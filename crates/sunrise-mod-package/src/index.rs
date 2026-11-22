@@ -1252,14 +1252,11 @@ impl Facts {
 /// this build doesn't know are refused: their checks come with their formats.
 pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
     match kind {
-        Kind::NativeMod => match native::Any::read(path)? {
-            native::Any::Flat(bundle) => {
-                crate::Content::read(path, &bundle.manifest)?;
-                Ok(bundle.facts())
-            }
-            // Starling: the registry's `.hnmod` bundle, as 0.8.0 inspected it.
-            legacy => Ok(legacy.facts()),
-        },
+        Kind::NativeMod => {
+            let bundle = native::Bundle::read(path)?;
+            crate::Content::read(path, &bundle.manifest)?;
+            Ok(bundle.facts())
+        }
         Kind::Mod => {
             let package = Package::read(path)?;
             if package.is_native() {

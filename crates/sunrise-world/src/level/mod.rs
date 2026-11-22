@@ -1007,12 +1007,6 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// Notify clients of a completed block write, when `UPDATE_CLIENTS` is set.
     fn send_block_updated(&mut self, _pos: BlockPos) {}
     fn is_loaded(&self, pos: BlockPos) -> bool;
-    /// Whether the block at `pos` may take a random tick (a randomly ticking
-    /// state, or lava's fluid): false only when it surely doesn't, so a
-    /// chunk's random ticks skip reading it. The default reads every one.
-    fn may_random_tick(&mut self, _pos: BlockPos) -> bool {
-        true
-    }
     /// Inclusive minimum and exclusive maximum build height.
     fn min_y(&self) -> i32 {
         -64
@@ -1599,15 +1593,6 @@ impl Behaviours {
     }
     pub fn is_randomly_ticking(&self, state: BlockStateId) -> bool {
         self.has_flag(state, data::state_flags::RANDOM_TICKS)
-    }
-    /// Whether a random tick at a block in this state does anything: the
-    /// block ticks randomly, or its fluid is lava (`random_tick_at`).
-    pub fn takes_random_tick(&self, state: BlockStateId) -> bool {
-        self.is_randomly_ticking(state)
-            || matches!(
-                self.fluid(state).kind(),
-                FluidKind::Lava | FluidKind::FlowingLava
-            )
     }
     /// Whether the exported vanilla support cache can answer for this state.
     pub fn has_cached_support(&self, state: BlockStateId) -> bool {

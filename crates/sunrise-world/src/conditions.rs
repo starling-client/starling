@@ -305,55 +305,8 @@ impl LoadConditions {
         }
         Ok(())
     }
-
-    /// Hashes what decides which handler answers a condition (the inventory and the mod owning
-    /// each registered namespace), not the handlers' table, which is a new one every start.
-    pub fn hash_handlers<H: std::hash::Hasher>(&self, state: &mut H) {
-        use std::hash::Hash;
-        self.mods.hash(state);
-        if let Some(registered) = &self.registered {
-            registered.0.owned.hash(state);
-        }
-    }
-
-    /// Every answer this candidate gave with registered handlers: the inventory it was asked
-    /// under, the file, its `neoforge:conditions` payload and the answer. A prepared root built
-    /// with handlers keeps these, since the handlers can read config with no fingerprint.
-    pub fn registered_answers(&self) -> Vec<RecordedAnswer> {
-        let Some(registered) = &self.registered else {
-            return Vec::new();
-        };
-        let inventories = registered.0.inventories.lock().unwrap();
-        let mut answers = Vec::new();
-        for (mods, diagnostics) in inventories.iter() {
-            let Some(state) = &diagnostics.0 else {
-                continue;
-            };
-            for ((path, payload), cell) in &state.lock().unwrap().cache {
-                if let Some(answer) = cell.get() {
-                    answers.push((mods.clone(), path.clone(), payload.clone(), *answer));
-                }
-            }
-        }
-        answers
-    }
-
-    /// Whether the handlers give every recorded answer again, without an error: then a root
-    /// built from them selected the same files this load would.
-    pub fn answers_hold(&self, answers: &[RecordedAnswer]) -> bool {
-        answers.iter().all(|(mods, path, payload, answer)| {
-            let Ok(payload) = serde_json::from_str::<Value>(payload) else {
-                return false;
-            };
-            let file = serde_json::json!({ "neoforge:conditions": payload });
-            let view = self.with_mod_inventory(mods.iter().map(String::as_str));
-            view.allows_file(&file, path) == *answer && view.check_errors().is_ok()
-        })
-    }
 }
 
-/// One answer of [`LoadConditions::registered_answers`]: inventory, file, payload, answer.
-pub type RecordedAnswer = (Vec<String>, String, String, bool);
 #[derive(Clone, Debug)]
 enum ConditionError {
     Invalid(String),

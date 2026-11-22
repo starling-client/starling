@@ -173,12 +173,6 @@ pub struct BlockProperties {
     /// does, using the declared outline or the template's published occlusion shape. Unset
     /// inherits the template.
     pub occludes: Option<bool>,
-    /// Starling: the block's own shape, for a block shaped unlike its template: boxes
-    /// `[x1, y1, z1, x2, y2, z2]` in sixteenths (as model elements, -16 to 32: a block out at
-    /// most), made for a state facing up (or along y) and turned to each state's `facing` (else
-    /// `axis`), as Create's shapers are made. Its outline, collision and support are these
-    /// boxes, and it hides none of its neighbours' faces nor their light.
-    pub shape: Option<Vec<[f32; 6]>>,
     /// `false`: the breaking crack (`destroy_stage_0..9`) is not drawn on the block, as for a
     /// block broken by use; unset or `true`, it is drawn. Only the overlay: the break and the
     /// destroy-progress packets are vanilla's.
@@ -337,187 +331,6 @@ impl RenderShape {
     }
 }
 
-/// What a block is in a kinetic network (rotation passed from block to block, as Create's):
-/// its part, a source's speed, and the models the game turns with it. Its axis or facing is
-/// its state's `axis` or `facing` property.
-#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Kinetic {
-    pub part: KineticPart,
-    /// A source's speed in RPM (a motor's always, a crank's while it is turned), at most 256
-    /// either way.
-    #[serde(default)]
-    pub rpm: f32,
-    /// The block's own model turns about its axis (the game draws it: its render shape is
-    /// `ENTITYBLOCK_ANIMATED`).
-    #[serde(default)]
-    pub spins: bool,
-    /// A model (`<ns>:block/<path>`) drawn turning at each face the part connects through,
-    /// made pointing south: a gearbox's and a motor's shaft ends.
-    #[serde(default)]
-    pub half: Option<String>,
-    /// Another model turning with the block, turned as its blockstate turns its own (a crank's
-    /// handle).
-    #[serde(default)]
-    pub extra: Option<String>,
-    /// The way `extra` is made pointing (`north`...), when it is not made as the block's own
-    /// model: it is turned from there to the state's `facing` (Create's crank handle points
-    /// north, its block up).
-    #[serde(default)]
-    pub extra_facing: Option<String>,
-    /// A model the machine moves down as it works, turned as the blockstate turns its own: a
-    /// press's head (Create's `mechanical_press/head`), a mixer's head, which also turns.
-    #[serde(default)]
-    pub head: Option<String>,
-    /// A model moving down with `head` without turning: a mixer's pole.
-    #[serde(default)]
-    pub pole: Option<String>,
-    /// More models the game draws for its part, in the order the part names them (a belt's:
-    /// start, middle, end, their bottoms, its diagonals, its pulley).
-    #[serde(default)]
-    pub models: Vec<String>,
-    /// Create's stress: what it takes from its network, in stress units per RPM it turns at
-    /// (Create's `impact`: a drill's 4, a press's 8).
-    #[serde(default)]
-    pub stress: f32,
-    /// A source's stress capacity, in stress units per RPM it turns its network at (a water
-    /// wheel's 32, a crank's 8). A network taking more than its sources give stands still.
-    #[serde(default)]
-    pub capacity: f32,
-}
-
-/// The directions a kinetic model may be made pointing.
-pub const DIRECTIONS: [&str; 6] = ["down", "up", "north", "south", "west", "east"];
-
-/// `north`... as a unit vector.
-pub fn direction(name: &str) -> Option<[i32; 3]> {
-    Some(match name {
-        "north" => [0, 0, -1],
-        "south" => [0, 0, 1],
-        "west" => [-1, 0, 0],
-        "east" => [1, 0, 0],
-        "down" => [0, -1, 0],
-        "up" => [0, 1, 0],
-        _ => return None,
-    })
-}
-
-/// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
-/// south at face `f`: a kinetic part's `half`.
-pub fn turns_to(f: [i32; 3]) -> [u8; 3] {
-    turns_from([0, 0, 1], f)
-}
-
-/// The quarter turns about x and y (a blockstate variant's) that point a model made pointing
-/// `made` at `f`: the first of x then y, as a variant turns its model (x first, each quarter
-/// taking south up and south west).
-pub fn turns_from(made: [i32; 3], f: [i32; 3]) -> [u8; 3] {
-    let x = |[a, b, c]: [i32; 3]| [a, c, -b];
-    let y = |[a, b, c]: [i32; 3]| [-c, b, a];
-    for tx in 0..4u8 {
-        let mut v = made;
-        for _ in 0..tx {
-            v = x(v);
-        }
-        for ty in 0..4u8 {
-            if v == f {
-                return [tx, ty, 0];
-            }
-            v = y(v);
-        }
-    }
-    [0; 3]
-}
-
-/// A kinetic part: what it joins and how.
-#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum KineticPart {
-    /// Along its axis, both ends.
-    Shaft,
-    /// A shaft that also meshes with the cogwheels beside it (radius half a block).
-    Cogwheel,
-    /// The same, a block in radius: meshes diagonally with small ones and at right angles with
-    /// large ones.
-    LargeCogwheel,
-    /// Joins the four faces around its axis.
-    Gearbox,
-    /// A source turning its facing side at `rpm`.
-    Motor,
-    /// A source turning its back while a player turns it (sneaking: the other way).
-    Crank,
-    /// Turned through its back, it breaks the block it faces (Create's mechanical drill: a
-    /// step a tick past its hardness over a hundredth of its speed, ten steps a block).
-    Drill,
-    /// A shaft along its axis; two a block apart turning opposite ways crush the items that
-    /// fall between them (Create's crushing wheels and their crushing and milling recipes).
-    CrushingWheel,
-    /// A small cogwheel about y that also joins the block below; turned, it mills what is put
-    /// in it (Create's millstone and its milling recipes).
-    Millstone,
-    /// An axle along its facing's axis; turned, it presses what is below it (Create's
-    /// mechanical press: an item on a depot or on the ground, a basin's items compacted).
-    Press,
-    /// A small cogwheel about y joining nothing else; turned above a basin, it mixes what is in
-    /// it (Create's mechanical mixer).
-    Mixer,
-    /// Turned through its back, it blows (or pulls) air out of its front: the items in the air
-    /// are pushed, and washed, blasted, smoked or haunted by what the air passes (Create's
-    /// encased fan).
-    Fan,
-    /// An axle along its axis (or its facing's) that water flowing past its rim turns, 8 RPM
-    /// the way it flows (Create's water wheel).
-    WaterWheel,
-    /// An axle along its axis that a redstone signal (its state's `powered`) breaks (Create's
-    /// clutch).
-    Clutch,
-    /// An axle along its axis that a redstone signal turns the other way past it (Create's
-    /// gearshift).
-    Gearshift,
-    /// A mechanical belt's segment (Create's belt): its pulleys (at its ends) join the shafts at
-    /// their sides and turn together, and it carries items along.
-    Belt,
-    /// Create's mechanical saw: facing sideways, turned through its back, it cuts the block it
-    /// faces as a drill does (only wood, leaves and plants) and the whole tree above it; facing
-    /// up or down, an axle across it (its state's `axis_along_first`), and facing up it cuts the
-    /// items put on it (cutting and stonecutting recipes).
-    Saw,
-    /// Create's mechanical and windmill bearings: turned through its back (or, a windmill's,
-    /// turning it), it carries the blocks attached in front of it round its facing's axis; a
-    /// windmill's is a source by its sails (`capacity`), a mechanical one starts and stops
-    /// with its network.
-    Bearing,
-    /// Create's mechanical arm: a small cogwheel about y also joined from below (above, its
-    /// state's `ceiling`), moving items between the points marked for it as it turns.
-    Arm,
-}
-
-/// What a block with work of its own keeps and does (Starling: Create's machines,
-/// `game/kinetic_machines.rs`), besides any kinetic part: its items live in a block entity the
-/// world saves (its id the block's), and nearby players see them.
-#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Machine {
-    /// Holds a stack on top for a press or a fan to work on (Create's depot).
-    Depot,
-    /// Holds the items a press compacts or a mixer mixes, and their results (Create's basin).
-    Basin,
-    /// A belt segment (Create's belt; with the kinetic part `belt`): the belt's items are its
-    /// start's.
-    Belt,
-    /// Burns fuel and heats the basin above it, its state's `blaze` saying how much (Create's
-    /// blaze burner).
-    Burner,
-    /// Faces away from the inventory behind it: puts what comes in at its open side into it, or
-    /// (its state's `extracting`) takes items out and drops them; `powered` pauses it (Create's
-    /// funnels; a `brass` one takes up to a stack at a time).
-    Funnel,
-    /// Items fall through it, from the inventory above (or landing on it) to the one below, the
-    /// chute it leads into (its state's `facing`: down, or a diagonal one's way), or dropped
-    /// below (Create's chute).
-    Chute,
-}
-
 /// Which of a block's states get random ticks (`BlockBehaviour.isRandomlyTicking(state)`), so a
 /// crop, sapling or soil on a template that doesn't tick still grows. The sections' random tick
 /// counts follow it, and `native_random_tick` fires for the states it picks.
@@ -567,11 +380,6 @@ impl<'de> Deserialize<'de> for BlockShapes {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Shapes {
-            // Starling: one property by name, as light and the other state values take it.
-            // Sunrise's catalog mods (voltz, factory_blocks, additional_lights, simplylight)
-            // write their shapes so, and were refused whole for it.
-            #[serde(default)]
-            property: String,
             #[serde(default)]
             properties: Vec<String>,
             #[serde(default)]
@@ -580,7 +388,7 @@ impl<'de> Deserialize<'de> for BlockShapes {
         }
         let shapes = Shapes::deserialize(deserializer)?;
         Ok(Self(StateValues {
-            property: shapes.property,
+            property: String::new(),
             properties: shapes.properties,
             values: shapes.values,
             default: shapes.default,
@@ -776,12 +584,6 @@ struct BlockFile {
     pick_item: Option<String>,
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
-    kinetic: Option<Kinetic>,
-    #[serde(default)]
-    machine: Option<Machine>,
-    #[serde(default)]
-    models: Vec<String>,
     suspicious_stew_effects: Option<Vec<StewEffect>>,
 }
 
@@ -909,13 +711,6 @@ pub struct Block {
     /// template is the matching wall sign and which has no item. The
     /// template's when unset.
     pub wall_block: Option<String>,
-    /// Its part in a kinetic network, if any.
-    pub kinetic: Option<Kinetic>,
-    /// The machine it is, if it keeps items of its own.
-    pub machine: Option<Machine>,
-    /// Starling: models (`<ns>:block/<path>`) the game draws for it besides its own, in the
-    /// order its machine names them (a blaze burner's blaze, its rods and its flame).
-    pub models: Vec<String>,
     /// A sign's new text colour (`SignBlockEntity.createDefaultSignText`): a `DyeColor` name,
     /// black when unset. Applies to a sign when it is placed, front and back.
     pub sign_text_color: Option<String>,
@@ -1605,68 +1400,6 @@ impl FileReader<'_> {
     }
 }
 
-fn reader<'a>(
-    source: &'a Source,
-    fetched: &'a Option<(PathBuf, BTreeSet<String>)>,
-) -> Result<FileReader<'a>, String> {
-    Ok(FileReader {
-        own: match source {
-            Source::Dir(root) => OwnFiles::Dir(root),
-            #[cfg(not(target_arch = "wasm32"))]
-            Source::Zip(path) => OwnFiles::Zip(Box::new(open_zip(path)?)),
-            Source::Code => OwnFiles::Dir(Path::new("")),
-        },
-        fetched: fetched.as_ref().map(|(dir, names)| (dir.as_path(), names)),
-    })
-}
-
-/// JSON text without the comments Gson's lenient reader skips: `//` and
-/// `#` to the end of the line, and `/* ... */`, outside strings.
-pub fn without_comments(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    let mut string = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if string {
-            out.push(b);
-            if b == b'\\' {
-                out.extend(bytes.get(i + 1));
-                i += 1;
-            } else if b == b'"' {
-                string = false;
-            }
-            i += 1;
-            continue;
-        }
-        match (b, bytes.get(i + 1)) {
-            (b'"', _) => {
-                string = true;
-                out.push(b);
-                i += 1;
-            }
-            (b'/', Some(b'/')) | (b'#', _) => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            (b'/', Some(b'*')) => {
-                i += 2;
-                while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
-                    i += 1;
-                }
-                i += 2;
-                out.push(b' ');
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
 /// Why two content mods cannot be on together: a namespace both own (one's
 /// id or listed namespace is the other's), which would mix their files.
 /// `a` and `b` are (mod id, owned namespaces).
@@ -1905,11 +1638,6 @@ impl Content {
         }
     }
 
-    /// The folder its fetched assets are read from, when they are.
-    pub fn fetched(&self) -> Option<&Path> {
-        self.fetched.as_ref().map(|(dir, _)| dir.as_path())
-    }
-
     /// No files: a mod with code only.
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
@@ -2012,10 +1740,6 @@ impl Content {
         }
         let reader = self.source.reader();
         let mut ids = BTreeSet::new();
-        // One reader for every declaration: a packaged mod's archive opened per file read its
-        // whole index each time (Create's 900 declarations in 10,000 files: half a minute on a
-        // phone, at every start).
-        let mut reader = reader(&self.source, &self.fetched)?;
         for (block, name) in blocks {
             let file: BlockFile =
                 serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
@@ -2055,9 +1779,6 @@ impl Content {
                 thickness: file.thickness,
                 wood_type: file.wood_type,
                 wall_block: file.wall_block,
-                kinetic: file.kinetic,
-                machine: file.machine,
-                models: file.models,
                 sign_text_color: file.sign_text_color,
                 sign_text_glow: file.sign_text_glow,
                 base_block: file.base_block,
@@ -2532,43 +2253,6 @@ fn check_block(file: &Block) -> Result<(), String> {
     if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
         return Err("sounds names a vanilla block (minecraft:...)".into());
     }
-    if p.shape.as_ref().is_some_and(|boxes| {
-        boxes.is_empty()
-            || boxes.iter().any(|b| {
-                b.iter().any(|v| !(-16.0..=32.0).contains(v)) || (0..3).any(|i| b[i] >= b[i + 3])
-            })
-    }) {
-        return Err(
-            "shape is boxes [x1, y1, z1, x2, y2, z2] in sixteenths, -16 to 32, each \
-                    from its least corner to its greatest"
-                .into(),
-        );
-    }
-    if p.shape.is_some() && file.shapes.is_some() {
-        return Err("properties.shape and shapes both give the outline, so a block has one".into());
-    }
-    if let Some(k) = &file.kinetic {
-        if !k.rpm.is_finite() || k.rpm.abs() > 256.0 {
-            return Err("kinetic rpm is a number from -256 to 256".into());
-        }
-        let model = |m: &Option<String>| {
-            m.as_deref().is_none_or(|m| {
-                m.split_once(':')
-                    .is_some_and(|(ns, p)| !ns.is_empty() && !p.is_empty())
-            })
-        };
-        if !model(&k.half) || !model(&k.extra) || !model(&k.head) || !model(&k.pole) {
-            return Err(
-                "kinetic half, extra, head and pole name models as <namespace>:<path>".into(),
-            );
-        }
-        if k.extra_facing
-            .as_deref()
-            .is_some_and(|f| !DIRECTIONS.contains(&f))
-        {
-            return Err("kinetic extra_facing is down, up, north, south, west or east".into());
-        }
-    }
     if !file.item && !file.components.is_empty() {
         return Err("item is false, so the block has no item to take components".into());
     }
@@ -2911,9 +2595,9 @@ capabilities = ["registries"]
             block.collision_shapes.as_ref().unwrap().default,
             Some(vec![])
         );
-        // Starling: one property by name, as Sunrise's catalog mods write their shapes.
-        let one: BlockShapes = serde_json::from_str(r#"{"property":"axis","default":[]}"#).unwrap();
-        assert_eq!(one.property, "axis");
+        assert!(
+            serde_json::from_str::<BlockShapes>(r#"{"property":"axis","default":[]}"#).is_err()
+        );
         for value in [
             r#"{"properties":["axis","axis"],"default":[]}"#,
             r#"{"properties":["Axis"],"default":[]}"#,
@@ -3302,9 +2986,6 @@ capabilities = ["registries"]
                 thickness: None,
                 wood_type: None,
                 wall_block: None,
-                kinetic: None,
-                machine: None,
-                models: Vec::new(),
                 sign_text_color: None,
                 sign_text_glow: None,
                 base_block: None,

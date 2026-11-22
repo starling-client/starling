@@ -177,11 +177,6 @@ pub struct Manifest {
     /// Game internals used by this mod, fingerprinted against its pinned build.
     #[serde(default)]
     pub internals: Vec<Internal>,
-    /// Files the `.smod` leaves out and the game fetches on the player's device (Starling): a
-    /// ported Java mod's assets, which its authors keep (All Rights Reserved), from the very
-    /// file on Modrinth the player could download themselves ([`crate::fetch`]).
-    #[serde(default)]
-    pub assets: Option<Assets>,
     /// Free-form scalar values other mods read through `PackageInfo::property`, with no limit
     /// separate from the complete manifest's byte limit.
     #[serde(default)]
@@ -200,35 +195,6 @@ pub enum Property {
     Float(f64),
     String(String),
 }
-
-/// A manifest's `[assets]`.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Assets {
-    pub fetch: Fetch,
-}
-
-/// `[assets.fetch]`: one file on Modrinth, found and checked by its SHA-512, and the folders of
-/// it the game takes.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Fetch {
-    /// The Modrinth project (its slug), shown to the player.
-    pub modrinth: String,
-    /// The version the file is of, shown.
-    pub version: String,
-    /// The file's name, shown.
-    pub file: String,
-    /// Its size in bytes: shown before the download, and the most it may be.
-    pub size: u64,
-    /// Its SHA-512 in lowercase hex: Modrinth finds the file by it, and the download must match.
-    pub sha512: String,
-    /// What the game takes from it: folders `assets/<namespace>/` of the mod's own namespaces.
-    pub take: Vec<String>,
-}
-
-/// The biggest file `[assets.fetch]` may name.
-const MAX_FETCH: u64 = 256 << 20;
 
 /// A `[dependencies]` entry: a semver requirement or a detailed table.
 #[derive(Clone, Debug, PartialEq)]
@@ -558,30 +524,12 @@ pub struct Module {
 
 pub use mod_vocab::Side;
 
-/// What a mod may do; the player sees it before turning the mod on. A content mod's is
-/// `registries`; the others are the wasm mods' of the registry's index (Starling 0.8.0 read them,
-/// and the index still lists such mods), and one this game does not know yet is `Unknown`, so a
-/// newer index still reads.
+/// What a content mod adds; the player sees it before turning the mod on.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
-    GameRead,
-    Chat,
-    Hud,
-    Storage,
-    /// Runs vanilla commands as the player, with the player's permissions.
-    Command,
     /// New blocks, items and mob effects from the mod's `data/` (API 0.2).
     Registries,
-    Ui,
-    Render,
-    Input,
-    Players,
-    World,
-    Recipes,
-    /// A capability a newer game added.
-    #[serde(other)]
-    Unknown,
 }
 impl Capability {
     /// What a package's capabilities are when its manifest does not say: the one label every
@@ -593,45 +541,17 @@ impl Capability {
     /// What the player reads before turning the mod on: "May <this>".
     pub fn describe(self) -> &'static str {
         match self {
-            Capability::GameRead => "see your position, health and the time",
-            Capability::Chat => "show you chat messages",
-            Capability::Hud => "draw text on your screen",
-            Capability::Storage => "save its own settings to disk",
-            Capability::Command => "run commands as you, with your permissions",
             Capability::Registries => {
                 "add blocks, items, mob effects and entity types to your worlds"
             }
-            Capability::Ui => "show its own screens and a settings page",
-            Capability::Render => "draw on your screen, shake and zoom the camera",
-            Capability::Input => {
-                "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
-            }
-            Capability::Players => "see who is on the server and message them",
-            Capability::World => "read and change the world's blocks",
-            Capability::Recipes => {
-                "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
-            }
-            Capability::Unknown => "do something this version of the game does not know",
         }
     }
 }
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Capability::GameRead => "game-read",
-            Capability::Chat => "chat",
-            Capability::Hud => "hud",
-            Capability::Storage => "storage",
-            Capability::Command => "command",
-            Capability::Registries => "registries",
-            Capability::Ui => "ui",
-            Capability::Render => "render",
-            Capability::Input => "input",
-            Capability::Players => "players",
-            Capability::World => "world",
-            Capability::Recipes => "recipes",
-            Capability::Unknown => "unknown",
-        })
+        match self {
+            Capability::Registries => f.write_str("registries"),
+        }
     }
 }
 
@@ -1016,56 +936,7 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
-        if let Some(Assets { fetch }) = &m.assets {
-            m.check_fetch(fetch)
-                .map_err(|e| format!("{MANIFEST}: [assets.fetch]: {e}"))?;
-        }
         Ok(m)
-    }
-    fn check_fetch(&self, fetch: &Fetch) -> Result<(), String> {
-        if !self.capabilities.contains(&Capability::Registries) {
-            return Err("fetched assets are content, which needs capability registries".into());
-        }
-        let hex = fetch.sha512.len() == 128
-            && fetch
-                .sha512
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        if !hex {
-            return Err("sha512 is not 128 lowercase hex digits".into());
-        }
-        if !(1..=MAX_FETCH).contains(&fetch.size) {
-            return Err(format!("size is not 1 to {} MiB", MAX_FETCH >> 20));
-        }
-        let plain = |s: &str| {
-            (1..=128).contains(&s.len())
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
-        };
-        for (field, value) in [
-            ("modrinth", &fetch.modrinth),
-            ("version", &fetch.version),
-            ("file", &fetch.file),
-        ] {
-            if !plain(value) {
-                return Err(format!("{field} {value:?} is not [A-Za-z0-9_.+-]{{1,128}}"));
-            }
-        }
-        if fetch.take.is_empty() {
-            return Err("take lists no folder".into());
-        }
-        for folder in &fetch.take {
-            let ns = folder
-                .strip_prefix("assets/")
-                .and_then(|f| f.strip_suffix('/'))
-                .filter(|ns| !ns.contains('/'));
-            if !ns.is_some_and(|ns| self.owned_namespaces().any(|own| own == ns)) {
-                return Err(format!(
-                    "take {folder:?} is not assets/<namespace>/ of the mod's own namespaces"
-                ));
-            }
-        }
-        Ok(())
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {

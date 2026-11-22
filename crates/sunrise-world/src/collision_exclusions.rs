@@ -239,7 +239,6 @@ mod tests {
                 large_collision_shape: false,
                 moving_piston: false,
                 empty_shape: p.x != 2 || p.y < 64,
-                full_block: false,
             })
         }
         fn is_suffocating(

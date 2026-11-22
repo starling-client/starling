@@ -1989,23 +1989,6 @@ impl Behaviours {
     ) {
         self.sim(level, ticks).report_placement(placed);
     }
-    /// `Block.setPlacedBy` with no placer, after a write put `state` at `pos`: the second
-    /// halves of doors, beds and tall plants, and the ticks and checks a placement starts
-    /// (a crafter, a diode, a piston, a tripwire hook). Nothing when another block stands
-    /// there now.
-    pub fn set_placed_by<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        ticks: &mut Ticks,
-        pos: BlockPos,
-        state: BlockStateId,
-    ) {
-        let mut sim = self.sim(level, ticks);
-        let placed = sim.state(pos);
-        if self.block(placed) == self.block(state) {
-            sim.set_placed_by(pos, placed);
-        }
-    }
     /// `DirectionalPlaceContext.canPlace`: whether the block at the clicked
     /// position can be replaced by the item (a dispenser places only there).
     pub fn directional_can_place<L: LevelAccess + ?Sized>(

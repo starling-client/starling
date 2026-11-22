@@ -27,9 +27,8 @@ pub fn find_supporting_block<W: BlockCollisionWorld>(
 ) -> Result<Option<BlockPos>, CollisionScanError<W::Error>> {
     let mut selected = None;
     let mut closest = f64::MAX;
-    let mut scan = BlockCollisionScan::new(world, context, bounds, false, candidate_budget)?;
-    while let Some(hit) = scan.next_collider() {
-        let p = hit?.0;
+    for hit in BlockCollisionScan::new(world, context, bounds, false, candidate_budget)? {
+        let p = hit?.position;
         let dx = f64::from(p.x) + 0.5 - entity_position.x;
         let dy = f64::from(p.y) + 0.5 - entity_position.y;
         let dz = f64::from(p.z) + 0.5 - entity_position.z;

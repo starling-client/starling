@@ -128,7 +128,6 @@ impl BlockCollisionWorld for Recording {
             large_collision_shape: true,
             moving_piston: true,
             empty_shape: true,
-            full_block: false,
         })
     }
     fn is_suffocating(&mut self, _: (), _: CollisionBlock, _: BlockPos) -> io::Result<bool> {
@@ -271,7 +270,6 @@ impl BlockCollisionWorld for ByColumn {
             large_collision_shape: true,
             moving_piston: true,
             empty_shape: true,
-            full_block: false,
         })
     }
     fn is_suffocating(&mut self, _: ChunkPos, _: CollisionBlock, _: BlockPos) -> io::Result<bool> {
@@ -390,7 +388,6 @@ impl BlockCollisionWorld for Sparse {
             large_collision_shape: false,
             moving_piston: false,
             empty_shape: !solid,
-            full_block: false,
         })
     }
     fn is_suffocating(

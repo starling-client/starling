@@ -5,7 +5,6 @@ pub mod content;
 pub mod dependencies;
 pub mod durable;
 pub mod enabled;
-pub mod fetch;
 pub mod extension_tags;
 pub mod game_identity;
 #[cfg(all(

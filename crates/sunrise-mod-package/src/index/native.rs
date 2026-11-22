@@ -6,59 +6,9 @@ use std::{collections::BTreeMap, io::Read, path::Path};
 /// of this fork's main (Diverges from upstream: horizon-rust/horizon has none).
 pub const PREBUILT_REPO: &str = "sunrise-org/sunrise";
 
-/// Whether a valid package is native, irrespective of its install folder: a flat package with
-/// native code, or Starling's `sunrise-native.json` bundle ([`legacy`]).
+/// Whether a valid package is native, irrespective of its install folder.
 pub fn holds(path: &Path) -> bool {
-    legacy::holds(path) || crate::Package::read(path).is_ok_and(|package| package.is_native())
-}
-
-pub mod legacy;
-
-/// Starling: a native mod in either format a phone holds: Sunrise's flat package ([`Bundle`]), or
-/// the bundle the registry's index publishes as `.hnmod` and Starling's build service compiles
-/// ([`legacy::Bundle`]), as 0.8.0 read them.
-pub enum Any {
-    Flat(Bundle),
-    Legacy(legacy::Bundle),
-}
-
-impl Any {
-    pub fn read(path: &Path) -> Result<Self, String> {
-        if legacy::holds(path) {
-            legacy::Bundle::read(path).map(Any::Legacy)
-        } else {
-            Bundle::read(path).map(Any::Flat)
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        match self {
-            Any::Flat(b) => &b.manifest.id,
-            Any::Legacy(b) => &b.manifest.id,
-        }
-    }
-
-    pub fn version(&self) -> &str {
-        match self {
-            Any::Flat(b) => &b.manifest.version,
-            Any::Legacy(b) => &b.manifest.version,
-        }
-    }
-
-    pub fn facts(&self) -> Facts {
-        match self {
-            Any::Flat(b) => b.facts(),
-            Any::Legacy(b) => b.manifest.facts(),
-        }
-    }
-
-    /// What Starling's build service is sent for it.
-    pub fn for_build(&self) -> Result<Vec<u8>, String> {
-        match self {
-            Any::Flat(b) => b.for_build(),
-            Any::Legacy(b) => b.for_build(),
-        }
-    }
+    crate::Package::read(path).is_ok_and(|package| package.is_native())
 }
 
 /// A flat native mod and its checked, archive-relative files.
@@ -100,27 +50,6 @@ impl Bundle {
             manifest: package.manifest,
             files,
         })
-    }
-
-    /// The bundle as the Android build service needs it (Starling): its manifest and sources,
-    /// without the content only the game reads (`assets/`, `data/`), so a mod's assets don't
-    /// count against the request's size. The same files always make the same bytes, which is
-    /// how the service knows it built them before.
-    pub fn for_build(&self) -> Result<Vec<u8>, String> {
-        use std::io::Write as _;
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .last_modified_time(zip::DateTime::default());
-        for (name, bytes) in &self.files {
-            if name.starts_with("assets/") || name.starts_with("data/") {
-                continue;
-            }
-            zip.start_file(name.as_str(), options)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(bytes).map_err(|e| e.to_string())?;
-        }
-        Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
     }
 
     /// Registry facts from the one package manifest, never Cargo metadata.
@@ -236,34 +165,6 @@ mod tests {
         assert_eq!(bundle.files["data/veinminer/table.bin"], bytes);
         assert_eq!(bundle.files["src/lib.rs"], b"fn hook() {}");
         assert!(bundle.files.contains_key(crate::manifest::MANIFEST));
-    }
-
-    #[test]
-    fn what_goes_to_the_build_service_leaves_the_content_out_and_repeats() {
-        let big = [7u8; 4096];
-        let bundle = read(
-            "for-build",
-            &manifest(),
-            &[
-                ("assets/veinminer/big.bin", &big),
-                ("data/veinminer/loot.json", b"{}"),
-            ],
-        )
-        .unwrap();
-        let sent = bundle.for_build().unwrap();
-        assert_eq!(sent, bundle.for_build().unwrap());
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&sent)).unwrap();
-        let mut names: Vec<String> = (0..zip.len())
-            .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
-            .collect();
-        names.sort();
-        let mut expected = vec![
-            crate::manifest::MANIFEST.to_string(),
-            "Cargo.toml".to_string(),
-            "src/lib.rs".to_string(),
-        ];
-        expected.sort();
-        assert_eq!(names, expected);
     }
 
     #[test]

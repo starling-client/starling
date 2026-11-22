@@ -580,7 +580,7 @@ fn shadow_every() -> u32 {
 static PREPASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The game's choice for the packs it loads from now on (`prepass_wanted`).
-pub(super) fn set_prepass(on: bool) {
+pub fn set_prepass(on: bool) {
     PREPASS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -588,7 +588,7 @@ pub(super) fn set_prepass(on: bool) {
 /// the program's own vertex stage and only the atlas' alpha test, then the program shades with
 /// depth writes off, so a phone's GPU can drop what is hidden before running the pack's fragment
 /// stage (grass and leaves stacked in front of each other otherwise run it once per layer).
-pub(super) fn prepass_wanted() -> bool {
+pub fn prepass_wanted() -> bool {
     PREPASS.load(std::sync::atomic::Ordering::Relaxed)
         || std::env::var_os("SUNRISE_SHADER_PACK_PREPASS").is_some()
 }

@@ -1239,7 +1239,7 @@ impl PackPost {
                 timestamp_writes,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth,
-                    depth_ops: Some(super::pack_shadow::load()),
+                    depth_ops: Some(crate::pack_shadow::load()),
                     stencil_ops: None,
                 }),
                 ..Default::default()
