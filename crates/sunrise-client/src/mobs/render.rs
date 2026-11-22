@@ -2266,6 +2266,11 @@ fn render_selected(
     // Refill one pooled pose map for layers that run their own setupAnim.
     let mut layer_poses = Poses::pooled();
     let body_keys = body.keys();
+    let armor_atlases = data
+        .mob_data()
+        .armor_atlases
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for (i, layer) in all_layers.iter().enumerate() {
         let custom = cem.layer(&layer.model);
         // `layer.texture` stays the vanilla name (the villager hats below look for its
