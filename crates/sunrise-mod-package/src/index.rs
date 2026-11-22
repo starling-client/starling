@@ -505,6 +505,18 @@ pub enum Trust {
 }
 
 impl Index {
+    /// Starling: `other`'s projects and takedowns added to this index's, for a catalog that
+    /// lists two registries (Sunrise's and Horizon's). A project both name is this index's.
+    pub fn merge(&mut self, other: Index) {
+        for project in other.projects {
+            if self.project(&project.id).is_none() {
+                self.projects.push(project);
+            }
+        }
+        self.revoked.extend(other.revoked);
+        self.left_out.extend(other.left_out);
+    }
+
     /// Parses an index and keeps what passes [`Index::check`]'s rules: an entry that breaks one
     /// is left out with its reason ([`Index::left_out`]). Only text that is not an index, or one
     /// of a newer schema, fails.
@@ -898,10 +910,17 @@ fn check_version(
     find_release(releases, v.sunrise.as_deref()).map_err(at)?;
     dependencies::check_shape(p, v)?;
     let f = &v.file;
+    // Starling: Horizon's registry names the same kinds with its own extensions; its packages
+    // are made Sunrise's as they are installed (`crate::horizon`).
+    let horizon = match p.kind {
+        Kind::Mod | Kind::NativeMod => Some(".hmod"),
+        _ => None,
+    };
     let extension_ok = p
         .kind
         .extension()
-        .is_none_or(|e| f.name.ends_with(&format!(".{e}")));
+        .is_none_or(|e| f.name.ends_with(&format!(".{e}")))
+        || horizon.is_some_and(|e| f.name.ends_with(e));
     if !plain_name(&f.name) || !extension_ok {
         return Err(at(format!(
             "{:?} is not a plain file name for a {}",
@@ -1133,6 +1152,11 @@ pub fn check_file(
             "this Sunrise can't install a {} yet",
             project.kind.name()
         ));
+    }
+    // Starling: the bytes are the ones the index lists. A Horizon package becomes Sunrise's
+    // now, before its manifest is read.
+    if matches!(project.kind, Kind::Mod | Kind::NativeMod) && crate::horizon::holds(path) {
+        crate::horizon::adopt(path)?;
     }
     let facts = inspect(&project.kind, path)?;
     facts.matches(project, version)?;

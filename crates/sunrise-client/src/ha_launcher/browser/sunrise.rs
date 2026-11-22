@@ -120,11 +120,48 @@ fn fetch_index() -> Result<(Index, String), String> {
     } else {
         fs::read_to_string(&at).map_err(|e| format!("{at}: {e}"))?
     };
-    let index = match local() {
+    let mut index = match local() {
         true => Index::parse_local(&text)?,
         false => Index::parse(&text)?,
     };
+    // Starling: Horizon's registry beside Sunrise's, in one list. Its `.hmod` packages are made
+    // Sunrise's as they are installed (sunrise_mod_package::horizon). What it lists is kept in the
+    // game folder too, for when it can't be reached; without either, Sunrise's stand alone.
+    if at == INDEX_URL {
+        let kept = crate::ha_launcher::backend::game_home().join(HORIZON_CACHE);
+        let fetched = horizon_index_text();
+        if let Ok(text) = &fetched {
+            if let Some(dir) = kept.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            let _ = fs::write(&kept, text);
+        }
+        let horizon = fetched.or_else(|e| fs::read_to_string(&kept).map_err(|_| e));
+        if let Ok(other) = horizon.and_then(|text| Index::parse(&text)) {
+            index.merge(other);
+        }
+    }
     Ok((index, text))
+}
+
+/// Horizon's registry's index (GitHub Pages of horizon-rust/horizon-mods).
+const HORIZON_INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
+const HORIZON_CACHE: &str = "mod-browser/horizon-index.json";
+
+fn horizon_index_text() -> Result<String, String> {
+    use std::io::Read;
+    let at = HORIZON_INDEX_URL;
+    let response = download::agent(at)
+        .get(at)
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    response
+        .into_reader()
+        .take(MAX_INDEX)
+        .read_to_string(&mut text)
+        .map_err(|e| e.to_string())?;
+    Ok(text)
 }
 
 /// A project's ratings: 1 to 5 stars, their mean and how many.

@@ -12,6 +12,8 @@ pub mod game_identity;
     any(target_os = "linux", target_os = "macos", windows)
 ))]
 pub mod holder;
+// Starling: Horizon's packages, made Sunrise's as they are installed.
+pub mod horizon;
 pub mod icon;
 #[cfg(feature = "index")]
 pub mod index;
