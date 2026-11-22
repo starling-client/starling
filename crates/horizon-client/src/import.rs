@@ -89,7 +89,12 @@ pub fn classify(path: &Path) -> (Kind, String) {
     if let Some(prefix) = found("horizon-mod.toml") {
         return (Kind::Mod, prefix);
     }
-    if ext == "hmod" {
+    // Sunrise's mods (`.smod`): its content mods load as Horizon's; one with code is refused
+    // by name on the Mods page (`horizon_mod_package::manifest::SUNRISE_CODE`).
+    if let Some(prefix) = found(horizon_mod_package::manifest::SUNRISE_MANIFEST) {
+        return (Kind::Mod, prefix);
+    }
+    if ext == "hmod" || ext == "smod" {
         return (Kind::Mod, String::new());
     }
     if let Some(prefix) = found("level.dat") {

@@ -30,7 +30,7 @@ impl Kind {
     pub fn accepts(self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         match self {
-            Self::Mods => lower.ends_with(".hmod"),
+            Self::Mods => lower.ends_with(".hmod") || lower.ends_with(".smod"),
             Self::Packs => lower.ends_with(".zip"),
             Self::Shaders => lower.ends_with(".zip") || lower.ends_with(".hshader"),
         }

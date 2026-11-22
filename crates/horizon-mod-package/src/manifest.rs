@@ -23,6 +23,48 @@ use std::{
 
 /// The manifest's file name in a `.hmod` or a mod folder.
 pub const MANIFEST: &str = "horizon-mod.toml";
+/// Sunrise's manifest (sunrise-org/sunrise, the fork Horizon's mod API came from), in place of
+/// [`MANIFEST`] in a `.smod` or a Sunrise mod folder. Its content mods read as Horizon's: the same
+/// fields and `data/<id>/sunrise/` for `data/<id>/horizon/`. Its mods with code are refused by name
+/// ([`SUNRISE_CODE`]).
+pub const SUNRISE_MANIFEST: &str = "sunrise-mod.toml";
+/// The package files this build reads: Horizon's `.hmod` and Sunrise's `.smod`.
+pub const EXTENSIONS: [&str; 2] = ["hmod", "smod"];
+/// Why a Sunrise mod with code doesn't load. Its native mods compile against one exact Sunrise build,
+/// and its wasm mods bind one import per call of module `sunrise` (no `host` dispatcher, no
+/// `horizon_layout`), which this runtime doesn't speak.
+pub const SUNRISE_CODE: &str =
+    "a Sunrise mod with code (native or wasm): only Sunrise's content mods load here for now";
+
+/// Whether `path` is a mod package by its extension: [`EXTENSIONS`].
+pub fn is_package(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXTENSIONS.contains(&e))
+}
+
+/// The manifest a mod folder carries: [`MANIFEST`], or [`SUNRISE_MANIFEST`] when only that is there.
+pub fn folder_manifest(dir: &Path) -> &'static str {
+    if !dir.join(MANIFEST).exists() && dir.join(SUNRISE_MANIFEST).is_file() {
+        SUNRISE_MANIFEST
+    } else {
+        MANIFEST
+    }
+}
+
+/// [`SUNRISE_CODE`] for a Sunrise manifest that declares code (`[native]`, `[wasm]` or `[runtime]`)
+/// or comes with it (`code`: `Cargo.toml`, `src/` or `mod.wasm` in the package).
+fn sunrise_content_only(text: &str, code: bool) -> Result<(), String> {
+    let manifest: toml::Value =
+        toml::from_str(text).map_err(|e| format!("{SUNRISE_MANIFEST}: {e}"))?;
+    let declares = ["native", "wasm", "runtime"]
+        .iter()
+        .any(|key| manifest.get(key).is_some());
+    if code || declares {
+        return Err(format!("{SUNRISE_MANIFEST}: {SUNRISE_CODE}"));
+    }
+    Ok(())
+}
 /// Executable components are not content and are refused in a `.hmod`.
 pub const WASM: &str = "mod.wasm";
 /// The largest uses table ([`USES_FILE`]) a package may carry: what the surface crate reads.
@@ -925,19 +967,23 @@ impl Package {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(format!("icon.png: {e}")),
             }
-            check_folder_file(path, MANIFEST)?;
+            let manifest = folder_manifest(path);
+            check_folder_file(path, manifest)?;
             has_wasm = std::fs::symlink_metadata(path.join(WASM)).is_ok();
             for (name, _) in crate::content::folder_files(path)? {
                 check_folder_file(path, &name)?;
             }
             let mut text = String::new();
-            std::fs::File::open(path.join(MANIFEST))
-                .map_err(|e| format!("{MANIFEST}: {e}"))?
+            std::fs::File::open(path.join(manifest))
+                .map_err(|e| format!("{manifest}: {e}"))?
                 .take(MAX_MANIFEST + 1)
                 .read_to_string(&mut text)
-                .map_err(|e| format!("{MANIFEST}: {e}"))?;
+                .map_err(|e| format!("{manifest}: {e}"))?;
             if text.len() as u64 > MAX_MANIFEST {
-                return Err(format!("{MANIFEST}: over {} MiB", MAX_MANIFEST >> 20));
+                return Err(format!("{manifest}: over {} MiB", MAX_MANIFEST >> 20));
+            }
+            if manifest == SUNRISE_MANIFEST {
+                sunrise_content_only(&text, has_cargo || has_source || has_wasm)?;
             }
             text
         } else {
@@ -1039,14 +1085,24 @@ impl Package {
                 icon = Some(crate::icon::Icon::parse(bytes)?);
             }
         }
+        let manifest = if entries.iter().all(|(name, _, _)| name != MANIFEST)
+            && entries.iter().any(|(name, _, _)| name == SUNRISE_MANIFEST)
+        {
+            SUNRISE_MANIFEST
+        } else {
+            MANIFEST
+        };
         let mut toml = String::new();
-        zip.by_name(MANIFEST)
-            .map_err(|e| format!("{MANIFEST}: {e}"))?
+        zip.by_name(manifest)
+            .map_err(|e| format!("{manifest}: {e}"))?
             .take(MAX_MANIFEST + 1)
             .read_to_string(&mut toml)
-            .map_err(|e| format!("{MANIFEST}: {e}"))?;
+            .map_err(|e| format!("{manifest}: {e}"))?;
         if toml.len() as u64 > MAX_MANIFEST {
-            return Err(format!("{MANIFEST}: over {} MiB", MAX_MANIFEST >> 20));
+            return Err(format!("{manifest}: over {} MiB", MAX_MANIFEST >> 20));
+        }
+        if manifest == SUNRISE_MANIFEST {
+            sunrise_content_only(&toml, has_cargo || has_source || has_wasm)?;
         }
         let mut package = Self::from_parts(&toml, icon, has_cargo, has_source, has_wasm)?;
         if uses && package.manifest.native.is_none() && package.manifest.wasm.is_none() {
@@ -1438,7 +1494,7 @@ fn check_folder_file(root: &Path, name: &str) -> Result<(), String> {
     check_file(name, mode, || std::fs::File::open(&path)).map_err(|e| e.to_string())
 }
 
-/// The `.hmod` files and mod folders in `dir`, by name.
+/// The `.hmod` and `.smod` files and mod folders in `dir`, by name.
 pub fn find(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -1446,7 +1502,9 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = read
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "hmod") || p.join(MANIFEST).is_file())
+        .filter(|p| {
+            is_package(p) || p.join(MANIFEST).is_file() || p.join(SUNRISE_MANIFEST).is_file()
+        })
         .collect();
     found.sort();
     found
@@ -2213,6 +2271,106 @@ issues = \"http://example.org/issues\"
             );
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A Sunrise `.smod` at `path` with `files` (the manifest among them, as `sunrise-mod.toml`).
+    fn smod(path: &Path, files: &[(&str, &[u8])]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    const SUNRISE_BLOCK: &[u8] = br#"{"template": "minecraft:iron_block",
+        "properties": {"hardness": 4.0, "light": 3, "sounds": "minecraft:amethyst_block"}}"#;
+
+    #[test]
+    fn a_sunrise_content_mod_reads_as_a_horizon_one() {
+        // Sunrise's `.smod`: its own manifest name and `data/<id>/sunrise/` for `horizon/`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ruby.smod");
+        smod(
+            &path,
+            &[
+                (SUNRISE_MANIFEST, EXAMPLE.as_bytes()),
+                ("data/ruby/sunrise/block/ruby_block.json", SUNRISE_BLOCK),
+            ],
+        );
+        let package = Package::read(&path).unwrap();
+        assert_eq!(package.manifest.id, "ruby");
+        let content = crate::content::Content::read(&path, &package.manifest).unwrap();
+        assert_eq!(content.blocks.len(), 1);
+        // The same mod as a folder, and both found where the game looks for mods.
+        let folder = dir.path().join("ruby_folder");
+        std::fs::create_dir_all(folder.join("data/ruby/sunrise/block")).unwrap();
+        std::fs::write(folder.join(SUNRISE_MANIFEST), EXAMPLE).unwrap();
+        std::fs::write(
+            folder.join("data/ruby/sunrise/block/ruby_block.json"),
+            SUNRISE_BLOCK,
+        )
+        .unwrap();
+        let package = Package::read(&folder).unwrap();
+        assert_eq!(
+            crate::content::Content::read(&folder, &package.manifest)
+                .unwrap()
+                .blocks
+                .len(),
+            1
+        );
+        assert_eq!(find(dir.path()), [path, folder]);
+    }
+
+    #[test]
+    fn a_sunrise_mod_with_code_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worms.smod");
+        let native = format!(
+            "{EXAMPLE}\n[native]\ngame = \"26.3\"\nsunrise = \"{}\"\nmixins = \"{}\"\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        let wasm = format!(
+            "{EXAMPLE}\n[wasm]\nsha512 = \"{}\"\ntoolchain = \"1.99.1\"\n",
+            "c".repeat(128)
+        );
+        let cases: [&[(&str, &[u8])]; 3] = [
+            // A native mod: its manifest table and its source.
+            &[
+                (SUNRISE_MANIFEST, native.as_bytes()),
+                ("Cargo.toml", b"[package]\nname = \"worms\"\n"),
+                ("src/lib.rs", b"// mod"),
+            ],
+            // A wasm mod's table, even without its module.
+            &[(SUNRISE_MANIFEST, wasm.as_bytes())],
+            // Code with no table for it.
+            &[
+                (SUNRISE_MANIFEST, EXAMPLE.as_bytes()),
+                ("src/lib.rs", b"// mod"),
+            ],
+        ];
+        for files in cases {
+            smod(&path, files);
+            let error = Package::read(&path).err().unwrap();
+            assert!(error.contains(SUNRISE_CODE), "{error}");
+            // The Mods page names it by its id.
+            let refused = crate::selection::package_errors([path.clone()]);
+            assert_eq!(refused.len(), 1);
+            assert_eq!(refused[0].0, "ruby");
+            assert!(refused[0].1.contains(SUNRISE_CODE), "{refused:?}");
+        }
+        // A Horizon manifest beside Sunrise's is the one read.
+        smod(
+            &path,
+            &[
+                (MANIFEST, EXAMPLE.as_bytes()),
+                (SUNRISE_MANIFEST, native.as_bytes()),
+            ],
+        );
+        assert_eq!(Package::read(&path).unwrap().manifest.id, "ruby");
     }
 
     #[cfg(unix)]

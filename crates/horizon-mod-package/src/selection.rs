@@ -48,7 +48,7 @@ pub fn package_errors(paths: impl IntoIterator<Item = PathBuf>) -> Vec<(String, 
             let limit = crate::manifest::MAX_MANIFEST + 1;
             let text = if path.is_dir() {
                 let mut text = String::new();
-                std::fs::File::open(path.join(crate::manifest::MANIFEST))
+                std::fs::File::open(path.join(crate::manifest::folder_manifest(&path)))
                     .ok()?
                     .take(limit)
                     .read_to_string(&mut text)
@@ -57,7 +57,13 @@ pub fn package_errors(paths: impl IntoIterator<Item = PathBuf>) -> Vec<(String, 
             } else {
                 let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).ok()?).ok()?;
                 let mut text = String::new();
-                zip.by_name(crate::manifest::MANIFEST)
+                // Horizon's manifest, or Sunrise's in a `.smod`.
+                let name = if zip.by_name(crate::manifest::MANIFEST).is_ok() {
+                    crate::manifest::MANIFEST
+                } else {
+                    crate::manifest::SUNRISE_MANIFEST
+                };
+                zip.by_name(name)
                     .ok()?
                     .take(limit)
                     .read_to_string(&mut text)

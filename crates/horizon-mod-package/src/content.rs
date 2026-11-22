@@ -1462,8 +1462,12 @@ impl Content {
             );
             let owned = manifest.owned_namespaces().any(|owned| owned == namespace);
             check_namespace(name, manifest)?;
+            // `sunrise/` is the same folder in a Sunrise content mod (`.smod`).
             let Some(decl) = (owned && top == "data")
-                .then(|| rest.strip_prefix("horizon/"))
+                .then(|| {
+                    rest.strip_prefix("horizon/")
+                        .or_else(|| rest.strip_prefix("sunrise/"))
+                })
                 .flatten()
             else {
                 continue;
