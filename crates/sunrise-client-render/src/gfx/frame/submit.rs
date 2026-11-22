@@ -260,6 +260,10 @@ impl Renderer {
                 let _ = std::fs::remove_file(marker);
                 log::info!("Sunrise renderer: HDR output presented its first frame");
             }
+            // Starling: the start went through; the next one keeps its graphics API.
+            if let Some(marker) = self.start_marker.take() {
+                let _ = std::fs::remove_file(marker);
+            }
             if reconfigure {
                 self.configure_surface();
             }
