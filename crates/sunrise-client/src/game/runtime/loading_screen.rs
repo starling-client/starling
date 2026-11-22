@@ -63,13 +63,7 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         }
         return result;
     }
-<<<<<<< sync-sunrise-1
-    let mut split = split::Split::new(game);
-    let result = event_loop()?.run_app(&mut split);
-    game = split.host;
-=======
-    let result = EventLoop::new()?.run_app(&mut game);
->>>>>>> sunrise/main
+    let result = event_loop()?.run_app(&mut game);
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     let result = result
@@ -157,7 +151,6 @@ pub(super) enum WorldRenderer {
 /// world renderer anyway (a hidden window may never be asked to redraw).
 pub(super) const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
-<<<<<<< sync-sunrise-1
     fn show_startup_console(&self) -> bool {
         cfg!(target_os = "android")
             && self.failure.is_none()
@@ -169,19 +162,14 @@ impl Loading {
                 .is_some_and(|options| !options.offscreen)
     }
 
-    /// The handoff and, offscreen, the world renderer's build run on the main
-    /// thread, so either before the title is on the screen holds the title back.
-    /// Wait for one title frame first, unless a world is waiting to open.
-=======
     /// Reconstitute the main-thread error without erasing declaration refusals.
     pub(super) fn take_worker_result(&mut self) -> Option<Result<Loaded>> {
         self.loaded.take().map(|result| result.map_err(Into::into))
     }
 
-    /// The world renderer is built on the main thread, so building it before
-    /// the title is on the screen holds the title back by that build. Wait for
-    /// one title frame first, unless a world is waiting to open.
->>>>>>> sunrise/main
+    /// The handoff and, offscreen, the world renderer's build run on the main
+    /// thread, so either before the title is on the screen holds the title back.
+    /// Wait for one title frame first, unless a world is waiting to open.
     pub(super) fn ready_for_handoff(&self) -> bool {
         self.title_drawn
             || (self.show_startup_console() && self.shown)
@@ -759,7 +747,6 @@ impl Loading {
             }
         }
     }
-<<<<<<< sync-sunrise-1
     /// Load the resources again (they were imported after a failure): a fresh loader, as at start.
     pub(super) fn retry(&mut self) -> Result<()> {
         #[cfg(target_os = "android")]
@@ -1009,10 +996,7 @@ impl Loading {
         // The world's renderer made on the loading screen's device (`begin_world_renderer`);
         // none builds it here.
         built: Option<Renderer>,
-    ) -> Result<Option<split::Split<'static>>> {
-=======
-    pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<Game<'static>>> {
->>>>>>> sunrise/main
+    ) -> Result<Option<Game<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -1026,7 +1010,6 @@ impl Loading {
             self.settings.file.int("maxAnisotropyBit"),
         );
         let renderer_at = Instant::now();
-<<<<<<< sync-sunrise-1
         let renderer_step = startup::step("handoff.renderer");
         let renderer = match built {
             Some(mut renderer) => {
@@ -1078,31 +1061,6 @@ impl Loading {
             }
         };
         drop(renderer_step);
-=======
-        let (renderer, clouds) = startup::time("renderer.world", || {
-            build_renderer(
-                window.clone(),
-                options.offscreen,
-                &loaded.pack,
-                &gui,
-                self.renderer.as_ref(),
-                loaded.renderer_cpu,
-                self.settings.sunrise.api,
-                self.settings.sunrise.translucent_batching,
-                self.settings.vsync,
-                &self.settings.sunrise,
-                shader_packs::picked_pack_shape(&self.settings),
-                self.renderer
-                    .as_ref()
-                    .map(|r| r.display_reading())
-                    .unwrap_or_default(),
-                (
-                    self.settings.file.int("textureFiltering"),
-                    self.settings.file.int("maxAnisotropyBit"),
-                ),
-            )
-        })?;
->>>>>>> sunrise/main
         log::info!(
             "Sunrise: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -1232,7 +1190,6 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-<<<<<<< sync-sunrise-1
                 match loading.poll_handoff() {
                     None => Step::Waiting,
                     Some(Ok(Some(game))) => {
@@ -1243,20 +1200,6 @@ impl ApplicationHandler for App {
                     }
                     Some(Ok(None)) => Step::Done,
                     Some(Err(e)) => Step::Failed(e),
-=======
-                match if loading.menu.reload_packs || !loading.ready_for_handoff() {
-                    None
-                } else {
-                    loading.take_worker_result()
-                } {
-                    None => Step::Waiting,
-                    Some(Err(e)) => Step::Failed(e),
-                    Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
-                        Ok(None) => Step::Done,
-                        Err(e) => Step::Failed(e),
-                    },
->>>>>>> sunrise/main
                 }
             }
         };

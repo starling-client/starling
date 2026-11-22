@@ -53,7 +53,6 @@ pub(super) fn build_renderer(
     shader_pack: shader_packs::PickedPack,
     display: sunrise_client::gfx::DisplayReading,
     filtering: (i32, i32),
-<<<<<<< sync-sunrise-1
 ) -> Result<Renderer> {
     let (mut renderer, _) = RendererParts::new(
         window,
@@ -232,10 +231,6 @@ pub(super) fn finish_renderer(
     filtering: (i32, i32),
     present: (bool, sunrise_client::graphics::PresentMode),
 ) -> Result<()> {
-=======
-) -> Result<(Renderer, std::result::Result<(), String>)> {
-    let assets = &pack.render;
->>>>>>> sunrise/main
     let atlas = &gui.atlas;
     // The new renderer's atlas texture starts from `HudAtlas.pixels`, which
     // holds the textures but never a glyph rasterized at run time. The font's
@@ -245,39 +240,6 @@ pub(super) fn finish_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
-<<<<<<< sync-sunrise-1
-=======
-    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
-    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
-    let atlas_pixels = atlas.pixels();
-    let mut renderer = pollster::block_on(Renderer::new(
-        window,
-        offscreen,
-        &assets.pixels.get(),
-        assets.sprite_size,
-        assets.sprite_minimum_size,
-        assets.texture_layers,
-        &assets.sprite_mips,
-        &assets.animations,
-        (&atlas_pixels, atlas.width, atlas.height),
-        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
-        (
-            &atlas.glint_armor.0,
-            atlas.glint_armor.1,
-            atlas.glint_armor.2,
-        ),
-        (&pack.forcefield.2, pack.forcefield.0),
-        gui.panorama.clone(),
-        prepared,
-        previous,
-        api,
-        translucent_batching,
-        (shader_pack.draws_flat, shader_pack.starts_wide),
-        settings,
-        shader_pack.frame(),
-        display,
-    ))?;
->>>>>>> sunrise/main
     let (prepared_vertices, prepared_ranges) =
         native_block_entity_draw::StandaloneGeometry::new(pack, gui).prepared_upload();
     renderer.install_prepared_models(
@@ -320,17 +282,13 @@ pub(super) fn finish_renderer(
         .hud
         .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
     // Last, so a renderer that fails before this marks none of the pack's pipelines invalid.
-<<<<<<< sync-sunrise-1
-    renderer.build_mod_pipelines(&pack.render.mod_pipelines)?;
-    Ok(())
-=======
     // Textured pipelines' sprites are looked up in the atlas the renderer was built with.
+    let atlas = &gui.atlas;
     renderer.build_mod_pipelines(&pack.render.mod_pipelines, &|name| {
         let r = atlas.sprites.get(name)?;
         Some([r.u0, r.v0, r.u1, r.v1])
     })?;
-    Ok((renderer, clouds))
->>>>>>> sunrise/main
+    Ok(())
 }
 
 /// The loading screen's own renderer, in place of `loading_renderer` wherever there is a window
@@ -650,38 +608,6 @@ pub(super) fn start_game<'a>(
         result?;
         return Ok(None);
     }
-<<<<<<< sync-sunrise-1
-    // Client entity renderer resolution reads the mob types. Mod setup can
-    // also read the items. Join the resource worker before either runs.
-    if game.options.is_client_start()
-        || world_content::next_start().is_some()
-        || world_content::any_loaded()
-    {
-        game.wait_world_rest()?;
-    }
-    // The atlases the initial load stitched, the models it baked, then FMLClientSetupEvent: once
-    // per process, here in `run`, after the initial load applied.
-    // A dedicated server has no client and returned above; a splitscreen guest's `run` is
-    // another local player of the same process.
-    game.publish_initial_client_models();
-    // Finish Setup -> Config -> World before any screen, connection, input or tick hooks.
-    game.native_configs_client_start();
-    if let Some(error) = pack_error {
-        game.open_options_at(true, sunrise_client::options_ui::Page::Packs);
-        game.ui.options.resource_error = Some(error);
-    }
-    match game.options.world.clone() {
-        _ if game.options.server.is_some() => {
-            let (address, name) = (
-                game.options.server.clone().unwrap_or_default(),
-                game.options.player_name(),
-            );
-            game.connect_server(&address, &name)?;
-            if let Some(report) = std::env::var_os("SUNRISE_NET_REPORT") {
-                game.run_net_harness(report.as_ref())?;
-                return Ok(None);
-            }
-=======
     let pending = initial.map(|models| initial_client_models::PendingClientStart {
         models,
         applies: client_applies,
@@ -718,7 +644,6 @@ pub(super) fn start_game<'a>(
         } else {
             game.pending_initial_models = Some(Box::new(pending));
             Ok(Some(game))
->>>>>>> sunrise/main
         }
     } else {
         let ready = game.finish_start_game(pack_error, handoff)?;
@@ -826,30 +751,11 @@ impl Game<'_> {
                 game.show_title(title);
             }
         }
-<<<<<<< sync-sunrise-1
-        None if handoff => {}
-        None => {
-            let mut title = game
-                .new_title(std::env::current_dir()?.join("saves"))
-                .with_user(|| game.options.player_name());
-            title.last_server = game.settings.file.string("lastServer");
-            title.skip_multiplayer_warning = game.settings.file.bool("skipMultiplayerWarning");
-            // Gui.addInitialScreens: the accessibility onboarding comes first. Not on Android,
-            // which has no narrator, and whose players' options all still ask for it.
-            if !cfg!(target_os = "android") && game.settings.file.bool("onboardAccessibility") {
-                title.start_onboarding();
-            }
-            game.show_title(title);
-            // Started again for a world's own mods (the start without a loading screen: the
-            // menu's takes it in startup_menu.rs).
-            game.pending_entry = world_content::next_entry();
-=======
         if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some()
             && std::env::var_os("SUNRISE_COMMAND_OUTPUT").is_some()
         {
             game.wait_command_harness()?;
             return Ok(false);
->>>>>>> sunrise/main
         }
         Ok(true)
     }

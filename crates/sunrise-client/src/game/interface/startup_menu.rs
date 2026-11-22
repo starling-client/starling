@@ -116,13 +116,11 @@ impl StartupMenu {
         additional_data: Arc<[Arc<sunrise_client::datapack::DataPack>]>,
         splashes: &str,
     ) {
-<<<<<<< sync-sunrise-1
         let source = source.unwrap_or_else(|| {
             sunrise_assets::resource_source::ResourceSource::directory(root.clone())
         });
-        sunrise_client::ui::load_metadata(&source);
-=======
->>>>>>> sunrise/main
+        // Starling's skin (the button takes, the pressed label) of the packs just read.
+        sunrise_client::ui::load_skin(&source);
         sunrise_client::lang::set(sunrise_client::lang::Language::load(
             &[&source],
             &settings.language,
@@ -485,34 +483,8 @@ pub(super) fn spawn_loader(
                             &mod_sources,
                         )
                     });
-<<<<<<< sync-sunrise-1
             progress.note(None);
-            let result = root
-                .and_then(|root| {
-                    load_resources(
-                        root,
-                        super::pack_finders::data_packs(&mod_sources),
-                        world.as_deref(),
-                        &vanilla_root,
-                        &settings,
-                        started,
-                        true,
-                        role,
-                        &progress,
-                        &mut |gui, root| {
-                            let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
-                        },
-                    )
-                })
-                .map(|mut loaded| {
-                    loaded.pack_error = loaded.pack_error.or(pack_error);
-                    loaded
-                })
-                .map_err(|error| error.to_string());
-            let _ = sender.send(LoaderMsg::Done(result));
-=======
             let _ = sender.send(LoaderMsg::done(result));
->>>>>>> sunrise/main
         })?;
     Ok((receiver, handle))
 }
@@ -1769,7 +1741,6 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
-<<<<<<< sync-sunrise-1
         self.menu.options.diagnostics_status = super::diagnostics::status();
         if let Some(r) = &self.renderer {
             self.menu
@@ -1781,11 +1752,9 @@ impl Loading {
                 ));
         }
         self.menu_button_image();
-=======
         // The buttons crates add to the title screen show by what is installed now
         // (`sunrise_hooks::title`), as on the game's own title screen.
         self.sync_title_mods();
->>>>>>> sunrise/main
         let logs = sunrise_client::logging::recent_lines();
         let Some(gui) = &self.gui else {
             // The pack's screens do not exist yet: the boot screen holds the
@@ -1810,16 +1779,8 @@ impl Loading {
                 title.focused_button = None;
             }
         }
-<<<<<<< sync-sunrise-1
         // A content build holds the menu too: its line says what the wait is for.
         if self.menu.pending.is_some() || self.progress.noted().is_some() {
-            sunrise_client::level_loading::draw_loading_overlay(
-                batch,
-                &gui.atlas,
-                &self.progress.line(),
-                self.progress.fraction(),
-=======
-        if self.menu.pending.is_some() {
             self.bar =
                 sunrise_client::level_loading::ease_overlay(self.bar, self.progress.fraction());
             sunrise_client::level_loading::draw_loading_overlay(
@@ -1827,7 +1788,6 @@ impl Loading {
                 &gui.atlas,
                 self.bar,
                 sunrise_client::level_loading::OverlayFade::OPAQUE,
->>>>>>> sunrise/main
                 self.settings.file.bool("darkMojangStudiosBackground"),
             );
             let (bars, lines) = super::startup_progress::shown();
@@ -2022,7 +1982,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< sync-sunrise-1
     fn retry_after_a_delivered_failure_reads_the_new_loader_result() {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender
@@ -2055,10 +2014,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-=======
     #[ignore = "daily"]
->>>>>>> sunrise/main
     fn queued_creation_is_reconciled_at_handoff() {
         use mod_api::{Hooks, Registrar, RegistrationContext};
         use sunrise_client::gamerules::Value;
@@ -2584,7 +2540,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< sync-sunrise-1
     fn a_new_loader_is_read_after_a_failed_generation() {
         // No game files yet: the first generation fails, and the setup shows.
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -2605,7 +2560,9 @@ mod tests {
         loading.follow_loader(receiver, std::thread::spawn(|| {}));
         loading.poll_menu_resources().unwrap();
         assert!(matches!(loading.loaded.take(), Some(Err(e)) if e == "second generation"));
-=======
+    }
+
+    #[test]
     fn native_declaration_failures_survive_the_graphical_loader() {
         use mod_api::__private::{DeclarationKind, DeclarationRefusal};
         let report = mods::DeclarationFailures::new(vec![
@@ -2637,7 +2594,6 @@ mod tests {
         let lines = report.lines();
         assert!(matches!(lines.as_slice(), [first, second]
             if first.contains("maker:Bad Key") && second.contains("foreign:wrench")));
->>>>>>> sunrise/main
     }
 
     #[test]

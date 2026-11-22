@@ -14,18 +14,15 @@ use loading_screen::{
     App, Loading, event_loop, leave_fullscreen_after, run_event_loop, unclean_start_recovery,
 };
 use motion_ids::{motion_at, motion_block_entity};
-<<<<<<< sync-sunrise-1
-use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
-use resource_loader::{
-    EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
-    run_loading, write_report,
-=======
 #[cfg(test)]
 use resource_load::load_resources;
 use resource_load::{
     Progress, StartupLoadContext, launch_world, load_resources_for_mods, load_resources_sync,
     named_scope, synchronous_startup,
->>>>>>> sunrise/main
+};
+use resource_loader::{
+    EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
+    run_loading, write_report,
 };
 /// The content tables the world plays with, as field-level borrows: the
 /// world's data packs' over the game's own. The `Game::items`/`recipes`/
@@ -2453,28 +2450,6 @@ use sunrise_core::{
 };
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 use sunrise_mod_package::selection::{Argument, LaunchArguments};
-<<<<<<< sync-sunrise-1
-pub use native_block_entity_draw::BlockEntityDraw;
-pub use native_claimed_items::{HeldItemSlot, ModEvent};
-pub use native_components::NativeComponentError;
-pub use native_configs::ConfigFile;
-pub use native_data_maps::DataMapType;
-pub use native_hooks::{PhantomSpawnResult, Shake, SleepProblem};
-pub use native_mob_draw::{MobRender, PlayerRender};
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-        mpsc::{Receiver, TryRecvError},
-    },
-    thread::JoinHandle,
-    time::{Duration, Instant},
-};
-=======
->>>>>>> sunrise/main
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
@@ -3969,16 +3944,8 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<sunrise_client::skins::Resolver>,
     skin_slots: sunrise_client::skins::SkinSlots,
-<<<<<<< sync-sunrise-1
     /// The player's own skin from Options > Skin Customization (game/own_skin.rs).
     own_skin: own_skin::OwnSkin,
-    /// Cosmetics on players (game/cosmetics.rs), off by default.
-    cosmetics: cosmetics::Cosmetics,
-    /// 3D skin layers: each player's outer layer as one slab per painted
-    /// texel, built once per (skin, slim) (`mobs::skin_layers`).
-    skin_3d: RefCell<skin_models::SkinModels>,
-=======
->>>>>>> sunrise/main
     /// Runtime trim slots and the last completed preparation for this atlas.
     trim_slots: sunrise_client::trims::TrimSlots,
     cart_models: minecarts::CartModels,
@@ -4081,9 +4048,6 @@ struct Game<'a> {
     /// `render-capture DIR`: replied once the renderer wrote the scene.
     pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
-<<<<<<< sync-sunrise-1
-    /// Recent frame times for the performance overlay.
-    frame_graph: sunrise_client::perf_overlay::FrameGraph,
     /// The Stats overlay's sampler and caches (game/perf.rs).
     stats_overlay: perf::Perf,
     /// Starling's performance test: draw choices and each setup's averages (perf_lab.rs).
@@ -4113,10 +4077,7 @@ struct Game<'a> {
     /// A new world's folder, until its level.dat is there to keep its content mods beside
     /// (world_content.rs).
     content_record: Option<String>,
-    /// Sunrise's extras (minimap, auto-reconnect; mods' counters): `game/interface/extras.rs`.
-=======
     /// Settings and HUD state: `game/interface/extras.rs`.
->>>>>>> sunrise/main
     extras: extras::ExtrasState,
     /// The PvP & HUD options' state (`game/entities/pvp.rs`).
     pvp: pvp::PvpState,
@@ -4906,19 +4867,15 @@ impl Game<'_> {
             let eye = [x, y + f64::from(e.eye_height), z];
             return Some((eye, view_vector(e.y_rot, e.x_rot)));
         }
-<<<<<<< sync-sunrise-1
         let dir = self
             .touch_aim_dir()
-            .unwrap_or_else(|| pick_view_vector(self.yaw, self.pitch));
+            .unwrap_or_else(|| view_vector(self.yaw, self.pitch));
         Some((self.eye_position()?, dir))
     }
     /// The look a use acts with (BlockPlaceContext's rotation) and the server
     /// is told: the view's, or the finger's with tap to interact.
     fn interaction_rotation(&self) -> (f32, f32) {
         self.touch_aim_rotation().unwrap_or((self.yaw, self.pitch))
-=======
-        Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
->>>>>>> sunrise/main
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
@@ -7315,223 +7272,9 @@ impl Game<'_> {
         }
         self.tick_first_level()
     }
-<<<<<<< sync-sunrise-1
-    /// What the tick runs after the local player's own update: effects, the
-    /// world's entities and blocks, and the network hub.
-    fn tick_world(&mut self, running: bool) -> Result<()> {
-        // Entities added since the last tick join the level before it ticks.
-        span("mods_joins_flush", || self.native_joins_flush(false, 0));
-        span("share_spawn_conditions", || self.share_spawn_conditions());
-        sunrise_client::mobs::sulfur_cube::set_tnt_explodes(
-            self.ui
-                .rules
-                .bool_at(sunrise_client::gamerules::vanilla::TNT_EXPLODES),
-        );
-        self.update_chunk_tickets();
-        self.score_destroyed_entities();
-        sunrise_client::spans::time("tick_effects", || self.tick_effects(running));
-        self.tick_sign_editor();
-        // Player.tick's ItemCooldowns.tick for the window's player (a
-        // server's players count theirs down in `tick_guests`).
-        self.shield_cooldown = self.shield_cooldown.saturating_sub(1);
-        self.cooldowns.tick();
-        sunrise_client::spans::time("tick_using", || self.tick_using());
-        self.tick_bundle_hover();
-        sunrise_client::spans::time("tick_hud", || self.tick_hud());
-        // The player's digging comes in with its packets, before the level
-        // ticks; ServerLevel.tick then runs the scheduled and random block
-        // ticks before any entity, so what they drop or spawn (dispensed
-        // items, popped crops) moves on the tick it appears, as in vanilla.
-        // On the server thread the window is a hub guest: drain its packets
-        // here too, before falling-block schedules run (#4510).
-        sunrise_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
-        sunrise_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
-        let mut sent = None;
-        if running {
-            sunrise_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
-            sent = sunrise_client::spans::time("tick_blocks", || self.tick_blocks())?;
-            // What the blocks spawned (a dispensed minecart, a lit TNT, a
-            // placed boat) joins before the entities tick.
-            span("mods_joins_flush", || self.native_joins_flush(false, 0));
-            span("lan_mark_synced", || self.lan_mark_synced());
-            // `EntityTickList.forEach`: what joined before the entity pass
-            // (function summons, dropped or dispensed items) ticks in it;
-            // what joins during it waits for the next tick
-            // (`ensureActiveIsNotIterated`). Primed TNT and falling blocks
-            // keep their own packet cutoff (`ordered.announced`, #10063).
-            self.ticked_entities_through = self.next_entity;
-        }
-        // ChunkMap still ticks while /tick freeze holds block/entity ticks.
-        if !running {
-            span("save_chunks_eagerly", || self.save_chunks_eagerly());
-        }
-        self.begin_ordered_ticks();
-        if running {
-            sunrise_client::spans::time("tick_paintings", || self.tick_paintings());
-            sunrise_client::spans::time("tick_item_frames", || self.tick_item_frames());
-            self.tick_explicit_knots();
-            self.tick_summoned_eyes();
-            self.ordered_before(ordered_tick::Batch::ArmorStands)?;
-            sunrise_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
-            sunrise_client::spans::time("tick_cushions", || self.tick_cushions());
-            // ServerLevel.tick: the arrivals of this server tick are in the level
-            // (`addDuringTeleport`), and each vehicle handles its portal as its
-            // own tick opens.
-            span("portal_arrivals", || self.land_portal_arrivals());
-            span("vehicle_portals", || self.handle_vehicle_portals());
-            self.ordered_before(ordered_tick::Batch::Boats)?;
-            sunrise_client::spans::time("tick_boats", || self.tick_boats());
-            self.ordered_before(ordered_tick::Batch::Carts)?;
-            sunrise_client::spans::time("tick_carts", || self.tick_carts());
-            self.tick_vehicle_watch();
-            let from = self.lan_synced_from();
-            sunrise_client::spans::time("tick_thunder", || self.tick_thunder());
-            self.lan_synced_since(from);
-            sunrise_client::spans::time("tick_lecterns", || self.tick_lecterns());
-            sunrise_client::spans::time("tick_maps", || self.tick_maps());
-            self.tick_lodestone_compasses();
-            sunrise_client::spans::time("tick_bolts", || self.tick_bolts());
-            sunrise_client::spans::time("tick_fishing", || self.tick_fishing());
-            self.ordered_before(ordered_tick::Batch::Tridents)?;
-            sunrise_client::spans::time("tick_tridents", || self.tick_tridents());
-            self.ordered_before(ordered_tick::Batch::Rockets)?;
-            sunrise_client::spans::time("tick_rockets", || self.tick_rockets());
-            sunrise_client::spans::time("tick_ominous_item_spawners", || {
-                self.tick_ominous_item_spawners()
-            });
-        }
-        if running {
-            sunrise_client::spans::time("entity_portals", || {
-                self.handle_entity_portals();
-                self.handle_end_gateway_portals();
-            });
-            self.ordered_before(ordered_tick::Batch::Items)?;
-            sunrise_client::spans::time("tick_items", || self.tick_items());
-            if self.remote.is_none() {
-                span("hoppers_catch_items", || self.hoppers_catch_items());
-            }
-            // Merged, burnt, despawned or picked up.
-            span("mods_leaves_flush", || self.native_leaves_flush());
-            span("mods_joins_flush", || self.native_joins_flush(false, 0));
-            sunrise_client::spans::time("touch_arrows", || self.touch_arrows());
-        }
-        sunrise_client::spans::time("spawn_loaded_entities", || self.spawn_loaded_entities());
-        // The ride the player's file names, once the vehicle is in the world.
-        self.restore_root_vehicle();
-        if running {
-            self.ordered_before(ordered_tick::Batch::Mobs)?;
-            sunrise_client::spans::time("tick_mobs", || self.tick_mobs())?;
-            // Dead, despawned or gone into a hive.
-            span("mods_leaves_flush", || self.native_leaves_flush());
-            sunrise_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
-            span("mod_viewers", || self.tick_mod_container_viewers());
-            // The mobile kinds' entities that joined before the earliest
-            // general row still to tick go first, in join order; then the
-            // general rows (#792), then the mobile kinds' remainder.
-            self.ordered_before(ordered_tick::Batch::General)?;
-            sunrise_client::spans::time("tick_general", || self.tick_general())?;
-            // Orbs, primed TNT and falling blocks still to tick, in join order.
-            self.run_ordered_ticks(sunrise_client::join_seq::JoinSeq::MAX, false)?;
-            sunrise_client::spans::time("tick_experience", || self.tick_experience());
-            // Merged, despawned or picked up.
-            span("mods_leaves_flush", || self.native_leaves_flush());
-            sunrise_client::spans::time("entity_portals", || {
-                self.find_entity_portals();
-                self.resolve_arrivals();
-            });
-        }
-        // The rest of the tick's spawns join, and what left is told of.
-        span("mods_joins_flush", || self.native_joins_flush(false, 0));
-        span("mods_leaves_flush", || self.native_leaves_flush());
-        // ServerLevel.tick broadcasts the changed blocks after the scheduled and
-        // random ticks (`tick_blocks`), before the block events, the entities
-        // and the block entities: what those change goes out with the next
-        // tick's. A piston's moved block reaches the clients once their own
-        // copy of it finished moving, so a slow tick rate shows it slide
-        // (#8430).
-        if let (Some(sent), Some(log)) = (sent, self.world.block_log.as_mut()) {
-            self.world.block_log_held = log.split_off(sent.min(log.len()));
-        }
-        sunrise_client::spans::time("tick_lan", || self.tick_lan(false));
-        let held = std::mem::take(&mut self.world.block_log_held);
-        if let Some(log) = self.world.block_log.as_mut() {
-            log.extend(held);
-        }
-        span("tick_friends", || self.tick_friends());
-        sunrise_client::spans::time("tick_hand", || self.tick_hand());
-        sunrise_client::spans::time("tick_sleep", || self.tick_sleep());
-        span("sleep_status", || self.announce_sleep_status());
-        span("sleep_status", || self.free_left_beds());
-        if running {
-            sunrise_client::spans::time("tick_end", || self.tick_end())?;
-            sunrise_client::spans::time("end_gateways", || {
-                self.find_end_gateway_portals();
-                self.resolve_end_gateway_arrivals()
-            })?;
-            span("end_gateways", || self.keep_gateway_destinations());
-        }
-        if running {
-            // Primed TNT and falling blocks that joined since the spawn packets.
-            self.run_ordered_ticks(sunrise_client::join_seq::JoinSeq::MAX, true)?;
-            span("late_wind_pushes", || self.apply_late_wind_pushes());
-        }
-        // Everything that has joined has had its spawn packet and, if it joined
-        // before the entity passes (TNT a piston or repeater primed), its first
-        // tick in the late pass above (#10063).
-        self.ordered.announced = sunrise_client::join_seq::JoinSeq::upcoming();
-        if running {
-            sunrise_client::spans::time("tick_kinetic_machines", || self.tick_kinetic_machines())?;
-            sunrise_client::spans::time("tick_moving_pistons", || self.tick_moving_pistons())?;
-            sunrise_client::spans::time("tick_block_entities", || self.tick_block_entities())?;
-            sunrise_client::spans::time("tick_sculk_entities", || self.tick_sculk_entities());
-            sunrise_client::spans::time("tick_sculk_blocks", || self.tick_sculk_blocks())?;
-        }
-        if running {
-            // ClientLevel.tickBlockEntities (not while paused or frozen):
-            // chest lids, books, shulker boxes, bells, conduits, heads.
-            sunrise_client::spans::time("tick_block_entity_anims", || {
-                self.tick_block_entity_anims()
-            });
-            // A conduit's hurt teleports an enderman now (`Enderman.hurtServer`).
-            span("settle_hurt_teleports", || self.settle_hurt_teleports())?;
-            sunrise_client::spans::time("tick_particles", || self.tick_particles());
-            span("tick_client_ambient", || self.tick_client_ambient());
-        }
-        // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
-        // block entity ticker (the bells, conduits and gateways above too): the
-        // chunks loaded before this pass have their entities loaded from the next.
-        self.world.entities_pending.clear();
-        span("tick_frame_visuals", || self.tick_frame_visuals(running));
-        if running {
-            // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
-            span("tick_game_tests", || self.tick_game_tests());
-        }
-        // ServerBossEvent broadcasts, after this level's entities have ticked.
-        span("publish_boss_bars", || self.publish_boss_bars());
-        // Minecraft.handleKeybinds: held use repeats only while no item is in
-        // use (a raised shield or a drawn bow places and uses nothing).
-        if self.right
-            && self.use_delay == 0
-            && self.using.is_none()
-            && self.screen == Screen::Playing
-            && !self.dialog_open()
-            && self.sleeping.is_none()
-        {
-            self.use_with_hand()?;
-            self.use_delay = 4;
-        }
-        if running {
-            sunrise_client::spans::time("lan_note_joined", || self.lan_note_joined());
-        }
-        Ok(())
-    }
-    /// The title remains the no-level sentinel while debug options covers it.
-    /// Only UI dispatch ignores it; world loading and simulation still see it.
-=======
     /// The title remains the no-level sentinel while debug options or a mod's
     /// screen covers it. Only UI dispatch ignores it; world loading and
     /// simulation still see it.
->>>>>>> sunrise/main
     fn title_input_active(&self) -> bool {
         self.title.is_some() && !matches!(self.screen, Screen::DebugOptions | Screen::Mod)
     }
@@ -7577,15 +7320,6 @@ impl Game<'_> {
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
-<<<<<<< sync-sunrise-1
-        self.draw_performance_overlays(&mut batch);
-        self.draw_pad_over_hud(&mut batch);
-        self.lift_over_keyboard(&mut batch);
-        self.preview_display_safe_zone(&mut batch);
-        self.draw_phone_offers(&mut batch);
-        // Over the keyboard's lift: the note stays at the top.
-        self.draw_imports(&mut batch);
-=======
         self.draw_deferred_subtitles(&mut batch);
         // The layers crates registered to draw over everything (`sunrise_hooks::hud`).
         sunrise_client::extras_hud::draw_top_layers(
@@ -7593,7 +7327,13 @@ impl Game<'_> {
             &mut batch,
             &self.gui.atlas,
         );
+        self.draw_performance_overlays(&mut batch);
         self.draw_pad_over_hud(&mut batch);
+        self.lift_over_keyboard(&mut batch);
+        self.preview_display_safe_zone(&mut batch);
+        self.draw_phone_offers(&mut batch);
+        // Over the keyboard's lift: the note stays at the top.
+        self.draw_imports(&mut batch);
         if let Some(pointer) = pointer {
             debug_assert_eq!(
                 self.cursor,
@@ -7602,7 +7342,6 @@ impl Game<'_> {
             );
             self.cursor = pointer.subpixel();
         }
->>>>>>> sunrise/main
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -7632,11 +7371,8 @@ impl Game<'_> {
             // screen, after its own drawing.
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
-<<<<<<< sync-sunrise-1
             menus.finish(&mut batch);
-=======
             self.draw_pack_toasts(&mut batch, true, false);
->>>>>>> sunrise/main
             return batch;
         }
         if self.screen == Screen::Options && self.title.is_some() {
@@ -7644,12 +7380,8 @@ impl Game<'_> {
             self.draw_options(&mut batch, drawn);
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
-<<<<<<< sync-sunrise-1
-            self.draw_split_hud(&mut batch, true);
-            menus.finish(&mut batch);
-=======
             self.draw_pack_toasts(&mut batch, true, false);
->>>>>>> sunrise/main
+            menus.finish(&mut batch);
             return batch;
         }
         self.settle_title_toasts();
@@ -7764,39 +7496,8 @@ impl Game<'_> {
                 None
             },
         );
-<<<<<<< sync-sunrise-1
-        // The mods' layers (`register_gui_layers`) draw among vanilla's while the HUD shows.
-        self.hud_layer_next = show_hud.then_some(0);
-        let mut guide_from = 0;
-        let (indicator, strength) = if show_hud {
-            let indicator = sunrise_client::android_controls::attack_indicator(
-                if self.pvp_hides_attack_indicator() {
-                    0
-                } else {
-                    self.settings.attack_indicator
-                },
-                !self.touch_hides_crosshair(),
-            );
-            let delay = sunrise_client::attack_strength::delay(self.main_hand_attack_speed());
-            let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
-            self.draw_spyglass(&mut batch);
-            guide_from = batch.vertices.len();
-            self.draw_hud_crosshair(&mut batch, spectator, indicator, strength, delay);
-            (indicator, strength)
-        } else {
-            (0, 0.0)
-        };
-        let margins = self.hud_safe_insets(&batch);
-        let area = hud_room::HudArea::begin(&mut batch, margins);
-        let (w, h) = (batch.width, batch.height);
-        let (wi, hi) = (w as i32, h as i32);
-        self.ui.room = self.hud_room(w, h, show_hud);
-        if show_hud {
-            self.gui_layer("minecraft:hotbar", &mut batch, |g, batch| {
-=======
         let dispatch_hud = !gui_canceled && !replaying;
         self.hud_layer_next = dispatch_hud.then_some(0);
-        self.ui.room = self.hud_room(w, h, show_hud);
         let mut guide_from = 0;
         if dispatch_hud {
             if show_hud {
@@ -7849,7 +7550,6 @@ impl Game<'_> {
                 if !show_hud {
                     return;
                 }
->>>>>>> sunrise/main
                 if spectator {
                     g.draw_spectator_hotbar(batch);
                 } else {
@@ -7868,32 +7568,10 @@ impl Game<'_> {
                             .filter(|_| indicator == 2)
                             .map(|(strength, _)| strength),
                     };
-<<<<<<< sync-sunrise-1
-                    let draws = hud_layout::hotbar_with_attack_side(
-                        wi,
-                        hi,
-                        &inputs,
-                        MOBILE_PLATFORM.then_some(g.settings.touch.attack_indicator_left),
-                    );
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                    for d in &draws {
-                        if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
-                            let stack = if slot == 40 {
-                                g.offhand.as_ref()
-                            } else {
-                                g.inventory[slot as usize].as_ref()
-                            };
-                            if let Some(stack) = stack {
-                                g.draw_item(batch, stack, x as f32, y as f32);
-                            }
-                        }
-                    }
-=======
                     let draws = hud_layout::hotbar(wi, hi, &inputs);
                     // `extractSlot` for each item, in order, on the path `gui_paint` takes.
                     let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
                     hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
->>>>>>> sunrise/main
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
@@ -8183,67 +7861,6 @@ impl Game<'_> {
             self.hud_layer_next = None;
             self.native_render_gui_post(&mut batch, &mut corners);
         }
-<<<<<<< sync-sunrise-1
-        // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
-        let mut draws =
-            hud_overlays::sleep_overlay(full_w as i32, full_h as i32, self.sleep_timer as i32);
-        if !draws.is_empty() && margins != [0.0; 4] {
-            draws.insert(
-                0,
-                hud_layout::GuiDraw::Push(vec![hud_layout::PoseOp::Translate(
-                    -margins[0],
-                    -margins[1],
-                )]),
-            );
-            draws.push(hud_layout::GuiDraw::Pop);
-        }
-        self.gui_layer("minecraft:sleep_overlay", &mut batch, |g, batch| {
-            hud_layout::paint(batch, &g.gui.atlas, &draws);
-        });
-        if show_hud {
-            self.gui_layer("minecraft:overlay_message", &mut batch, |g, batch| {
-                g.draw_overlay_message(batch);
-            });
-            self.gui_layer("minecraft:title", &mut batch, |g, batch| {
-                g.draw_title(batch);
-            });
-            self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
-                g.draw_scoreboard(batch);
-            });
-            if subtitles != Subtitles::Hidden {
-                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                    g.draw_subtitles(batch);
-                });
-            }
-        } else if subtitles == Subtitles::Deferred {
-            // F1 hid the HUD, but an in-game screen still shows the subtitles.
-            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                g.draw_subtitles(batch);
-            });
-        }
-        let atlas = &self.gui.atlas;
-        if show_hud
-            && let Some((text, at)) = &self.message
-            && at.elapsed() < Duration::from_secs(3)
-        {
-            let tw = HudBatch::text_width(atlas, text);
-            batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
-        }
-        // The chat screen draws the focused chat itself; F1 hides the rest.
-        if self.screen == Screen::Chat {
-            // The mod layers under the chat stay under the focused chat.
-            self.draw_mod_gui_layers(Some("minecraft:chat"), &mut batch);
-        } else if show_hud {
-            if !self.overlay_holds_view() {
-                self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
-            }
-            self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
-                g.draw_tab_list(batch);
-            });
-        }
-        // The mod layers above the last vanilla layer drawn.
-        self.draw_mod_gui_layers(None, &mut batch);
-        self.hud_layer_next = None;
         area.finish(&mut batch);
         if margins != [0.0; 4] {
             let mut room = sunrise_client::hud_kit::room::Room::new(full_w, full_h);
@@ -8252,8 +7869,6 @@ impl Game<'_> {
             }
             self.ui.room = room;
         }
-=======
->>>>>>> sunrise/main
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;
@@ -8264,14 +7879,11 @@ impl Game<'_> {
         } else {
             self.screen
         };
-<<<<<<< sync-sunrise-1
         let menus = self.interface_area(&mut batch);
-=======
         if screen == Screen::Options {
             self.flush_skin_slots();
             self.update_remote_skins();
         }
->>>>>>> sunrise/main
         let drawn = self.draw_screen_with_pre_hook(&mut batch);
         let mut region_screen = None;
         match screen {
@@ -9034,13 +8646,7 @@ impl Game<'_> {
         self.moving_piston_geometry(camera, alpha, &mut out);
         // LevelRenderer.submitTransientBlocks.
         self.transient_block_geometry(camera, &mut out);
-<<<<<<< sync-sunrise-1
         self.kinetic_geometry(camera, &mut out);
-        self.mark_entity(out.len(), "minecraft:tnt");
-        self.tnt_geometry(camera, alpha, &mut out);
-        self.mark_motion(out.len(), 0);
-=======
->>>>>>> sunrise/main
         self.mark_entity(out.len(), "minecraft:painting");
         self.painting_geometry(camera, alpha, &mut out);
         self.mark_motion(out.len(), 0);
@@ -11414,13 +11020,8 @@ impl Game<'_> {
                 sunrise_client::level_loading::draw_loading_overlay(
                     &mut hud,
                     &self.gui.atlas,
-<<<<<<< sync-sunrise-1
-                    &reload.progress.line(),
-                    reload.progress.fraction(),
-=======
                     bar,
                     fade,
->>>>>>> sunrise/main
                     self.settings.file.bool("darkMojangStudiosBackground"),
                 );
                 pr.lap("pr_loading");
@@ -11886,14 +11487,10 @@ impl Game<'_> {
         } else {
             self.shader_pack_inputs(camera, alpha as f32, &sky)
         };
-<<<<<<< sync-sunrise-1
-        if !title && !kept_menu {
-=======
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.
         let mut additive = self.particles.take_additive();
-        if !title {
->>>>>>> sunrise/main
+        if !title && !kept_menu {
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
                     self.entity_geometry(camera, alpha, billboard_frustum, entities, &mut additive)
@@ -12222,17 +11819,13 @@ impl Game<'_> {
                 use sunrise_client::client_perf::request::GpuSwitch;
                 let capture_gpu = self.profile.gpu();
                 let recording = capture_gpu != GpuSwitch::Off;
-<<<<<<< sync-sunrise-1
                 renderer.set_pass_timing(
                     debug_passes
                         || self.gpu_passes
                         || recording
                         || crate::performance::gpu_profile(),
                 );
-=======
-                renderer.set_pass_timing(debug_passes || self.gpu_passes || recording);
                 renderer.set_lightmap_readback(lightmap_chart);
->>>>>>> sunrise/main
                 renderer.set_keep_timed_frames(recording);
                 renderer.set_pass_detail(self.gpu_pass_detail || capture_gpu == GpuSwitch::Detail);
                 // `gpu_passes` and a capture's `--gpu` are measurements: they take every sample they can.
@@ -12293,28 +11886,6 @@ struct WindowKeyInput<'a> {
 /// winit's events for a window's game, with any loop: a headless client (#4951) has no
 /// winit loop and calls these from its own.
 impl Game<'_> {
-<<<<<<< sync-sunrise-1
-    /// One window event, in the order vanilla's `KeyboardHandler` and `MouseHandler` see it.
-    ///
-    /// A controller doesn't come through here in play: `pad_action` goes straight to the mappings
-    /// (`mapped_key`, `mouse_mapping`). So a key handled below before `mapped_key_event` (a window
-    /// shortcut, a special case) never reaches a controller. If a player could want it on one, give
-    /// it a handler both can call and a `gamepad::Route` (screenshot and fullscreen do this). A
-    /// screen's own raw keys, text and mods' key hooks stay raw on purpose.
-    fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
-        if self.platform_keypad_event(event_loop, &mut event) {
-            return;
-        }
-
-        let pressed = match &event {
-            WindowEvent::KeyboardInput { event, .. } => {
-                event.state == ElementState::Pressed && !event.repeat
-            }
-            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
-            _ => false,
-        };
-        if pressed && !self.pad.menu.synthetic {
-=======
     fn pointer_space(&self, framebuffer: [u32; 2]) -> sunrise_client::window::PointerSpace {
         use sunrise_client::window::PointerSpace;
         match self.window.as_deref() {
@@ -12379,7 +11950,6 @@ impl Game<'_> {
     ) -> bool {
         let pressed = input.state == ElementState::Pressed;
         if pressed && !input.repeat && !self.pad.menu.synthetic {
->>>>>>> sunrise/main
             self.pad_radial_cancel();
         }
         if let PhysicalKey::Code(key) = input.physical {
@@ -12477,8 +12047,6 @@ impl Game<'_> {
         if let WindowEvent::DroppedFile(path) = event {
             self.drop_pack_file(path);
         }
-        // Android's winit sends no ModifiersChanged: the held keys make them.
-        self.platform_held_modifiers(&event);
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
         if let WindowEvent::KeyboardInput { event, .. } = event
@@ -12571,21 +12139,12 @@ impl Game<'_> {
             && starting.handle.upgrade().is_file_fixing()
         {
             let upgrade = starting.handle.upgrade();
-<<<<<<< sync-sunrise-1
-            match &event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = self.interface_batch([r.config.width, r.config.height]);
-                        self.cursor =
-                            self.interface_point([position.x as f32, position.y as f32], b.scale);
-=======
             match event {
                 WindowEvent::CursorMoved { .. } => {
                     if let (Some(projection), Some(sample)) =
                         (self.renderer_pointer_projection(), cursor_sample)
                     {
                         self.set_window_cursor(sample, projection);
->>>>>>> sunrise/main
                     }
                 }
                 WindowEvent::MouseInput {
@@ -13084,15 +12643,6 @@ impl Game<'_> {
                         self.regrab_on_refocus = held;
                     }
                 }
-<<<<<<< sync-sunrise-1
-                WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = self.interface_batch([r.config.width, r.config.height]);
-                        let previous = self.cursor;
-                        self.cursor =
-                            self.interface_point([position.x as f32, position.y as f32], b.scale);
-                        if self.studio_mouse_dragged(b.width) {
-=======
                 WindowEvent::CursorMoved { .. } => {
                     if let (Some(r), Some(sample)) = (&self.renderer, cursor_sample) {
                         let size = [r.config.width, r.config.height];
@@ -13103,7 +12653,6 @@ impl Game<'_> {
                         self.set_window_cursor(sample, projection);
                         let [w, h] = projection.gui.size.map(|v| v as f32);
                         if self.studio_mouse_dragged(w) {
->>>>>>> sunrise/main
                             return Ok(());
                         }
                         match self.screen_mouse_dragged(delta) {
@@ -13168,18 +12717,12 @@ impl Game<'_> {
                         MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
                         MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
                     };
-<<<<<<< sync-sunrise-1
                     // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity. A
                     // phone's pixel scrolls are a finger's (touch.rs), which follow it instead.
                     let finger =
                         MOBILE_PLATFORM && matches!(delta, MouseScrollDelta::PixelDelta(_));
                     let discrete = self.settings.discrete_scroll && !finger;
-                    let wheel_sensitivity = f64::from(self.settings.mouse_wheel_sensitivity);
-=======
-                    // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity.
-                    let discrete = self.settings.discrete_scroll;
                     let wheel_sensitivity = self.settings.mouse_wheel_sensitivity;
->>>>>>> sunrise/main
                     let scaled = |v: f64| {
                         (if discrete {
                             sunrise_client::mouse::java_signum(v)
@@ -13319,141 +12862,7 @@ impl Game<'_> {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
                 }
-<<<<<<< sync-sunrise-1
-                WindowEvent::MouseInput { state, button, .. } if self.command_prompt.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.command_prompt_click();
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.link_prompt.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.link_prompt_click();
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.code_of_conduct.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.code_of_conduct_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. }
-                    if self.server_packs.prompt.is_some() =>
-                {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.pack_prompt_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.dialog_open() => {
-                    if button == MouseButton::Left {
-                        if state == ElementState::Pressed {
-                            self.dialog_click()?;
-                        } else {
-                            self.dialog_release();
-                        }
-                    }
-                }
-                // ConnectScreen's Cancel, under the prompts and dialogs above.
-                WindowEvent::MouseInput { state, button, .. } if self.remote_loading() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.connect_screen_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { .. } if self.screen == Screen::Win => {}
-                WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
-                    if self.options_waiting_for_key() && state == ElementState::Pressed {
-                        self.options_bind_mouse(button)?;
-                    } else if matches!(button, MouseButton::Left | MouseButton::Right) {
-                        self.options_mouse(
-                            state == ElementState::Pressed,
-                            button == MouseButton::Right,
-                        )?;
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } if self.title_input_active() && self.screen != Screen::Options => {
-                    if let Some(title) = &mut self.title {
-                        title.release();
-                        title.release_field();
-                    }
-                    self.release_title_player();
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if self.title_player_at(self.cursor) => self.press_title_player(),
-                WindowEvent::MouseInput {
-                    state,
-                    button: MouseButton::Left,
-                    ..
-                } if self.title_input_active() && state == ElementState::Pressed => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
-                    let b = self.interface_batch(size);
-                    let atlas = &self.gui.atlas;
-                    let shift = self.has_shift_down();
-                    let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-                        let clicked = t.click(self.cursor.0, self.cursor.1, (b.width, b.height));
-                        t.press_field(atlas, self.cursor, (b.width, b.height), shift);
-                        let rules = t.press_rules(atlas, self.cursor, (b.width, b.height));
-                        (clicked.0, clicked.1 || rules)
-                    });
-                    self.save_title_options();
-                    if sound {
-                        self.audio.play_button_click();
-                    }
-                    self.title_action(event_loop, action)?;
-                    self.reopen_data_packs(event_loop)?;
-                }
-                // AbstractSelectionList.mouseClicked: the world list takes a
-                // click of any button, so the middle one selects its row
-                // without joining (only the left click's play icon or its
-                // click on the selected row does that).
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Middle,
-                    ..
-                } if self.title_input_active() && self.screen != Screen::Options => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
-                    let b = self.interface_batch(size);
-                    if let Some(title) = self.title.as_mut() {
-                        title.select_world_at(self.cursor.0, self.cursor.1, (b.width, b.height));
-                    }
-                }
-                WindowEvent::MouseInput { .. } if self.title_input_active() => {}
-                WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
-                        self.book_click(size);
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.sign_edit.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
-                        self.sign_edit_click(size);
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-=======
                 event @ WindowEvent::MouseInput { state, button, .. } => {
->>>>>>> sunrise/main
                     let pressed = state == ElementState::Pressed;
                     let code = glfw_button(button);
                     // Set by the outer handler at physical button-up.
@@ -13520,96 +12929,7 @@ impl Game<'_> {
                                 double_click,
                             });
                         }
-<<<<<<< sync-sunrise-1
-                        Screen::Inventory => {
-                            self.inventory_mouse_release(button == MouseButton::Right);
-                            self.station_release();
-                            self.recipe_book_release();
-                        }
-                        Screen::Chat if pressed && button == MouseButton::Left => self.chat_click(),
-                        Screen::Creative if pressed => {
-                            self.click_creative(button == MouseButton::Right);
-                        }
-                        Screen::Creative => {
-                            if button == MouseButton::Left {
-                                self.creative_screen.release();
-                            }
-                            self.inventory_mouse_release(button == MouseButton::Right);
-                            self.bedrock_held = false;
-                        }
-                        Screen::Paused
-                            if pressed && button == MouseButton::Left && self.pause_menu =>
-                        {
-                            self.pause_click()?
-                        }
-                        Screen::WorldOptions if pressed && button == MouseButton::Left => {
-                            self.world_options_click()
-                        }
-                        Screen::ServerLinks if pressed && button == MouseButton::Left => {
-                            self.server_links_click()?
-                        }
-                        Screen::DebugOptions if pressed && button == MouseButton::Left => {
-                            self.debug_options_click()
-                        }
-                        Screen::DebugOptions if button == MouseButton::Left => {
-                            self.debug_options_release()
-                        }
-                        Screen::HudEditor
-                            if pressed
-                                && matches!(button, MouseButton::Left | MouseButton::Right) =>
-                        {
-                            self.hud_editor_press(button == MouseButton::Right)
-                        }
-                        Screen::HudEditor if button == MouseButton::Left => {
-                            self.hud_editor_release()
-                        }
-                        Screen::ConfirmLink if pressed && button == MouseButton::Left => {
-                            self.confirm_link_click()
-                        }
-                        Screen::DialogWarning if pressed && button == MouseButton::Left => {
-                            self.dialog_warning_click()?
-                        }
-                        Screen::WorldOptions if button == MouseButton::Left => {
-                            self.world_options_release()
-                        }
-                        Screen::Friends if pressed && button == MouseButton::Left => {
-                            self.friends_screen_click()
-                        }
-                        Screen::Social if pressed && button == MouseButton::Left => {
-                            self.social_click()
-                        }
-                        Screen::CommandBlock if pressed && button == MouseButton::Left => {
-                            self.command_block_click()
-                        }
-                        Screen::BlockEditor if pressed && button == MouseButton::Left => {
-                            self.block_editor_click()
-                        }
-                        Screen::BlockEditor if button == MouseButton::Left => {
-                            self.block_editor_release()
-                        }
-                        Screen::Dead if pressed && button == MouseButton::Left => {
-                            self.death_click()?
-                        }
-                        Screen::Advancements if button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-                            self.advancements_mouse(pressed, size);
-                        }
-                        Screen::Stats if pressed && button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-                            self.stats_click(size);
-                        }
-                        Screen::Stats if button == MouseButton::Left => self.stats_release(),
-                        Screen::GameModeSwitcher if !pressed => self.switcher_release(button),
-                        _ => {}
-=======
                         container_handled = self.container_mouse(button, pressed, owned_release);
->>>>>>> sunrise/main
                     }
                     if !container_handled {
                         self.key_focus_mouse_press(&event);
@@ -14788,12 +14108,7 @@ impl<'a> Game<'a> {
             }),
             skin_profiles: RefCell::new(sunrise_client::skins::Resolver::new()),
             skin_slots: sunrise_client::skins::SkinSlots::new(sunrise_client::hud::SKIN_SLOTS),
-<<<<<<< sync-sunrise-1
             own_skin: Default::default(),
-            cosmetics: Default::default(),
-            skin_3d: Default::default(),
-=======
->>>>>>> sunrise/main
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -14861,8 +14176,6 @@ impl<'a> Game<'a> {
             pending_uploads_merge: Vec::new(),
             pending_uploads_order: None,
             upload_pace: Default::default(),
-<<<<<<< sync-sunrise-1
-            frame_graph: Default::default(),
             stats_overlay: Default::default(),
             perf_lab: Default::default(),
             old_mod_net: Default::default(),
@@ -14880,8 +14193,6 @@ impl<'a> Game<'a> {
             creative_hovered: None,
             creative_effect_tip: None,
             content_record: None,
-=======
->>>>>>> sunrise/main
             extras: Default::default(),
             pvp: Default::default(),
             mods: mod_sources,
@@ -15227,20 +14538,12 @@ pub(crate) fn run_with(
     options
         .mods
         .capture_code_switches(&early_settings.mods.disabled);
-<<<<<<< sync-sunrise-1
     // Starling: the mods adding blocks or items are those of the world a restart was made for, or
     // the last world's (world_content.rs), so a world plays with the set it was made with.
     let game_dir = std::env::current_dir()?;
     let content_set =
         world_content::start_set(&game_dir, &early_settings.mods.enabled, &options.mods.dev);
     options.mods.select(&game_dir, &content_set);
-    let mod_phase = mod_api::__private::PhaseOwner::new(mod_api::__private::ModPhase::Packages);
-    api_values::install_packages(options.mods.native.packages(), &options.mods.selected)?;
-    mods::install_registration_data(&vanilla_root)?;
-=======
-    options
-        .mods
-        .select(&std::env::current_dir()?, &early_settings.mods.enabled);
     mods::validate_startup_packages(&options.mods)?;
     let jar_store = sunrise_client::logging::game_home().join("jars");
     let admission = options.mods.admit_startup_packages(&jar_store)?;
@@ -15250,7 +14553,6 @@ pub(crate) fn run_with(
         mods::runtime_files::sources(&options.mods),
         mods::package_files::sources(&admission),
     )?;
->>>>>>> sunrise/main
     {
         crate::game::part_admission::admit_parts(mod_api::__private::mods())?;
         // The structure types those mods registered, handed to the engine before
@@ -15659,8 +14961,6 @@ fn test_server_load() -> sunrise_world::native_load_context::LoadContext {
 }
 
 #[cfg(test)]
-<<<<<<< sync-sunrise-1
-=======
 mod nested_orb_spawn_tests {
     #[test]
     #[ignore = "daily"]
@@ -15706,7 +15006,6 @@ mod nested_orb_spawn_tests {
 }
 
 #[cfg(test)]
->>>>>>> sunrise/main
 pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
     const OWN_PROCESS: &str = "SUNRISE_TEST_OWN_PROCESS";
     if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {

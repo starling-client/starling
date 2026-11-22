@@ -57,7 +57,7 @@
 - FEATURE TO RE-PORT: the Stats performance overlay (`Overlay::Stats`, stats_overlay.rs, our perf_overlay.rs edits in
   ours-diffs). Sunrise moved the overlay to the crate sunrise-perf-overlay and its key out of sunrise-graphics.txt;
   graphics.rs took that. Anything of ours still naming `g.overlay`/`Overlay::Stats` must go through the new crate.
-- ui.rs: `load_skin(root)` (Starling's low-budget skin: button takes, pressed label) lost its caller: Sunrise took read_metadata out of ui.rs. Call it where the resource root is (re)loaded.
+- ui.rs: `load_skin` (Starling's low-budget skin) is called from startup_menu.rs's set_root; a pack reload in a world must call it too (packs/mod.rs is Sunrise's).
 - options_ui.rs: the wardrobe's drag on the skin preview (the `Page::Skin && self.wardrobe_enabled` block of the click
   handler) is out: Sunrise's click handler now returns `(Vec<Event>, bool)` and lost its splitscreen pages. Put the
   block back in that shape (ours-diffs/options_ui.7.wardrobe-click.diff).
@@ -100,3 +100,31 @@
   - names.rs: name tags turned by `camera_text_axes()`; Sunrise turns them by the camera's orientation.
 - Files on Android's shared storage: Starling read and wrote stats, advancements and the like through `sunrise_client::save::read_file`/`write_file`; save.rs is Sunrise's now (`write_durable`). Check those paths still work in shared storage (no hard links, no rename across folders).
   - game/world/autosave.rs also took Sunrise's whole (ours-diffs/server/game_world_autosave.rs.diff).
+  - game/network/remote/mod.rs (+964 of ours) took Sunrise's whole too: other players' skins as Starling draws them (3D layers, the wardrobe's previews, Ely.by), old mods' network messages and the API backport's client side were in it.
+- THE START (game/runtime/loading_screen.rs, loading_window.rs): Starling's loading flow is kept (the loading screen's
+  own renderer `boot_renderer`, `RendererParts` built on a thread, `finish(loaded, built)`, `poll_handoff`), on
+  Sunrise's start without the splitscreen wrapper (`run_app(&mut game)`, `finish` returns `Game`). To join with the
+  compiler (both sides' hunks are in ours-diffs/client/loading_window.*.diff):
+  - Sunrise's `build_renderer` returns `(Renderer, clouds result)` and passes `(draws_flat, starts_wide)`; ours returns
+    the renderer alone and builds through `RendererParts`.
+  - Sunrise takes the worker's result with `take_worker_result()` (keeps declaration refusals); ours `poll_handoff`
+    takes `loaded` itself.
+  - The end of `start_game` is Sunrise's (`PendingClientStart`, `apply_pending_client_start`): ours joined the resource
+    worker first when a world's mods were to load (`wait_world_rest`), skipped the accessibility onboarding on
+    Android, and set `pending_entry = world_content::next_entry()` after the title.
+- game/modding/mods/mod.rs is Sunrise's content loading (ContentRequest, admission, ModsReload) with Starling's
+  phone parts: no registry names before the game files exist, the cache folder outside shared storage, the mods a
+  world's own set is compared with (`world_content::set_running`/`set_loaded`), `display_name`. Left out with the
+  Create port: fetched assets (`fetched_assets`, `mod_assets.rs`, the `Fetching` note). To check: a reload from the
+  title kept the player's switches (`wanted`), and Sunrise's `apply_mods_reload` sets them to what loaded.
+- game.rs is resolved: Sunrise's tick, HUD layer dispatch, pointer projection and mouse-button routing, with
+  Starling's fields, performance overlays, phone offers and imports, the keyboard's lift, the world's own content set at
+  startup, and a finger's pixel scroll. Starling's edits that sat inside code Sunrise moved are not carried yet (both
+  sides' hunks: ours-diffs/client/game.ours.diff and game.theirs.diff):
+  - the HUD on a phone: the attack indicator's side (`hotbar_with_attack_side`), the safe-zone margins around the
+    sleep overlay and the HUD layers (hunks 12-14), `hud_room` no longer set in `hud` (hunk 11);
+  - window events: `platform_keypad_event` first in `handle_window_event_inner`, `platform_held_modifiers` (Android's
+    winit sends no ModifiersChanged), the cursor in the interface's own scale on CursorMoved, the title's player
+    press/release, `bedrock_held` on a mouse release (hunks 21-28).
+- ALL CONFLICT MARKERS ARE GONE (2026-11-22). Every changed .rs file parses (rustfmt). Nothing has been compiled yet:
+  next are Cargo.lock (Starling's crates), `cargo check` rounds on the build machine, then the items above.

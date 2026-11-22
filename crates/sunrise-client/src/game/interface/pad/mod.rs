@@ -16,11 +16,8 @@ use sunrise_client::{
     gamepad::{
         self, Button, Edges, GlyphOf, GlyphStyle, HealthWatch, MenuJob, PadState, Route, Rumble,
     },
-<<<<<<< sync-sunrise-1
-    input_mode::InputMode,
-=======
     hud::HudBatch,
->>>>>>> sunrise/main
+    input_mode::InputMode,
     keymapping::SNEAK,
     pad_glyph::{Glyph, Glyphs},
 };
@@ -52,17 +49,8 @@ fn style_named(name: &str) -> Result<GlyphStyle> {
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
-<<<<<<< sync-sunrise-1
-    /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
-    pub(super) feed: Option<PadState>,
-    /// The pad behind `feed`.
-    feed_source: Option<PadId>,
     /// The real controllers and the DualSense's output, or Android's controllers.
     #[cfg(any(feature = "controllers", target_os = "android"))]
-=======
-    /// The real controllers and the DualSense's output.
-    #[cfg(feature = "controllers")]
->>>>>>> sunrise/main
     devices: hardware::Devices,
     /// The virtual pad of `sunrise-ctl pad`.
     injected: PadState,
@@ -194,73 +182,14 @@ enum Connection {
     Disconnected { active: bool },
 }
 
-<<<<<<< sync-sunrise-1
-/// What a controller did since the last frame.
-#[cfg_attr(not(feature = "controllers"), allow(dead_code))]
-pub(in crate::game) enum PadEvent {
-    Press(PadId, Button),
-    /// Disconnected (out of battery, unplugged, out of range).
-    Gone(PadId),
-    /// Connected again under the same id (Windows keeps it; macOS gives a new one). On Linux
-    /// gilrs gives a new device the slot of a disconnected one of the same model, so there this
-    /// can be another controller of that model.
-    Back(PadId),
-}
-
 /// Android's controllers, from the system's events: gilrs (the `controllers` feature) has no
 /// Android backend.
 #[cfg(all(target_os = "android", not(feature = "controllers")))]
 #[path = "android.rs"]
 mod hardware;
-
-/// The splitscreen's pad router where there are no gilrs pads to route (the server build, Android):
-/// no pad events, no pad to lend.
-#[cfg(not(feature = "controllers"))]
-mod no_router {
-    use super::{PadEvent, Pads};
-    use sunrise_client::gamepad::PadState;
-
-    pub(in crate::game) type PadId = usize;
-    #[derive(Default)]
-    pub(in crate::game) struct PadRouter {}
-    impl PadRouter {
-        pub(in crate::game) fn adopt(&mut self, _: &mut Pads) {}
-        pub(in crate::game) fn hand_back(&mut self, _: &mut Pads) {}
-        pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
-            Vec::new()
-        }
-        pub(in crate::game) fn device(
-            &self,
-            _: PadId,
-        ) -> Option<sunrise_client::controller_ui::Device> {
-            None
-        }
-        pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
-        pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
-        pub(in crate::game) fn play_rumbles(&mut self, _: &mut Pads, _: Option<PadId>) {}
-        pub(in crate::game) fn report_status(&self, _: &mut Pads, _: Option<PadId>) {}
-        pub(in crate::game) fn connected(&self, _: PadId) -> bool {
-            false
-        }
-        pub(in crate::game) fn uuid(&self, _: PadId) -> [u8; 16] {
-            [0; 16]
-        }
-        pub(in crate::game) fn state(&self, _: PadId) -> PadState {
-            PadState::default()
-        }
-        pub(in crate::game) fn peaks(&self, _: PadId) -> [[f32; 2]; 2] {
-            [[0.0; 2]; 2]
-        }
-        pub(in crate::game) fn name(&self, _: PadId) -> String {
-            String::new()
-        }
-        pub(in crate::game) fn style(&self, _: PadId) -> sunrise_client::gamepad::GlyphStyle {
-            sunrise_client::gamepad::GlyphStyle::Auto
-        }
-=======
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `sunrise-ctl pad`'s virtual one.
-#[cfg(not(feature = "controllers"))]
+#[cfg(not(any(feature = "controllers", target_os = "android")))]
 mod hardware {
     use super::{super::Game, Pads};
     use serde_json::{Value, json};
@@ -270,7 +199,6 @@ mod hardware {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
         }
->>>>>>> sunrise/main
     }
 }
 
@@ -424,14 +352,12 @@ impl Game<'_> {
         // Off leaves the controllers out; the touch controls play through the pad all the same.
         let enabled = self.settings.controller.enabled;
         let hardware = if enabled {
-            match self.pad.feed {
-                // A scripted run leaves the person's pad at rest and unread, as the window drops
-                // their keys and mouse: a read makes a newly touched pad the active one, which lets
-                // go of the run's A held in a menu. A held button lets go as the run starts and is
-                // held again after it.
-                _ if self.scripted_run() => PadState::default(),
-                Some(state) => state,
-                None => self.pad.read(),
+            // A scripted run leaves the person's pad at rest and unread, just like its
+            // keyboard and mouse. Reading it could change the active pad mid-run.
+            if self.scripted_run() {
+                PadState::default()
+            } else {
+                self.pad.read()
             }
         } else {
             self.pad_output_off();
@@ -440,26 +366,12 @@ impl Game<'_> {
                 .radial_look
                 .observe(None, std::time::Instant::now());
             self.pad.in_use = false;
-<<<<<<< sync-sunrise-1
+            // Starling: no early return here. The touch controls' buttons arrive as pad state
+            // (`self.pad.touch`, merged below), so the frame goes on with an empty hardware pad.
             PadState::default()
         };
-        // A Nintendo pad going by its letters is read that way: its own, or the one
-        // splitscreen's router feeds this player.
+        // A Nintendo pad going by its letters is read that way.
         let hardware = if enabled && self.pad.by_letter(&self.settings.controller) {
-=======
-            // The keyboard's menu focus follows its widget all the same.
-            self.pad_menu_frame(event_loop);
-            return;
-        }
-        // A scripted run leaves the person's pad at rest and unread, just like its
-        // keyboard and mouse. Reading it could change the active pad mid-run.
-        let hardware = if self.scripted_run() {
-            PadState::default()
-        } else {
-            self.pad.read()
-        };
-        let hardware = if self.pad.by_letter(&self.settings.controller) {
->>>>>>> sunrise/main
             hardware.by_letter()
         } else {
             hardware
@@ -521,7 +433,7 @@ impl Game<'_> {
             self.pad.in_use = self.input_mode == InputMode::Pad;
             self.pad.keyboard_took_over = false;
         }
-<<<<<<< sync-sunrise-1
+        let previous_move = self.pad_move();
         let state = state.merge(&self.pad.touch);
         for button in std::mem::take(&mut self.pad.touch_taps) {
             self.pad.touch.set(button, false);
@@ -530,18 +442,11 @@ impl Game<'_> {
         let edges = self.pad.edges.update(&state, threshold);
         self.pad.state = state;
         if enabled {
+            self.resume_stick_mappings(previous_move);
             self.pad_radial_frame();
             self.pad_drop_frame();
             self.pad_output_frame();
         }
-=======
-        let previous_move = self.pad_move();
-        self.pad.state = state;
-        self.resume_stick_mappings(previous_move);
-        self.pad_radial_frame();
-        self.pad_drop_frame();
-        self.pad_output_frame();
->>>>>>> sunrise/main
         // Damage from any source, here or on a server; nothing counts on
         // the title screen.
         let health = self

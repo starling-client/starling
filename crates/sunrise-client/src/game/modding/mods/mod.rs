@@ -29,21 +29,6 @@ use sunrise_world::{
     native_load_context::{LoadContext, LoadInputs},
 };
 
-<<<<<<< sync-sunrise-1
-/// Read filesystem-bound package declarations concurrently, retaining dependency order and
-/// keeping an individual package's refusal attached to that package.
-/// Each request: the package, its manifest, the items its native code declares, and (Starling) the
-/// folder its assets were fetched into from Modrinth (`mod_assets.rs`).
-#[allow(clippy::type_complexity)]
-fn read_contents(
-    requests: &[(
-        &Path,
-        &sunrise_mod_package::Manifest,
-        Vec<String>,
-        Option<PathBuf>,
-    )],
-) -> Vec<Result<sunrise_mod_package::Content, String>> {
-=======
 struct ContentRequest<'a> {
     path: &'a Path,
     manifest: &'a sunrise_mod_package::Manifest,
@@ -56,7 +41,6 @@ fn read_package_inputs<T: Sync, U: Send>(requests: &[T], read: impl Fn(&T) -> U 
     if requests.is_empty() {
         return Vec::new();
     }
->>>>>>> sunrise/main
     use std::sync::atomic::{AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
     let threads = sunrise_threads::worker_count().clamp(1, requests.len());
@@ -67,28 +51,10 @@ fn read_package_inputs<T: Sync, U: Send>(requests: &[T], read: impl Fn(&T) -> U 
                     let mut done = Vec::new();
                     loop {
                         let index = next.fetch_add(1, Ordering::Relaxed);
-<<<<<<< sync-sunrise-1
-                        let Some((path, manifest, declared, fetched)) = requests.get(index) else {
-                            return done;
-                        };
-                        let content = sunrise_mod_package::Content::read_with(
-                            path,
-                            manifest,
-                            declared,
-                            fetched.as_deref(),
-                        );
-                        if declared.is_empty()
-                            && let Ok(content) = &content
-                        {
-                            remember_verdict(path, content);
-                        }
-                        done.push((index, content));
-=======
                         let Some(request) = requests.get(index) else {
                             return done;
                         };
                         done.push((index, read(request)));
->>>>>>> sunrise/main
                     }
                 })
             })
@@ -427,18 +393,8 @@ pub(super) fn install_registration_data(
     package_files: BTreeMap<String, Arc<dyn mod_api::PackageFileSource>>,
 ) -> sunrise_client::Result<()> {
     let packages = mod_api::__private::loaded_mods();
-<<<<<<< sync-sunrise-1
-    let directory = Game::game_dir();
-    #[cfg(unix)]
-    let directory = {
-        use std::os::unix::ffi::OsStrExt;
-        mod_api::InstanceDirectory::Unix(directory.as_os_str().as_bytes().to_vec())
-    };
-    #[cfg(windows)]
-    let directory = {
-        use std::os::windows::ffi::OsStrExt;
-        mod_api::InstanceDirectory::Windows(directory.as_os_str().encode_wide().collect())
-    };
+    let directory = mod_api::InstanceDirectory::from_path(&Game::game_dir())
+        .expect("the host path has an encoding the mod API carries");
     // Android starts before the game files exist (its setup screen prepares them, no launcher did):
     // with none yet there is nothing to read, and no native mod runs in the APK's own game.
     let names = match builtin_registry_names(root) {
@@ -448,12 +404,7 @@ pub(super) fn install_registration_data(
         }
         Err(e) => return Err(e),
     };
-    (sunrise_engine_slots::platform()?.install_registration_data)(
-=======
-    let directory = mod_api::InstanceDirectory::from_path(&Game::game_dir())
-        .expect("the host path has an encoding the mod API carries");
     (mod_api::__private::platform::platform()?.install_registration_data)(
->>>>>>> sunrise/main
         mod_api::__private::RegistrationData::new(
             names,
             sunrise_world::native_load_context::capture_settings(
@@ -1027,35 +978,6 @@ pub(super) struct ContentOverlay {
     pub(super) content_mods: Vec<sunrise_client::save::level_mods::ModRecord>,
 }
 
-<<<<<<< sync-sunrise-1
-/// Starling: the folder mod `m`'s assets from Modrinth are unpacked in (`mod_assets.rs`), fetched
-/// now when they are not there yet, with `note` hearing how far the download is; the Mods page
-/// says why one failed (`mod_assets::failed`).
-fn fetched_assets(
-    m: &sunrise_mod_package::Manifest,
-    cache: &Path,
-    note: &dyn Fn(Option<String>),
-) -> Option<PathBuf> {
-    let a = m.assets.as_ref()?;
-    let dir = sunrise_mod_package::fetch::dir(cache, &a.fetch);
-    if !sunrise_mod_package::fetch::ready(&dir, &a.fetch) {
-        log::info!(
-            "Sunrise: fetching {}'s assets: {} from Modrinth ({} bytes)",
-            m.id,
-            a.fetch.file,
-            a.fetch.size
-        );
-        let name = m.name.as_str();
-        let got = super::mod_assets::get(m, &dir, &mut |done, total| {
-            note(Some(ContentNote::Fetching { name, done, total }.text()))
-        });
-        match got {
-            Ok(n) => log::info!("Sunrise: {n} assets of {} unpacked", m.id),
-            Err(e) => log::warn!("Sunrise: {}'s assets not fetched: {e}", m.id),
-        }
-    }
-    Some(dir)
-=======
 /// A package's primary namespace is not an alias another layer can acquire.
 fn refuse_primary_namespace_claims(
     manifests: &[&sunrise_mod_package::Manifest],
@@ -1184,7 +1106,6 @@ fn content_owner_pairs<'a>(
                 .map(move |namespace| (namespace.as_str(), owner))
         })
         .collect()
->>>>>>> sunrise/main
 }
 
 /// Builds the content overlay: every enabled or dev content mod's files
@@ -1275,29 +1196,11 @@ fn content_overlay_with_refusals(
     .map_err(|error| error.to_string())?;
     let order = resolution.order;
     // Hooks are queried on the calling thread, never from a content reader.
-<<<<<<< sync-sunrise-1
-    let native_items = &native_declared().items;
-    let note = |text: Option<String>| {
-        if let Some(note) = &sources.note {
-            note(text);
-        }
-    };
-    // Starling: a mod's assets from Modrinth, fetched here (one at a time, before the reads) the
-    // first time it is on.
-    let assets_cache = sunrise_client::logging::cache_dir();
-=======
     let declared = native_declared();
->>>>>>> sunrise/main
     let requests: Vec<_> = order
         .iter()
         .map(|&index| {
             let source = &packages[index];
-<<<<<<< sync-sunrise-1
-            let declared =
-                super::native_content_items::owned_item_ids(source.manifest, native_items);
-            let fetched = fetched_assets(source.manifest, &assets_cache, &note);
-            (source.path, source.manifest, declared, fetched)
-=======
             ContentRequest {
                 path: source.path,
                 manifest: source.manifest,
@@ -1307,7 +1210,6 @@ fn content_overlay_with_refusals(
                 ),
                 admitted: admission.and_then(|a| a.package(&source.manifest.id, source.path)),
             }
->>>>>>> sunrise/main
         })
         .collect();
     let read = read_contents(&requests);
@@ -1463,12 +1365,9 @@ fn content_overlay_with_refusals(
         &overrides,
     )
     .map_err(|error| error.to_string())?;
-<<<<<<< sync-sunrise-1
     // The game's derived caches (`logging::cache_dir`): the folder the game runs in, or Android's
     // private files. Android's game folder is in shared storage, which refuses the overlay's links:
     // a phone with a code or content mod on fell back to its setup ("Permission denied").
-=======
->>>>>>> sunrise/main
     let cache = sunrise_client::logging::cache_dir();
     // Content admission and the live code-dispatch boundary jointly determine
     // what loaded. Namespaces and raw startup metadata cannot answer this.
@@ -1645,7 +1544,6 @@ pub(in crate::game) fn content_root(
     register_entity_types(&overlay.mods);
     register_menu_types(&overlay.mods)?;
     sunrise_client::mod_content::set_fluid_looks(&overlay.mods);
-<<<<<<< sync-sunrise-1
     // Starling: the mods adding blocks or items this process loaded, which a world's own set is
     // compared with (world_content.rs).
     super::world_content::set_running(
@@ -1660,7 +1558,6 @@ pub(in crate::game) fn content_root(
     if let Some(note) = &sources.note {
         note(None);
     }
-=======
     sunrise_client::mod_content::set_fluid_interactions(&overlay.mods);
     // Freeze ownership with the startup registries, before preparing Parts. Pack and data
     // reloads can change layers but cannot replace the registered blocks and block entity types.
@@ -1668,7 +1565,6 @@ pub(in crate::game) fn content_root(
         &overlay.mods,
         &sources.selected,
     ));
->>>>>>> sunrise/main
     Ok(overlay.root)
 }
 
@@ -2165,7 +2061,6 @@ pub(super) struct PreparedLoopContext {
     worldgen: Option<sunrise_world::native_load_context::WorldgenContext>,
 }
 
-<<<<<<< sync-sunrise-1
 /// A native mod's name from its id, which is all its bundle says of it (the name is in its code):
 /// `carry_block` is "Carry block", as the game built with it names `Wrench` "Wrench".
 fn display_name(id: &str) -> String {
@@ -2177,14 +2072,7 @@ fn display_name(id: &str) -> String {
         .unwrap_or_default()
 }
 
-impl Game<'_> {
-    /// Observe the platform phase at construction, after bootstrapping the real test runtime.
-    pub(super) fn mod_phase_for_construction() -> mod_api::__private::ModPhase {
-        #[cfg(test)]
-        Self::initialize_mod_runtime_for_tests();
-        mod_api::__private::current_phase()
-    }
-=======
+
 /// What a live content mod switch changes on the server (`Game::apply_mods_reload`).
 pub(super) struct ModsReload {
     root: PathBuf,
@@ -2195,7 +2083,6 @@ pub(super) struct ModsReload {
     selected: Arc<[sunrise_mod_package::selection::SelectedPackage]>,
     refused: Arc<Mutex<Vec<MissingJar>>>,
 }
->>>>>>> sunrise/main
 
 impl Game<'_> {
     #[cfg(test)]
@@ -2394,13 +2281,8 @@ impl Game<'_> {
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),
-<<<<<<< sync-sunrise-1
-                    description: format!("{fetched}{}", m.description).trim().to_owned(),
-                    problem,
-=======
                     description: m.description.clone(),
                     problem: None,
->>>>>>> sunrise/main
                     dev: self.mods.dev.contains(path),
                     native: None,
                 }
@@ -2538,16 +2420,7 @@ impl Game<'_> {
         if let Some(server) = &self.integrated {
             server.tell(OwnerRequest::ReloadMods(Box::new(reload)));
         } else if self.remote.is_none() {
-<<<<<<< sync-sunrise-1
-            // Starling: with no server yet (the title screen) the reload runs on this game, where
-            // the switches are the player's: they keep what the player chose, a mod waiting for a
-            // restart or a switch made during the reload too, not only what loaded.
-            let wanted = self.settings.mods.enabled.clone();
-            reload(self);
-            self.settings.mods.enabled = wanted;
-=======
             self.apply_mods_reload(reload);
->>>>>>> sunrise/main
         }
     }
     /// The server's side of a live switch: the data packs reload from the new root.
@@ -5825,16 +5698,12 @@ mod concurrent_content_tests {
             .collect();
         let requests: Vec<_> = packages
             .iter()
-<<<<<<< sync-sunrise-1
-            .map(|(path, package)| (path.as_path(), &package.manifest, Vec::new(), None))
-=======
             .map(|(path, package)| ContentRequest {
                 path,
                 manifest: &package.manifest,
                 declared: Vec::new(),
                 admitted: None,
             })
->>>>>>> sunrise/main
             .collect();
         let read = read_contents(&requests);
         assert_eq!(read.len(), 12);
