@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Hosts images may come from.
-const HOSTS: [&str; 7] = [
+const HOSTS: [&str; 8] = [
     "https://cdn.modrinth.com/",
     // Fabric's and Forge's own icons, for instances that play them (no published logo licence:
     // drawn from their sites, never shipped).
