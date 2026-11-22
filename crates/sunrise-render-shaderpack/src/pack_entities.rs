@@ -129,6 +129,7 @@ pub fn inputs() -> sunrise_shaders::GbuffersInputs {
             .map(|&(n, v)| (n.to_owned(), v.to_owned()))
             .collect(),
         after: String::new(),
+        prepass_uv: false,
         // Cutout, as vanilla's entity types mostly are (OQ-23): the loader's test at 0.1.
         alpha_test: Some(sunrise_shaders::AlphaTest {
             op: ">",
@@ -201,6 +202,7 @@ pub fn cloud_inputs() -> sunrise_shaders::GbuffersInputs {
             .map(|&(n, v)| (n.to_owned(), v.to_owned()))
             .collect(),
         after: String::new(),
+        prepass_uv: false,
         alpha_test: None,
         parts: None,
         item_id_declared: false,

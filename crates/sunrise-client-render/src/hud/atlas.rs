@@ -91,6 +91,45 @@ pub const GLYPH_ROWS: u32 = 512;
 /// The largest atlas side: the 2D texture limit of the GPUs Sunrise runs on
 /// (Apple silicon, RADV and Intel allow 16384; NVIDIA 32768).
 pub const MAX_ATLAS_SIZE: u32 = 16384;
+/// Below this a texture at half size stops being worth what it costs to look at.
+const SMALLEST_SHRUNK_SIDE: u32 = 32;
+/// The interface's textures shrink only once the others are down to this side.
+const INTERFACE_WAITS_FOR_SIDE: u32 = 64;
+/// A side of a GPU's largest texture, once the renderer has found the GPU; 0 before.
+static GPU_TEXTURE_SIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The renderer's word on what the GPU takes, which the atlas is packed within.
+pub fn set_gpu_texture_side(side: u32) {
+    GPU_TEXTURE_SIDE.store(side, std::sync::atomic::Ordering::Relaxed);
+}
+/// The most an atlas may measure a side. On a phone the renderer finds the GPU while the atlas
+/// loads, and the small GPUs are there, so this waits for its word (not for ever: it only asks
+/// the driver); elsewhere a GPU not found yet counts as one that takes the most.
+fn atlas_limit() -> u32 {
+    let side = || GPU_TEXTURE_SIDE.load(std::sync::atomic::Ordering::Relaxed);
+    if cfg!(target_os = "android") {
+        let start = std::time::Instant::now();
+        while side() == 0 && start.elapsed() < std::time::Duration::from_secs(20) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    match side() {
+        0 => MAX_ATLAS_SIZE,
+        side => side.min(MAX_ATLAS_SIZE),
+    }
+}
+/// `image` at half its size, by every other texel: no new colors or alpha, so what was cut out
+/// stays cut out.
+fn halved((name, w, h, data): &PackedImage) -> PackedImage {
+    let (half_w, half_h) = (w.div_ceil(2), h.div_ceil(2));
+    let mut half = Vec::with_capacity((half_w * half_h * 4) as usize);
+    for y in 0..half_h {
+        for x in 0..half_w {
+            let at = ((y * 2 * w + x * 2) * 4) as usize;
+            half.extend_from_slice(&data[at..at + 4]);
+        }
+    }
+    (name.clone(), half_w, half_h, half)
+}
 /// 128x128 atlas slots for map textures. A lobby paints its signs as walls of
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
@@ -115,6 +154,71 @@ pub const WORLD_ICON_SLOTS: usize = 32;
 pub const PACK_ICON_SLOTS: usize = 64;
 /// A pack icon slot's side: vanilla's own icons are 128x128.
 pub const PACK_ICON_SIZE: u32 = 128;
+// Bake the settings glyph into its plate: drawing a translucent glyph over
+// a translucent plate changes its effective alpha and darkens it twice.
+fn android_utility_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
+    const GEAR: [&str; 13] = [
+        ".....###.....",
+        "..##.###.##..",
+        ".###########.",
+        ".###########.",
+        "..###...###..",
+        "####.....####",
+        "####.....####",
+        "####.....####",
+        "..###...###..",
+        ".###########.",
+        ".###########.",
+        "..##.###.##..",
+        ".....###.....",
+    ];
+    let mut out = Vec::new();
+    for name in ["pause", "inventory", "settings"] {
+        for pressed in [false, true] {
+            let suffix = if pressed { "_pressed" } else { "" };
+            let source = if name == "settings" {
+                "custom_blank"
+            } else {
+                name
+            };
+            let key = format!("starling:gui/sprites/touch/{source}{suffix}");
+            let Some((_, w, h, pixels)) = images.iter().find(|i| i.0 == key).or_else(|| {
+                images
+                    .iter()
+                    .find(|i| i.0 == format!("starling:gui/sprites/touch/{source}"))
+            }) else {
+                continue;
+            };
+            let mut pixels = pixels.clone();
+            if name == "settings" && *w >= 13 && *h >= 13 {
+                let ox = (*w - 13) / 2;
+                let oy = (*h - 13) / 2;
+                for (y, row) in GEAR.iter().enumerate() {
+                    for (x, pixel) in row.bytes().enumerate() {
+                        if pixel == b'#' {
+                            let index = (((oy + y as u32) * w + ox + x as u32) * 4) as usize;
+                            let ink = if pressed { 230 } else { 0 };
+                            pixels[index..index + 3].fill(ink);
+                        }
+                    }
+                }
+            }
+            if name != "inventory" {
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    pixel[3] = (u16::from(pixel[3]) * 204 / 255) as u8;
+                }
+            }
+            out.push((
+                format!("starling:android-controls/{name}{suffix}"),
+                *w,
+                *h,
+                pixels,
+            ));
+        }
+    }
+    out
+}
+
 /// Atlas slots for armour trim textures made at run time (`trims`), each the
 /// size of the largest trim texture.
 pub const TRIM_SLOTS: usize = 32;
@@ -123,6 +227,9 @@ pub const TRIM_SLOTS: usize = 32;
 pub(super) const GUI_KEY: &str = "#gui:";
 /// The prefix of the name a registered atlas's sprite is packed under.
 pub(super) const REGISTERED_KEY: &str = "#registered:";
+
+/// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
+pub const MISSING_SPRITE: &str = "sunrise/missing";
 
 /// Starling's own touch controls (packaging/touch/make.py draws them): a button's sprite and its
 /// `_pressed`, the D-pad's cells and the stick's, as `starling:touch/<name>`.
@@ -444,9 +551,6 @@ fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
         )
         .collect()
 }
-
-/// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
-pub const MISSING_SPRITE: &str = "sunrise/missing";
 
 /// One of [`TOUCH_SPRITES`], as RGBA pixels: a place for a custom button's image to start from.
 pub fn touch_sprite(name: &str) -> Option<Vec<u8>> {
@@ -927,7 +1031,3 @@ impl HudAtlas {
         }
     }
 }
-        #[cfg(target_os = "android")]
-        if max <= 4096 {
-            return Self::mobile_layout(images, max);
-        }

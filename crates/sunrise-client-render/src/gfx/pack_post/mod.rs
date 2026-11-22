@@ -30,8 +30,9 @@ pub(crate) use super::external::ShadowView;
 /// `Frame` it turns into the crate's `UniformFrameView`, sky and hand inputs; `shadow_view`; and
 /// `prepare_entities`, which uploads the frame's `Vertex` runs and its `SkinFrame`.
 pub trait PackPostExt: Sized {
-    /// The shadow pass this frame wants, when the pack draws one.
-    fn shadow_view(&self, frame: &Frame) -> Option<ShadowView>;
+    /// The shadow pass this frame wants, when the pack draws one and this frame doesn't keep the
+    /// last shadow map.
+    fn shadow_view(&mut self, frame: &Frame) -> Option<ShadowView>;
     /// The entities and block entities the pack draws this frame, into its own buffers.
     fn prepare_entities(
         &mut self,
@@ -110,11 +111,18 @@ fn frame_view<'a>(frame: &'a Frame) -> UniformFrameView<'a> {
 }
 
 impl PackPostExt for PackPost {
-    /// The shadow camera this frame draws of the terrain, when the pack draws it.
-    fn shadow_view(&self, frame: &Frame) -> Option<ShadowView> {
+    /// The shadow camera this frame draws of the terrain, when the pack draws it and this frame
+    /// doesn't keep the last shadow map (Starling: one map serves `shadow_every` frames on a phone).
+    fn shadow_view(&mut self, frame: &Frame) -> Option<ShadowView> {
         if !self.has_shadow() {
             return None;
         }
+        self.uniforms.keep_shadow = self.shadow_wait > 0 && self.uniforms.shadow_near(frame.camera);
+        if self.uniforms.keep_shadow {
+            self.shadow_wait -= 1;
+            return None;
+        }
+        self.shadow_wait = self.shadow_every - 1;
         let shadow = &self.uniforms.shadow;
         let unculled = match self.shadow_culling {
             sunrise_shaders::ShadowCulling::On => None,

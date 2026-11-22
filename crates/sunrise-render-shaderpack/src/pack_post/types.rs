@@ -413,6 +413,8 @@ pub struct Pass {
     pub paged: bool,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     pub ids: bool,
+    /// The depth-only pipeline drawn first (`Geometry::prepass`) and the alpha it keeps above.
+    pub prepass: Option<(Slot<wgpu::RenderPipeline>, f32)>,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
     /// 16–31) and the shadowcolor sides read or bound as images (bits 32 on).
     pub groups: HashMap<u64, wgpu::BindGroup>,

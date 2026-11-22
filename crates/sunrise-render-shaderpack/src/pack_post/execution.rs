@@ -226,9 +226,31 @@ impl PackPost {
         self.water.is_some() || self.water_undrawn
     }
 
-    /// The names of the programs that run, in order.
+    /// The names of the programs that run: the full-screen ones in order, then those that draw
+    /// the world. A pack may have only these (Round World).
     pub fn programs(&self) -> Vec<&str> {
-        self.passes.iter().map(|p| p.name.as_str()).collect()
+        let sky = self
+            .sky
+            .iter()
+            .flat_map(|s| s.basic.iter().chain(&s.textured));
+        let entities = self.entities.iter().flat_map(|e| e.passes.iter().flatten());
+        self.passes
+            .iter()
+            .chain(&self.terrain)
+            .chain(&self.water)
+            .chain(sky)
+            .chain(entities)
+            .chain(&self.clouds)
+            .chain(self.weather.iter().flatten())
+            .chain(self.hand.iter().map(|h| &h.0))
+            .map(|p| p.name.as_str())
+            .collect()
+    }
+
+    /// The programs that run and the notes of loading them.
+    pub fn report(&self) -> (Vec<String>, Vec<String>) {
+        let programs = self.programs().into_iter().map(str::to_owned).collect();
+        (programs, self.notes.clone())
     }
 
     /// Whether the pack draws the first-person hand itself.
@@ -1206,6 +1228,35 @@ impl PackPost {
         };
         let translucent = list.translucent();
         let group = self.bind(device, queue, encoder, &mut pass, size);
+        if let Some((slot, _)) = &pass.prepass
+            && let Some(prepass) = slot.get()
+        {
+            let targets = self.targets.as_ref().expect("resized");
+            let timestamp_writes = self.timing.as_mut().and_then(|t| t.writes("terrain depth"));
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Shader pack terrain depth"),
+                color_attachments: &[],
+                timestamp_writes,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &targets.depth,
+                    depth_ops: Some(super::pack_shadow::load()),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            rp.set_pipeline(prepass);
+            rp.set_bind_group(0, &group, &[]);
+            if pass.draw {
+                self.draws.bind(&mut rp, "TERRAIN_SOLID");
+            }
+            let (groups, ids) = (&self.page_groups, pass.ids);
+            let page = |rp: &mut wgpu::RenderPass<'_>, page: u32| {
+                if let Some((_, _, group)) = groups.get(&page).filter(|_| ids) {
+                    rp.set_bind_group(3, group, &[]);
+                }
+            };
+            draw(&mut rp, list, &page, None);
+        }
         {
             let mut rp = self.begin(encoder, &pass);
             rp.set_pipeline(pass.render());
@@ -2137,6 +2188,10 @@ impl PackPost {
         ticks: u64,
         day_time: i64,
     ) {
+        // The last shadow map serves this frame too (`shadow_every`).
+        if self.uniforms.keep_shadow {
+            return;
+        }
         // Opt-in only (`sunrise-graphics.txt` shadowCache). Off: always redraw, drop any cache.
         if !shadow_cache {
             self.shadow_cache = ShadowCache::default();

@@ -293,9 +293,3 @@ pub(super) fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> At
         non_gui,
     }
 }
-        let limit = atlas_limit();
-        let mut full_sizes = HashMap::new();
-        #[cfg(target_os = "android")]
-        if limit < MAX_ATLAS_SIZE {
-            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &flags, limit)?;
-        }

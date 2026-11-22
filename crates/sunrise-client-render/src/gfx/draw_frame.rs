@@ -414,8 +414,8 @@ impl Renderer {
         }
         let shadow_view = self
             .pack_post
-            .as_ref()
-            .and_then(|p| p.1.as_ref())
+            .as_mut()
+            .and_then(|p| p.1.as_mut())
             .filter(|_| !frame.title)
             .and_then(|p| p.shadow_view(frame))
             .or_else(|| {

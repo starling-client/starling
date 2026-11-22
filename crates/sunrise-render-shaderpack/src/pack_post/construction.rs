@@ -562,6 +562,42 @@ pub struct Geometry<'a> {
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
     pub cull: bool,
+    /// Drawn twice (`prepass`): depth only first, then the program over what stays in front.
+    pub prepass: bool,
+}
+
+/// How many frames one shadow map serves: `SUNRISE_SHADER_SHADOW_EVERY`, else two on a phone. The
+/// map costs the same wherever the player looks, and what casts shadows barely moves in a frame.
+fn shadow_every() -> u32 {
+    std::env::var("SUNRISE_SHADER_SHADOW_EVERY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if cfg!(target_os = "android") { 2 } else { 1 })
+        .max(1)
+}
+
+/// Whether the next pack draws terrain's depth first (`set_prepass`).
+static PREPASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The game's choice for the packs it loads from now on (`prepass_wanted`).
+pub(super) fn set_prepass(on: bool) {
+    PREPASS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The Auto profile, or `SUNRISE_SHADER_PACK_PREPASS=1`: solid terrain draws its depth first with
+/// the program's own vertex stage and only the atlas' alpha test, then the program shades with
+/// depth writes off, so a phone's GPU can drop what is hidden before running the pack's fragment
+/// stage (grass and leaves stacked in front of each other otherwise run it once per layer).
+pub(super) fn prepass_wanted() -> bool {
+    PREPASS.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var_os("SUNRISE_SHADER_PACK_PREPASS").is_some()
+}
+
+/// A pipeline layout's groups up to the last one used: a device limits how long the list is, the
+/// empty places at its end too (Mali's drivers allow 4, and most programs use no more).
+fn used_groups<T>(groups: &[Option<T>]) -> &[Option<T>] {
+    let used = groups.iter().rposition(Option::is_some);
+    &groups[..used.map_or(0, |last| last + 1)]
 }
 
 /// What a pack brings besides its programs: custom textures, images and storage buffers.
@@ -1158,6 +1194,10 @@ pub fn build_pass(
     water_mask: bool,
 ) -> Option<Pass> {
     let features = device.features();
+    // The shadow pass clamps depth where it can: casters between the light and the shadow
+    // camera's near plane land on it instead of being cut off (gfx.rs `light_frustum`).
+    let unclipped_depth =
+        p.group == Group::Shadow && features.contains(wgpu::Features::DEPTH_CLIP_CONTROL);
     // The frame's uniforms, then the pack's custom ones.
     let index = |name: &str, ty: &str| {
         pack_uniforms::index_in(name, geometry.is_some()).or_else(|| custom_index(custom, name, ty))
@@ -1258,7 +1298,10 @@ pub fn build_pass(
         targets.pop();
     }
     // A program that only writes images draws into a sink that keeps nothing; one drawing
-    // geometry has the depth buffer, and draws with no colour target at all.
+    // geometry has the depth buffer, and draws with no colour target at all. Of the geometry
+    // programs that write no buffer, only the shadow pass's draws (one that only wants the shadow
+    // map: Pixel Perfect's `/* DRAWBUFFERS: */`); any other is skipped, as upstream does, so a
+    // terrain part that writes nothing takes the other part with it (`terrain_parts_tests`).
     let sink = !final_pass && writes.is_empty() && !program.interface.images.is_empty();
     if sink && geometry.is_none() {
         targets = vec![Some(wgpu::ColorTargetState {
@@ -1266,7 +1309,11 @@ pub fn build_pass(
             blend: None,
             write_mask: wgpu::ColorWrites::empty(),
         })];
-    } else if !final_pass && writes.is_empty() && !sink {
+    } else if !final_pass
+        && writes.is_empty()
+        && !sink
+        && (geometry.is_none() || p.group != Group::Shadow)
+    {
         notes.push(format!("{}: writes no buffer; skipped", p.name));
         return None;
     }
@@ -1288,16 +1335,17 @@ pub fn build_pass(
             label: Some(&p.name),
             entries: &entries,
         });
+        let groups = [
+            Some(&layout),
+            geometry.and_then(|g| g.table),
+            draw.then_some(draws),
+            geometry.and_then(|g| g.ids),
+            (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
+            pack.indices.filter(|_| reads_indices),
+        ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(&p.name),
-            bind_group_layouts: &[
-                Some(&layout),
-                geometry.and_then(|g| g.table),
-                draw.then_some(draws),
-                geometry.and_then(|g| g.ids),
-                (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
-                pack.indices.filter(|_| reads_indices),
-            ],
+            bind_group_layouts: used_groups(&groups),
             ..Default::default()
         });
         let module = |mut m: naga::Module| {
@@ -1308,10 +1356,71 @@ pub fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
+        // The depth pass keeps a little less than the program's own cut (Complementary's is 0.5,
+        // vanilla's 0.1): a texel it kept and the program threw away would leave a hole.
+        let cut = program.interface.alpha_cut.unwrap_or(0.0).max(0.5) + 0.01;
         let mut fragment = program.fragment;
         packed::quantise_outputs(&mut fragment, &packed_outputs);
         packed::bitcast_outputs(&mut fragment, &int_outputs);
         let (vs, fs) = (module(program.vertex), module(fragment));
+        // The depth pass: the atlas' alpha test at the texture's own binding and sampler. A
+        // program with a geometry stage or storage writes of its own is drawn once.
+        let atlas = samplers.iter().find(|b| b.source == Source::Atlas);
+        let prepass = geometry
+            .filter(|g| {
+                g.prepass
+                    && g.depth_write
+                    && p.geometry_triangles == 0
+                    && interface.buffers.is_empty()
+                    && images.is_empty()
+            })
+            .zip(atlas)
+            .zip(interface.prepass_uv)
+            .map(|((_, a), uv_at)| {
+                let source = format!(
+                    "@group(0) @binding({}) var hz_atlas: texture_2d<f32>;\n\
+                     @group(0) @binding({}) var hz_atlas_sampler: sampler;\n\
+                     @fragment fn main(@location({uv_at}) uv: vec2<f32>) {{\n    \
+                     if textureSample(hz_atlas, hz_atlas_sampler, uv).a <= {cut:?} {{ discard; }}\n}}\n",
+                    a.binding, a.sampler
+                );
+                let depth_fs = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Shader pack terrain depth"),
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                });
+                pack.render_pipeline(
+                    device,
+                    RenderJob {
+                        label: "Shader pack terrain depth".to_owned(),
+                        layout: pipeline_layout.clone(),
+                        vs: vs.clone(),
+                        fs: depth_fs,
+                        buffers: geometry.map_or_else(Vec::new, |g| owned_buffers(g.buffers)),
+                        primitive: wgpu::PrimitiveState {
+                            front_face: wgpu::FrontFace::Cw,
+                            cull_mode: geometry.filter(|g| g.cull).map(|_| wgpu::Face::Back),
+                            unclipped_depth,
+                            ..Default::default()
+                        },
+                        // A hair farther than the program's own draw lands: the two pipelines
+                        // may round the same vertex differently, and the program's draw must
+                        // still pass.
+                        depth_stencil: Some(wgpu::DepthStencilState {
+                            format: wgpu::TextureFormat::Depth32Float,
+                            depth_write_enabled: Some(true),
+                            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                            stencil: Default::default(),
+                            bias: wgpu::DepthBiasState {
+                                constant: 2,
+                                slope_scale: 1.0,
+                                clamp: 0.0,
+                            },
+                        }),
+                        targets: Vec::new(),
+                    },
+                )
+            })
+            .map(|depth| (depth, cut));
         let job = RenderJob {
             label: p.name.clone(),
             layout: pipeline_layout,
@@ -1327,11 +1436,13 @@ pub fn build_pass(
                 cull_mode: geometry
                     .filter(|g| g.cull && p.geometry_triangles == 0)
                     .map(|_| wgpu::Face::Back),
+                unclipped_depth,
                 ..Default::default()
             },
             depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(g.depth_write),
+                // After the depth pass, only what stays in front passes.
+                depth_write_enabled: Some(g.depth_write && prepass.is_none()),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: if p.name == "gbuffers_damagedblock" {
@@ -1392,10 +1503,11 @@ pub fn build_pass(
             layout,
             pack.render_pipeline(device, job),
             sky_parts,
+            prepass,
             water_mask,
         )
     });
-    let (layout, pipeline, sky_parts, water_mask) = match created {
+    let (layout, pipeline, sky_parts, prepass, water_mask) = match created {
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{}: skipped: {e}", p.name));
@@ -1451,6 +1563,7 @@ pub fn build_pass(
         material_maps: geometry.is_some_and(|g| g.material_maps),
         paged: false,
         ids: geometry.is_some_and(|g| g.ids.is_some()),
+        prepass,
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
         copies: (image_buffers(&images)
@@ -1518,15 +1631,16 @@ pub fn build_compute(
             label: Some(&name),
             entries: &entries,
         });
+        let groups = [
+            Some(&layout),
+            None,
+            None,
+            None,
+            (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
+        ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(&name),
-            bind_group_layouts: &[
-                Some(&layout),
-                None,
-                None,
-                None,
-                (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
-            ],
+            bind_group_layouts: used_groups(&groups),
             ..Default::default()
         });
         let mut module = c.module;
@@ -1594,6 +1708,7 @@ pub fn build_compute(
         material_maps: false,
         paged: false,
         ids: false,
+        prepass: None,
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
         buffers: !interface.buffers.is_empty(),
@@ -1704,6 +1819,9 @@ pub struct PackPost {
     pub portal_texture: Option<([f32; 4], wgpu::TextureView)>,
     pub shadow_water: Option<Pass>,
     pub shadow_comp: Vec<Pass>,
+    /// How many frames one shadow map serves (`shadow_every`), and how many more this one will.
+    pub shadow_every: u32,
+    pub shadow_wait: u32,
     /// Buffers with mipmaps (filterable ones a program asks them for).
     pub mipped: u16,
     /// Buffers whose mip chain matches their first level, this frame.
@@ -2189,12 +2307,23 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
+            prepass: false,
+        });
+        let solid_geometry = world.terrain.as_ref().map(|g| Geometry {
+            buffers: g.buffers,
+            table: g.table,
+            depth_write: g.depth_write,
+            atlas: g.atlas.clone(),
+            material_maps: g.material_maps,
+            ids: block_ids.as_ref().map(|i| &i.0),
+            cull: g.cull,
+            prepass: prepass_wanted(),
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
         let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
         let mut terrain = post
             .terrain
-            .zip(terrain_geometry.as_ref())
+            .zip(solid_geometry.as_ref())
             .and_then(|(p, g)| build(p, Some(g)));
         let mut terrain_cutout = post
             .terrain_cutout
@@ -2214,6 +2343,7 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: g.ids,
             cull: false,
+            prepass: false,
         });
         let shadow_terrain = post
             .shadow
@@ -2246,6 +2376,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             let basic = post.sky.and_then(|p| build(p, Some(&basic)));
             let textured = Geometry {
@@ -2256,6 +2387,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             let textured = post.sky_textured.and_then(|p| build(p, Some(&textured)));
             Sky {
@@ -2299,6 +2431,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            prepass: false,
         });
         // Programs drawing the shared atlas's geometry read its paged maps (`pack_entities::inputs`).
         let paged = |pass: Option<Pass>| {
@@ -2322,6 +2455,7 @@ impl PackPost {
                         material_maps: g.material_maps,
                         ids: g.ids,
                         cull: false,
+                        prepass: false,
                     };
                     paged(build(p, Some(&decal)))
                 } else {
@@ -2356,6 +2490,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            prepass: false,
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
         // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
@@ -2368,6 +2503,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            prepass: false,
         });
         let hand_geometry = world
             .hand
@@ -2381,6 +2517,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             paged(build(p, Some(&g))).map(|pass| (pass, geometry))
         });
@@ -2395,6 +2532,7 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                prepass: false,
             };
             paged(build(p, Some(&g)))
         });
@@ -2423,6 +2561,7 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
+            prepass: false,
         };
         let lines = post.lines.and_then(|p| build(p, Some(&line_geometry)));
         // Developers' aid: `SUNRISE_SHADER_PACK_SKIP=composite,final` leaves programs out.
@@ -2472,7 +2611,13 @@ impl PackPost {
             ));
         }
         match (&terrain, &terrain_cutout) {
-            (Some(t), None) => notes.push(format!("terrain draws with {}", t.name)),
+            (Some(t), None) => {
+                let first = match &t.prepass {
+                    Some((_, cut)) => format!(", its depth first (alpha above {cut})"),
+                    None => String::new(),
+                };
+                notes.push(format!("terrain draws with {}{first}", t.name));
+            }
             (t, Some(c)) => {
                 if let Some(t) = t {
                     notes.push(format!("solid terrain draws with {}", t.name));
@@ -2975,6 +3120,8 @@ impl PackPost {
             }),
             blit,
             copy,
+            shadow_every: shadow_every(),
+            shadow_wait: 0,
             upscale,
             final_target: None,
             screen,

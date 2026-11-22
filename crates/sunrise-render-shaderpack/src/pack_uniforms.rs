@@ -464,6 +464,11 @@ pub struct FrameUniforms {
     center_depth: Option<f32>,
     /// The pack's shadow settings (7.1).
     pub shadow: Shadow,
+    /// Where the shadow map was last drawn from: the camera, the view and the projection.
+    shadow_drawn: Option<(DVec3, Mat4, Mat4)>,
+    /// This frame keeps the shadow map (`PackPost::shadow_view`): nothing draws into it, and the
+    /// shadow matrices go on describing it.
+    pub keep_shadow: bool,
     /// The pack's smoothing half-lives in ticks (`sunrise_shaders::HALF_LIVES`).
     pub half_lives: [Option<f32>; 4],
 }
@@ -483,6 +488,8 @@ impl Default for FrameUniforms {
             center_depth_raw: None,
             center_depth: None,
             shadow: Shadow::default(),
+            shadow_drawn: None,
+            keep_shadow: false,
             half_lives: [None; 4],
         }
     }
@@ -676,8 +683,14 @@ pub fn shadow_culling_at(light: Vec3, camera: DVec3, shadow: &Shadow) -> Mat4 {
     depth * gl * view
 }
 
+/// The view of a shadow map drawn with `view` from `drawn`, seen from `camera`. A pack gives it
+/// player space, which moves with the camera; the map stays where it was drawn.
+fn kept_shadow_view(view: Mat4, drawn: DVec3, camera: DVec3) -> Mat4 {
+    view * Mat4::from_translation((camera - drawn).as_vec3())
+}
+
 /// How far toward the light a `shadowMapFov` projection starts, in blocks.
-const SHADOW_EYE: f32 = 100.0;
+pub const SHADOW_EYE: f32 = 100.0;
 
 /// The orthographic shadow projection's planes when the pack sets none, as JOML's `zNear` and
 /// `zFar`: Iris 1.11.7's, measured with a probe pack (each unset plane on its own).
@@ -905,14 +918,25 @@ impl FrameUniforms {
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
         let light = shadow_light(frame, &self.shadow);
-        let (shadow_projection, shadow_projection_inverse) = match self.shadow.fov {
-            Some(_) => {
-                let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
-                (projection, projection.inverse())
-            }
-            None => shadow_ortho(&self.shadow),
-        };
-        let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
+        let (shadow_projection, shadow_projection_inverse, shadow_view, shadow_view_inverse) =
+            match self.shadow_drawn.filter(|_| self.keep_shadow) {
+                Some((drawn, view, projection)) => {
+                    let view = kept_shadow_view(view, drawn, frame.camera);
+                    (projection, projection.inverse(), view, view.inverse())
+                }
+                None => {
+                    let (projection, projection_inverse) = match self.shadow.fov {
+                        Some(_) => {
+                            let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
+                            (projection, projection.inverse())
+                        }
+                        None => shadow_ortho(&self.shadow),
+                    };
+                    let (view, view_inverse) = shadow_model_view(frame, &self.shadow);
+                    self.shadow_drawn = Some((frame.camera, view, projection));
+                    (projection, projection_inverse, view, view_inverse)
+                }
+            };
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
         let (seconds, frame_time, frame_counter) = match (inputs.frame_timing, inputs.still_ticks) {
@@ -1053,6 +1077,12 @@ impl FrameUniforms {
         self.frame = (self.frame + 1) % 720_720;
     }
 
+    /// Whether the shadow map was drawn near `camera`, so a frame may keep it: a teleport draws
+    /// it again at once.
+    pub fn shadow_near(&self, camera: DVec3) -> bool {
+        self.shadow_drawn
+            .is_some_and(|(drawn, ..)| drawn.distance_squared(camera) < 16.0 * 16.0)
+    }
     /// `hz_fog_color` and `hz_fog` of the translator's block (the compatibility `gl_Fog`).
     /// Its density is `fogDensity`'s (0): Iris 1.11.7 gave `gl_Fog.density` 0, not 1, in every
     /// program kind our probe pack read it in (gbuffers_terrain and deferred, in a cave and in
@@ -1424,6 +1454,19 @@ mod tests {
         assert!(body(90.0, 30.0).abs_diff_eq(Vec3::new(-100.0, 0.0, 0.0), 1e-3));
     }
 
+    #[test]
+    fn a_kept_shadow_map_stays_where_it_was_drawn() {
+        let view = Mat4::from_translation(Vec3::new(1.0, 2.0, -128.0));
+        let (drawn, camera) = (
+            DVec3::new(3500.25, 70.0, -12.5),
+            DVec3::new(3501.0, 70.5, -11.0),
+        );
+        let world = DVec3::new(3510.0, 64.0, -20.0);
+        let then = view.transform_point3((world - drawn).as_vec3());
+        let now =
+            kept_shadow_view(view, drawn, camera).transform_point3((world - camera).as_vec3());
+        assert!((then - now).length() < 1e-3, "{then} {now}");
+    }
     #[test]
     fn the_shadow_camera_looks_down_from_the_light_in_steps() {
         let shadow = Shadow::default();

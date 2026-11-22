@@ -39,10 +39,13 @@
   (THIRD_PARTY_NOTICES.md, sync-check.yml, gfx/*.rs comments, starling-account).
 - Cargo.lock is Sunrise's: add Starling's crates back with `cargo metadata` on the build machine (not --locked once).
 - .github/workflows: ours as they were, renamed by rebrand.py; check every name it changed that isn't a crate (env vars HORIZON_* -> SUNRISE_*, artifact names, branch names fixed by hand) when CI first runs.
-- IN PROGRESS (stopped 2026-11-22, usage limit): sunrise-client-render/src/hud.rs took Sunrise's side; 10 of our 14
-  atlas/HUD edits were carried into hud/*.rs by carry.py. The 4 left are in
-  C:/workspace/starling-sync-sunrise-tools/ours-diffs/crates_sunrise-client-render_src_hud.rs.1.rej
-  (layout_within + the GPU side limit in the atlas build, full_sizes for GUI sizes, take_seed, LAST_GUI_SCALE and
-  HudBatch::new_old). hud.rs hunk 2 (tests, -> hud/tests/atlas.rs) is not carried yet.
-- Next: pack_uniforms.rs and pack_entities.rs -> crates/sunrise-render-shaderpack (same carry.py), gfx.rs, then
-  crates/sunrise-client (about 95 files).
+- Shader pack crate (sunrise-render-shaderpack): Starling's edits to pack_post, pack_uniforms, pack_entities and
+  pack_lines are carried (exact context, then five by hand: Pass.prepass, shadow_every/shadow_wait, programs()/report(),
+  the kept shadow map in shadow_view, now `&mut self` in client-render's PackPostExt). Still owed there:
+  - tests: `a_layout_lists_groups_up_to_the_last_used` and `alpha_cut: None, prepass_uv: None` in three Interface
+    literals (ours-diffs/pack_post.left.rej hunks 6-9); a Frame literal's `menu_blur_cache: false`.
+  - gfx.rs has a second caller of shadow_view (`.as_ref()` must be `.as_mut()`), once that file is merged.
+- HUD: all 14 atlas/batch edits and the 10 tests are in hud/*.rs and hud/tests/atlas.rs. Sunrise already ignores PNG
+  checksums (our line dropped as a duplicate) and no longer swaps the title banner to "RUST EDITION".
+- Compile store (mod-builds, 2026-11-22): the base is rebuilt in the sandbox's environment under cache key store2-;
+  mod.yml/catalog.yml read it once branch store2-readers is merged.
