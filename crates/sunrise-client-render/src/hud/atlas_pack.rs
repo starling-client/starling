@@ -210,6 +210,11 @@ impl HudAtlas {
     /// room: a pack of thousands of mixed sizes (server packs with custom
     /// items) fits where the shelves' ragged ends would not.
     pub(super) fn layout(images: &[PackedImage], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
+        // Starling: a phone's small atlas is packed against a skyline (`mobile_layout`).
+        #[cfg(target_os = "android")]
+        if max <= 4096 {
+            return Self::mobile_layout(images, max);
+        }
         let mut width = 4096.min(max);
         loop {
             let wide_enough = images.iter().all(|i| i.1 < width);
