@@ -1451,14 +1451,6 @@ fn login_and_configure(
                 data: Vec::new(),
             }),
         )?;
-        // Starling: and that it carries the old mod messages (sunrise_protocol::mod_net).
-        send(
-            c,
-            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-                channel: sunrise_protocol::mod_net::CHANNEL.into(),
-                data: Vec::new(),
-            }),
-        )?;
         // Advertise private custom-book synchronization independently of mod registration.
         send(
             c,

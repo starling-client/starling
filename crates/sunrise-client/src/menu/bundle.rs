@@ -164,7 +164,6 @@ impl SlotView for MenuSlotView<'_, '_> {
         self.menu.safe_take(self.env, self.slot, count, max)
     }
 }
-use sunrise_world::native_load_context::LoopContext;
 
 impl Menu {
     /// The carried stack's `overrideStackedOnOther`, then the clicked
@@ -259,23 +258,4 @@ impl Menu {
         copy.state.containers[slot.container][slot.index] = clicked;
         copy.carried_bundle_click(env, s, primary)
     }
-}
-
-/// `ShulkerBoxSlot.mayPlace`: [`fits_inside_container_items`] as the parts of `stack`'s item
-/// answer it (`IItemExtension.canFitInsideContainerItems`).
-pub fn shulker_box_slot_takes(context: &LoopContext, stack: &ItemStack) -> bool {
-    let mut fits = fits_inside_container_items(stack);
-    native_can_fit_inside_container_items(context, stack, &mut fits);
-    fits
-}
-
-/// The parts of `stack`'s item answer whether it may go inside an item that holds items: `fits`
-/// arrives with vanilla's answer and leaves with theirs.
-#[inline(never)]
-pub fn native_can_fit_inside_container_items(
-    context: &LoopContext,
-    stack: &ItemStack,
-    fits: &mut bool,
-) {
-    crate::native_client_hooks::can_fit_inside_container_items(context, stack, fits);
 }

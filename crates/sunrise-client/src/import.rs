@@ -225,9 +225,9 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
         }
         Kind::NativeMod => {
             // Either format: the registry's `sunrise-native.json` bundle or a flat package.
-            let bundle = sunrise_mod_package::index::native::Any::read(path)
+            let bundle = sunrise_mod_package::index::native::Bundle::read(path)
                 .map_err(|e| format!("{name} can't be added: {e}"))?;
-            let id = bundle.id().to_owned();
+            let id = bundle.manifest.id.clone();
             let dir = places.game.join("sunrise-native-mods");
             fs::create_dir_all(&dir).map_err(fail)?;
             copy_file(path, &dir.join(format!("{id}.hnmod"))).map_err(fail)?;

@@ -132,8 +132,6 @@ pub fn apply_menu_slot_rules(
             &mut max_stack,
         );
     }
-    // Starling: the old hook after the typed ones, for the mods made for it.
-    super::native_menu_slot_rules(menu, slot, stack, &mut may_place, &mut max_stack);
     let max_stack = max_stack.min(CONTAINER_MAX).min(item_max);
     (may_place, may_pickup, max_stack)
 }

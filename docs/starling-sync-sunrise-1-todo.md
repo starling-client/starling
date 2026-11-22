@@ -128,3 +128,9 @@
     press/release, `bedrock_held` on a mouse release (hunks 21-28).
 - ALL CONFLICT MARKERS ARE GONE (2026-11-22). Every changed .rs file parses (rustfmt). Nothing has been compiled yet:
   next are Cargo.lock (Starling's crates), `cargo check` rounds on the build machine, then the items above.
+- BUILD ROUNDS (2026-11-22): sunrise-client-render compiles for Android. Dropped on the way: the old .hnmod index and
+  the fetched assets (sunrise-mod-package), Starling's protocol edits (item components for servers' custom armour,
+  the old mod messages `mod_net`), `starling_mod_api.rs` (names for mods made for 0.8.0), `kinetics.rs` (Create).
+  `stats_overlay.rs` is in the tree but not compiled (it reads `perf_overlay::FrameSummary`, which Sunrise's
+  sunrise-perf-overlay crate doesn't have). Create World's kept options no longer keep the world type across the
+  restart for a world's content mods.

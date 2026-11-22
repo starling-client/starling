@@ -360,7 +360,7 @@ impl Keyboard {
         // Upstream names a button only by the job it does in menus (pad_glyph::Glyph).
         use sunrise_client_input::gamepad::MenuJob;
         use sunrise_client_render::pad_glyph::{Glyph, Glyphs};
-        let shown = Glyphs::unheld(&Default::default(), glyphs);
+        let shown = Glyphs::of(&Default::default(), glyphs);
         let hints = [
             (MenuJob::Confirm, "Type"),
             (MenuJob::Alternate, "Delete"),

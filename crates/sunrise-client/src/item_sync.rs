@@ -491,39 +491,6 @@ fn components_tag(
             continue;
         };
         let value = match c {
-            // A server's custom armour names its own equipment asset.
-            Component::Raw(_) if *kind == component::EQUIPPABLE => {
-                let Some(e) = s.equippable() else {
-                    continue;
-                };
-                const SLOTS: [&str; 8] = [
-                    "mainhand", "feet", "legs", "chest", "head", "offhand", "body", "saddle",
-                ];
-                let slot = SLOTS.get(e.slot as usize).copied().unwrap_or("head");
-                Tag::compound(
-                    [("slot", Tag::String(slot.into()))]
-                        .into_iter()
-                        .chain(
-                            e.asset
-                                .map(|a| ("asset_id", Tag::String(a.as_str().into()))),
-                        )
-                        .chain(
-                            e.overlay
-                                .map(|o| ("camera_overlay", Tag::String(o.as_str().into()))),
-                        ),
-                )
-            }
-            // A plugin's item with a cooldown of its own (ClientboundCooldownPacket names it).
-            Component::Raw(_) if *kind == component::USE_COOLDOWN => {
-                let Some((seconds, group)) = s.use_cooldown() else {
-                    continue;
-                };
-                Tag::compound(
-                    [("seconds", Tag::Float(seconds.to_bits()))]
-                        .into_iter()
-                        .chain(group.map(|g| ("cooldown_group", Tag::String(g.as_str().into())))),
-                )
-            }
             // `ItemContainerContents`: a shulker box's items, for its tooltip.
             Component::Raw(bytes) if *kind == component::CONTAINER => {
                 let Some(slots) = container_tag(bytes, builtin, synced, admitted) else {
