@@ -24,7 +24,7 @@ impl Game<'_> {
             Action::Launcher => {
                 #[cfg(target_os = "android")]
                 crate::ha_launcher::back_to_launcher();
-                event_loop.exit();
+                self.begin_closing_save(true)?;
             }
             Action::Options => self.open_options(true),
             Action::Accessibility => {

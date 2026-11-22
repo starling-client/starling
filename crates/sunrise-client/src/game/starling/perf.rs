@@ -2,7 +2,10 @@
 //! HUD, and the `perf` and `overlay` control commands.
 use super::Game;
 use sunrise_client::{
-    Result, graphics::Overlay, hud::HudBatch, stats_overlay::StatsView, system_stats::Sampler,
+    Result,
+    hud::HudBatch,
+    stats_overlay::{Frames, StatsView},
+    system_stats::Sampler,
     ui_theme::Ui,
 };
 use serde_json::{Value, json};
@@ -10,7 +13,7 @@ use std::time::{Duration, Instant};
 
 pub(super) const HELP: &[&str] = &[
     "perf                           frames (1% low), CPU/GPU time, memory, chunks, meshing, draws, temperatures, throttling",
-    "overlay off|fps|graph|stats    the performance overlay (stats: everything perf reports)",
+    "overlay off|stats              the Stats overlay (everything perf reports)",
 ];
 
 /// How often the GPU allocator's report is taken: it walks every allocation.
@@ -18,6 +21,9 @@ const GPU_MEMORY_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 pub(super) struct Perf {
+    /// The Stats overlay shows (the three-finger tap, `overlay stats`).
+    shown: bool,
+    frames: Frames,
     system: Sampler,
     /// The GPU allocator's (allocated, reserved) bytes, and when they were taken.
     gpu_memory: Option<(Option<u64>, Option<u64>, Instant)>,
@@ -51,7 +57,7 @@ impl Game<'_> {
         let stages = self.streaming.stages();
         let stage = |name: &str| stages.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
         StatsView {
-            frames: self.frame_graph.summary(),
+            frames: self.stats_overlay.frames.summary(),
             system: self.stats_overlay.system.latest(),
             gpu_allocated,
             gpu_reserved,
@@ -74,9 +80,14 @@ impl Game<'_> {
         }
     }
 
-    /// The Stats overlay's panel, when it is the chosen overlay.
+    /// A drawn frame's times, for the Stats overlay's frames.
+    pub(super) fn stats_frame(&mut self, frame_ms: f32, cpu_ms: f32, gpu_ms: Option<f32>) {
+        self.stats_overlay.frames.record(frame_ms, cpu_ms, gpu_ms);
+    }
+
+    /// The Stats overlay's panel, when it shows.
     pub(super) fn draw_stats_overlay(&mut self, batch: &mut HudBatch) {
-        if self.settings.sunrise.overlay != Overlay::Stats {
+        if !self.stats_overlay.shown {
             return;
         }
         let view = self.stats_view();
@@ -87,32 +98,25 @@ impl Game<'_> {
 
     /// The three-finger tap: the Stats overlay on, or the overlay off.
     pub(super) fn toggle_stats_overlay(&mut self) {
-        let overlay = &mut self.settings.sunrise.overlay;
-        *overlay = if *overlay == Overlay::Stats {
-            Overlay::Off
-        } else {
-            Overlay::Stats
-        };
+        self.stats_overlay.shown = !self.stats_overlay.shown;
     }
 
     pub(super) fn perf_command(&mut self, words: &[&str]) -> Result<Option<Value>> {
         match words.first().copied() {
             Some("perf") => Ok(Some(self.stats_view().json())),
             Some("overlay") => {
-                let overlay = match words.get(1).copied() {
-                    Some("off") => Overlay::Off,
-                    Some("fps") => Overlay::Fps,
-                    Some("graph") => Overlay::Graph,
-                    Some("stats") => Overlay::Stats,
+                let shown = match words.get(1).copied() {
+                    Some("off") => false,
+                    Some("stats") => true,
                     other => {
                         return Err(format!(
-                            "overlay takes off, fps, graph or stats, not {}",
+                            "overlay takes off or stats, not {}",
                             other.unwrap_or("nothing")
                         )
                         .into());
                     }
                 };
-                self.settings.sunrise.overlay = overlay;
+                self.stats_overlay.shown = shown;
                 Ok(Some(json!({ "ok": true, "overlay": words[1] })))
             }
             _ => Ok(None),

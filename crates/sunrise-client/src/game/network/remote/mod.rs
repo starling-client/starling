@@ -3237,3 +3237,27 @@ mod player_tick_tests;
 mod rider_tick_tests;
 #[cfg(test)]
 mod smoke_source_tests;
+
+impl Game<'_> {
+    /// Starling: how far the block being mined is, for the touch controls' ring.
+    #[cfg(target_os = "android")]
+    pub(super) fn touch_mining_progress(&self) -> f32 {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.destroying.map(|d| d.2))
+            .or_else(|| self.mining.as_ref().map(|m| m.progress))
+            .unwrap_or(0.)
+    }
+
+    /// Starling: a click in one of the game's own dialogs (`starling:` actions).
+    pub(super) fn starling_dialog_click(&mut self, id: &str, payload: Option<&Tag>) {
+        // The link confirmation's Open (`confirm_link`).
+        if id == "starling:open_link" {
+            if let Some(Tag::String(url)) = payload.and_then(|p| p.get("url")) {
+                self.open_link(&url.to_string_lossy());
+            }
+            return;
+        }
+        log::warn!("Sunrise: no such dialog action {id}");
+    }
+}

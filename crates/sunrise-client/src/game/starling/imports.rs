@@ -692,7 +692,7 @@ impl super::Loading {
                 ),
                 Default::default(),
             );
-            audio.master = self.settings.master_volume;
+            audio.master = self.settings.master_volume as f32;
             audio
         });
         for chime in chimes {

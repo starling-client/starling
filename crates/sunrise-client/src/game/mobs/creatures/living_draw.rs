@@ -244,7 +244,14 @@ impl Game<'_> {
             let chest = mob.extra.slot_id(sunrise_items::equipment::CHEST);
             // `CapeLayer` and `Deadmau5EarsLayer`: `!state.isInvisible`, whoever sees the body.
             if !invisible {
-                self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
+                self.player_cape_geometry(
+                    mob,
+                    chest,
+                    camera,
+                    alpha as f32,
+                    (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed),
+                    out,
+                );
             }
             if !invisible
                 && let Some((_, name)) = self

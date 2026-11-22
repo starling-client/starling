@@ -443,25 +443,6 @@ impl Game<'_> {
 
     pub(super) fn dress_wardrobe_preview(&mut self, mob: &mut sunrise_client::mobs::Mob) {
         mob.extra.hidden_model_parts = !self.settings.file.model_customisation() & 0x7F;
-        if self.settings.extras.three_d_skin_layers && mob.skin.is_none() {
-            let skin = &mob.kind.texture;
-            let missing = self.skin_downloads.borrow().image(skin).is_none();
-            if missing
-                && let Ok(png) = self
-                    .pack
-                    .source
-                    .read(&format!("assets/minecraft/textures/{skin}.png"))
-                && let Ok((width, height, rgba)) = sunrise_client::hud::decode_bytes(&png)
-                && let Some(image) =
-                    sunrise_client::skins::process_legacy_skin(width, height, &rgba)
-            {
-                self.skin_downloads
-                    .borrow_mut()
-                    .remember_image(skin, &image);
-            }
-        }
-        let skin = mob.skin.as_deref().unwrap_or(&mob.kind.texture);
-        mob.skin_3d = self.skin_3d_model(&mob.kind, skin, mob.slim);
         let server_cape = mob
             .cape
             .take()

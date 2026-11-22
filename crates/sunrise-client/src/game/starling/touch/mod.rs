@@ -591,7 +591,7 @@ impl Game<'_> {
     /// keys on this server (their eight directions on screen).
     fn touch_dpad(&self) -> bool {
         let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
-        picked.unwrap_or(self.remote_stick_mode() == Some(ServerStick::Keys))
+        picked.unwrap_or(false)
     }
 
     /// Taps and presses on the view act on what is under the finger now: tap to interact, the
@@ -929,7 +929,7 @@ impl Game<'_> {
         let gui_scale = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs()).scale;
         self.touch
             .pointer
-            .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
+            .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity as f32);
         for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
             self.handle_window_event(events, id, mouse, InputOrigin::User);
         }
@@ -1465,7 +1465,17 @@ impl Game<'_> {
         self.touch_sync_sneak();
     }
 
-    /// Whether the touch Sneak button holds sneak now (`sync_toggle` adds it to the key's state).
+    /// A toggle mapping (0 sneak, 1 sprint) held or let go by the touch controls: its state is the
+    /// vanilla mapping's (Sunrise keeps the four `ToggleKeyMapping`s there). The Sneak button's
+    /// hold counts for sneak whatever the key says.
+    pub(in crate::game) fn touch_set_toggle(&mut self, slot: usize, down: bool) {
+        let down = down || (slot == 0 && self.touch_sneaking());
+        self.vanilla_mappings
+            .toggle_state_mut(slot)
+            .set_down(down, false);
+    }
+
+    /// Whether the touch Sneak button holds sneak now (`touch_set_toggle` adds it to the key's state).
     pub(super) fn touch_sneaking(&self) -> bool {
         #[cfg(target_os = "android")]
         if self.mobile_controls_enabled() {
@@ -1497,11 +1507,11 @@ impl Game<'_> {
         }
         let sneaking = self.touch_playing() && self.touch.controls.sneaking();
         // Also when something let go of the keys under it (the window losing focus).
-        let lost = sneaking && !self.keys.held(sunrise_client::actions::Action::Sneak);
+        let lost = sneaking && !self.vanilla_mappings.toggle_state(0).is_down;
         if sneaking != self.touch.sneaking || lost {
             let pressed = sneaking && !self.touch.sneaking;
             self.touch.sneaking = sneaking;
-            self.sync_toggle(0);
+            self.touch_set_toggle(0, false);
             // As a press of the key reaches the game (it gets a sleeper up).
             if pressed {
                 let _ = self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft);

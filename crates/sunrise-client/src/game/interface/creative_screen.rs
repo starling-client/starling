@@ -18,7 +18,7 @@ impl Game<'_> {
     /// Inventory tab chosen, there is one window, in the middle, as without it.
     fn bedrock_show(&mut self, panel: bool, width: f32) {
         let screen = &mut self.creative_screen;
-        let items = self.bedrock_items.unwrap_or(screen.selected);
+        let items = self.bedrock_items.unwrap_or(screen.selected_index());
         let inventory = screen.tabs.iter().position(|t| t.inventory);
         let both = self.settings.bedrock_inventory
             && self.screen == Screen::Creative
@@ -28,17 +28,17 @@ impl Game<'_> {
         match inventory.filter(|_| both) {
             Some(inventory) if panel => {
                 self.bedrock_items = Some(items);
-                screen.selected = inventory;
+                screen.show(inventory);
                 CREATIVE_SHIFT.set(BEDROCK_SHIFT);
             }
             Some(_) => {
                 self.bedrock_items = None;
-                screen.selected = items;
+                screen.show(items);
                 CREATIVE_SHIFT.set(-BEDROCK_SHIFT);
             }
             None => {
                 self.bedrock_items = None;
-                screen.selected = items;
+                screen.show(items);
                 CREATIVE_SHIFT.set(0.0);
             }
         }
@@ -145,24 +145,27 @@ impl Game<'_> {
         }
         if CREATIVE_SHIFT.get() == 0.0 {
             self.render_transparent_background("creative", batch);
-            self.draw_creative_window(batch, false);
-            self.draw_carried(batch);
-            self.draw_creative_tooltips(batch);
-            return;
+            let drawn = self.draw_creative_window(batch, false);
+            if drawn {
+                self.draw_creative_tooltips(batch);
+            }
+            return drawn;
         }
         // Bedrock Inventory: both windows, the one worked with last, so its tooltip is on top.
         self.render_transparent_background("creative", batch);
         let on_panel = self.bedrock_items.is_some();
         self.bedrock_show(!on_panel, batch.width);
-        self.draw_creative_window(batch, !on_panel);
+        let other = self.draw_creative_window(batch, !on_panel);
         self.bedrock_show(on_panel, batch.width);
-        self.draw_creative_window(batch, on_panel);
-        self.draw_carried(batch);
-        self.draw_creative_tooltips(batch);
+        let drawn = self.draw_creative_window(batch, on_panel);
+        if drawn {
+            self.draw_creative_tooltips(batch);
+        }
+        drawn || other
     }
     /// One creative window: the item tab's or, with `panel`, Bedrock Inventory's inventory, which
     /// has no tabs of its own.
-    fn draw_creative_window(&mut self, batch: &mut HudBatch, panel: bool) {
+    fn draw_creative_window(&mut self, batch: &mut HudBatch, panel: bool) -> bool {
         let (ox, oy) = Self::creative_origin(batch);
         let selected = self.creative_screen.selected_index();
         // Only what is drawn of the tabs: their stacks stay where they are.
@@ -373,6 +376,7 @@ impl Game<'_> {
             self.draw_creative_pages(batch, ox, oy);
         }
         self.creative_hovered = hovered;
+        true
     }
     /// What the cursor is over in the window worked with, over everything else.
     fn draw_creative_tooltips(&mut self, batch: &mut HudBatch) {
@@ -384,7 +388,7 @@ impl Game<'_> {
         let browser_tip = self.draw_mod_browser(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
         self.draw_carried(batch);
-        if tab.inventory {
+        if inventory {
             if Self::creative_trash_hovered(batch, self.cursor) {
                 // `CreativeModeInventoryScreen`: the destroy slot's tooltip is
                 // `inventory.binSlot`, not an English literal.
@@ -424,7 +428,6 @@ impl Game<'_> {
         if let Some(tooltip) = browser_tip {
             self.draw_mod_browser_tooltip(batch, tooltip);
         }
-        true
     }
     pub(super) fn creative_trash_hovered(batch: &HudBatch, cursor: (f32, f32)) -> bool {
         let (ox, oy) = Self::creative_origin(batch);

@@ -322,8 +322,8 @@ fn folder_mods_on(off: &BTreeSet<String>) -> BTreeSet<String> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| native_file(p))
-        .filter_map(|p| sunrise_mod_package::index::native::Any::read(&p).ok())
-        .map(|bundle| bundle.id().to_owned())
+        .filter_map(|p| sunrise_mod_package::index::native::Bundle::read(&p).ok())
+        .map(|bundle| bundle.manifest.id.clone())
         .filter(|id| !off.contains(id))
         .collect()
 }
@@ -484,10 +484,10 @@ fn bundles_body() -> Result<Vec<u8>, String> {
     let mut seen = BTreeSet::new();
     let mut mods = Vec::new();
     for path in paths {
-        let Ok(bundle) = sunrise_mod_package::index::native::Any::read(&path) else {
+        let Ok(bundle) = sunrise_mod_package::index::native::Bundle::read(&path) else {
             continue;
         };
-        if off.contains(bundle.id()) || !seen.insert(bundle.id().to_owned()) {
+        if off.contains(&bundle.manifest.id) || !seen.insert(bundle.manifest.id.clone()) {
             continue;
         }
         mods.push(
@@ -688,14 +688,10 @@ fn store_wanted() -> Result<StoreWanted, String> {
     let mut wanted = Vec::new();
     let mut old = Vec::new();
     for path in paths {
-        let Ok(bundle) = sunrise_mod_package::index::native::Any::read(&path) else {
+        let Ok(bundle) = sunrise_mod_package::index::native::Bundle::read(&path) else {
             continue;
         };
-        if off.contains(bundle.id()) || !seen.insert(bundle.id().to_owned()) {
-            continue;
-        }
-        if !matches!(bundle, sunrise_mod_package::index::native::Any::Flat(_)) {
-            old.push(bundle.id().to_owned());
+        if off.contains(&bundle.manifest.id) || !seen.insert(bundle.manifest.id.clone()) {
             continue;
         }
         let source =
@@ -703,7 +699,7 @@ fn store_wanted() -> Result<StoreWanted, String> {
         wanted.push((
             path,
             store::Wanted {
-                id: bundle.id().to_owned(),
+                id: bundle.manifest.id.clone(),
                 source,
             },
         ));
@@ -883,9 +879,7 @@ fn put_native_libs(
         let Some((path, _)) = wanted.iter().find(|(_, w)| w.id == library.id) else {
             return Err(format!("{} went from the folder.", library.id));
         };
-        let Ok(sunrise_mod_package::index::native::Any::Flat(bundle)) =
-            sunrise_mod_package::index::native::Any::read(path)
-        else {
+        let Ok(bundle) = sunrise_mod_package::index::native::Bundle::read(path) else {
             return Err(format!("{}: can't be read", path.display()));
         };
         // The whole package, its source too: the game refuses a `[native]` manifest without it

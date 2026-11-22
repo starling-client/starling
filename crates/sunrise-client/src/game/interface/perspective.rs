@@ -910,7 +910,7 @@ impl Game<'_> {
                     chest,
                     camera,
                     alpha as f32,
-                    (self.res.mob_data(), packed),
+                    (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed),
                     out,
                 );
             }
@@ -1054,7 +1054,9 @@ impl Game<'_> {
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
         let body = self.own_body_visible() || self.spectator();
-        let data = self as &dyn sunrise_client::mobs::render::RenderDataSource;
+        // Starling: the title screen's player comes before the world's mob data: its own stands
+        // in (`MobData` is a source too, without the world's equipment).
+        let data: &dyn sunrise_client::mobs::render::RenderDataSource = if in_world { self } else { data };
         let armour = if in_world {
             self.player_armor_layers()
         } else {
@@ -1291,7 +1293,7 @@ impl Game<'_> {
         chest: Option<&str>,
         camera: glam::DVec3,
         partial: f32,
-        (data, light): (&sunrise_client::mobs::MobData, u32),
+        (data, light): (&dyn sunrise_client::mobs::render::RenderDataSource, u32),
         out: &mut Vec<sunrise_client_render::render_geometry::Vertex>,
     ) {
         let Some(rect) = m
@@ -1319,7 +1321,7 @@ impl Game<'_> {
         let layers = equippable
             .filter(|e| e.slot == "chest")
             .and_then(|e| e.asset_id)
-            .and_then(|asset| self.armor_stand_assets.equipment_layers.get(&asset));
+            .and_then(|asset| self.armor_stand_assets.equipment.get(&asset));
         if layers.is_some_and(|k| k.contains_key("wings")) {
             return;
         }

@@ -6,8 +6,6 @@ use super::{super::Game, Pads};
 use sunrise_client::gamepad::{GlyphStyle, PadState, Pulse, Rumble};
 use serde_json::{Value, json};
 
-pub(in crate::game) use super::no_router::{PadId, PadRouter};
-
 /// The controllers used so far and the one playing.
 #[derive(Default)]
 pub(super) struct Devices {

@@ -2413,7 +2413,6 @@ use sunrise_client_render::block_entity_reach::Reach;
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
-pub(crate) use launch_options::Options;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_configs::ConfigFile;
 pub use native_data_maps::DataMapType;
@@ -3065,12 +3064,6 @@ struct WorldRest {
     /// `SpinAttackEffectModel` (Riptide's spinning boxes).
     spin_attack: Option<sunrise_client::mobs::Part>,
     stations: sunrise_client::stations::StationData,
-    /// Content mods' kinetic parts, by state.
-    kinetics: sunrise_client::kinetics::KineticTable,
-    /// Create's processing recipes the content root holds (game/kinetic_machines.rs).
-    create_recipes: kinetic_machines::Recipes,
-    /// Create's basin recipes and the crafting ones a basin takes (game/basins.rs).
-    basin_recipes: basins::BasinRecipes,
 }
 
 /// The content tables a world's data packs change, loaded when the world
@@ -3914,11 +3907,6 @@ struct Game<'a> {
     waypoints: sunrise_client::locator_bar::ClientWaypoints,
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
-    /// The kinetic parts near the player and their speeds (game/kinetics.rs).
-    kinetics: kinetics::Kinetics,
-    /// Where this game simulates the world: its drills and crushing wheels at work
-    /// (game/kinetic_machines.rs).
-    machines: kinetic_machines::Machines,
     native_camera_frame: Option<mod_api::Camera>,
     /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
     /// none when it drew from vanilla's.
@@ -4085,8 +4073,6 @@ struct Game<'a> {
     stats_overlay: perf::Perf,
     /// Starling's performance test: draw choices and each setup's averages (perf_lab.rs).
     perf_lab: perf_lab::PerfLab,
-    /// Starling: the old mod messages, for the mods made for them (old_mod_net.rs).
-    old_mod_net: old_mod_net::OldModNet,
     /// Files handed to the game from outside (game/imports.rs).
     imports: imports::Imports,
     /// The offer of the Starling folder in shared storage (game/files_offer.rs).
@@ -6778,10 +6764,6 @@ impl Game<'_> {
         let mut canceled = false;
         let mut exp_to_drop = None;
         self.native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
-        // Starling: the old hook, for the mods made for it (native_compat.rs).
-        if !canceled {
-            self.native_destroy_block(pos, state, &mut canceled);
-        }
         if canceled {
             return Ok(false);
         }
@@ -7531,6 +7513,13 @@ impl Game<'_> {
         );
         let dispatch_hud = !gui_canceled && !replaying;
         self.hud_layer_next = dispatch_hud.then_some(0);
+        let (w, h) = (full_w, full_h);
+        let (wi, hi) = (w as i32, h as i32);
+        self.ui.room = self.hud_room(w, h, show_hud);
+        // Starling: the HUD keeps to the screen's safe area (`hud_safe_insets`), from the hotbar on;
+        // what covers the view (the spyglass, the crosshair, the sleep overlay) takes all of it.
+        let margins = self.hud_safe_insets(&batch);
+        let mut area = None;
         let mut guide_from = 0;
         if dispatch_hud {
             if show_hud {
@@ -7558,6 +7547,8 @@ impl Game<'_> {
                     && (!spectator || g.spectator_crosshair())
                     && !g.debug_crosshair()
                     && !g.overlay_holds_view()
+                    && !g.touch_hides_crosshair()
+                    && (g.screen != Screen::Creative || CREATIVE_SHIFT.get() == 0.0)
                 {
                     let crosshair_attack = attack.filter(|_| indicator == 1);
                     let full = crosshair_attack.is_some_and(|(strength, delay)| {
@@ -7579,6 +7570,11 @@ impl Game<'_> {
                     }
                 }
             });
+            area = Some(hud_room::HudArea::begin(&mut batch, margins));
+            let (full_wi, full_hi) = (wi, hi);
+            let (w, h) = (batch.width, batch.height);
+            let (wi, hi) = (w as i32, h as i32);
+            self.ui.room = self.hud_room(w, h, show_hud);
             self.gui_layer(VanillaGuiLayer::Hotbar, &mut batch, &mut |g, batch| {
                 if !show_hud {
                     return;
@@ -7834,7 +7830,18 @@ impl Game<'_> {
                 VanillaGuiLayer::SleepOverlay,
                 &mut batch,
                 &mut |g, batch| {
-                    let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer as i32);
+                    let mut draws =
+                        hud_overlays::sleep_overlay(full_wi, full_hi, g.sleep_timer as i32);
+                    if !draws.is_empty() && margins != [0.0; 4] {
+                        draws.insert(
+                            0,
+                            hud_layout::GuiDraw::Push(vec![hud_layout::PoseOp::Translate(
+                                -margins[0],
+                                -margins[1],
+                            )]),
+                        );
+                        draws.push(hud_layout::GuiDraw::Pop);
+                    }
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 },
             );
@@ -7894,8 +7901,10 @@ impl Game<'_> {
             self.hud_layer_next = None;
             self.native_render_gui_post(&mut batch, &mut corners);
         }
-        area.finish(&mut batch);
-        if margins != [0.0; 4] {
+        if let Some(area) = area {
+            area.finish(&mut batch);
+        }
+        if dispatch_hud && margins != [0.0; 4] {
             let mut room = sunrise_client::hud_kit::room::Room::new(full_w, full_h);
             for (keep, [x, y, w, h]) in self.ui.room.keeps() {
                 room.add(keep, [x + margins[0], y + margins[1], w, h]);
@@ -8679,7 +8688,6 @@ impl Game<'_> {
         self.moving_piston_geometry(camera, alpha, &mut out);
         // LevelRenderer.submitTransientBlocks.
         self.transient_block_geometry(camera, &mut out);
-        self.kinetic_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:painting");
         self.painting_geometry(camera, alpha, &mut out);
         self.mark_motion(out.len(), 0);
@@ -12830,9 +12838,7 @@ impl Game<'_> {
                     // MouseHandler.onScroll: the hotbar (or the spectator
                     // menu) takes the wheel only when no screen is open; a
                     // book, lectern, sign or prompt drawn over gameplay is one.
-                    // Starling: a mod made for the old hooks may take the steps first
-                    // (native_compat.rs).
-                    if self.hotbar_takes_wheel() && !self.native_wheel_event(d) {
+                    if self.hotbar_takes_wheel() {
                         let scroll =
                             self.mouse
                                 .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity);
@@ -13377,7 +13383,6 @@ impl Game<'_> {
                     self.follow_retry()?;
                     self.apply_mouse_look();
                     self.input_look(elapsed.as_secs_f32());
-                    self.kinetics_frame();
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
@@ -13470,6 +13475,9 @@ impl Game<'_> {
                         crate::performance::submit(sample, context);
                     }
                     self.platform_diagnostic_heartbeat();
+                    if let Some((frame, cpu, gpu)) = lab_sample {
+                        self.stats_frame(frame, cpu, gpu);
+                    }
                     self.perf_lab_frame(lab_sample);
                     self.limit_frame();
                     let paused = self.pauses_game();
@@ -14098,8 +14106,6 @@ impl<'a> Game<'a> {
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
             locator_camera: None,
-            kinetics: Default::default(),
-            machines: Default::default(),
             native_camera_frame: None,
             posed_rotation: None,
             post_effects: Vec::new(),
@@ -14211,7 +14217,6 @@ impl<'a> Game<'a> {
             upload_pace: Default::default(),
             stats_overlay: Default::default(),
             perf_lab: Default::default(),
-            old_mod_net: Default::default(),
             imports: Default::default(),
             #[cfg(target_os = "android")]
             files_offer: Default::default(),

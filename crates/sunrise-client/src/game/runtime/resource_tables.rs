@@ -31,15 +31,6 @@ impl Resources {
     pub(super) fn rest_ready(&self) -> bool {
         self.rest.get().is_some()
     }
-    pub(super) fn kinetics(&self) -> &sunrise_client::kinetics::KineticTable {
-        &self.rest().kinetics
-    }
-    pub(super) fn create_recipes(&self) -> &kinetic_machines::Recipes {
-        &self.rest().create_recipes
-    }
-    pub(super) fn basin_recipes(&self) -> &basins::BasinRecipes {
-        &self.rest().basin_recipes
-    }
     pub(super) fn facts(&self) -> &BlockFacts {
         &self.core.facts
     }

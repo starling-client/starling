@@ -583,8 +583,6 @@ impl ApplicationHandler for Game<'_> {
             // Still the key's handling: a mod's key hook may reach the clipboard.
             self.with_user_input(true, |game| {
                 game.key_input(name, layout_key, raw_code, action, modifiers);
-                // Starling: the old hook, which had the window's event (native_compat.rs).
-                game.native_input_key_old(&event, modifiers);
             });
         }
     }

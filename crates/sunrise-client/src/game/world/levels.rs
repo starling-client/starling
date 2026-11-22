@@ -3397,3 +3397,10 @@ impl Game<'_> {
         self.tick_world(running)
     }
 }
+
+impl Levels {
+    /// Starling: the save folders of the levels not in place, to wait for their writes.
+    pub(super) fn parked_saves(&self) -> Vec<std::sync::Arc<sunrise_client::save::SaveDir>> {
+        self.parked.values().map(|p| p.save.clone()).collect()
+    }
+}

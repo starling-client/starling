@@ -575,49 +575,7 @@ impl Game<'_> {
                 });
             }
         }
-        self.remote_name_tags(camera, &mut tags);
         tags
-    }
-    /// On a server: the visible custom names of the other objects, styled as the server sent
-    /// them. Armor stands (the holograms) and mobs name themselves above, from the same entity
-    /// data; text displays draw their own text (`text_displays.rs`).
-    fn remote_name_tags(&self, camera: glam::DVec3, tags: &mut Vec<NameTag>) {
-        let Some(r) = &self.remote else {
-            return;
-        };
-        for (id, (name, visible)) in &r.names {
-            let (Some(name), true) = (name, *visible) else {
-                continue;
-            };
-            let id = *id as u32;
-            if self.armor_stands.iter().any(|a| a.id == id) || self.mobs.iter().any(|m| m.id == id)
-            {
-                continue;
-            }
-            // EntityAttachment.NAME_TAG: the entity's height, then 0.5 up.
-            let at = if let Some(t) = r.entities.get(&(id as i32))
-                && t.kind != "minecraft:text_display"
-            {
-                glam::DVec3::new(t.position[0], t.position[1] + 0.5, t.position[2])
-            } else {
-                continue;
-            };
-            if at.distance_squared(camera) >= 64.0 * 64.0 {
-                continue;
-            }
-            let light = self.world.light(
-                at.x.floor() as i32,
-                at.y.floor() as i32,
-                at.z.floor() as i32,
-            );
-            tags.push(NameTag {
-                at,
-                lines: vec![(name.resolve_legacy(), 0.0)],
-                light,
-                discrete: false,
-                marks: Marks::default(),
-            });
-        }
     }
     /// `SubmitNodeCollection.submitNameTag`: a discrete name is drawn once,
     /// faded, on its background; any other in full over the world, its faded
@@ -747,7 +705,7 @@ impl Game<'_> {
         );
         for (text, lift) in lines {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
-            let (r, u) = (axes.right * unit, axes.up * unit);
+            let (r, u) = (right.as_vec3() * unit, up.as_vec3() * unit);
             // Text space: x right, y down (scale 0.025, -0.025).
             let at = |x: f32, y: f32| o + r * x - u * y;
             let y0 = if text.plain() == "deadmau5" {
@@ -798,36 +756,6 @@ impl Game<'_> {
         // Glyphs rasterized on first use (Unifont's) upload with the frame.
         batch.patches
     }
-    /// The axes of text facing the camera.
-    pub(super) fn camera_text_axes(&self) -> TextAxes {
-        // The camera's facing (Camera.rotation()), turned round in third-person
-        // front view, so the text reads the right way from where it is seen.
-        let (view_yaw, view_pitch) = match self.posed_rotation {
-            // The frame's camera, already turned round in front view.
-            Some(rotation) => rotation,
-            None if self.camera_type == mod_api::CameraType::ThirdPersonFront => {
-                (self.yaw + 180.0, -self.pitch)
-            }
-            None => (self.yaw, self.pitch),
-        };
-        let forward = glam::DVec3::from_array(view_vector(view_yaw, view_pitch));
-        let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
-        let up = right.cross(forward).normalize_or_zero();
-        TextAxes {
-            right: right.as_vec3(),
-            up: up.as_vec3(),
-            away: forward.as_vec3() * 0.002,
-        }
-    }
-}
-
-/// The way text lies: unit vectors to its right and its top, and the small step a background
-/// goes behind it.
-#[derive(Clone, Copy)]
-pub(super) struct TextAxes {
-    pub(super) right: glam::Vec3,
-    pub(super) up: glam::Vec3,
-    pub(super) away: glam::Vec3,
 }
 
 /// Use the renderer's camera-relative clip test before measuring or emitting text.

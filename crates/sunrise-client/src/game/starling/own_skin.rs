@@ -149,7 +149,6 @@ impl Game<'_> {
             .as_deref()
             .map(|file| own_skin::load(&Self::skins_dir(), file))
             .transpose()?;
-        self.skin_3d.borrow_mut().forget(LOCATION);
         let skin = &mut self.own_skin;
         skin.loaded = true;
         skin.image = image;

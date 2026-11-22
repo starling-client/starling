@@ -435,7 +435,7 @@ impl Game<'_> {
         self.advancement_tree();
         let progress = self
             .adv_path()
-            .and_then(|p| sunrise_client::save::read_file(&p).ok())
+            .and_then(|p| std::fs::read(&p).ok())
             .and_then(|b| String::from_utf8(b).ok())
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .map(|v| Progress::from_json(&v))

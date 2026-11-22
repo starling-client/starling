@@ -440,6 +440,7 @@ pub(super) fn spawn_loader(
             if first
                 && let Ok(ui) = UiResources::load(
                     &sunrise_assets::resource_source::ResourceSource::directory(vanilla.clone()),
+                    &vanilla,
                 )
             {
                 let _ = sender.send(LoaderMsg::Ui(ui, vanilla.clone()));

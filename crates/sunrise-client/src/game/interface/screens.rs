@@ -554,8 +554,7 @@ impl Game<'_> {
             })
             .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8))
             .chain(
-                (cfg!(target_os = "android") && !self.options.split_guest)
-                    .then_some((LAUNCHER, 31)),
+                cfg!(target_os = "android").then_some((LAUNCHER, 31)),
             )
     }
     pub(super) fn pause_click(&mut self) -> Result<bool> {

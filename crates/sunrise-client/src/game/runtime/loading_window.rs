@@ -53,7 +53,7 @@ pub(super) fn build_renderer(
     shader_pack: shader_packs::PickedPack,
     display: sunrise_client::gfx::DisplayReading,
     filtering: (i32, i32),
-) -> Result<Renderer> {
+) -> Result<(Renderer, std::result::Result<(), String>)> {
     let (mut renderer, _) = RendererParts::new(
         window,
         offscreen,
@@ -68,14 +68,14 @@ pub(super) fn build_renderer(
         display,
     )
     .build(previous, None)?;
-    finish_renderer(
+    let clouds = finish_renderer(
         &mut renderer,
         pack,
         gui,
         filtering,
         (vsync, settings.present_mode),
     )?;
-    Ok(renderer)
+    Ok((renderer, clouds))
 }
 
 /// What the world's renderer is made from (`Renderer::new`): borrowed from the pack and the GUI,
@@ -202,7 +202,7 @@ impl<'a> RendererParts<'a> {
             boot,
             self.api,
             self.translucent_batching,
-            self.shader_pack.draws_flat,
+            (self.shader_pack.draws_flat, self.shader_pack.starts_wide),
             &self.settings,
             self.shader_pack.frame(),
             self.display,
@@ -230,7 +230,7 @@ pub(super) fn finish_renderer(
     gui: &UiResources,
     filtering: (i32, i32),
     present: (bool, sunrise_client::graphics::PresentMode),
-) -> Result<()> {
+) -> Result<std::result::Result<(), String>> {
     let atlas = &gui.atlas;
     // The new renderer's atlas texture starts from `HudAtlas.pixels`, which
     // holds the textures but never a glyph rasterized at run time. The font's
@@ -288,7 +288,7 @@ pub(super) fn finish_renderer(
         let r = atlas.sprites.get(name)?;
         Some([r.u0, r.v0, r.u1, r.v1])
     })?;
-    Ok(())
+    Ok(clouds)
 }
 
 /// The loading screen's own renderer, in place of `loading_renderer` wherever there is a window

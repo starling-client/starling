@@ -1118,3 +1118,10 @@ mod tests {
         });
     }
 }
+
+impl ServerPackState {
+    /// Starling: the prompt shows: it takes the back key and the touch controls' screen state.
+    pub(super) fn prompting(&self) -> bool {
+        self.prompt.is_some()
+    }
+}

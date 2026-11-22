@@ -284,7 +284,8 @@ impl Game<'_> {
         tc.safe_insets(width, height, crate::android::safe_insets());
         let flying = self.player.as_ref().is_some_and(|p| p.flying);
         if shown && flying && !tc.vertical_movement {
-            self.toggles.0[0] = sunrise_client::keymapping::KeyState::toggle(true, true);
+            *self.vanilla_mappings.toggle_state_mut(0) =
+                sunrise_client::keymapping::KeyState::toggle(true, true);
             self.keys.remove(&KeyCode::ShiftLeft);
         }
         tc.set_vertical_movement(flying);
@@ -590,7 +591,7 @@ impl Game<'_> {
             w,
             h,
             &self.mobile.controls.settings,
-            self.settings.sensitivity,
+            self.settings.sensitivity as f32,
             self.settings.invert_x,
             self.settings.invert_y,
             self.zoom_turn_scale() as f32,
@@ -894,10 +895,7 @@ impl Game<'_> {
                     self.physical_keys.remove(&key);
                     self.keys.remove(&key);
                 }
-                if slot == 1 {
-                    self.toggles.0[slot].set_down(down, false);
-                }
-                self.sync_toggle(slot);
+                self.touch_set_toggle(slot, down);
                 if slot == 1
                     && !down
                     && let Some(player) = &mut self.player
@@ -1025,10 +1023,7 @@ impl Game<'_> {
                 self.keys.remove(&key);
             }
             let slot = usize::from(matches!(key, KeyCode::ControlLeft | KeyCode::ControlRight));
-            if slot == 1 {
-                self.toggles.0[slot].set_down(down, false);
-            }
-            self.sync_toggle(slot);
+            self.touch_set_toggle(slot, down);
             if slot == 1
                 && !down
                 && let Some(player) = &mut self.player
@@ -1324,6 +1319,7 @@ impl Game<'_> {
                         ElementState::Released
                     },
                 },
+                None,
             );
             if !right && !down {
                 self.touch_field_click();
@@ -2089,7 +2085,7 @@ impl Game<'_> {
                     device_id: t.device_id,
                     delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
                         0.,
-                        f64::from(y * 30. / self.settings.mouse_wheel_sensitivity.max(0.01)),
+                        f64::from(y) * 30. / self.settings.mouse_wheel_sensitivity.max(0.01),
                     )),
                     phase: TouchPhase::Moved,
                 },

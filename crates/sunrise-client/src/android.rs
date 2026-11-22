@@ -1610,7 +1610,6 @@ pub fn main(
         asset,
         keep_working,
     });
-    sunrise_protocol::set_name_servers(dns_servers);
     let _ = ARGS.set(args.clone());
     let _ = APP.set(app);
     if !in_game {

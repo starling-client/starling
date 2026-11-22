@@ -67,8 +67,7 @@ impl Game<'_> {
         if self.pending_save.is_none()
             && self.captured
             && self.focused
-            && self.keyboard_mouse
-            && (!self.options.offscreen || self.split_window)
+            && !self.options.offscreen
             && self.screen == Screen::Playing
         {
             self.note_input(
@@ -307,6 +306,7 @@ impl Game<'_> {
         if !self.internal_grab() {
             window.set_cursor_visible(!self.captured);
         }
+        #[cfg(not(target_os = "android"))]
         if let Some(pos) = projection
             .window
             .center_after_grab_change(capture, was_grabbed)

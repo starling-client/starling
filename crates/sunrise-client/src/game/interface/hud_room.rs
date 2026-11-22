@@ -2,7 +2,7 @@
 //! overlays keep clear of. `hud` empties it each frame and `hud_layers` fills it in before the
 //! world's HUD draws, into `ui.room`; the controller notice and radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
 //! overlay holds the view (`overlay_holds_view`), which what vanilla draws there gives way to.
-use super::{CREATIVE_SHIFT, Game, Screen};
+use super::{Game, Screen};
 use sunrise_client::hud::{HudBatch, HudVertex};
 use sunrise_client::hud_kit::motion::Clock;
 use sunrise_client::hud_kit::room::{Keep, Room};
@@ -83,7 +83,6 @@ impl Game<'_> {
         area.finish(batch);
 
         self.draw_touch(batch);
-        self.draw_kinetic_info(batch);
 
         let area = self.interface_area(batch);
         self.draw_chat_bar(batch);
@@ -174,71 +173,12 @@ impl Game<'_> {
         }
     }
 
+    /// Starling's Stats overlay, within the HUD's safe area. The frames' counter and graph are
+    /// Sunrise's own layer now (sunrise-perf-overlay).
     pub(super) fn draw_performance_overlays(&mut self, batch: &mut HudBatch) {
-        let hud = self.hud_safe_insets(batch);
-        #[cfg(target_os = "android")]
-        if self.title.is_some() || self.screen != Screen::Playing {
-            // The compact counter sits below Back in the utility buttons' layout.
-            let area = HudArea::begin(batch, self.button_safe_insets(batch));
-            self.frame_graph.draw_compact(
-                self.settings.sunrise.overlay,
-                batch,
-                &self.gui.atlas,
-                25.0,
-            );
-            area.finish(batch);
-
-            let area = HudArea::begin(batch, hud);
-            self.draw_stats_overlay(batch);
-            area.finish(batch);
-            return;
-        }
-        let area = HudArea::begin(batch, hud);
-        self.frame_graph
-            .draw(self.settings.sunrise.overlay, batch, &self.gui.atlas);
+        let area = HudArea::begin(batch, self.hud_safe_insets(batch));
         self.draw_stats_overlay(batch);
         area.finish(batch);
-    }
-
-    pub(super) fn draw_hud_crosshair(
-        &mut self,
-        batch: &mut HudBatch,
-        spectator: bool,
-        indicator: u8,
-        strength: f32,
-        delay: f32,
-    ) {
-        let (wi, hi) = (batch.width as i32, batch.height as i32);
-        // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
-        // extractVehicleHealth and the experience bar, laid out by hud_layout.
-        // Combat feel Legacy hides the attack indicator unless the player keeps it.
-        // The 3D crosshair (F3) takes the 2D one's place.
-        // Hud.extractCrosshair: a spectator only sees it over something to open.
-        if self.camera_type.is_first_person()
-            && (!spectator || self.spectator_crosshair())
-            && !self.debug_crosshair()
-            && !self.touch_hides_crosshair()
-            && !self.overlay_holds_view()
-        {
-            let attack = (indicator == 1).then_some(strength);
-            let full = attack.is_some_and(|a| {
-                hud_layout::full_attack_indicator(a, delay, self.crosshair_living())
-            });
-            let draws = hud_layout::crosshair(wi, hi, attack, full);
-            // Under one creative window it hides; Bedrock Inventory has a gap at the middle.
-            if self.screen != Screen::Creative || CREATIVE_SHIFT.get() == 0.0 {
-                self.gui_layer("minecraft:crosshair", batch, |g, batch| {
-                    // The custom crosshair takes the sprite's place (the first draw); the
-                    // attack indicator stays.
-                    if g.custom_crosshair() {
-                        g.draw_custom_crosshair(batch, wi, hi);
-                        hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
-                    } else {
-                        hud_layout::paint(batch, &g.gui.atlas, &draws);
-                    }
-                });
-            }
-        }
     }
 
     pub(super) fn hud_safe_insets(&self, batch: &HudBatch) -> [f32; 4] {

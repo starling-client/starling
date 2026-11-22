@@ -404,7 +404,7 @@ impl Loading {
                 // Lists follow the finger one to one at this GUI scale.
                 self.touch_pointer.set_gui_scale(
                     HudBatch::new(size, self.settings.gui_scale_inputs()).scale,
-                    self.settings.mouse_wheel_sensitivity,
+                    self.settings.mouse_wheel_sensitivity as f32,
                 );
                 // A finger on an option's button scrolls whichever way it moves, as in game.
                 if touch.phase == winit::event::TouchPhase::Started
@@ -737,9 +737,9 @@ impl Loading {
                     ),
                     registry,
                 );
-                audio.master = self.settings.master_volume;
+                audio.master = self.settings.master_volume as f32;
                 // As Game::apply_ui_settings: the master volume is the engine's own.
-                let mut volumes = self.settings.volumes;
+                let mut volumes = self.settings.volumes.map(|gain| gain as f32);
                 volumes[0] = 1.0;
                 sunrise_client::settings::set_source_volumes(volumes);
                 audio.sync_volumes();
@@ -761,6 +761,8 @@ impl Loading {
         let (receiver, handle) = startup_menu::spawn_loader(
             options,
             &self.settings,
+            self.menu.pack_selection_revision,
+            options.execution_role.into(),
             &self.vanilla_root,
             self.started,
             &self.progress,
@@ -951,7 +953,7 @@ impl Loading {
     }
     /// What the app does next (`App::about_to_wait`): nothing yet, or the game, made from the
     /// loaded resources and the world's renderer.
-    fn poll_handoff(&mut self) -> Option<Result<Option<split::Split<'static>>>> {
+    fn poll_handoff(&mut self) -> Option<Result<Option<Game<'static>>>> {
         if self.setup.onboarding_visible() {
             return None;
         }
@@ -1011,7 +1013,7 @@ impl Loading {
         );
         let renderer_at = Instant::now();
         let renderer_step = startup::step("handoff.renderer");
-        let renderer = match built {
+        let (renderer, clouds) = match built {
             Some(mut renderer) => {
                 // The window keeps the one surface it has: the boot renderer's, its last frame
                 // still on it, else (the window came back without one) a new one.
@@ -1024,14 +1026,14 @@ impl Loading {
                     Some(surface) => renderer.adopt_surface(surface, size.width, size.height)?,
                     None => renderer.resume(size.width, size.height)?,
                 }
-                finish_renderer(
+                let clouds = finish_renderer(
                     &mut renderer,
                     &loaded.pack,
                     &gui,
                     filtering,
                     (self.settings.vsync, self.settings.sunrise.present_mode),
                 )?;
-                renderer
+                (renderer, clouds)
             }
             None => {
                 // Keep the loader's device and swap in the real textures in one step.

@@ -289,7 +289,7 @@ impl Game<'_> {
                 let gui_scale = self.touch_gui_batch().scale;
                 self.touch
                     .pointer
-                    .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
+                    .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity as f32);
                 let now = Instant::now();
                 let mut events = self.touch.pointer.event(&start, slop, now);
                 events.extend(self.touch.pointer.event(t, slop, now));

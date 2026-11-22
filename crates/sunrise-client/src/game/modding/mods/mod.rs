@@ -1372,18 +1372,8 @@ fn content_overlay_with_refusals(
     // Content admission and the live code-dispatch boundary jointly determine
     // what loaded. Namespaces and raw startup metadata cannot answer this.
     let inventory = sources.enabled_inventory(|id| mods.iter().any(|loaded| loaded.id == id));
-    // Starling: the loading screen says a build is due, only when one is.
-    let names = (mods.iter().map(|m| m.id.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
     let prepared = super::load_conditions::content_root_with_conditions(
-        root,
-        jar_store,
-        &mods,
-        &cache,
-        &inventory,
-        sources,
-        &mut || note(Some(ContentNote::Building(&names).text())),
+        root, jar_store, &mods, &cache, &inventory, sources,
     )?;
     let root = mod_content::resolved_resources(root, prepared, jar_store, &mods, cache)?;
     let _ = sources.content_base.set(original_base);
@@ -2014,8 +2004,7 @@ fn not_built(
     paths.sort();
     let mut out: Vec<Installed> = Vec::new();
     for path in paths {
-        // Starling: either format, the registry's `.hnmod` bundle too (`native::Any`).
-        let bundle = match sunrise_mod_package::index::native::Any::read(&path) {
+        let bundle = match sunrise_mod_package::index::native::Bundle::read(&path) {
             Ok(bundle) => bundle,
             // Said on its row: a file left out without a word looks like the folder isn't read.
             Err(e) => {
@@ -2038,7 +2027,7 @@ fn not_built(
                 continue;
             }
         };
-        let (id, version) = (bundle.id().to_owned(), bundle.version());
+        let (id, version) = (bundle.manifest.id.clone(), bundle.manifest.version.clone());
         let listed = rows.iter().chain(&out).any(|row| row.id == id);
         if !listed && !built.iter().any(|b| b.id == id) {
             out.push(Installed {
@@ -2264,20 +2253,6 @@ impl Game<'_> {
                     m.id.clone(),
                     mod_list::ModInfo::of(m, package.icon.as_ref()),
                 );
-                // Starling: a mod whose assets come from Modrinth says so, and why they could
-                // not be downloaded at this start (mod_assets.rs).
-                let fetched = m.assets.as_ref().map_or_else(String::new, |a| {
-                    format!(
-                        "Its textures, models and sounds come from Modrinth ({}, {:.1} MB), \
-                         downloaded the first time it is on. ",
-                        a.fetch.file,
-                        a.fetch.size as f64 / 1_000_000.0
-                    )
-                });
-                let problem = refused.map(|why| format!("Not loaded: {why}")).or_else(|| {
-                    super::mod_assets::failed(&m.id)
-                        .map(|e| format!("Its assets could not be downloaded: {e}"))
-                });
                 Installed {
                     id: m.id.clone(),
                     title: format!("{} {}", m.name, m.version),

@@ -1,13 +1,74 @@
-//! The Stats overlay (Sunrise's Overlay setting, `stats`): frames with the 1% low, CPU and GPU
+//! Starling's Stats overlay: frames with the 1% low, CPU and GPU
 //! time, the process's memory and the GPU's, chunks, meshing and draws, temperatures and
 //! throttling, the render distance and the graphics backend, in a panel at the top left. The
 //! same numbers are `sunrise-ctl perf`'s reply.
 use crate::{
-    perf_overlay::FrameSummary,
     system_stats::{SystemSample, thermal_name},
     ui_theme::{Face, Ui, color},
 };
 use serde_json::{Value, json};
+use std::collections::VecDeque;
+
+const HISTORY: usize = 160;
+/// Frames the 1% low is taken over (about 20 s at 60 fps).
+const LOW_WINDOW: usize = 1200;
+
+/// Recent frames in numbers (the Stats overlay, `sunrise-ctl perf`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameSummary {
+    pub fps: f32,
+    pub frame_ms: f32,
+    pub worst_ms: f32,
+    /// The average frame time of the slowest 1% of the last `LOW_WINDOW` frames, as frames
+    /// per second (FrameStats' `low_1pct_fps`).
+    pub low_1pct_fps: f32,
+    pub cpu_ms: f32,
+    pub gpu_ms: f32,
+}
+
+/// The frames the summary is taken from. Sunrise's own overlay (sunrise-perf-overlay) keeps its
+/// frames to itself, so the Stats overlay keeps these.
+#[derive(Default)]
+pub struct Frames {
+    /// Frame, CPU and GPU milliseconds of recent frames, oldest first.
+    frames: VecDeque<(f32, f32, f32)>,
+    /// Frame milliseconds over a longer window, for the 1% low.
+    window: VecDeque<f32>,
+}
+
+impl Frames {
+    pub fn record(&mut self, frame_ms: f32, cpu_ms: f32, gpu_ms: Option<f32>) {
+        let gpu = gpu_ms.unwrap_or_else(|| self.frames.back().map_or(0.0, |f| f.2));
+        if self.frames.len() == HISTORY {
+            self.frames.pop_front();
+        }
+        self.frames.push_back((frame_ms, cpu_ms, gpu));
+        if self.window.len() == LOW_WINDOW {
+            self.window.pop_front();
+        }
+        self.window.push_back(frame_ms);
+    }
+    pub fn summary(&self) -> Option<FrameSummary> {
+        if self.frames.is_empty() {
+            return None;
+        }
+        let n = self.frames.len() as f32;
+        let avg = |f: fn(&(f32, f32, f32)) -> f32| self.frames.iter().map(f).sum::<f32>() / n;
+        let frame_ms = avg(|f| f.0);
+        let mut sorted: Vec<f32> = self.window.iter().copied().collect();
+        sorted.sort_by(f32::total_cmp);
+        let slowest = sorted.len().div_ceil(100);
+        let slow = sorted[sorted.len() - slowest..].iter().sum::<f32>() / slowest as f32;
+        Some(FrameSummary {
+            fps: 1000.0 / frame_ms.max(0.001),
+            frame_ms,
+            worst_ms: self.frames.iter().map(|f| f.0).fold(0.0f32, f32::max),
+            low_1pct_fps: 1000.0 / slow.max(0.001),
+            cpu_ms: avg(|f| f.1),
+            gpu_ms: avg(|f| f.2),
+        })
+    }
+}
 
 /// The game's side of the numbers, gathered each frame (game/perf.rs).
 #[derive(Clone, Debug, Default)]

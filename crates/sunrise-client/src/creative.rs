@@ -789,6 +789,13 @@ impl Creative {
             .position(|tab| tab.id == self.selected_id)
             .unwrap_or(0)
     }
+    /// Starling: the tab the screen works with, without `select`'s search box and scroll: Bedrock
+    /// Inventory shows two tabs' windows and goes from one to the other inside a frame.
+    pub fn show(&mut self, tab: usize) {
+        if let Some(t) = self.tabs.get(tab) {
+            self.selected_id.clone_from(&t.id);
+        }
+    }
     /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
     /// key opens while another one is shown.
     pub fn search_tab(&self) -> Option<usize> {

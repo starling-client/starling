@@ -2493,3 +2493,14 @@ mod screen_room_tests {
         });
     }
 }
+
+impl Game<'_> {
+    /// Starling: the search box while it takes the keys, for the keyboard's editor on Android
+    /// (touch/text_mirror.rs).
+    pub(super) fn recipe_search_box(&mut self) -> Option<&mut EditBox> {
+        if !self.recipe_search_focused() {
+            return None;
+        }
+        self.recipe_ui.search.as_mut()
+    }
+}

@@ -4879,7 +4879,7 @@ impl Launcher {
                 let ptr_size_frac =
                     ((touch_cfg.virtual_mouse_pointer_scale - 0.50) / 1.50).clamp(0.0, 1.0);
                 let gyro_sens_frac = ((touch_cfg.gyro_sensitivity - 0.20) / 2.80).clamp(0.0, 1.0);
-                let mouse_sens_frac = opts.sensitivity.clamp(0.0, 1.0);
+                let mouse_sens_frac = opts.sensitivity.clamp(0.0, 1.0) as f32;
                 let scheme_str = touch_cfg.mode.label();
                 let zone_str = touch_cfg.joystick_style.move_area.label();
                 let invert_y_active = opts.invert_y || touch_cfg.invert_y;
@@ -5472,8 +5472,8 @@ impl Launcher {
                         .game_home(&self.home)
                         .join("options.txt"),
                 );
-                audio.master = settings.volumes[0];
-                let mut volumes = settings.volumes;
+                audio.master = settings.volumes[0] as f32;
+                let mut volumes = settings.volumes.map(|gain| gain as f32);
                 volumes[0] = 1.0;
                 crate::ha_launcher::client::settings::set_source_volumes(volumes);
                 audio
@@ -5860,7 +5860,7 @@ impl Launcher {
             }
             Some(Action::MouseSensDelta(delta)) => {
                 self.modify_game_settings(|s| {
-                    s.sensitivity = (s.sensitivity + delta).clamp(0.05, 1.0);
+                    s.sensitivity = (s.sensitivity + f64::from(delta)).clamp(0.05, 1.0);
                 });
             }
             Some(Action::TouchSensDelta(delta)) => {
@@ -6969,7 +6969,7 @@ impl Launcher {
             }
             Action::MouseSensDelta(_) => {
                 let v = ((0.05 + t * 0.95) * 100.0).round() / 100.0;
-                self.modify_game_settings(|s| s.sensitivity = v.clamp(0.05, 1.0));
+                self.modify_game_settings(|s| s.sensitivity = f64::from(v.clamp(0.05, 1.0)));
             }
             Action::ButtonScaleDelta(_) => {
                 let v = ((0.60 + t * 1.00) * 100.0).round() / 100.0;

@@ -602,7 +602,7 @@ impl Loading {
                 ),
                 Default::default(),
             );
-            audio.master = self.settings.master_volume;
+            audio.master = self.settings.master_volume as f32;
             self.audio = Some(audio);
         }
         for sound in self.setup.fishing.take_sounds() {
@@ -623,7 +623,8 @@ impl Loading {
                     let root = preparer::skin()?;
                     let source =
                         sunrise_assets::resource_source::ResourceSource::directory(root.clone());
-                    Some((root, UiResources::load(&source).map_err(|e| e.to_string())))
+                    let ui = UiResources::load(&source, &root).map_err(|e| e.to_string());
+                    Some((root, ui))
                 })
                 .inspect_err(|e| log::warn!("Sunrise: the setup's skin did not start: {e}"))
                 .ok();

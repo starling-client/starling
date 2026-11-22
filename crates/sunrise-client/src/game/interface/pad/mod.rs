@@ -214,10 +214,7 @@ mod hardware {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
         }
-        pub(in crate::game) fn release_hardware(&mut self) {}
     }
-
-    pub(in crate::game) use super::no_router::{PadId, PadRouter};
 
     impl Game<'_> {
         pub(super) fn pad_output_off(&mut self) {}
@@ -659,8 +656,7 @@ impl Game<'_> {
             }
             #[cfg(target_os = "android")]
             Route::Sneak if self.touch_shown() && self.mobile.controls.vertical_movement => {
-                self.toggles.0[SNEAK].is_down = down;
-                self.sync_toggle(SNEAK);
+                self.vanilla_mappings.toggle_state_mut(SNEAK).is_down = down;
                 if down {
                     self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)?;
                 }
