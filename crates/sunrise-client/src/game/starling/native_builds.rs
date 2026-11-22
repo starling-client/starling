@@ -490,11 +490,7 @@ fn bundles_body() -> Result<Vec<u8>, String> {
         if off.contains(&bundle.manifest.id) || !seen.insert(bundle.manifest.id.clone()) {
             continue;
         }
-        mods.push(
-            bundle
-                .for_build()
-                .map_err(|e| format!("{}: {e}", path.display()))?,
-        );
+        mods.push(for_build(&bundle).map_err(|e| format!("{}: {e}", path.display()))?);
     }
     if mods.is_empty() {
         return Err("There is no native mod to compile.".into());
@@ -2237,4 +2233,23 @@ fn restart_with_built_mods() {
         "starling.restart.native_mods",
         "Starting the game with your native mods…",
     ));
+}
+
+/// A native package as the compile service takes it: its code and manifest, without the assets
+/// and data the build never reads.
+fn for_build(bundle: &sunrise_mod_package::index::native::Bundle) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default());
+    for (name, bytes) in &bundle.files {
+        if name.starts_with("assets/") || name.starts_with("data/") {
+            continue;
+        }
+        zip.start_file(name.as_str(), options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
 }

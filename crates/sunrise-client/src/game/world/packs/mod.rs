@@ -787,7 +787,7 @@ pub(super) fn stage_pack(
                 panorama: Arc::new(panorama.unwrap_or_else(|p| std::panic::resume_unwind(p))),
                 // `Game::apply_staged_pack` fills it with the client's setting.
                 splashes: Arc::from(""),
-                source: Some(resource_root.clone()),
+                source: Some(resource_root.source().clone()),
                 plain_texts: Default::default(),
             };
             progress.set(2);

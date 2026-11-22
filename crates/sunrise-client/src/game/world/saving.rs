@@ -635,7 +635,7 @@ impl Game<'_> {
                 if !self.is_published() {
                     server.set_paused(true);
                 }
-                server.execute(|g| {
+                let _ = server.post(|g| {
                     let started = Instant::now();
                     match g.save_game_with(false) {
                         Ok(()) => {
