@@ -201,8 +201,20 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        file.try_lock()
-            .map_err(|_| format!("{} is already open in another instance", world.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(
+                    format!("{} is already open in another instance", world.display()).into(),
+                );
+            }
+            // Starling: a filesystem without file locks (Android's shared storage): the world
+            // opens unlocked, as vanilla's DirectoryLock does where locking is unsupported.
+            Err(fs::TryLockError::Error(e)) => log::warn!(
+                "Sunrise: {} cannot be locked ({e}); opening it unlocked",
+                world.display()
+            ),
+        }
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
