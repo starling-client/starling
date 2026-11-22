@@ -3,6 +3,7 @@
 //! the log lines that explain a player a server keeps pulling back, and the creative screen's
 //! crafting grid. Its state is one field of [`Remote`] (`starling`).
 use super::*;
+use sunrise_client::actions::Action;
 use sunrise_client::gamepad::ServerStick;
 
 /// A gap in the ticks or movement sent to the server worth a log line (an old server's
