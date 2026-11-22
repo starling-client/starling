@@ -1638,7 +1638,13 @@ pub fn main(
     // A chosen custom GPU driver replaces the system's libvulkan before anything loads Vulkan
     // (#470). Its report waits for the log: none runs yet.
     let _ = GPU_DRIVER_NOTES.set(load_custom_driver());
+    // Starling: what an earlier Starling (on Horizon) kept under Horizon's names, before anything
+    // reads the settings.
+    let adopted = [adopt_horizon_names(&home), adopt_horizon_names(&private)].concat();
     crate::entry::set_after_log(move || {
+        for line in &adopted {
+            log::info!("{line}");
+        }
         if let Some(driver_notes) = GPU_DRIVER_NOTES.get() {
             for (level, message) in driver_notes {
                 log::log!(*level, "{message}");
@@ -1751,4 +1757,64 @@ pub fn open_recovery() {
         env.call_method(activity, "openDiagnostics", "()V", &[])
             .map(drop)
     });
+}
+
+/// Starling: the files and folders of `dir` an earlier Starling kept under Horizon's names
+/// (`horizon-touch.json`, `horizon-mods.txt`, `horizon-mods/`...), copied to the names this game
+/// reads (`sunrise-...`) where those are not there yet: settings, the touch layout, the mods' list
+/// and the mods themselves, which were Horizon packages and are made Sunrise's on the way
+/// (`sunrise_mod_package::horizon`). The old ones stay, for a player who goes back. Returns what
+/// it did, for the log.
+fn adopt_horizon_names(dir: &std::path::Path) -> Vec<String> {
+    let mut notes = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return notes;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name
+            .strip_prefix("horizon")
+            .filter(|rest| rest.starts_with(['-', '_']))
+        else {
+            continue;
+        };
+        // A leftover of a test or of a backup is no setting.
+        if rest.contains(".before-") || rest.contains(".test-") {
+            continue;
+        }
+        let to = dir.join(format!("sunrise{rest}"));
+        if to.exists() {
+            continue;
+        }
+        let from = entry.path();
+        if from.is_file() {
+            match std::fs::copy(&from, &to) {
+                Ok(_) => notes.push(format!("Starling: {name} read as sunrise{rest}")),
+                Err(e) => notes.push(format!("Starling: {name} could not be copied: {e}")),
+            }
+        } else if matches!(rest, "-mods" | "-native-mods") {
+            let mut mods = 0;
+            if std::fs::create_dir_all(&to).is_ok()
+                && let Ok(files) = std::fs::read_dir(&from)
+            {
+                for file in files.flatten().filter(|f| f.path().is_file()) {
+                    let mut target = to.join(file.file_name());
+                    if target.extension().is_some_and(|e| e == "hmod") {
+                        target.set_extension("smod");
+                    }
+                    if std::fs::copy(file.path(), &target).is_err() {
+                        continue;
+                    }
+                    if sunrise_mod_package::horizon::holds(&target)
+                        && let Err(e) = sunrise_mod_package::horizon::adopt(&target)
+                    {
+                        notes.push(format!("Starling: {e}"));
+                    }
+                    mods += 1;
+                }
+            }
+            notes.push(format!("Starling: {mods} mods of {name} brought to sunrise{rest}"));
+        }
+    }
+    notes
 }
