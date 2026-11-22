@@ -111,6 +111,17 @@ impl Game<'_> {
     /// and an MCP client's config for this game.
     pub(super) fn agent_details(&self) -> String {
         let socket = self.agent_socket_path();
+        // Android has no horizon-ctl beside the game (current_exe is app_process in /system/bin):
+        // an agent on the phone reads the endpoint file and speaks the protocol itself. The token
+        // stays in the file, off the clipboard.
+        if cfg!(target_os = "android") {
+            return format!(
+                "Starling agent control (this phone only)\nEndpoint file: {}\nIt holds the port and \
+                 the token. Connect to 127.0.0.1:PORT, send `auth TOKEN` as the first line, then \
+                 one command per line (`status`, `help`).\nGuide: docs/android-agent-control.md\n",
+                socket.display()
+            );
+        }
         let ctl = std::env::current_exe()
             .unwrap_or_default()
             .with_file_name(if cfg!(windows) {
@@ -177,6 +188,11 @@ fn status_lines(
         lines.push(tr("horizon.agent.socket", &[&s.name]));
     }
     lines.push(get("horizon.agent.local_only"));
+    // The endpoint file sits in the game folder there (control::default_path), where an app
+    // allowed to read all files finds the token too.
+    if cfg!(target_os = "android") {
+        lines.push(get("horizon.agent.android_file"));
+    }
     lines
 }
 

@@ -473,6 +473,7 @@
   "horizon.agent.copy_details": "Copiar detalhes da conexão",
   "horizon.agent.export_repro": "Exportar pacote de reprodução",
   "horizon.agent.local_only": "Somente local: agentes neste computador, nunca na rede.",
+  "horizon.agent.android_file": "O arquivo de conexão fica na pasta do jogo: enquanto isto estiver ligado, apps com acesso a todos os arquivos podem se conectar.",
   "horizon.agent.off": "Desativado: os agentes não podem acessar este jogo.",
   "horizon.agent.record_session": "Iniciar sessão de gravação",
   "horizon.agent.record_stop": "Parar a sessão de gravação",

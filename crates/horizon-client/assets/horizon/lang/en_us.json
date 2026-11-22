@@ -780,6 +780,7 @@
   "horizon.agent.session_opened": "Opened for this session by the program that started the game.",
   "horizon.agent.socket": "Socket: %s (copy the details for its full path)",
   "horizon.agent.local_only": "Local only: agents on this computer, never the network.",
+  "horizon.agent.android_file": "The connection file is in the game folder: while this is on, apps allowed to read all files can connect.",
   "Entity Culling Precheck": "Entity Culling Precheck",
   "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.": "Runs the mob AABB precheck after this many loaded mobs. Zero disables it.",
   "%s mobs": "%s mobs",
