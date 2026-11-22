@@ -477,7 +477,9 @@ impl TouchControls {
         }
         let p = self.placement(c);
         if in_menu {
+            // Both only act when Inventory Walk Controls is on; otherwise taps are dead.
             if self.in_inventory
+                && self.settings.inventory_controls
                 && self.settings.control_style == ControlStyle::Mcpe
                 && matches!(c, Control::Sneak | Control::Inventory)
             {
@@ -2020,6 +2022,20 @@ fn starling_utility(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inventory_buttons_follow_inventory_walk_controls_in_menus() {
+        let mut touch = TouchControls::default();
+        touch.viewport(1920, 1080);
+        touch.settings.control_style = ControlStyle::Mcpe;
+        touch.in_inventory = true;
+        for on in [false, true] {
+            touch.settings.inventory_controls = on;
+            for c in [Control::Sneak, Control::Inventory] {
+                assert_eq!(touch.visible_for_state(c, true), on, "{c:?}");
+            }
+        }
+    }
+
     #[test]
     fn joystick_active_zones_mirror_with_left_handed_layouts() {
         for (area, start) in [
