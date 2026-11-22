@@ -38,7 +38,7 @@ Credits:
   Horizon's own parts from another repository as a launcher plugin.
 - **Martipops** (controllers, splitscreen): the compositor's place in the engine, and where controllers,
   splitscreen, Replay Studio, PvP & HUD and a UI page API go.
-- **Contributors at the 2026-11-08 stage:** the file-size rule, the single list of addresses, sponsors in the
+- **Contributors at the 2026-11-08 stage:** the single list of addresses, sponsors in the
   Horizon layer, a platform that exposes what vanilla already uses, and extras as native mods.
 
 ## The rule
@@ -80,8 +80,10 @@ Vanilla Minecraft: Java Edition 26.3, and nothing else.
 ### Portable crates
 
 `horizon-core`, `horizon-world`, `horizon-protocol`, `horizon-items`, `horizon-command`, `horizon-client-core`
-and `horizon-assets` hold vanilla's rules and data with no desktop in them: no window, GPU, sound, gamepad or
-clipboard library, no HTTP client, and no engine crate outside this list. The platform sits on the desktop engine
+and `horizon-assets` hold vanilla's rules and data with no desktop in them. `horizon-threads` and
+`horizon-guest-stack` provide the desktop-free execution plumbing: worker scheduling, sampling and stack
+reservations, and `horizon-java-properties` reads and writes Java-properties files with the standard library alone. These portable crates have no window, GPU, sound, gamepad or clipboard library, no HTTP client,
+and no engine crate outside the portable list. The platform sits on the desktop engine
 (`wgpu`, `winit`, `cpal`), which a handheld console or a browser can't run, so a port there builds on these crates
 instead. They stay that way: the layer check fails when one takes `winit`, `wgpu`, `cpal`, `gilrs`, `arboard` or
 `ureq`, or an engine crate outside the list (#13002). Gameplay itself still lives in `horizon-client`; step P of
@@ -100,7 +102,7 @@ public API that mods, desktop-class ports and the Horizon layer build on.
   hooks and so on become public API with stable types (arismoko/horizon#1608's patterns). Then a mod, a port or a
   Horizon feature builds on them instead of editing or copying engine code.
 - **Examples:** `horizon-shader-api`, `horizon-shaders`, `horizon-optifine` (`cem/`), `horizon-polytone`,
-  `horizon-hdr`, `horizon-dualsense`, `horizon-mods`, `cargo-horizon-mod`, `horizon-anticheat`, `horizon-mcp`,
+  `horizon-hdr`, `horizon-dualsense`, `horizon-mods`, `horizon-anticheat`, `horizon-mcp`,
   `horizon-theme`. Still in engine crates today: `game/mod_api_host.rs`, `game/native_*.rs`, `shader_ui.rs`,
   `hdr_calibration.rs`.
 - **Never:** a built-in address (every address comes from the player, a file or a setting), anything that names
@@ -159,9 +161,9 @@ Horizon's own extras and its product, and every built-in address of an outside s
   and partner servers in the list, Play with Friends and its relay, Discord, the "I'm playing" ping, telemetry and
   benchmark uploads, releases and updates, the hosting supervisor, the launcher.
 - **Examples:** `horizon-addresses`, `horizon-cosmetics`, `horizon-friends`, `horizon-relay`, `horizon-telemetry`,
-  `horizon-bench`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
+  `horizon-perf-share`, `horizon-release-sign`, `horizon-server`, `horizon-mod-registry`, `horizon-heartbeat`,
   `horizon-official`, `horizon-official-servers`, `horizon-discord`, `launcher/`. Still in engine crates today:
-  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs`, `game/tweaks.rs`, `extras_ui.rs`, `pvp.rs`.
+  `game/cosmetics.rs`, `game/emotes.rs`, `game/extras.rs` and `game/extras/`, `extras_ui.rs`, `pvp.rs`.
 - **Rules:**
   - It uses the platform's public API only, never the engine.
   - Until it moves, every Horizon feature in the game sits behind the `horizon-extras` feature
@@ -169,8 +171,10 @@ Horizon's own extras and its product, and every built-in address of an outside s
 
 ## Tools
 
-Developer tools that no player runs: `xtask`, `horizon-bots`, `horizon-mod-api-gen-tests`, and the Python in
-`tools/`. They may depend on anything, and no shipped crate depends on them.
+Developer tools that no player runs: `xtask`, `horizon-bots`, `horizon-mod-api-gen-tests`, `horizon-mod-wasm-wire-loopback`, and the Python in
+`tools/`. They may depend on anything, and no shipped crate depends on them. `cargo-horizon-mod`, the mod author's
+tool, is one: it fetches and checks Horizon's signed mod SDK, so it reads `horizon-addresses` and
+`horizon-release-sign` beside the engine's mod crates.
 
 ## Where a new feature goes
 
@@ -299,7 +303,7 @@ build pays nothing.
 
 The hooks today: `started` (once, when someone plays: not a dedicated server, a benchmark or an automated run),
 `published` (the world opened to or closed from LAN or friends, on change), `shutdown` (the window closed, the
-world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends'). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
+world saved) and `tunnel` (the resolver of `friend:` addresses, Play with Friends') and `captures` (Open and Share for saved performance captures, `horizon-perf-share`: with none registered the game offers neither). **A hook you need and don't find:** add a method with an empty default to `Hooks` and a function in
 `horizon_hooks::engine` that the engine calls where vanilla does the matching thing; give it plain data or a type
 the engine owns, never one from above. A hook that needs engine types the platform doesn't expose yet (a draw
 context for HUD and chat overlays, a settings page) comes with that type's platform API (M6). An extension point
@@ -334,8 +338,8 @@ hook (#14081), `seat()` (#14096).
   only calls it.
 - With nothing registered, the engine does no work: a load of an empty slice where it would dispatch. It makes
   no allocation, no draw call and no file. A vanilla build (horizon-client, horizon-plain) is unchanged.
-- Visible text is a translation key the registrant ships in its lang files, never English in code. Values a
-  player typed (a name, a path) are the exception.
+- Visible text is a translation key the registrant ships in its lang files ([Lang files](#lang-files-horizon_platformlang)),
+  never English in code. Values a player typed (a name, a path) are the exception.
 - Splitscreen players are one process, one thread, each `Game` in turn (`game/split.rs`), so a crate's statics
   are shared by them. Every call (stores, pages, layers, hooks) happens on one player's turn, and
   `horizon_platform::hooks::seat()` (0 for P1) says whose: a crate keeps per-player state indexed by it.
@@ -375,7 +379,7 @@ pub trait Store: Sync {
 A page lives in the options screen's shell, and its entry sits on one of the game's menus.
 
 ```rust
-pub enum Place { HorizonSettings, Title, Pause }
+pub enum Place { HorizonSettings, Pause, Extras, Title }
 pub trait Page: Sync {
     fn id(&self) -> &'static str;            // stable, for horizon-ctl and the page stack
     fn title(&self) -> &'static str;         // translation key
@@ -383,6 +387,7 @@ pub trait Page: Sync {
     fn rows(&self, rows: &mut Vec<Row>);     // asked when the page is drawn, not every frame elsewhere
     fn act(&self, row: usize, act: Act);     // a click, a reverse click, a slider's value, a key
     fn tooltip(&self, row: usize) -> Option<Label> { None }   // hover text, may follow the value
+    fn back(&self) -> &'static str { "gui.done" }            // the leave button of a page drawn as a screen
 }
 pub enum Row {
     Heading(&'static str),                   // translation key
@@ -394,9 +399,11 @@ pub enum Row {
     Key { label: &'static str, key: String },                 // a binding: `key.keyboard.z`
     Text { text: String, quiet: bool, groups: bool },         // Row::text(..): white or grey, wrapped
     Space(u8),                                                // GUI pixels, on a page drawn as a screen
+    Field { label: &'static str, text: String, max: usize },  // Row::field(..).max(n): an EditBox, on a page drawn as a screen
 }
 pub enum Label { Key(&'static str), Value(String) }
-pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
+pub enum Act { Press, PressBack, Slide(f32), Bind(String), Edit(String), Submit }
+pub fn connect(address: impl Into<String>);                   // from a Title page's act: join that server
 ```
 
 - `HorizonSettings`: a row of the Horizon Settings page, after the engine's own pages. `Title` and `Pause`: a
@@ -407,10 +414,21 @@ pub enum Act { Press, PressBack, Slide(f32), Bind(String) }
   button, `.half()` puts two side by side, `.footer()` sets one beside Done on a page drawn as its own screen,
   `.quiet()` greys text, `.groups()` breaks it only between `-`-separated groups (an invite code). In the options
   shell, text is notes and space is nothing.
+- `Title` is the title screen's Friends icon slot (vanilla's `CommonButtons.friends`), not a new row: the icon
+  keeps its place and look at every GUI scale, and opens the first page registered there as a form drawn as Join a
+  Friend is (`multiplayer/page.rs`): the title, the rows from y 53 (a field's grey label, its 200-wide box 11
+  below, 41 a field), the buttons in a column from a quarter of the height + 114, the back button last
+  (`Page::back`, `gui.cancel` for a form). It shows heading, note, text, space, field and button rows. With no page
+  there the icon opens the engine's Join a Friend while an invite-code resolver is registered, else it is
+  inactive.
+- `Field` is vanilla's `EditBox` on a page drawn as its own screen: focus by click or Tab, typing, the caret keys,
+  selection, copy and paste, at most `max` characters (32 by default). The engine keeps its text while the page is
+  open and sends each change (`Act::Edit`, before any other act or redraw reaches the page) and Enter
+  (`Act::Submit`). The options shell has no field.
 - Rows are rebuilt when the page is drawn or acted on, like the engine's own pages: no cost while no page is
   open.
 - The engine keeps native mods' pages (`Page::NativeMod`) as they are. Both kinds sit in one module that
-  `options_ui.rs` calls: `options_ui.rs` is over 3000 lines and doesn't grow.
+  `options_ui.rs` calls.
 
 ### HUD drawing (`horizon_platform::hud`)
 
@@ -512,6 +530,30 @@ fn container_draw(&self, c: &dyn Container, canvas: &mut dyn hud::Canvas);    //
 - `order` is the only text: Sorting ranks by it. The rest is ids and numbers, so the API names no engine type
   (`ItemStack` stays in the engine).
 
+### Lang files (`horizon_platform::lang`)
+
+A crate keeps the text for its keys in its own folder, `crates/<name>/assets/lang/<code>.json`, with the same
+shape as the engine's `assets/horizon/lang` files (flat `"key": "text"` lines, `en_us.json` the reference).
+It registers them as `(code, JSON)` pairs, usually `include_str!`s:
+
+```rust
+static LANG: &horizon_platform::lang::Files = &[
+    ("en_us", include_str!("../assets/lang/en_us.json")),
+    ("fr_fr", include_str!("../assets/lang/fr_fr.json")),
+];
+horizon_platform::lang::register(LANG)?;
+```
+
+- The game loads them into its `horizon` namespace right after its own bundled file for the same language, so a
+  resource pack still overrides them, and a language a crate lacks falls back to its English.
+- A key belongs to one folder. On a key the engine's file also has, the engine's text wins (and the
+  `lang.rs` test fails).
+- Regional variants read their language's file as the engine's do (`fr_ca` reads `fr_fr`, `de_ch` reads `de_de`
+  without `ß`).
+- `tools/lang_coverage.py` reports each crate's folder beside the engine's. A person's review of a crate's entry
+  is kept in `tools/lang_review/<name>/<code>.json` ([translations.md](translations.md)).
+- With nothing registered, a language loads exactly as before.
+
 ## Extras that may leave the game
 
 Horizon's extras are Horizon-layer code. Each one is a candidate to become an optional native mod that players add
@@ -538,7 +580,7 @@ grow to 3000 lines, and a big file may shrink or stay as it is. The fork records
 explicitly fetched from `https://github.com/horizon-rust/horizon.git` into `refs/sync/upstream-main`.
 It must not be an ancestor of the base and must be a parent of a merge in `base..HEAD`. Without this
 proof, adding or raising an entry fails against `--base`. Missing network access, failed fetches and
-shallow history fail closed. The addresses and layers checks reuse the same provenance helper to
+shallow history fail closed (`tools/pr_ready.py` skips the step on a shallow clone, saying so; CI's verify job checks a full history). The addresses and layers checks reuse the same provenance helper to
 permit only exact rows or assignments from the verified upstream inventories. A PR can still merge
 a real upstream commit and add unrelated caps: review the sync and growth list
 (see `tools/sync/README.md`). In a sync PR a listed file must stay within its cap, and a cap above
@@ -551,7 +593,7 @@ Generated files and `third_party/` are not checked. Test code doesn't count eith
 build doesn't compile it: inline `#[cfg(test)] mod name { ... }` modules. Filenames such as `tests.rs`
 or `<name>_tests.rs` do not exempt a file; other `#[cfg(test)]` items count.
 
-## The check
+## The checks
 
 `python3 tools/check_layers.py` runs in CI's verify job and in `tools/pr_ready.py`. It reads the `cargo metadata` of the
 four workspaces `tools/layers.json` lists (the game, `launcher/`, `crates/horizon-mod-registry/` and
@@ -569,6 +611,9 @@ gives every crate its layer. It fails when:
 Each failure names the section of this page that applies. An `allowed` or `optional` entry that has no dependency
 left is only reported: take it out when you like. `--list` prints every crate's layer and the upward dependencies
 left.
+
+`python3 tools/check_addresses.py` (horizon-rust/horizon#12990) checks the built-in addresses
+([below](#built-in-addresses)); it runs in CI's verify job and in `tools/pr_ready.py` too.
 
 ### Today's exceptions
 
@@ -616,6 +661,7 @@ Horizon's own and third-party addresses (Horizon layer):
 |---|---|---|
 | `play.playhorizon.dev` (status `:24454`), previously `horizon.bunchy7s.dev` | the official server in the list, its status | `horizon-addresses` (#12993), `launcher/links.json` |
 | `cosmetics.playhorizon.dev` | cosmetics, emotes, presence | `horizon-addresses` (#12993) |
+| `playhorizon.dev/perf`, `playhorizon.dev/api/perf/captures` | the performance viewer Open shows a saved capture in, and the upload behind Share (`HORIZON_PERF_VIEWER`, `HORIZON_PERF_CAPTURES` override them) | `horizon-addresses`, used by `horizon-perf-share` |
 | `telemetry.playhorizon.dev` | opt-in telemetry, the "I'm playing" ping, benchmark uploads | `horizon-addresses` (#12993) |
 | `stun.cloudflare.com`, `stun.l.google.com` | Play with Friends NAT discovery | `horizon-addresses` (#12993) |
 | `afri-network.co.za` | the withdrawn partner server, so the game can remove the entry it added | `horizon-addresses` |
@@ -640,7 +686,6 @@ These are not addresses:
   code is just as wrong, and so is Horizon code that reaches into the engine instead of the platform.
 - Horizon features in the game are behind `horizon-extras`, and nothing new names a Horizon crate below it.
 - No new built-in address outside `horizon-addresses`.
-- No file over 3000 lines grows.
 
 ## Plan
 
@@ -675,3 +720,16 @@ by default), so the pipeline moves once. HDR off stays bit-exact.
 The mod API work on arismoko/horizon lands upstream as part of the platform. The API owns its types,
 `horizon-mod-runtime` gets no game dependency, and its CI property check stays as a stricter check inside the
 platform.
+
+The portable engine crate `horizon-engine-slots` owns the final registration seal socket
+and the generated point records, their copy-in constructors, typed dispatchers and activity table.
+The host installs its seal provider before engine startup and registers native API listeners
+after dependency ordering and installation. At sealing, `horizon-mod-points` installs the
+set-once dispatch provider before publishing activity flags. Ordering, owner guards,
+replacement authority and listener dispatch remain in the platform registry. Staged point
+sites name only engine-owned paths; staging does not inject point dependencies into engine manifests.
+The seal refuses repeat or re-entrant sealing and late provider installation.
+
+Engine crates import `horizon-mod-vocab` as `mod_api`. Their test-only
+`mod_platform` dependency reaches `horizon-mod-api`; dev-dependencies are exempt
+from the layer rule because tests may exercise the platform, while shipped code may not.

@@ -104,7 +104,11 @@ final class GameFolder {
             return file;
         }
         String[] names = id.substring(ROOT.length() + 1).split("/", -1);
-        if (ownFiles && !PLAYER_FILES.contains(names[0]) && !LOGS.contains(names[0])) {
+        boolean appearanceImages = "skins".equals(names[0])
+                || ("game-wardrobe".equals(names[0])
+                    && (names.length == 1 || "images".equals(names[1])));
+        if (ownFiles && !PLAYER_FILES.contains(names[0]) && !LOGS.contains(names[0])
+                && !appearanceImages) {
             throw new FileNotFoundException("Not in the game folder: " + id);
         }
         for (String name : names) {

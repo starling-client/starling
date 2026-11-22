@@ -85,6 +85,22 @@ pub fn upload_skin(
     Ok(renewed)
 }
 
+/// Keep the cape reported by Minecraft Services next to the rest of the account profile.
+pub fn remember_cape(dir: &Path, key: &str, cape: Option<String>) -> Result<(), String> {
+    let _lock = account_lock();
+    let mut accounts = Accounts::load(dir);
+    if let Some(account) = accounts
+        .accounts
+        .iter_mut()
+        .find(|account| account.provider == Provider::Microsoft && account.key() == key)
+        && account.cape != cape
+    {
+        account.cape = cape;
+        accounts.save(dir)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

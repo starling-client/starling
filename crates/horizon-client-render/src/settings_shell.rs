@@ -222,11 +222,6 @@ impl<P: Copy, S: Copy> Lines<P, S> {
         }
         self.y += style::GROUP_GAP;
     }
-    /// A group of rows under its page's own name (`list`'s `page_name`), for pages named at run
-    /// time, such as a resource pack's config entries (`pack_options_ui`).
-    pub(crate) fn titled(&mut self, page: P, rows: Vec<S>) {
-        self.group(page, "", rows);
-    }
     /// The lines and the content's height.
     pub(crate) fn finish(self) -> (Vec<Line<P, S>>, f32) {
         (self.lines, (self.y - style::GROUP_GAP).max(0.0))
@@ -310,6 +305,9 @@ pub(crate) fn search_field(
     let frame = [x, y, clear[0] - x, h];
     search.frame = Some(frame);
     search.draw(batch, atlas, None);
+    if ui::hovered(cursor, x, y, frame[2], h) {
+        crate::widgets::text_cursor(true, true);
+    }
     if search.value.is_empty() && !focused {
         let hint = Text::literal(search.message.clone());
         batch.text_styled(atlas, &hint, x + 5.0, search.y, style::muted(), true);
@@ -334,10 +332,9 @@ pub(crate) fn search_field(
     }
 }
 
-/// The plate, with the open page's name (or the search's) over its list.
+/// The open page's name (or the search's) and rule, over its already-painted plate.
 pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, heading: &str) {
     let [px, py, pw, _] = cols.plate;
-    style::panel(batch, atlas, cols.plate);
     let heading = Text::literal(style::fit(atlas, heading, pw - 24.0));
     batch.text_styled(atlas, &heading, px + 12.0, py + 10.0, style::WHITE, true);
     style::fill(
@@ -349,8 +346,7 @@ pub(crate) fn plate(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, head
 }
 
 /// The list, clipped to its view: each group's panel, then its names and rows on it. `row`
-/// draws a setting at its `y`; `page_name` names a page, and a group without a name of its own
-/// (`Lines::titled`), in the player's language.
+/// draws a setting at its `y`; `page_name` names a page, in the player's language.
 pub(crate) fn list<P: Copy, S: Copy>(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -383,7 +379,6 @@ pub(crate) fn list<P: Copy, S: Copy>(
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
-                Some(("", _)) => (page_name(line.page), style::muted(), 3.0),
                 Some((name, _)) => (lang::get(name), style::muted(), 3.0),
                 None => (page_name(line.page), style::accent(), 4.0),
             };
@@ -501,7 +496,12 @@ pub(crate) fn row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32
         let lit = [rect[0] + 2.0, y + 1.0, rect[2] - 4.0, style::ROW - 2.0];
         style::fill(batch, atlas, lit, style::hover());
     }
-    crate::widgets::widget_cursor(hover, live);
+    // AbstractSliderButton.handleCursor: a dragged slider resizes, buttons point.
+    if slider.is_some() {
+        crate::widgets::slider_cursor(hover, live, held);
+    } else {
+        crate::widgets::widget_cursor(hover, live);
+    }
     // The control socket's widget tree, the narrator and a controller's focus.
     let kind = match slider {
         Some(value) => crate::widgets::Kind::Slider {
@@ -944,22 +944,10 @@ pub(crate) fn dock_note(
     }
 }
 
-/// Done or Undo at the foot of the page list.
+/// Done, Undo or Apply at the foot of the page list, registered for a controller. Its label
+/// leaves `room` at its left for a controller's glyph: a button that declared its job gets one,
+/// as vanilla's do (`ui::action_button`), which a half-width Undo or Apply needs.
 pub(crate) fn foot_button(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    rect: [f32; 4],
-    label: &Text,
-    cursor: (f32, f32),
-    flags: (bool, bool),
-) {
-    foot_button_with_room(batch, atlas, rect, label, cursor, flags, 0.0);
-}
-
-/// A foot button whose label leaves `room` at its left for a controller's glyph: a button that
-/// declared its job gets one, as vanilla's do (`ui::action_button`), which a half-width Undo or
-/// Apply needs.
-fn foot_button_with_room(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
@@ -1477,7 +1465,18 @@ pub(crate) trait Hosted {
     /// moves clearly sideways, and scrolls the list otherwise (touch.rs, `prefer_slider`).
     fn slider_at(&mut self, s: &Settings, size: (f32, f32), at: (f32, f32)) -> bool;
     /// `waiting`: the binding the host waits on.
-    fn draw(
+    fn discard_draw(&mut self);
+    fn draw_background(
+        &mut self,
+        s: &Settings,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        in_world: bool,
+        waiting: Option<Capture>,
+    );
+    fn draw_contents(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32));
+    #[cfg(test)]
+    fn draw_test_frame(
         &mut self,
         s: &Settings,
         batch: &mut HudBatch,
@@ -1485,7 +1484,13 @@ pub(crate) trait Hosted {
         cursor: (f32, f32),
         in_world: bool,
         waiting: Option<Capture>,
-    );
+        phases: &mut dyn FnMut(crate::screen_draw::RenderPhase, &mut HudBatch),
+    ) {
+        self.draw_background(s, batch, atlas, in_world, waiting);
+        phases(crate::screen_draw::RenderPhase::Background, batch);
+        self.draw_contents(batch, atlas, cursor);
+        phases(crate::screen_draw::RenderPhase::Foreground, batch);
+    }
     /// A press (or a drag with `drag`) at `at`.
     fn click(
         &mut self,
@@ -1608,6 +1613,8 @@ pub(crate) struct Shell<S: Screen> {
     waiting: Option<Capture>,
     /// The rows as last built, and what for.
     built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
+    /// This frame's prepared view, consumed before the foreground hook.
+    frame_draw: Option<Rc<View<S::Page, S::Row>>>,
     /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
     /// changed them since.
     before: Option<Box<Settings>>,
@@ -1643,6 +1650,7 @@ impl<S: Screen + Default> Default for Shell<S> {
             picked: None,
             waiting: None,
             built: None,
+            frame_draw: None,
             before: None,
             changed: false,
             focus_next: None,
@@ -1979,6 +1987,12 @@ impl<S: Screen> Shell<S> {
     }
     /// The page the plate shows: the open one or, while searching, the one picked, else the
     /// topmost line's.
+    /// The page the plate is headed with.
+    #[cfg(test)]
+    pub(crate) fn current_page(&mut self, s: &Settings, size: (f32, f32)) -> Option<S::Page> {
+        let view = self.view(s, size);
+        self.current(&view)
+    }
     fn current(&self, view: &View<S::Page, S::Row>) -> Option<S::Page> {
         if self.query().is_empty() {
             // A page that went (a screen whose pages are the player's) leaves the first.
@@ -2031,6 +2045,27 @@ impl<S: Screen> Shell<S> {
             let [rx, ry, rw, rh] = cols.row(ry);
             ui::hovered((x, y), rx, ry, rw, rh)
         })
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn preview_row(
+        &mut self,
+        s: &Settings,
+        size: (f32, f32),
+        at: (f32, f32),
+    ) -> Option<S::Row> {
+        let view = self.view(s, size);
+        let focused = match (self.keyed, self.focus) {
+            (true, Some(Target::Row(row))) => Some(row),
+            _ => None,
+        };
+        self.dragging
+            .or_else(|| self.row_at(&view, at).map(|(row, _)| row.id).or(focused))
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn selected_page(&self) -> Option<S::Page> {
+        self.page
     }
     /// Press `row`, or (`stepped`) Left or Right on it: `track` is where on its slider's track
     /// (`None` from the keyboard, or off it).
@@ -2265,7 +2300,6 @@ impl<S: Screen> Shell<S> {
         let [x, y, w, _] = cols.dock;
         let left = x + DOCK_INSET;
         let top = y + DOCK_NAME_Y;
-        style::panel(batch, atlas, cols.dock);
         let row = described.map(|i| &view.rows[i]);
         let why = row.and_then(|row| row.why.as_deref().filter(|_| !row.live));
         let said = row.map(|row| self.strip_text(row));
@@ -2322,15 +2356,18 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         self.row_at(&view, at)
             .is_some_and(|(row, _)| matches!(row.value, Value::Slider { .. }))
     }
-    fn draw(
+    fn discard_draw(&mut self) {
+        self.frame_draw = None;
+    }
+    fn draw_background(
         &mut self,
         s: &Settings,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
-        cursor: (f32, f32),
         in_world: bool,
         waiting: Option<Capture>,
     ) {
+        self.frame_draw = None;
         self.waiting = waiting;
         self.keep(s);
         let size = (batch.width, batch.height);
@@ -2357,6 +2394,16 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         }
         let cols = view.cols;
         backdrop(batch, atlas, in_world);
+        style::panel(batch, atlas, cols.plate);
+        style::panel(batch, atlas, cols.dock);
+        self.frame_draw = Some(view);
+    }
+    fn draw_contents(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32)) {
+        let view = self
+            .frame_draw
+            .take()
+            .expect("shell background before contents");
+        let cols = view.cols;
         let current = self.current(&view);
         self::mark(batch, atlas, &cols, &lang::get(self.screen.title()));
         let pages = self.page_list(&view, Some(atlas));
@@ -2427,7 +2474,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 }
                 None => 0.0,
             };
-            foot_button_with_room(batch, atlas, rect, &label, cursor, flags, room);
+            foot_button(batch, atlas, rect, &label, cursor, flags, room);
         }
     }
     fn click(
@@ -2815,11 +2862,6 @@ impl<S: Screen> Shell<S> {
         lines
             .filter_map(|l| Some((l.page, view.rows[l.setting?].id)))
             .collect()
-    }
-    /// The page the plate is headed with.
-    pub(crate) fn current_page(&mut self, s: &Settings, size: (f32, f32)) -> Option<S::Page> {
-        let view = self.view(s, size);
-        self.current(&view)
     }
     /// Whether `row` is all in the list's view now.
     pub(crate) fn in_view(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> bool {

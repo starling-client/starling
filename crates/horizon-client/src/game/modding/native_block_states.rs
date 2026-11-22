@@ -230,20 +230,19 @@ impl Game<'_> {
         self.pack.assets.registry.state(state)?;
         Some(self.res.facts().get(state).hardness)
     }
+    /// The explosion resistance the block of this state declares (`Block.getExplosionResistance`):
+    /// stone 6, obsidian 1200, bedrock 3,600,000. None for an unknown state.
+    pub(super) fn block_state_explosion_resistance(&self, state: BlockStateId) -> Option<f32> {
+        self.pack.assets.registry.state(state)?;
+        Some(self.res.facts().get(state).explosion_resistance)
+    }
     /// `BlockState.getSoundType()`: its volume, pitch and the sound events for breaking,
     /// stepping on, placing, hitting and falling on it. None for an unknown state.
     pub(super) fn block_state_sound(&self, state: BlockStateId) -> Option<BlockSoundType> {
         self.pack.assets.registry.state(state)?;
-        let sounds = &self.res.facts().get(state).sounds;
-        Some(BlockSoundType {
-            volume: sounds.volume,
-            pitch: sounds.pitch,
-            break_sound: Arc::clone(&sounds.break_sound),
-            step: Arc::clone(&sounds.step),
-            place: Arc::clone(&sounds.place),
-            hit: Arc::clone(&sounds.hit),
-            fall: Arc::clone(&sounds.fall),
-        })
+        Some(horizon_client::block_sounds::own(
+            &self.res.facts().get(state).sounds,
+        ))
     }
     /// `BlockState.hasBlockEntity()`. None for an unknown state.
     pub(super) fn block_state_has_block_entity(&self, state: BlockStateId) -> Option<bool> {
@@ -471,17 +470,21 @@ mod tests {
                 .is_none()
             );
             assert_eq!(
-                host.block_item(mod_api::__private::part_tests::block_key("minecraft:stone"))
-                    .and_then(mod_api::__private::item_key_id),
+                host.block_item(mod_platform::__private::part_tests::block_key(
+                    "minecraft:stone"
+                ))
+                .and_then(mod_api::__private::item_key_id),
                 Some("minecraft:stone")
             );
             assert_eq!(
-                host.block_item(mod_api::__private::part_tests::block_key("minecraft:water"))
-                    .and_then(mod_api::__private::item_key_id),
+                host.block_item(mod_platform::__private::part_tests::block_key(
+                    "minecraft:water"
+                ))
+                .and_then(mod_api::__private::item_key_id),
                 Some("minecraft:air")
             );
             let item = |id| mod_api::__private::item_key(id).unwrap();
-            let block = mod_api::__private::part_tests::block_key;
+            let block = mod_platform::__private::part_tests::block_key;
             assert_eq!(
                 host.item_block(item("minecraft:oak_planks")),
                 Some(block("minecraft:oak_planks"))
@@ -528,16 +531,14 @@ mod tests {
                 _context: &mod_api::RegistrationContext,
                 event: &mut mod_api::BlocksEvent<'_>,
             ) {
-                event.blocks.push({
-                    let mut draft = mod_api::Block::new(CRATE, "minecraft:stone");
-                    draft.item = true;
-                    draft
-                });
+                event
+                    .blocks
+                    .push(mod_api::Block::new(CRATE, "minecraft:stone"));
             }
         }
         let mods: mod_api::Mods =
             Arc::from([mod_api::ModEntry::new("item_test", Box::new(TestMod))]);
-        mod_api::__private::install(mods.clone());
+        mod_platform::__private::install(mods.clone());
         crate::game::api_values::install_parts(&mods).unwrap();
         let base = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let root = super::super::mods::content_root(&base, &Default::default())
@@ -613,6 +614,28 @@ mod tests {
             // A second read is the same table in the same order.
             assert_eq!(host.block_keys(), blocks);
             assert_eq!(host.enchantment_keys(), enchantments);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires prepared resources"]
+    fn public_host_resolves_literal_block_and_effect_names() {
+        mod_platform::testing::with_mods(std::sync::Arc::from([]), || {
+            let root =
+                std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+            super::super::native_entity_refs::tests::with_game_at(root, |game| {
+                let host: &dyn mod_api::Host = game;
+                assert_eq!(
+                    host.block_key("minecraft:stone").unwrap().id(host),
+                    "minecraft:stone"
+                );
+                assert_eq!(
+                    host.effect_key("minecraft:speed").unwrap().id(host),
+                    "minecraft:speed"
+                );
+                assert_eq!(host.block_key("test:missing_block"), None);
+                assert_eq!(host.effect_key("test:missing_effect"), None);
+            });
         });
     }
 
@@ -945,9 +968,9 @@ mod tests {
 
     #[test]
     fn a_block_key_resolves_its_default_state() {
-        use mod_api::__private::part_tests;
+        use mod_platform::__private::part_tests;
         let (_, registry) = blocks();
-        mod_api::__private::install(Default::default());
+        mod_platform::__private::install(Default::default());
         crate::game::api_values::register_game_keys([
             "minecraft:oak_stairs".to_owned(),
             "minecraft:wheat".to_owned(),
@@ -1024,13 +1047,13 @@ mod facts_tests {
             // Oak stairs: facing 4 × half 2 × shape 5 × waterlogged 2 = 80 states, its default
             // among them; stone has one.
             let range = facts
-                .states_of(mod_api::__private::part_tests::block_key(
+                .states_of(mod_platform::__private::part_tests::block_key(
                     "minecraft:oak_stairs",
                 ))
                 .unwrap();
             assert_eq!(range.len(), 80);
             assert!(range.contains(stairs));
-            let key = mod_api::__private::part_tests::block_key("minecraft:oak_stairs");
+            let key = mod_platform::__private::part_tests::block_key("minecraft:oak_stairs");
             assert!(range.iter().all(|state| state.block() == key));
             assert_eq!(
                 range
@@ -1041,7 +1064,9 @@ mod facts_tests {
             );
             assert_eq!(
                 facts
-                    .states_of(mod_api::__private::part_tests::block_key("minecraft:stone"))
+                    .states_of(mod_platform::__private::part_tests::block_key(
+                        "minecraft:stone"
+                    ))
                     .map(|r| (r.first(), r.len())),
                 Some((stone, 1))
             );
@@ -1119,7 +1144,7 @@ mod crafting_remainder_tests {
     fn crafting_remainder_without_parts_matches_data() {
         let mods: mod_api::Mods = Vec::new().into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 assert!(!mod_api::__private::has_part_hook(
                     mod_api::HookId::CraftingRemainder
@@ -1152,7 +1177,7 @@ mod crafting_remainder_tests {
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("remainder", Box::new(RemainderMod))].into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 super::super::native_entity_refs::tests::resolve_parts(game).unwrap();
                 let mut tool = ItemStack {

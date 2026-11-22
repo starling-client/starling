@@ -41,7 +41,7 @@ pub const ENTITY_ITEMS: EntityCapabilityKey<dyn ResourceHandler<ItemResource>> =
     EntityCapabilityKey {
         name: "horizon:entity_items",
         default: Some(|host, entity, ()| {
-            if entity.kind(host)? != "minecraft:player" {
+            if !builtin_player_inventory_type(&entity.kind(host)?.id(host)) {
                 if let Some(size) = backend_of(host)?.entity_container_size(entity.id()) {
                     return Some(Box::new(ContainerItems { entity, size }));
                 }
@@ -86,6 +86,11 @@ pub const ENTITY_FLUIDS: EntityCapabilityKey<
     Option<Direction>,
 > = EntityCapabilityKey::new("horizon:entity_fluids");
 
+/// The player inventory default's type domain, shared with registration-time coverage.
+pub(crate) fn builtin_player_inventory_type(kind: &str) -> bool {
+    kind == "minecraft:player"
+}
+
 impl EntityRef {
     /// `key`'s handler for this entity (`Entity.getCapability`), its providers given `context`
     /// (`()` for [`ENTITY_ITEMS`], the side asked about for [`ENTITY_AUTOMATION`],
@@ -106,7 +111,7 @@ impl EntityRef {
         let table = host.capability_providers();
         let kind = table
             .provided(ProvidedBy::Entity, key.name)
-            .then(|| self.kind(host))
+            .then(|| self.kind(host).map(|kind| kind.id(host)))
             .flatten();
         crate::answered(
             crate::ask_providers(
@@ -281,7 +286,10 @@ impl ResourceHandler<ItemResource> for LivingEquipment {
 
 /// The entity type `entity` is (`minecraft:zombie`), empty where the handle no longer reads.
 fn kind_of(host: &dyn Host, entity: EntityRef) -> String {
-    entity.kind(host).unwrap_or_default()
+    entity
+        .kind(host)
+        .map(|kind| kind.id(host))
+        .unwrap_or_default()
 }
 
 /// The player inventory's slots, by `Inventory`'s numbers (`PlayerInventoryWrapper`).
@@ -302,7 +310,7 @@ impl PlayerItems {
     fn place(&self, host: &dyn Host, index: usize) -> Option<ItemPlace> {
         live(host, self.entity).then(|| self.slot(index)).flatten()
     }
-    /// Index `index` as the player's slot, numbered as `native_inventory_tick` numbers them.
+    /// Index `index` as the player's slot, numbered as `inventory_tick` numbers them.
     fn slot(&self, index: usize) -> Option<ItemPlace> {
         let slot = match index {
             OFF_HAND => -106,

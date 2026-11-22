@@ -1,29 +1,35 @@
 //! Command execution (the `execute` side of each vanilla command class):
 //! entity selectors resolved against the game, vanilla feedback and errors.
 mod admin;
+mod clone_payload;
 pub(super) mod compute;
 mod data;
 mod difficulty;
+mod display_names;
 pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
+mod give;
+mod item_count;
 pub(in crate::game) mod items;
 mod misc;
 mod modprofile;
 mod place;
 mod players;
+mod position_args;
 pub(super) mod pregen;
 mod profiles;
 mod raid;
 mod selector_bounds;
+mod targets;
 mod terrain_cmds;
 mod test_locate;
 mod test_runs;
 mod text_commands;
 mod world_cmds;
 
-use super::{Dim, Game, Screen, chat::PLAYER_NAME};
+use super::{Dim, Game, Screen, chat::PLAYER_NAME, vehicle_teleport::TeleportMotion};
 use horizon_client::{
     command::{
         Arg, CommandError, Context, Reader,
@@ -34,7 +40,7 @@ use horizon_client::{
     items::ItemStack,
     text::{self, Style, Text},
 };
-use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_core::{geometry::Vec3, java_number::float_to_string, random::RandomSource};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use horizon_world::registry::BlockStateId;
 
@@ -86,6 +92,8 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// A general entity row, by its entity id (#792).
+    General(u32),
     /// A cast fishing hook (`minecraft:fishing_bobber`), which lives with the
     /// player who cast it. Only a mod's handle names one.
     Hook(u32),
@@ -174,18 +182,10 @@ fn entity_name_key(id: &str) -> String {
 fn texts(args: &[Text]) -> Vec<Text> {
     args.to_vec()
 }
-/// Java's String.valueOf(float/double) for the values commands print.
-fn java_float(v: f64) -> String {
-    if v == v.trunc() && v.abs() < 1.0e7 {
-        format!("{v:.1}")
-    } else {
-        format!("{v}")
-    }
-}
 /// String.format(Locale.ROOT, "%.<decimals>f"): Java rounds the shortest
 /// decimal text half-up, which `{:.N}` (exact value, half-even) does not.
 pub(super) fn percent_f(v: f64, decimals: usize) -> String {
-    horizon_client::java_text::format_fixed(v, decimals)
+    horizon_core::java_number::format_fixed(v, decimals)
 }
 /// String.format(Locale.ROOT, "%f").
 fn format_double(v: f64) -> String {
@@ -216,36 +216,6 @@ fn wrap_degrees(angle: f32) -> f32 {
     }
 }
 
-/// The network id of a target that is no player: its entity id.
-fn non_player_entity_id(t: Target) -> Option<i32> {
-    let (Target::Mob(id)
-    | Target::Item(id)
-    | Target::Orb(id)
-    | Target::Projectile(id)
-    | Target::Stand(id)
-    | Target::Frame(id)
-    | Target::Painting(id)
-    | Target::Boat(id)
-    | Target::Cart(id)
-    | Target::Other(id)
-    | Target::Fangs(id)
-    | Target::Crystal(id)
-    | Target::Dragon(id)
-    | Target::DragonPart(id)
-    | Target::Tnt(id)
-    | Target::Cushion(id)
-    | Target::Falling(id)
-    | Target::Rocket(id)
-    | Target::Trident(id)
-    | Target::Spawner(id)
-    | Target::Cloud(id)
-    | Target::Hook(id)
-    | Target::Knot(id)) = t
-    else {
-        return None;
-    };
-    i32::try_from(id).ok()
-}
 impl Game<'_> {
     /// `native_player_level_change` for a level that was `from` before an experience change.
     pub(super) fn native_player_level_changed(&mut self, from: i32) {
@@ -322,7 +292,7 @@ impl Game<'_> {
         self.command_source = outer;
         ok
     }
-    pub(super) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
+    pub(in crate::game) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
         self.command_failure(e.message.clone());
         let Some(input) = &e.input else { return };
         let cursor = e.cursor.min(input.len());
@@ -479,9 +449,7 @@ impl Game<'_> {
         // the server's own source, "Server".
         let who = match self.command_source.and_then(|s| s.entity) {
             Some(entity) => self.target_name(entity),
-            None if self.console_broadcast.is_some() => {
-                Text::literal(if self.rcon_source { "Rcon" } else { "Server" }.to_owned())
-            }
+            None if self.console_broadcast.is_some() => self.server_name(),
             None => self.player_display_name(),
         };
         let line = Text::translate("chat.type.admin", &[who, message])
@@ -504,7 +472,7 @@ impl Game<'_> {
         );
         displayname
     }
-    fn source_position(&self) -> [f64; 3] {
+    pub(super) fn source_position(&self) -> [f64; 3] {
         if let Some(s) = &self.command_source {
             return s.pos;
         }
@@ -520,7 +488,7 @@ impl Game<'_> {
             [s.x.floor(), s.y.floor(), s.z.floor()]
         })
     }
-    fn source_rotation(&self) -> [f32; 2] {
+    pub(super) fn source_rotation(&self) -> [f32; 2] {
         self.command_source
             .map_or([self.yaw, self.pitch], |s| s.rot)
     }
@@ -541,22 +509,6 @@ impl Game<'_> {
     pub(super) fn position_arg(&self, ctx: &Context, name: &str) -> Option<[f64; 3]> {
         self.coords(ctx, name).map(|c| self.resolve_coords(&c))
     }
-    /// BlockPosArgument.getLoadedBlockPos.
-    pub(super) fn block_pos_arg(&self, ctx: &Context, name: &str) -> R<[i32; 3]> {
-        let c = self
-            .coords(ctx, name)
-            .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
-        // BlockPos.containing(getPosition)
-        let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-        if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
-            return Err(err("argument.pos.unloaded", &[]));
-        }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
-            return Err(err("argument.pos.outofworld", &[]));
-        }
-        Ok(p)
-    }
     fn int(ctx: &Context, name: &str) -> Option<i32> {
         match ctx.get(name) {
             Some(Arg::Int(v)) => Some(*v),
@@ -565,195 +517,6 @@ impl Game<'_> {
     }
     // ---- entities -------------------------------------------------------
 
-    /// The level `t` is in (`Entity.level`): a server's players have their
-    /// own, which need not be the one in place; everything else is in the
-    /// level in place.
-    pub(super) fn target_level(&self, t: Target) -> Dim {
-        let conn = match t {
-            Target::Player => self.lan_acting,
-            Target::Guest(conn) => Some(conn),
-            _ => None,
-        };
-        conn.and_then(|c| self.command_guest(c))
-            .map_or(self.dim, |g| Dim::from_id(&g.dimension))
-    }
-    pub(super) fn target_position(&self, t: Target) -> Option<[f64; 3]> {
-        match t {
-            Target::Player => self
-                .player
-                .as_ref()
-                .map(|p| [p.position.x, p.position.y, p.position.z]),
-            Target::Guest(conn) => self.command_guest(conn).map(|g| g.position),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| [m.position.x, m.position.y, m.position.z]),
-            Target::Item(id) => self
-                .dropped
-                .iter()
-                .find(|i| i.id == id)
-                .map(|i| [i.position.x, i.position.y, i.position.z]),
-            Target::Orb(id) => self
-                .orbs
-                .iter()
-                .find(|o| o.id == id)
-                .map(|o| [o.position.x, o.position.y, o.position.z]),
-            Target::Projectile(id) => self
-                .creatures
-                .projectiles
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| [a.position.x, a.position.y, a.position.z]),
-            Target::Stand(id) => self
-                .armor_stands
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| [a.position.x, a.position.y, a.position.z]),
-            Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id).map(|f| {
-                let (lo, hi) = f.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
-            Target::Painting(id) => self.paintings.iter().find(|p| p.id == id).map(|p| {
-                let (lo, hi) = p.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
-            Target::Boat(id) => self
-                .boats
-                .iter()
-                .find(|b| b.id == id)
-                .map(|b| [b.position.x, b.position.y, b.position.z]),
-            Target::Cart(id) => self
-                .carts
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::Other(id) => self
-                .others
-                .iter()
-                .find(|o| o.id == id)
-                .map(|o| [o.position.x, o.position.y, o.position.z]),
-            Target::Crystal(id) => self
-                .crystals
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::Dragon(id) => self
-                .dragon
-                .as_ref()
-                .filter(|d| d.id == id)
-                .map(|d| [d.position.x, d.position.y, d.position.z]),
-            Target::Cushion(id) => self
-                .cushions
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| [c.position.x, c.position.y, c.position.z]),
-            Target::DragonPart(id) => self.resident_dragon_part(id).map(|(d, i)| {
-                let p = d.parts[i].0;
-                [p.x, p.y, p.z]
-            }),
-            Target::Tnt(id) => self
-                .tnts
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| [t.position.x, t.position.y, t.position.z]),
-            Target::Falling(id) => self
-                .falling
-                .iter()
-                .find(|f| f.id == id)
-                .map(|f| [f.position.x, f.position.y, f.position.z]),
-            Target::Rocket(id) => self
-                .rockets
-                .iter()
-                .find(|r| r.id == id)
-                .map(|r| [r.position.x, r.position.y, r.position.z]),
-            Target::Cloud(id) => self.breath_clouds.iter().find(|c| c.id == id).map(|c| c.at),
-            Target::Hook(id) => self.fishing_hook_by_id(id).map(|(h, _)| {
-                let p = h.position;
-                [p.x, p.y, p.z]
-            }),
-            Target::Trident(id) => self
-                .tridents
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| [t.position.x, t.position.y, t.position.z]),
-            Target::Fangs(id) => self.fangs.list.iter().find(|f| f.id == id).map(|f| f.pos),
-            Target::Spawner(id) => self
-                .ominous_spawners
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.position),
-            Target::Knot(id) => self.natural_knot(id).map(|fence| {
-                let p = horizon_client::mobs::leash::knot_state(fence).position;
-                [p.x, p.y, p.z]
-            }),
-        }
-    }
-    pub(super) fn target_type(&self, t: Target) -> String {
-        match t {
-            Target::Player | Target::Guest(_) => "minecraft:player".into(),
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map_or_else(String::new, |m| {
-                    horizon_client::command::args::normalize(&m.kind.id)
-                }),
-            Target::Item(_) => "minecraft:item".into(),
-            Target::Orb(_) => "minecraft:experience_orb".into(),
-            Target::Projectile(id) => self
-                .creatures
-                .projectiles
-                .iter()
-                .find(|p| p.id == id)
-                .map_or_else(String::new, |p| p.entity_type().into()),
-            Target::Stand(_) => "minecraft:armor_stand".into(),
-            Target::Frame(id) => {
-                if self.item_frames.iter().any(|f| f.id == id && f.glow) {
-                    "minecraft:glow_item_frame".into()
-                } else {
-                    "minecraft:item_frame".into()
-                }
-            }
-            Target::Painting(_) => "minecraft:painting".into(),
-            Target::Boat(id) => self
-                .boats
-                .iter()
-                .find(|b| b.id == id)
-                .map_or_else(|| "minecraft:oak_boat".into(), |b| b.entity_type()),
-            Target::Cart(id) => self
-                .carts
-                .iter()
-                .find(|c| c.id == id)
-                .map_or_else(|| "minecraft:minecart".into(), |c| c.kind.id().into()),
-            Target::Other(id) => self
-                .others
-                .iter()
-                .find(|o| o.id == id)
-                .map_or_else(String::new, |o| o.kind.clone()),
-            Target::Crystal(_) => "minecraft:end_crystal".into(),
-            // `EnderDragonPart` takes its parent's type.
-            Target::Dragon(_) | Target::DragonPart(_) => "minecraft:ender_dragon".into(),
-            Target::Tnt(_) => "minecraft:tnt".into(),
-            Target::Cushion(_) => "minecraft:cushion".into(),
-            Target::Falling(_) => "minecraft:falling_block".into(),
-            Target::Rocket(_) => "minecraft:firework_rocket".into(),
-            Target::Trident(_) => "minecraft:trident".into(),
-            Target::Fangs(_) => "minecraft:evoker_fangs".into(),
-            Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
-            Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
-            Target::Hook(_) => "minecraft:fishing_bobber".into(),
-            Target::Knot(_) => "minecraft:leash_knot".into(),
-        }
-    }
     /// The name of the player the game acts for: a guest's own while their
     /// command or action runs (`Player.getName`).
     pub(super) fn acting_player_name(&self) -> &str {
@@ -818,13 +581,7 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
-                || Text::translate("entity.", &[]),
-                |m| match self.mob_team_of(m) {
-                    Some(team) => team.formatted_name(m.command_name()),
-                    None => m.command_name(),
-                },
-            ),
+            Target::Mob(id) => self.mob_command_name(id),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = super::native_entities::target_id(other)
@@ -893,7 +650,7 @@ impl Game<'_> {
                     candidates.extend(self.level_candidates());
                 }
             }
-            out.extend(self.select_in_level(candidates, s, origin));
+            out.extend(self.native_selector_kept(s, candidates, origin));
             if let Some(back) = back {
                 self.enter_command_level(back);
             }
@@ -927,14 +684,13 @@ impl Game<'_> {
     }
     /// The candidates of the level in place that pass the selector
     /// (EntitySelector.getPredicate).
-    fn select_in_level(
+    pub(super) fn select_in_level(
         &mut self,
         candidates: Vec<Target>,
         s: &Selector,
         origin: [f64; 3],
     ) -> Vec<(Target, f64)> {
         let level = self.experience.level;
-        let creative = self.creative;
         // EntitySelector tests the type before any predicate. With no scores=
         // or team= (whose holders may be made as they are read), the rest of
         // the extra filter is a pure test of each candidate, so the ones of
@@ -966,7 +722,7 @@ impl Game<'_> {
                     return None;
                 }
                 for (name, neg) in &s.names {
-                    let n = self.target_name(t).plain();
+                    let n = self.target_plain_name(t);
                     if (n == *name) == *neg {
                         return None;
                     }
@@ -975,7 +731,8 @@ impl Game<'_> {
                     return None;
                 }
                 let player = match t {
-                    Target::Player => Some((level, if creative { "creative" } else { "survival" })),
+                    // ServerPlayer.gameMode: the real mode, not `creative`.
+                    Target::Player => Some((level, self.mode.name())),
                     Target::Guest(conn) => self.guest_level_and_mode(conn),
                     _ => None,
                 };
@@ -1037,7 +794,7 @@ impl Game<'_> {
     /// `EntityLookup.getEntities`: insertion order for the joined families in
     /// unbounded arbitrary queries. Spatial queries keep their existing path;
     /// their section membership order is a separate traversal.
-    fn global_selector_candidates(&self) -> Vec<Target> {
+    pub(in crate::game) fn global_selector_candidates(&self) -> Vec<Target> {
         use super::entity::{Entity as _, entity_lists_of, with_entity};
         let original = self.level_candidates();
         // Counts preserve every occurrence, including nonwalk fallback targets.
@@ -1074,7 +831,7 @@ impl Game<'_> {
     /// the entity lists (a kind added there joins `@e` once it names its
     /// `Target`), then the kinds that are not on the walk. An
     /// unsorted selector lists them in that order.
-    fn level_candidates(&self) -> Vec<Target> {
+    pub(in crate::game) fn level_candidates(&self) -> Vec<Target> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
         let mut candidates = Vec::new();
         for_each_entity!(entity_lists_of!(self), entity => {
@@ -1100,9 +857,7 @@ impl Game<'_> {
         );
         candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         // `isRemoved` from a mod's call on, though the sweep has not taken it out.
-        if !self.persist.removals.is_empty() {
-            candidates.retain(|t| !self.persist.removals.contains(t));
-        }
+        candidates.retain(|t| !self.target_removed(t));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -1178,7 +933,7 @@ impl Game<'_> {
         self.enter_command_level(back);
         Some(result)
     }
-    fn entity_tag_matches(&self, tag: &str, ty: &str) -> bool {
+    pub(in crate::game) fn entity_tag_matches(&self, tag: &str, ty: &str) -> bool {
         let path = self.options.resources.join(format!(
             "data/minecraft/tags/entity_type/{}.json",
             tag.trim_start_matches("minecraft:")
@@ -1392,16 +1147,16 @@ impl Game<'_> {
             _ => Ok(0),
         }
     }
-    pub(super) fn set_game_mode(&mut self, mode: GameMode) -> bool {
+    pub(super) fn set_game_mode(&mut self, mut mode: GameMode) -> bool {
         if self.mode == mode {
             return false;
         }
-        // A server player's change is heard by the mods first, who may keep it.
+        // A server player's change is heard by the mods first, who may keep or redirect it.
         if let Some(uuid) = self.lan_acting_uuid {
             let name = self.acting_player_name().to_owned();
             let mut cancel = false;
-            self.native_player_game_mode_changed(uuid, &name, self.mode, mode, &mut cancel);
-            if cancel {
+            self.native_player_game_mode_changed(uuid, &name, self.mode, &mut mode, &mut cancel);
+            if cancel || self.mode == mode {
                 return false;
             }
         }
@@ -1595,36 +1350,15 @@ impl Game<'_> {
                 while remaining > 0 {
                     let size = remaining.min(max_stack);
                     remaining -= size;
-                    let left = g.add_stack_to_inventory(ItemStack {
-                        item: id.as_str().into(),
-                        count: size as u32,
-                        damage,
-                        extra: extra.clone(),
-                    });
-                    // At the player who gets them.
-                    let p = g
-                        .target_position(Target::Player)
-                        .unwrap_or(g.source_position());
-                    if let Some(rest) = left {
-                        // Inventory full: Player.createItemStackToDrop (thrown from
-                        // the eyes), then setNoPickUpDelay and setTarget(player).
-                        let eye = g.eye_position().unwrap_or([
-                            p[0],
-                            p[1] + g.target_eye_height(Target::Player),
-                            p[2],
-                        ]);
-                        g.throw_from_eyes(rest, eye, false, false);
-                        if let Some(item) = g.just_spawned_item() {
-                            item.thrower = None;
-                            item.pickup_delay = 0;
-                            item.target = uuid;
-                        }
-                    } else {
-                        let r = &mut g.world.random;
-                        let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
-                        g.audio
-                            .play("minecraft:entity.item.pickup", Some(p), 0.2, pitch);
-                    }
+                    g.give_acting_stack(
+                        ItemStack {
+                            item: id.as_str().into(),
+                            count: size as u32,
+                            damage,
+                            extra: extra.clone(),
+                        },
+                        uuid,
+                    );
                 }
                 // containerMenu.broadcastChanges: InventoryChangeTrigger
                 // (and its announcement) comes before the command's message.
@@ -1732,10 +1466,9 @@ impl Game<'_> {
         relative: [bool; 3],
         turn_riders: bool,
     ) {
-        let from = self.place_teleport_in_level(t, pos, rotation, relative, turn_riders);
-        if self.options.dedicated.is_some()
-            && let (Some(entity), Some(from), Some(to)) =
-                (self.network_entity_id(t), from, self.target_position(t))
+        let from = self.place_teleport_filed(t, pos, rotation, relative, turn_riders);
+        if let (Some(entity), Some(to)) = (self.network_entity_id(t), self.target_position(t))
+            && let (true, Some(from)) = (self.options.dedicated.is_some(), from)
         {
             self.native_entity_teleport(self.dim.id(), entity as u32, from, to);
         }
@@ -1764,6 +1497,8 @@ impl Game<'_> {
         // PositionMoveRotation.calculateAbsolute clamps pitch before setXRot.
         let rotation = rotation.map(|[yaw, pitch]| [yaw, pitch.clamp(-90.0, 90.0)]);
         match t {
+            // Stage 3's insertion joins live rows; there is nothing to place.
+            Target::General(_) => {}
             Target::Guest(_) => {
                 self.for_player(t, |g| {
                     g.teleport_to_relative(Target::Player, pos, rotation, relative, turn_riders)
@@ -1776,7 +1511,7 @@ impl Game<'_> {
                 // there at once: the arrival they were waiting for elsewhere
                 // in it (whose chunks lose their tickets) is abandoned.
                 if let Some(conn) = self.lan_acting {
-                    self.server_trips.retain(|trip| !trip.is(conn));
+                    self.hold_for_chunks(conn, v);
                 }
                 let from = self
                     .player
@@ -1942,7 +1677,7 @@ impl Game<'_> {
             }
             Target::Crystal(id) => {
                 if let Some(c) = self.crystals.iter_mut().find(|c| c.id == id) {
-                    c.position = v;
+                    (c.position, c.fall.0) = (v, true); // performTeleport: setOnGround(true)
                 }
             }
             Target::Dragon(id) => {
@@ -1953,6 +1688,8 @@ impl Game<'_> {
             }
             Target::Tnt(id) => {
                 if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                    // `PrimedTnt.teleport` includes same-level command teleports.
+                    t.used_portal = true;
                     t.position = v;
                     t.previous = v;
                     if let Some(r) = rotation {
@@ -2046,39 +1783,22 @@ impl Game<'_> {
         from
     }
 
-    /// A mod sends `t` to `pos` in `level` (`Entity.teleportTo(ServerLevel, ..)`):
-    /// as `/tp` into another level does, or in its own level when that is
-    /// `level`. False for a kind that only moves within its level (items,
-    /// orbs, projectiles, ...), a player who is not a server guest, or a
-    /// transfer the game could not make. A fake player stays, and the call is true.
-    pub(in crate::game) fn teleport_to_level(
-        &mut self,
-        t: Target,
-        level: super::Dim,
-        pos: [f64; 3],
-        rotation: Option<[f32; 2]>,
-    ) -> bool {
-        if self.target_level(t) == level {
-            self.teleport_to(t, pos, rotation, true);
-            return true;
-        }
-        self.teleport_across(t, level, pos, rotation, true)
-            .unwrap_or(false)
-    }
-    /// A server's player teleported into another level than theirs
-    /// (ServerPlayer.teleport): queued to move after the command. False
-    /// when `t` is not a player in another level.
-    fn teleport_across(
+    /// `t` teleported into another level than its own: an entity crosses at
+    /// once (`teleport_target_across`), a server's player is queued to move
+    /// after the command (ServerPlayer.teleport). False when `t` cannot
+    /// change level or is already in `level`.
+    pub(in crate::game) fn teleport_across(
         &mut self,
         t: Target,
         level: super::Dim,
         pos: [f64; 3],
         rotation: Option<[f32; 2]>,
         turn_riders: bool,
+        motion: TeleportMotion,
     ) -> R<bool> {
-        match self.teleport_vehicle_across(t, level, pos, rotation, turn_riders) {
-            Ok(true) => return Ok(true),
-            Ok(false) => {}
+        match self.teleport_target_across(t, level, pos, rotation, turn_riders, motion) {
+            Ok(Some(moved)) => return Ok(moved),
+            Ok(None) => {}
             Err(error) => {
                 log::error!("entity teleport into {}: {error}", level.id());
                 return Err(err("commands.generic.exception", &[]));
@@ -2126,12 +1846,12 @@ impl Game<'_> {
     /// unless the entity moves first.
     /// `Entity.getId` as the players' clients know it: a player's is the one the
     /// hub gave it, any other entity's is its own id.
-    pub(super) fn network_entity_id(&self, t: Target) -> Option<i32> {
+    pub(in crate::game) fn network_entity_id(&self, t: Target) -> Option<i32> {
         let host = self.lan.as_ref();
         match t {
-            Target::Player => host?.hub.guest(self.lan_acting?).map(|g| g.entity_id),
+            Target::Player => self.player_entity_id_by_connection(self.lan_acting),
             Target::Guest(conn) => host?.hub.guest(conn).map(|g| g.entity_id),
-            other => non_player_entity_id(other),
+            other => targets::non_player_entity_id(other),
         }
     }
     pub(super) fn send_player_look_at(
@@ -2219,7 +1939,7 @@ impl Game<'_> {
                 let Some(pos) = self.teleport_command_target(t, level, pos) else {
                     continue;
                 };
-                if !self.teleport_across(t, level, pos, rotation, true)? {
+                if !self.teleport_across(t, level, pos, rotation, true, TeleportMotion::Stop)? {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
                     self.teleport_to(t, pos, rotation, true);
@@ -2327,7 +2047,14 @@ impl Game<'_> {
                     }
                 }))
             });
-            if self.teleport_across(t, source_level, pos, rotation, turn_riders)? {
+            if self.teleport_across(
+                t,
+                source_level,
+                pos,
+                rotation,
+                turn_riders,
+                TeleportMotion::Stop,
+            )? {
                 continue;
             }
             self.teleport_to_relative(t, pos, rotation, relative, turn_riders);
@@ -2388,9 +2115,10 @@ impl Game<'_> {
                 let Some(Arg::Resource(marker)) = ctx.get("timemarker").cloned() else {
                     return Ok(0);
                 };
-                let Some(m) = (clock == "minecraft:overworld")
+                let Some((m, target)) = (clock == "minecraft:overworld")
                     .then(|| self.ui.markers.get(&marker).copied())
                     .flatten()
+                    .and_then(|m| Some((m, m.resolve(total)?)))
                 else {
                     return Err(err(
                         "commands.time.no_time_marker_found",
@@ -2403,7 +2131,6 @@ impl Game<'_> {
                         &[&clock, &marker],
                     ));
                 }
-                let target = m.resolve(total);
                 let mut cancel = false;
                 self.native_time_skip(self.dim.id(), total, target, "command", &mut cancel);
                 if !cancel {
@@ -2459,13 +2186,13 @@ impl Game<'_> {
                 if self.command_clock_state(&clock).rate == rate {
                     return Err(err(
                         "commands.time.rate.already_same",
-                        &[&clock, &java_float(f64::from(rate))],
+                        &[&clock, &float_to_string(rate)],
                     ));
                 }
                 self.command_clock_state(&clock).rate = rate;
                 self.feedback(Text::tr(
                     "commands.time.rate",
-                    &[&clock, &java_float(f64::from(rate))],
+                    &[&clock, &float_to_string(rate)],
                 ));
                 Ok(1)
             }
@@ -2574,6 +2301,8 @@ impl Game<'_> {
             });
         }
         match t {
+            // Stage 3's insertion joins live rows; there is nothing to kill.
+            Target::General(_) => {}
             Target::Guest(_) => {
                 self.for_player(t, |g| g.kill_target(Target::Player));
             }
@@ -2597,9 +2326,6 @@ impl Game<'_> {
                         m.last_damage = Some((source, i64::from(m.age)));
                     }
                     m.health = 0.0;
-                    if m.death_time == 0 {
-                        m.death_time = 1;
-                    }
                     killed = alive.then(|| m.clone());
                 }
                 // The hit runs LivingEntity.die before the command returns:
@@ -2622,9 +2348,7 @@ impl Game<'_> {
                     o.age = u32::MAX / 2;
                 }
             }
-            Target::Projectile(id) => {
-                self.creatures.projectiles.retain(|p| p.id != id);
-            }
+            Target::Projectile(id) => self.remove_projectile(id),
             Target::Stand(id) => self.armor_stands.retain(|a| a.id != id),
             Target::Frame(id) => {
                 // ItemFrame.onKilled.
@@ -2634,25 +2358,9 @@ impl Game<'_> {
                 self.item_frames.retain(|f| f.id != id);
             }
             Target::Painting(id) => self.paintings.retain(|p| p.id != id),
-            Target::Boat(id) => {
-                // AbstractBoat.remove: a killed boat drops its lead.
-                self.dismount_killed_boat(id);
-                if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                    self.release_vehicle_container(id);
-                    let b = self.boats.remove(i);
-                    // AbstractChestBoat.remove, after the live menu writes
-                    // back its slots.
-                    self.drop_vehicle_contents(b.position.components(), &b.items);
-                    self.boat_removed(&b);
-                }
-            }
-            Target::Cart(id) => {
-                self.dismount_killed_cart(id);
-                self.release_vehicle_container(id);
-                if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-                    let c = self.carts.remove(i);
-                    // AbstractMinecartContainer.remove.
-                    self.drop_vehicle_contents(c.position.components(), &c.items);
+            Target::Boat(_) | Target::Cart(_) => {
+                if !self.kill_vehicle_object(t) {
+                    return;
                 }
             }
             Target::Other(id) => {
@@ -2667,8 +2375,8 @@ impl Game<'_> {
             Target::Falling(id) => self.falling.retain(|f| f.id != id),
             Target::Rocket(id) => self.rockets.retain(|r| r.id != id),
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
-            Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
-            Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            Target::Spawner(id) => self.remove_ominous_spawner(id),
+            Target::Cloud(id) => self.remove_breath_cloud(id),
             Target::Hook(id) => self.remove_fishing_hook(id),
             Target::Knot(_) => {}
             // No command names a part, and `kill` on one would not stop its dragon.
@@ -2751,15 +2459,16 @@ impl Game<'_> {
         }
         let name;
         if kind == "minecraft:ender_dragon" || self.res.mob_types().contains_key(&kind) {
-            self.spawn_mob_spawned(
-                &short,
-                pos,
-                super::creatures::SpawnSite::Finalizing(
-                    horizon_client::mobs::spawn_rules::Reason::Command,
-                ),
-            )
-            .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
-            name = Text::translate(&entity_name_key(&kind), &[]);
+            let id = self
+                .spawn_mob_spawned(
+                    &short,
+                    pos,
+                    super::creatures::SpawnSite::Finalizing(
+                        horizon_client::mobs::spawn_rules::Reason::Command,
+                    ),
+                )
+                .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
+            name = self.target_name(Target::Mob(id));
         } else {
             match short.as_str() {
                 "item" => {
@@ -2767,27 +2476,17 @@ impl Game<'_> {
                     return Err(err("commands.summon.failed", &[]));
                 }
                 "experience_orb" => {
-                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
-                    // like any other orb spawn.
+                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck like any orb spawn.
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
-                    self.orbs.push(horizon_client::entities::ExperienceOrb {
-                        attachment_lifetime: Default::default(),
-                        rotation: [0.0, 0.0],
-                        join: Default::default(),
-                        no_gravity: false,
-                        id: self.next_entity,
-                        position: Vec3::new(at[0], at[1], at[2]),
-                        previous: Vec3::new(at[0], at[1], at[2]),
-                        velocity: Vec3::new(0.0, 0.0, 0.0),
-                        value: 0,
-                        age: 0,
-                        on_ground: false,
-                        count: 1,
-                        ticks: 0,
-                        health: 5,
-                        following: None,
-                    });
+                    let at = Vec3::new(at[0], at[1], at[2]);
+                    let orb = horizon_client::entities::ExperienceOrb::new(
+                        self.next_entity,
+                        at,
+                        Vec3::ZERO,
+                        0,
+                    );
+                    self.orbs.push(orb);
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
@@ -2812,16 +2511,9 @@ impl Game<'_> {
                     self.next_entity += 1;
                     let at = Vec3::new(pos[0], pos[1], pos[2]);
                     let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
-                    self.crystals.push(super::dragon::Crystal {
-                        attachment_lifetime: Default::default(),
-                        join: Default::default(),
-                        id: self.next_entity,
-                        position: at,
-                        show_bottom: true,
-                        time: super::dragon::Crystal::start_time(at, drawn, self.clock.still()),
-                        beam: None,
-                        invulnerable: false,
-                    });
+                    let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
+                    let crystal = super::dragon::Crystal::new(self.next_entity, at, true, time);
+                    self.crystals.push(crystal);
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
@@ -3124,128 +2816,65 @@ impl Game<'_> {
     /// container: a roll the container still holds fires
     /// `player_generates_container_loot` for its table, and from then on the
     /// container saves its items, not the table.
-    pub(super) fn unpack_opened_loot(&mut self, key: (i32, i32, i32), name: &str) {
-        let Some(rolled) = self
-            .world
-            .chunks
-            .get(&(key.0 >> 4, key.2 >> 4))
-            .and_then(|c| c.saved.as_ref())
-            .and_then(|s| s.rolled_loot.iter().find(|r| r.pos == key))
-            .cloned()
-        else {
-            return;
-        };
-        // The roll is still there only while the container holds exactly its items.
-        let still_rolled = self
-            .world
-            .block_entities
-            .get_mut(&key)
-            .is_some_and(|entity| {
-                let mut tag = horizon_client::save::encode_block_entity(key, entity, name);
-                match &mut tag {
-                    horizon_core::nbt::Tag::Compound(map) => rolled.restore(map),
-                    _ => false,
-                }
-            });
-        if still_rolled {
-            self.trigger_loot_table(&rolled.table);
-        }
-        let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
-            return;
-        };
-        let chunk = std::sync::Arc::make_mut(chunk);
-        let mut extras = chunk
-            .saved
-            .take()
-            .map(std::sync::Arc::unwrap_or_clone)
-            .unwrap_or_default();
-        horizon_client::save::consume_container_loot(&mut extras, key);
-        chunk.saved = Some(std::sync::Arc::new(extras));
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
-        // `ChestBlock.getMenuProvider` unpacks both halves of a double chest:
-        // the other half's table, if it still holds one, rolls too. The own roll
-        // is consumed above, so the partner's call does not come back here.
+    pub(super) fn unpack_opened_loot(&mut self, key: (i32, i32, i32), _name: &str) {
+        let player = self.native_acting_player();
+        self.unpack_loot(crate::game::container_loot::LootTarget::Block(key), player);
         if let Some((other, _)) = self.chest_partner(key) {
-            let other_name = self
-                .res
-                .facts()
-                .get(self.world.block(other.0, other.1, other.2))
-                .name
-                .to_string();
-            self.unpack_opened_loot(other, &other_name);
+            self.unpack_loot(
+                crate::game::container_loot::LootTarget::Block(other),
+                player,
+            );
         }
     }
-    /// RandomizableContainer.tryLoadLootTable for a tag a command gives a
-    /// container (`setblock`, `data`): an empty container with a `LootTable`
-    /// is rolled now, as a loaded chunk's are (`save::roll_loaded_loot`), and
-    /// the roll is kept with its chunk, so that the container saves, and
-    /// `data get` shows, its table and seed until its items change. A tag
-    /// without one drops what the container had. True when it had a table.
+    /// Install a command's table without rolling. Raw NBT reads keep it pending.
     pub(super) fn take_loot_table(
         &mut self,
         key: (i32, i32, i32),
         tag: &horizon_core::nbt::Tag,
         entity: &mut horizon_client::containers::BlockEntity,
     ) -> bool {
-        use horizon_client::{containers::BlockEntity, save, structure_blocks};
-        let table = save::text(tag.get("LootTable"))
-            .and_then(|id| horizon_client_core::identifier::normalize_id(&id));
-        let rolled = match (table, entity) {
-            (Some(table), BlockEntity::Chest(slots)) if slots.iter().all(Option::is_none) => {
-                let loot = self.server_loot.get();
-                let at = Vec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
-                let biome = self.biome_name_at(at).unwrap_or_default();
-                Some(structure_blocks::roll_container(
-                    slots,
-                    loot.as_deref(),
-                    table,
-                    structure_blocks::loot_seed(tag),
-                    key,
-                    &biome,
-                ))
-            }
-            _ => None,
-        };
-        let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
-            return false;
-        };
-        let held = |c: &horizon_client::chunk::Chunk| {
-            c.saved
-                .as_ref()
-                .is_some_and(|s| s.rolled_loot.iter().any(|r| r.pos == key))
-        };
-        if rolled.is_none() && !held(chunk) {
-            return false;
-        }
-        let chunk = std::sync::Arc::make_mut(chunk);
-        let mut extras = chunk
-            .saved
-            .take()
-            .map(std::sync::Arc::unwrap_or_clone)
-            .unwrap_or_default();
-        save::consume_container_loot(&mut extras, key);
-        let taken = rolled.is_some();
-        extras.rolled_loot.extend(rolled);
-        chunk.saved = Some(std::sync::Arc::new(extras));
-        taken
+        let pending = matches!(entity, horizon_client::containers::BlockEntity::Chest(_))
+            .then(|| horizon_client::save::PendingContainerLoot::from_tag(tag))
+            .flatten();
+        let mut changed = false;
+        self.world.with_chunk_extras(key, |extras| {
+            changed = extras.pending_loot.get(&key) != pending.as_ref();
+            extras.pending_loot.remove(&key);
+            extras.pending_loot.extend(pending.map(|p| (key, p)));
+        });
+        changed
     }
-    /// The loot table and seed a container still holding its roll saves
-    /// (`RolledLoot::restore`), in place of its items.
-    pub(super) fn restore_loot_table(
+    /// Raw NBT inspection overlays metadata without unpacking the inventory.
+    pub(super) fn write_pending_loot(
         world: &horizon_client::world::World,
         key: (i32, i32, i32),
         tag: &mut horizon_core::nbt::Tag,
     ) {
-        let horizon_core::nbt::Tag::Compound(map) = tag else {
+        if !matches!(
+            world.block_entities.get(&key),
+            Some(horizon_client::containers::BlockEntity::Chest(_))
+        ) {
             return;
-        };
-        let rolled = world
-            .chunks
-            .get(&(key.0 >> 4, key.2 >> 4))
-            .and_then(|c| c.saved.as_ref())
-            .and_then(|s| s.rolled_loot.iter().find(|r| r.pos == key));
-        if let Some(r) = rolled {
-            r.restore(map);
+        }
+        if let horizon_core::nbt::Tag::Compound(map) = tag {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+            if let Some(pending) = world
+                .chunks
+                .get(&(key.0 >> 4, key.2 >> 4))
+                .and_then(|c| c.saved.as_ref())
+                .and_then(|s| s.pending_loot.get(&key))
+            {
+                let items = map.get(&"Items".into()).cloned();
+                pending.write_tags(map);
+                if world
+                    .block_entities
+                    .get(&key)
+                    .is_some_and(|e| e.slots().iter().any(Option::is_some))
+                {
+                    map.extend(items.map(|items| ("Items".into(), items)));
+                }
+            }
         }
     }
     fn cmd_fill(&mut self, ctx: &Context) -> R<i32> {
@@ -3553,14 +3182,14 @@ impl Game<'_> {
                             dest[2] + z - min[2],
                         ],
                         s,
-                        self.world.block_entities.get(&(x, y, z)).cloned(),
-                        self.world.block_names.get(&(x, y, z)).cloned(),
+                        self.clone_block_payload((x, y, z)),
                     ));
                 }
             }
         }
         if moving {
             for (from, ..) in &copies {
+                self.discard_clone_loot(*from);
                 self.place_state(*from, air, true, false)?;
             }
         }
@@ -3570,20 +3199,13 @@ impl Game<'_> {
         // each copied state but a barrier counts as placed.
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         let mut count = 0;
-        for (_, to, s, entity, name) in copies {
+        for (_, to, s, payload) in copies {
+            self.discard_clone_loot(to);
             self.place_state(to, s, strict, false)?;
             if Some(s) != barrier {
                 count += 1;
             }
-            if let Some(e) = entity {
-                let key = (to[0], to[1], to[2]);
-                self.world.block_entities.insert(key, e);
-                // The copied tag carries the custom name.
-                match name {
-                    Some(name) => self.world.block_names.insert(key, name),
-                    None => self.world.block_names.remove(&key),
-                };
-            }
+            self.apply_clone_payload(to, payload);
         }
         // LevelTicks.copyAreaFrom: the block ticks pending anywhere in the
         // source box go to the same offset in the destination, before the
@@ -3897,7 +3519,7 @@ impl Game<'_> {
             vec![Target::Player]
         };
         let pos = if ctx.get("pos").is_some() {
-            self.block_pos_arg(ctx, "pos")?
+            self.spawnable_pos_arg(ctx, "pos")?
         } else {
             let p = self.source_position();
             [
@@ -3927,8 +3549,8 @@ impl Game<'_> {
             p[0].clone(),
             p[1].clone(),
             p[2].clone(),
-            Text::literal(java_float(f64::from(yaw))),
-            Text::literal(java_float(f64::from(pitch))),
+            Text::literal(float_to_string(yaw)),
+            Text::literal(float_to_string(pitch)),
             dim,
         ];
         let key = if targets.len() == 1 {
@@ -3990,8 +3612,8 @@ impl Game<'_> {
             Text::literal(pos[0].to_string()),
             Text::literal(pos[1].to_string()),
             Text::literal(pos[2].to_string()),
-            Text::literal(java_float(f64::from(yaw))),
-            Text::literal(java_float(f64::from(pitch))),
+            Text::literal(float_to_string(yaw)),
+            Text::literal(float_to_string(pitch)),
             Text::literal(self.dim.id()),
         ];
         self.feedback(Text::translate("commands.setworldspawn.success", &args));
@@ -4048,6 +3670,12 @@ impl Game<'_> {
             };
             let present = components.get(&id.as_str().into());
             let result = match term[split..].chars().next() {
+                // Both count wrappers in `ItemPredicateArgument` use the live
+                // stack count and the same integer bounds matcher.
+                Some('=' | '~') if id == "minecraft:count" => {
+                    let value = horizon_core::nbt::parse_snbt(term[split + 1..].trim());
+                    value.is_ok_and(|(v, _)| item_count::matches(stack.count, &v))
+                }
                 Some('=') => {
                     let value = horizon_core::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
@@ -4061,26 +3689,11 @@ impl Game<'_> {
                     }
                 }
                 Some('~') => {
-                    // Sub-predicates: `count` and component predicates.
+                    // Component sub-predicates.
                     let value = horizon_core::nbt::parse_snbt(term[split + 1..].trim())
                         .ok()
                         .map(|(t, _)| t);
                     match (id.as_str(), value) {
-                        ("minecraft:count", Some(v)) => {
-                            let n = i64::from(stack.count);
-                            match &v {
-                                horizon_core::nbt::Tag::Compound(_) => {
-                                    let get = |k: &str| match v.get(k) {
-                                        Some(horizon_core::nbt::Tag::Int(i)) => Some(i64::from(*i)),
-                                        _ => None,
-                                    };
-                                    get("min").is_none_or(|m| n >= m)
-                                        && get("max").is_none_or(|m| n <= m)
-                                }
-                                horizon_core::nbt::Tag::Int(i) => n == i64::from(*i),
-                                _ => false,
-                            }
-                        }
                         // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
                         // Int bounds shape; effective DAMAGE presence is required.
                         // Other fields keep the entire existing predicate path.
@@ -4268,9 +3881,9 @@ impl Game<'_> {
         };
         let from = self.source_position().map(|v| v.floor() as i32);
         const RANGE: i32 = 256;
-        let mut cache: std::collections::HashMap<u32, Option<&'static str>> =
+        let mut cache: std::collections::HashMap<u32, Option<&str>> =
             std::collections::HashMap::new();
-        let mut best: Option<(i64, [i32; 3], &'static str)> = None;
+        let mut best: Option<(i64, [i32; 3], &str)> = None;
         let (cx0, cz0) = ((from[0] - RANGE) >> 4, (from[2] - RANGE) >> 4);
         let (cx1, cz1) = ((from[0] + RANGE) >> 4, (from[2] + RANGE) >> 4);
         for cx in cx0..=cx1 {
@@ -4549,7 +4162,7 @@ impl Game<'_> {
                                 .map(|cart| cart.command.name())
                         })
                     })
-                    .unwrap_or_else(|| Text::literal("Server")),
+                    .unwrap_or_else(|| self.server_name()),
             },
             None => self.player_display_name(),
         };
@@ -4896,7 +4509,8 @@ mod summon_tests {
 
 #[cfg(test)]
 mod look_at_tests {
-    use super::{Target, non_player_entity_id};
+    use super::Target;
+    use super::targets::non_player_entity_id;
 
     #[test]
     fn look_at_entity_form_names_any_entity_by_its_id() {
@@ -4953,6 +4567,10 @@ mod teleport_mob_tests;
 mod teleport_item_tests;
 
 #[cfg(test)]
+#[path = "teleport_level_tests.rs"]
+mod teleport_level_tests;
+
+#[cfg(test)]
 mod teleport_player_tests {
     use crate::game::native_entity_refs::tests::with_game;
     use horizon_client::motion::PlayerMotion;
@@ -4963,6 +4581,7 @@ mod teleport_player_tests {
     fn command_moves_velocity_per_axis_and_keeps_fall_distance() {
         with_game(|game| {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            crate::game::native_entity_refs::tests::bind_local_player(game, 1, 99);
             let player = game.player.as_mut().unwrap();
             player.position = Vec3::new(0.0, 64.0, 0.0);
             player.velocity = Vec3::new(1.0, -2.0, 3.0);
@@ -5031,7 +4650,14 @@ mod fake_travel_tests {
             let (fake, real) = (conn(2), conn(1));
             let to_nether = |game: &mut super::super::Game<'_>, conn| {
                 game.as_guest(conn, |g| {
-                    g.teleport_across(Target::Player, Dim::Nether, [0.0, 64.0, 0.0], None, false)
+                    g.teleport_across(
+                        Target::Player,
+                        Dim::Nether,
+                        [0.0, 64.0, 0.0],
+                        None,
+                        false,
+                        super::super::vehicle_teleport::TeleportMotion::Stop,
+                    )
                 })
             };
             // Taken (true), so no same-level teleport stands in for it, and nothing queued.
@@ -5044,10 +4670,10 @@ mod fake_travel_tests {
     }
 
     /// A mod's `teleport_to_level`: a player to another level goes on the queue; to their own
-    /// level, nothing is queued; what cannot change level is refused.
+    /// level, nothing is queued; an entity no level holds is refused.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_mod_sends_a_player_to_another_level_and_not_an_item() {
+    fn a_mod_sends_a_player_to_another_level_and_not_a_missing_entity() {
         super::super::native_entity_refs::tests::with_game(|game| {
             super::super::bossbars::audience_tests::add_real_and_fake(game);
             let conn = game
@@ -5071,7 +4697,7 @@ mod fake_travel_tests {
             let home = game.target_level(Target::Guest(conn));
             assert_eq!(sent(game, home), Some(true));
             assert_eq!(game.level_teleports.len(), 1);
-            // An item only moves within its level.
+            // No level holds this item.
             assert!(!game.teleport_to_level(Target::Item(9_999), Dim::Nether, [0.0; 3], None));
         });
     }
@@ -5224,6 +4850,7 @@ mod selector_bounds_tests {
     use horizon_core::geometry::Vec3;
 
     #[test]
+    #[ignore = "daily"]
     fn actual_selector_uses_body_overlap_but_distance_stays_at_the_origin() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -5769,7 +5396,7 @@ mod forced_respawn_tests {
                     .expect("Overworld commands must retain a forced configuration");
                 assert!(config.forced);
                 assert_eq!(config.pos, [5, 64, 5]);
-                let actual = game.resolve_server_respawn(config);
+                let actual = game.resolve_server_respawn(config, true);
                 assert_eq!(actual.is_some(), allowed, "{block} at height {height}");
                 assert_eq!(game.respawn_config.is_some(), allowed);
                 assert_eq!(game.level.world_spawn, Some([0, 80, 0]));
@@ -6385,3 +6012,10 @@ mod global_selector_order_tests {
 #[cfg(test)]
 #[path = "incoming_tests/knot_identity.rs"]
 mod knot_identity_tests;
+
+#[cfg(test)]
+mod mob_display_name_tests;
+
+#[cfg(test)]
+#[path = "item_count_predicate_tests.rs"]
+mod item_count_predicate_tests;

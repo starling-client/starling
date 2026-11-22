@@ -4,10 +4,9 @@
 use mod_api::{
     BlockKey, DataLoadContext, EffectKey, Flow, FluidDefinition, FluidIngredient, FluidKey,
     FluidStack, FluidStateError, Hooks, HostFluidStates, HostSide, ItemPart, LootTableLoadEvent,
-    Registrar, RegistrationContext, ServerChatEvent, ServerHost, StateConstraint, Text,
-    UseItemEvent,
+    Registrar, RegistrationContext, ServerChatEvent, ServerHost, ServerTickEvent, StateConstraint,
+    Text, UseItemEvent,
 };
-use mod_points::TickArgs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
@@ -23,11 +22,17 @@ struct Stick;
 
 #[mod_api::horizon_part]
 impl ItemPart for Stick {
-    fn use_item(&self, host: &mut dyn ServerHost, event: &mut UseItemEvent<'_>) -> Flow {
-        let item = event.stack.item().id(host);
-        host.messages()
-            .broadcast(Text::literal(format!("a {item} was used")));
-        Flow::Continue
+    fn use_item(
+        &self,
+        host: HostSide<'_>,
+        event: &mut UseItemEvent<'_>,
+    ) -> Option<mod_api::InteractionResult> {
+        if let HostSide::Server(host) = host {
+            let item = event.stack.item().id(host);
+            host.messages()
+                .broadcast(Text::literal(format!("a {item} was used")));
+        }
+        None
     }
 }
 
@@ -40,6 +45,18 @@ impl Hooks for Mod {
         let _ = self.speed.set(registrar.effect_key("minecraft:speed"));
         let _ = self.water.set(registrar.fluid_key("minecraft:water"));
         let _ = self.chocolate.set(registrar.declare_fluid("chocolate"));
+    }
+
+    /// Counts server ticks through the ordinary hook, including on plain builds.
+    fn server_tick(&self, host: &mut dyn ServerHost, event: &mut ServerTickEvent<'_>) {
+        if !matches!(event.phase, mod_api::ServerTickPhase::ServerTickEnd { .. }) {
+            return;
+        }
+        let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+        if ticks % 200 == 0 {
+            host.messages()
+                .broadcast(Text::literal(format!("hello_wasm: {ticks} server ticks")));
+        }
     }
 
     fn loot_table_load(&self, context: &dyn DataLoadContext, event: &mut LootTableLoadEvent<'_>) {
@@ -134,16 +151,4 @@ impl Hooks for Mod {
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// Listens at the game's tick, a point its `horizon-mod.toml` names: every 200 server ticks it
-/// says so in chat.
-pub fn tick(host: HostSide<'_>, _args: &mut TickArgs) {
-    let HostSide::Server(host) = host else { return };
-    let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if ticks % 200 == 0 {
-        host.messages()
-            .broadcast(Text::literal(format!("hello_wasm: {ticks} server ticks")));
-    }
-}
-#[cfg(target_arch = "wasm32")]
-include!(concat!(env!("OUT_DIR"), "/guest_injects.rs"));
 // ANCHOR_END: mod

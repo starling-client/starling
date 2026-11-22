@@ -96,6 +96,25 @@ pub struct ArmorHurt {
 /// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
 pub type Dispensed = (Option<ItemStack>, i32);
 
+// no wire: borrowed call-scoped view; transport uses owned snapshots.
+/// The table, location and initiating player of a container fill.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct ContainerLootFilled<'a> {
+    /// The rolled loot table id.
+    pub table: &'a str,
+    /// The dimension containing the target.
+    pub dimension: &'a str,
+    /// The block centre or container entity position.
+    pub origin: [f64; 3],
+    /// The container block position, for a block target.
+    pub block: Option<[i32; 3]>,
+    /// The container entity id, for a vehicle target.
+    pub entity: Option<u32>,
+    /// The UUID of the player whose open starts the fill; None otherwise.
+    pub opener: Option<u128>,
+}
+
 // no wire: borrowed call-scoped view; transport uses owned snapshots rather than serializing references.
 /// What dropped the items heard by the `loot_drops` hook.
 #[derive(Clone, Copy, Debug)]
@@ -124,6 +143,10 @@ pub struct LootDrops<'a> {
     /// `causing` and `direct` are the attacking and direct attacking entity IDs;
     /// 0 means absent or unknown, as on the other damage hooks.
     pub damage_source: Option<crate::entity::health::HurtSource<'a>>,
+    /// The direct projectile's recorded stack; use `weapon_item` for the death weapon.
+    // hidden: borrowed transport field; mods use the source-aware weapon_item read.
+    #[doc(hidden)]
+    pub weapon: Option<&'a ItemStack>,
     /// The breaking or using tool (`LootContextParams.TOOL`). Always None for
     /// entity deaths. For the attacker's live hand, resolve `damage_source.causing`
     /// through `host.entity`, then `host.living`, and read `living.hand_item(host, Hand::Main)`.
@@ -143,8 +166,27 @@ pub struct LootDrops<'a> {
     pub used: bool,
 }
 
-/// An item that drops where a living entity died, before it is an item entity
-/// in the level (`living_drops`): what `ItemEntity`'s constructor was given.
+impl LootDrops<'_> {
+    /// Vanilla's `DamageSource.getWeaponItem` for this death. Arrows return the
+    /// bow or crossbow recorded when fired; tridents return their own original
+    /// stack, preserving components even after the shooter changes hands.
+    /// Otherwise reads the direct entity's weapon when called: a player's recorded
+    /// auto-spin stack during Riptide, otherwise the live main hand.
+    /// Returns None for non-death drops or an absent or unavailable weapon.
+    pub fn weapon_item(&self, host: &dyn Host) -> Option<ItemStack> {
+        let source = self.damage_source?;
+        if let Some(weapon) = self.weapon {
+            return Some(weapon.clone());
+        }
+        let entity = host.entity(u32::try_from(source.direct).ok().filter(|id| *id != 0)?)?;
+        let living = host.living(entity)?;
+        backend_of(host)?.living_weapon_item(living)
+    }
+}
+
+/// An item that drops where a living entity died or a block broke, before it is
+/// an item entity in the level (`living_drops`, `block_drops`): what `ItemEntity`'s
+/// constructor was given, and the item-entity state it joins the level with.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
@@ -157,6 +199,16 @@ pub struct ItemDrop {
     pub velocity: [f64; 3],
     /// Ticks before a player may pick it up.
     pub pickup_delay: u32,
+    /// `ItemEntity.setThrower`: the UUID of the entity that threw it, none by default.
+    pub thrower: Option<u128>,
+    /// `ItemEntity.setTarget`: the UUID of the only player who may pick it up, none (anyone)
+    /// by default.
+    pub target: Option<u128>,
+    /// `Entity.setNoGravity`: the item entity floats where it moves; false by default.
+    pub no_gravity: bool,
+    /// The item entity's starting `age` in ticks, 0 by default. It despawns at 6000;
+    /// [`ItemDrop::UNLIMITED_LIFETIME`] (vanilla's `setUnlimitedLifetime`) never does.
+    pub age: i32,
 }
 
 impl ItemDrop {
@@ -172,7 +224,29 @@ impl ItemDrop {
             position,
             velocity,
             pickup_delay,
+            thrower: None,
+            target: None,
+            no_gravity: false,
+            age: 0,
         }
+    }
+    /// The `age` that keeps an item entity from despawning (`ItemEntity.setUnlimitedLifetime`).
+    pub const UNLIMITED_LIFETIME: i32 = -32768;
+    /// The same drop, thrown by `thrower` (`ItemEntity.setThrower`).
+    pub fn with_thrower(self, thrower: Option<u128>) -> Self {
+        Self { thrower, ..self }
+    }
+    /// The same drop, which only `target` may pick up (`ItemEntity.setTarget`).
+    pub fn with_target(self, target: Option<u128>) -> Self {
+        Self { target, ..self }
+    }
+    /// The same drop, with or without gravity (`Entity.setNoGravity`).
+    pub fn with_no_gravity(self, no_gravity: bool) -> Self {
+        Self { no_gravity, ..self }
+    }
+    /// The same drop, starting at `age` ticks ([`ItemDrop::UNLIMITED_LIFETIME`] never despawns).
+    pub fn with_age(self, age: i32) -> Self {
+        Self { age, ..self }
     }
 }
 
@@ -224,14 +298,13 @@ impl StatType {
 /// A fishing catch, for `item_fished` (`ItemFishedEvent`).
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub struct ItemFished<'a> {
+#[derive(horizon_mod_api_macros::Wire)]
+#[wire(internal_field_layouts)]
+pub struct ItemFished {
     /// The bobber's entity id and position.
     pub hook: u32,
     /// The position.
     pub position: [f64; 3],
-    /// The items the fishing loot table rolled, which the player receives
-    /// (`getDrops`: they can't be changed here; loot tables change them).
-    pub drops: &'a [ItemStack],
 }
 
 /// The slots an item's attribute modifier applies in (vanilla's
@@ -662,7 +735,7 @@ pub enum UsePhase {
 }
 
 // no wire: borrowed call-scoped view; transport uses owned snapshots rather than serializing references.
-/// A player's item use without a block or entity target (`RightClickItem`).
+/// A player's item use, including after target fallthrough (`RightClickItem`).
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct ItemClick<'a> {

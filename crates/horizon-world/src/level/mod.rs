@@ -103,11 +103,13 @@ use horizon_core::{
 };
 use std::{collections::HashMap, io, path::Path, sync::Arc, sync::RwLock};
 
+pub use block_maps::BlockMaps;
 pub mod classes;
 pub mod data;
 pub mod states;
 pub mod ticks;
 
+mod block_maps;
 mod bonemeal;
 mod buckets;
 mod creaking;
@@ -125,6 +127,7 @@ mod query;
 pub(crate) use query::data_2d;
 pub mod orientation;
 mod rails;
+pub use rails::RailShape;
 mod redstone;
 pub mod removal;
 pub mod sculk;
@@ -140,14 +143,31 @@ mod update;
 mod weather;
 
 #[cfg(test)]
+#[path = "tests/connections.rs"]
+mod connection_tests;
+#[cfg(test)]
+mod fertile_tests;
+#[cfg(test)]
+mod fire_tests;
+#[cfg(test)]
 mod growth_tests;
+#[cfg(test)]
+mod infiniburn_tests;
+#[cfg(test)]
+mod piston_carry_tests;
+#[cfg(test)]
+#[path = "tests/state_change.rs"]
+mod state_change_tests;
 #[cfg(test)]
 mod survive_tests;
 #[cfg(test)]
 mod tests;
 
 pub use bonemeal::{BonemealCheck, TemplateSettings};
-pub use buckets::{BucketContent, fluid_bucket, fluid_pickup_sound};
+pub use buckets::{
+    BucketContent, Douse, Drain, FluidChange, FluidWrite, PlacedLiquid, fluid_bucket,
+    fluid_empty_sound, fluid_pickup_sound,
+};
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
 pub use fluids::{
@@ -155,6 +175,21 @@ pub use fluids::{
     fluid_randomly_ticks, fluid_tick_delay,
 };
 
+/// A write a block's part asks for when an entity is inside it (`Block.entityInside`'s
+/// own `setBlockAndUpdate` or `destroyBlock`), at the block the entity touched. The
+/// level applies each once the entity's batch has ticked, in the order asked, if the
+/// block is still the state the entity touched: the same contract as [`LandingWrite`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InsideWrite {
+    /// `Level.setBlockAndUpdate(pos, state)`: a pressure plate a part pressed.
+    SetBlock(BlockStateId),
+    /// `Level.destroyBlock(pos, drop)`: the block gone, with its drops or without.
+    DestroyBlock {
+        /// Whether the block drops its resources.
+        drop: bool,
+    },
+}
 /// A write a block's part asks for when an entity lands on it (`Block.fallOn`'s own
 /// `setBlockAndUpdate` or `destroyBlock`), at the block the entity landed on. The level
 /// applies each once the entity's batch has ticked, in the order asked.
@@ -174,7 +209,7 @@ pub use pistons::{BlockEventData, MovingPiston};
 pub use place::{PlaceContext, PlaceOutcome, PlacementContext, PlacementPreview};
 pub use portal::PortalShape;
 pub use states::{BlockId, PropKey, StateTable};
-pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
+pub use tick::{Precipitation, PrecipitationKind, RandomTickMask, RandomTickMaskUpdate};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].
@@ -207,19 +242,19 @@ pub fn vanilla_sea_level(level: LevelKey) -> i32 {
     }
 }
 
-/// The sea levels of the levels a mod registered, from the noise settings their stems name, by
-/// level key: set at each world's load (`set_sea_levels`), as the dimension types' facts are.
+/// The sea level each level's generator builds with (`ChunkGenerator.getSeaLevel`), by level key.
+/// Filled when a world opens from the noise settings its data packs replace (`set_sea_levels`),
+/// and by each level's generator as it opens (`register_sea_level`).
 static SEA_LEVELS: std::sync::LazyLock<RwLock<HashMap<LevelKey, i32>>> =
     std::sync::LazyLock::new(Default::default);
 
-/// Replaces the registered levels' sea levels, at a world's load.
+/// Replaces every registered sea level, as a world opens.
 pub fn set_sea_levels(levels: Vec<(LevelKey, i32)>) {
     *SEA_LEVELS.write().unwrap_or_else(|e| e.into_inner()) = levels.into_iter().collect();
 }
 
-/// Registers one level's sea level, as a server told a client the level of a mod or a data pack
-/// has (`CommonPlayerSpawnInfo.seaLevel`); the levels of a world's own load are set by
-/// `set_sea_levels`.
+/// Registers one level's sea level: its generator's, or the one a server sent
+/// (`CommonPlayerSpawnInfo.seaLevel`).
 pub fn register_sea_level(level: LevelKey, sea_level: i32) {
     SEA_LEVELS
         .write()
@@ -491,6 +526,10 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_leaves_decay(&self, _pos: BlockPos) -> bool {
         true
     }
+    /// Session-only watered areas, checked before vanilla's farmland water scan.
+    fn has_water_ticket(&self, _pos: BlockPos) -> bool {
+        false
+    }
     fn allow_moisture_change(&self, _pos: BlockPos, _from: i32, _to: i32) -> bool {
         true
     }
@@ -538,6 +577,18 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn allow_bell_ring(&self, _pos: BlockPos) -> bool {
         true
     }
+    /// The sound type `state`, just placed at `pos`, plays its place sound from
+    /// (`IBlockExtension.getSoundType`): `sounds`, its own, unless a mod's block part answers
+    /// another (`BlockItem.place`, asked with the placing player, or none when nothing places
+    /// it, such as a dispenser). The default keeps the block's own.
+    fn place_sound_type(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        sounds: Arc<data::Sounds>,
+    ) -> Arc<data::Sounds> {
+        sounds
+    }
     fn allow_cauldron_level_change(
         &self,
         _pos: BlockPos,
@@ -575,8 +626,35 @@ pub trait LevelAccess: BlockEntityNeighbors {
         _destroy: &[BlockPos],
     ) {
     }
+    /// NeoForge's `IBlockExtension.onDestroyedByPushReaction`: the piston move
+    /// `piston_move_blocks` resolved destroys the block `state` at `pos`, the
+    /// blocks moving `direction`, after it dropped its resources and before
+    /// its cell becomes air; `fluid` is the fluid state the cell holds. `ticks`
+    /// schedules the ticks the level's writes schedule; a write to a cell of
+    /// the move is overwritten, as the pushed states were read before. The
+    /// default does nothing.
+    fn on_destroyed_by_push_reaction(
+        &mut self,
+        _ticks: &mut Ticks,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        _fluid: FluidState,
+    ) {
+    }
     /// Observe a committed `Level.setBlock` state change, before its side effects.
     fn observe_block_changed(&self, _pos: BlockPos, _old: BlockStateId, _new: BlockStateId) {}
+    /// NeoForge's `IBlockExtension.onBlockStateChange`: a `Level.setBlock` that held changed
+    /// the block at `pos` from `old` to `new`, observed at the end of the write
+    /// (`updatePOIOnBlockStateChange`), after the client update, the neighbour updates and the
+    /// neighbours' shape updates. A write whose `on_place` replaced the block is not observed.
+    fn observe_block_state_change(&self, _pos: BlockPos, _old: BlockStateId, _new: BlockStateId) {}
+    /// Whether `observe_block_state_change` would hear a change from `old` to `new`; a write
+    /// inside a running neighbour update queues its notice only when this is true. The
+    /// default hears nothing.
+    fn observes_block_state_change(&self, _old: BlockStateId, _new: BlockStateId) -> bool {
+        false
+    }
     /// NeoForge's `NeighborNotifyEvent`: the block at `pos` is about to tell
     /// its neighbours it changed (`ServerLevel.updateNeighborsAt`, or
     /// `updateNeighborsAtExceptFromFacing` with the side it skips). True
@@ -723,6 +801,34 @@ pub trait LevelAccess: BlockEntityNeighbors {
         _sustains: &mut Option<bool>,
     ) {
     }
+    /// Whether a part may answer `IBlockExtension.isFertile`: asked once per
+    /// `CropBlock.getGrowthSpeed`, so with none the speed is vanilla's loop.
+    /// The default is false.
+    fn asks_is_fertile(&self) -> bool {
+        false
+    }
+    /// `IBlockExtension.isFertile` for the soil `state` at `pos`, a block in
+    /// `#grows_crops` under a crop: `fertile` starts at vanilla's answer
+    /// (`moisture > 0`). The default does nothing.
+    fn before_is_fertile(&self, _state: BlockStateId, _pos: BlockPos, _fertile: &mut bool) {}
+    /// Whether a part may answer `IBlockExtension.canBeHydrated` for the
+    /// farmland `state`: asked once before its scan, so with none the scan is
+    /// vanilla's. The default is false.
+    fn asks_can_be_hydrated(&self, _state: BlockStateId) -> bool {
+        false
+    }
+    /// `IBlockExtension.canBeHydrated` for the farmland `state` at `pos` and
+    /// the non-empty `fluid` at `fluid_pos`: an answer put in `hydrates`
+    /// decides, left `None` the `#water` rule does. The default does nothing.
+    fn before_can_be_hydrated(
+        &self,
+        _state: BlockStateId,
+        _pos: BlockPos,
+        _fluid: FluidState,
+        _fluid_pos: BlockPos,
+        _hydrates: &mut Option<bool>,
+    ) {
+    }
     /// `VegetationBlock.mayPlaceOn(ground, level, groundPos)` for the plant
     /// `state`, before the plant answers it: the blocks a plant can stand on,
     /// which its `canSurvive` asks. An answer put in `may` is the result. The
@@ -740,12 +846,56 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn is_client_side(&self) -> bool {
         false
     }
-    /// `FireBlock`'s flammability table for `state`'s block, before the
-    /// table answers it: `(igniteOdds, burnOdds)`, as `FireBlock.setFlammable`
-    /// sets them. Fire spread, burning out and where fire can stand read it;
-    /// a waterlogged state never burns and isn't asked. An answer put in
-    /// `odds` is the result. The default does nothing.
-    fn before_fire_odds(&self, _state: BlockStateId, _odds: &mut Option<(i32, i32)>) {}
+    /// `FireBlock`'s flammability table for `state` at `pos`, asked from its
+    /// side `face` (the one facing the fire, or the air fire may take), before
+    /// the table answers it: `(igniteOdds, burnOdds)`, as
+    /// `FireBlock.setFlammable` sets them. Fire spread, burning out and where
+    /// fire can stand read it; a waterlogged state never burns and isn't
+    /// asked. An answer put in `odds` is the result, clamped to 0 to 100. The
+    /// default does nothing.
+    fn before_fire_odds(
+        &self,
+        _state: BlockStateId,
+        _pos: BlockPos,
+        _face: Direction,
+        _odds: &mut Option<(i32, i32)>,
+    ) {
+    }
+    /// Whether the block `state` at `pos`, under a fire, keeps it burning
+    /// (`FireBlock.tick`'s `DimensionType.infiniburn` check), before the
+    /// dimension's tag answers it. An answer put in `source` is the result.
+    /// The default does nothing.
+    fn before_is_fire_source(
+        &self,
+        _state: BlockStateId,
+        _pos: BlockPos,
+        _source: &mut Option<bool>,
+    ) {
+    }
+    /// `LavaFluid.isFlammable` for the block `state` at `pos`, asked from its
+    /// side `face` (the one facing the air the fire would take), before the
+    /// state's `IGNITED_BY_LAVA` flag answers it. An answer put in `ignites`
+    /// is the result. The default does nothing.
+    fn before_ignited_by_lava(
+        &self,
+        _state: BlockStateId,
+        _pos: BlockPos,
+        _face: Direction,
+        _ignites: &mut Option<bool>,
+    ) {
+    }
+    /// Fire burned the block `state` at `pos` from its side `face`, the one
+    /// facing the fire (`FireBlock.checkBurnOut`), after the cell became fire
+    /// or air and after a TNT-class block primed. `ticks` schedules the ticks
+    /// the level's writes schedule. The default does nothing.
+    fn on_caught_fire(
+        &mut self,
+        _ticks: &mut Ticks,
+        _state: BlockStateId,
+        _pos: BlockPos,
+        _face: Direction,
+    ) {
+    }
     /// `CampfireBlock.isSmokeSource(state)` for the block under a campfire,
     /// before vanilla's rule (a hay bale) answers it: true makes the campfire
     /// a signal fire. An answer put in `smoke` is the result. The default
@@ -820,6 +970,10 @@ pub trait LevelAccess: BlockEntityNeighbors {
     fn sea_level(&self) -> i32 {
         sea_level_of(self.level_key())
     }
+    /// `DimensionType.infiniburn` resolved once for this level; None lets the fire tick resolve the tag from the bundle.
+    fn infiniburn(&self) -> Option<&data::BlockSet> {
+        None
+    }
     /// The level's dimension type.
     fn dimension_type(&self) -> &DimensionFacts {
         DimensionFacts::of_level(self.level_key())
@@ -849,7 +1003,7 @@ pub trait LevelAccess: BlockEntityNeighbors {
     /// containers, jukeboxes, lecterns, ...). State-only sources (cake,
     /// composter, cauldrons, beehives, ...) are evaluated by the library.
     fn block_entity_analog_signal(
-        &self,
+        &mut self,
         _pos: BlockPos,
         _state: BlockStateId,
         _direction: Direction,
@@ -907,6 +1061,66 @@ pub trait LevelAccess: BlockEntityNeighbors {
     ) -> bool {
         vanilla
     }
+    /// `PistonStructureResolver`'s slime test (`IBlockExtension.isSlimeBlock`) of `state`
+    /// once vanilla answered `vanilla` (a slime block): the answer to use. The default keeps it.
+    fn adjust_is_slime_block(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `PistonStructureResolver.isSticky` (`IBlockExtension.isStickyBlock`) of `state` once
+    /// vanilla answered `vanilla` (a slime or honey block): the answer to use. The default
+    /// keeps it.
+    fn adjust_is_sticky_block(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `IBlockExtension.canStickTo`: whether `state` sticks to the `other` beside it once the
+    /// library answered `vanilla`: the answer to use. The default keeps it.
+    fn adjust_can_stick_to(
+        &self,
+        _state: BlockStateId,
+        _other: BlockStateId,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
+    /// Whether the rail queries below need the level hooks.
+    fn has_rail_hook(&self) -> bool {
+        false
+    }
+    /// `IBaseRailBlockExtension.getRailDirection` of the rail `state` at `pos`, with no cart, once
+    /// the library read `vanilla` from its `shape`: the track it lays. The default keeps it.
+    fn adjust_rail_direction(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        vanilla: RailShape,
+    ) -> RailShape {
+        vanilla
+    }
+    /// `IBaseRailBlockExtension.canMakeSlopes` of the rail `state` at `pos` once the library
+    /// answered `vanilla`: whether it may climb toward a raised rail. The default keeps it.
+    fn adjust_rail_can_make_slopes(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
+    /// `IBaseRailBlockExtension.isFlexibleRail` of the rail `state` at `pos` once the library
+    /// answered `vanilla`: whether it may curve. The default keeps it.
+    fn adjust_rail_flexible(&self, _pos: BlockPos, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `IBaseRailBlockExtension.isValidRailShape` of the rail `state` for `shape`, about to be
+    /// written, once the library answered `vanilla`. The default keeps it.
+    fn adjust_rail_valid_shape(
+        &self,
+        _state: BlockStateId,
+        _shape: RailShape,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
     /// Whether redstone wire connection queries need the level hook.
     fn has_redstone_wire_connection_hook(&self) -> bool {
         false
@@ -934,14 +1148,35 @@ pub trait LevelAccess: BlockEntityNeighbors {
     ) -> BlockStateId {
         vanilla
     }
-    /// Whether connection queries (fences, walls, bars and panes) need the level hook.
+    /// Whether connection queries (fences, walls, bars and panes) need the level hooks:
+    /// [`Self::adjust_can_be_connected_to`] or [`Self::adjust_connects_to`].
     fn has_connection_hook(&self) -> bool {
         false
     }
-    /// The `kind` rule's connection once the library answered `vanilla` for
-    /// the block `state` at `pos` and the `neighbour` state beside it,
-    /// `direction` pointing from the block toward it and `face_solid` its
-    /// face's sturdiness: whether the block connects that side. The default keeps it.
+    /// NeoForge's `IBlockExtension.canBeConnectedTo`: once the `kind` rule
+    /// answered `vanilla` for a fence, wall, or bars or pane beside the block
+    /// `state` at `pos`, whether that block lets the `connector` state connect
+    /// to it, `direction` pointing from the block toward the connector and
+    /// `face_solid` whether the block's face toward it is sturdy. Asked before
+    /// [`Self::adjust_connects_to`], which starts from this answer and has the
+    /// last word. The default keeps it.
+    fn adjust_can_be_connected_to(
+        &self,
+        _kind: ConnectionKind,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _connector: BlockStateId,
+        _direction: Direction,
+        _face_solid: bool,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
+    /// The `kind` rule's connection once the library and then the neighbour
+    /// ([`Self::adjust_can_be_connected_to`]) answered `vanilla` for the block
+    /// `state` at `pos` and the `neighbour` state beside it, `direction`
+    /// pointing from the block toward it and `face_solid` its face's
+    /// sturdiness: whether the block connects that side. The default keeps it.
     fn adjust_connects_to(
         &self,
         _kind: ConnectionKind,
@@ -1037,11 +1272,38 @@ pub trait LevelAccess: BlockEntityNeighbors {
         false
     }
     /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
-    /// whatever its block's template: it is removed with its block and no piston
-    /// moves it, as for a template that has one.
+    /// whatever its block's template: it is removed with its block, as for a
+    /// template that has one, and a piston moves it only when the block's
+    /// part answers `Some(true)` ([`Self::adjust_piston_carries_block_entity`]).
     fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
         false
     }
+    /// The `piston_carries_block_entity` hook (Horizon's own) for the block
+    /// `state` at `pos`, asked at the last step of `PistonBaseBlock.isPushable`, for a block that got
+    /// past its push reaction: `Some(false)` keeps it in place, `Some(true)`
+    /// lets a piston move it with its block entity, and `None` keeps
+    /// vanilla's rule (a block with a block entity does not move). The default
+    /// answers `None`.
+    fn adjust_piston_carries_block_entity(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+    ) -> Option<bool> {
+        None
+    }
+    /// Take the block entity at `from` out of the level with its
+    /// attachments, running none of its removal side effects, for the moving
+    /// piston `PistonBaseBlock.moveBlocks` puts at `to`, which holds it until
+    /// its block lands. Levels without block entities do nothing.
+    fn carry_block_entity(&mut self, _from: BlockPos, _to: BlockPos) {}
+    /// Install the block entity the moving piston at `pos` carried there, as
+    /// a new block entity of that position. False when it carried none.
+    fn land_block_entity(&mut self, _pos: BlockPos) -> bool {
+        false
+    }
+    /// Drop the block entity the moving piston at `pos` carried, without
+    /// installing it: a client's copy, once the server's block replaced it.
+    fn discard_carried_block_entity(&mut self, _pos: BlockPos) {}
     /// `ShulkerBoxBlockEntity.isClosed` at `pos`: whether the box's lid is
     /// still shut. None when no shulker box block entity lives there, or the
     /// level keeps none: vanilla then reads the box as closed, a full cube.
@@ -1105,6 +1367,8 @@ pub struct Behaviours {
     dynamic: HashMap<BlockStateId, crate::dynamic_support::DynamicSupport>,
     occlusion_cache: RwLock<HashMap<(i32, i32, u8), bool>>,
     growth: growth::Growth,
+    /// The open world's NeoForge block data maps.
+    block_maps: block_maps::Slot,
 }
 
 impl Behaviours {
@@ -1280,6 +1544,18 @@ impl Behaviours {
         self.sim(level, ticks)
             .destroy_block(pos, drop, flags::UPDATE_LIMIT)
     }
+    /// `Block.dropResources(state, level, pos)`: the loot of `state` at `pos`, with what the
+    /// block entity there copies into it, as `destroy_block` drops it (nothing under
+    /// `doTileDrops` false), without touching the block.
+    pub fn drop_resources<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) {
+        self.sim(level, ticks).drop_resources(state, pos);
+    }
     /// A player breaking a block (`playerWillDestroy` + `Level.destroyBlock`
     /// without drops; the caller handles the player's loot/tool). Double
     /// blocks (doors, tall plants, beds) remove their other half as vanilla.
@@ -1432,6 +1708,22 @@ impl Behaviours {
         if sim.has_analog_output(state) {
             sim.update_neighbour_for_output_signal(pos, block);
         }
+    }
+    /// `ShulkerBoxBlockEntity.doNeighborUpdates`: the box's collision shape
+    /// changes with its lid, so the neighbours' shapes are updated (flag 3)
+    /// and then their `neighborChanged` runs, at the four points in `tick`
+    /// where the lid starts or finishes opening or closing.
+    pub fn shulker_neighbor_updates<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) {
+        let mut sim = self.sim(level, ticks);
+        sim.update_neighbour_shapes(state, pos, 3, flags::UPDATE_LIMIT);
+        let block = sim.block_of(state);
+        sim.update_neighbors_at(pos, block);
     }
     /// `Level.updateNeighborsAt(pos, block)`: notify the six neighbours.
     pub fn update_neighbors_at<L: LevelAccess + ?Sized>(
@@ -1814,3 +2106,5 @@ mod dimension_key_tests {
 
 #[cfg(test)]
 mod block_entity_neighbor_tests;
+
+mod piston_reactions;

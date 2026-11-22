@@ -4,6 +4,41 @@
 use super::{Game, commands::Target, native_hooks::mob_kind};
 
 impl Game<'_> {
+    pub(super) fn retire_vehicle_registration(&self, target: Target) {
+        match target {
+            Target::Boat(id) => {
+                if let Some(boat) = self.boats.iter().find(|boat| boat.id == id) {
+                    boat.attachment_lifetime.retire();
+                }
+            }
+            Target::Cart(id) => {
+                if let Some(cart) = self.carts.iter().find(|cart| cart.id == id) {
+                    cart.attachment_lifetime.retire();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `Entity.setRemoved` makes a vehicle invisible before notifying riders.
+    /// The owning list is kept stable while callbacks run.
+    pub(super) fn with_destroying_vehicle<R>(
+        &mut self,
+        target: Target,
+        action: impl FnOnce(&mut Self) -> R,
+    ) -> Option<R> {
+        if !self.persist.destroying_vehicles.insert(target) {
+            return None;
+        }
+        self.retire_vehicle_registration(target);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self)));
+        self.persist.destroying_vehicles.remove(&target);
+        match result {
+            Ok(value) => Some(value),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
     /// Whether this game is a server whose mounts the mods hear: the server thread or a
     /// dedicated server, never a client.
     fn native_hears_mounts(&self) -> bool {
@@ -28,6 +63,8 @@ impl Game<'_> {
             b.entity_type()
         } else if let Some(c) = self.cart_object(id) {
             c.kind.id().into()
+        } else if let Some(vehicle) = self.persist.removed_vehicles.get(&id) {
+            vehicle.kind()
         } else if self.cushions.iter().any(|c| c.id == id) {
             "minecraft:cushion".into()
         } else if let Some(m) = self.mob_object(id) {

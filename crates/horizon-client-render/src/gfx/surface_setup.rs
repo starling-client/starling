@@ -2,12 +2,12 @@
 //! an adapter that can't present to the window gives way to another of its backend
 //! (#13493).
 use super::{
-    Renderer, check_layers, cull, describe_adapter, is_software, oit, startup_step, surface_format,
-    timing,
+    Renderer, check_layers, cull, describe_adapter, is_software, oit, pack_timing, startup_step,
+    surface_format, timing,
 };
 // Ray tracing on request, which the device needs from its creation (gfx.rs may not grow).
 #[path = "ray_query.rs"]
-mod ray_query;
+pub(super) mod ray_query;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -120,6 +120,7 @@ pub(super) async fn open_adapter(
         ));
     }
     describe_adapter(adapter);
+    ray_query::note_offer(adapter);
     let info = adapter.get_info();
     let limits = adapter.limits();
     if let Err(e) = check_layers(adapter, layers) {
@@ -135,6 +136,7 @@ pub(super) async fn open_adapter(
     // 32-bit float textures: shader packs' RGBA32F buffers, which GL filters and mipmaps. Count
     // draws: GPU culling's (`gpu_culling`).
     let features = timing::GpuTimer::features(adapter)
+        | pack_timing::PassTiming::features(adapter)
         | cull::Cull::features(adapter)
         | oit::features(adapter)
         | ray_query::features(adapter)
@@ -164,7 +166,7 @@ pub(super) async fn open_adapter(
         limits.max_storage_buffer_binding_size,
         limits.max_texture_array_layers,
     ));
-    let desc = wgpu::DeviceDescriptor {
+    let mut desc = wgpu::DeviceDescriptor {
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
@@ -175,17 +177,31 @@ pub(super) async fn open_adapter(
         experimental_features: ray_query::experimental(features),
         ..Default::default()
     };
-    #[cfg(not(target_os = "macos"))]
-    let opened = match info.backend {
-        wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(adapter, &desc),
-        _ => None,
+    let open = async |desc: &wgpu::DeviceDescriptor<'_>| {
+        #[cfg(not(target_os = "macos"))]
+        if info.backend == wgpu::Backend::Vulkan
+            && let Some(opened) = horizon_hdr::open_vulkan_device(adapter, desc)
+        {
+            return opened;
+        }
+        adapter.request_device(desc).await
     };
-    #[cfg(target_os = "macos")]
-    let opened = None;
-    let opened = match opened {
-        Some(opened) => opened,
-        None => adapter.request_device(&desc).await,
-    };
+    let mut opened = open(&desc).await;
+    // Ray tracing (experimental, #470): a device that won't open with ray queries opens without.
+    if let Err(e) = &opened
+        && desc
+            .required_features
+            .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+    {
+        log::warn!(
+            "Horizon renderer: the ray-tracing device failed to open ({e}); opening a plain one \
+             instead"
+        );
+        desc.required_features
+            .remove(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+        desc.experimental_features = wgpu::ExperimentalFeatures::disabled();
+        opened = open(&desc).await;
+    }
     let (device, queue) = match opened {
         Ok(opened) => opened,
         Err(e) => return Err(AdapterFailure::Failed(format!("{name} device: {e}"))),
@@ -225,6 +241,18 @@ pub(super) async fn open_adapter(
         device_lost,
         configured,
     })
+}
+/// Logs a sprite split below the CPU's (the GPU's limit), and warns when Metal's arrays grew
+/// past 512 layers (#12155), so a big pack's texture-corruption report ties to it (#8471).
+pub(super) fn log_sprite_split(info: &wgpu::AdapterInfo, split: u32, layers: u32) {
+    if info.backend == wgpu::Backend::Metal && split > 512 {
+        log::warn!(
+            "Horizon: {split}-layer Metal sprite arrays for {layers} on {}",
+            info.name
+        );
+    } else if split < super::sprite_split() {
+        log::info!("Horizon: {split} block textures per array (the GPU's limit)");
+    }
 }
 #[cfg(test)]
 mod tests {

@@ -26,14 +26,14 @@ pub trait ClientRenderClientHost {
     #[access(PublishedResources)]
     fn instance_group_destroy(&self, group: InstanceGroupRef) -> Result<(), GroupError>;
     /// Side: client.
-    /// Asks `native_block_render_visibility` again for every state and, when the answers differ
+    /// Asks `block_render_visibility` again for every state and, when the answers differ
     /// from those in use, remeshes every loaded section with them. Call it when your answer changes (a toggle key, a scan
     /// finishing) and once when the player joins, not every frame: a rebuild takes the workers a
     /// few seconds. With no part answering, nothing is asked and the mesher keeps its no-mod path.
     #[access(WorldOnly)]
     fn refresh_render_visibility(&mut self);
     /// Side: client.
-    /// Asks `native_biome_colors` again for every biome and, when the colours
+    /// Asks `biome_colors` again for every biome and, when the colours
     /// differ from those in use, rebuilds every loaded section and the far
     /// terrain with them (`LevelRenderer.allChanged`, as changing Biome Blend
     /// does). Call it when your colours change (a new season, a new day of a
@@ -52,21 +52,22 @@ pub trait ClientRenderClientHost {
     #[access(WorldOnly)]
     fn mod_image(&mut self, width: u32, height: u32, rgba: &[u8]) -> bool;
     /// Side: client.
-    /// Published asset/data read: available in Setup, Reloading and World.
-    /// For a client mod drawing a block entity: the texture block state `state`'s model shows on its `side`
-    /// (`block/oak_planks`: vanilla's without their namespace, a mod's with it), by the name `native_draw_cube` and
-    /// `native_draw_quad` take, and that face's
-    /// tint index (-1 for none): a copycat block drawing a box of its material's textures with `native_draw_cube`,
-    /// kept with `BlockEntityDraw::keep`. The face culled against that side comes first, else the first facing it;
-    /// None when the model has no face that way or isn't baked. API @API:block_face_sprite@.
-    #[access(PublishedResources)]
-    fn block_face_sprite(&self, state: BlockState, side: Direction) -> Option<BlockFaceTexture>;
+    /// For a client mod drawing a block's faces itself (a copycat drawing its material's, from
+    /// `block_sprites`): the 0xRRGGBB colour a face of `state` with tint index `tint_index`
+    /// (`FaceSprite::tint_index`) is multiplied by at `pos`, as the chunk mesher tints it there
+    /// (`BlockColors.getColor`, biome blend included: grass, foliage and water follow the biome
+    /// around `pos`). None for an untinted face (-1, or an index past the state's tints). Reads
+    /// this client's copy of the world.
+    #[access(WorldOnly)]
+    fn block_tint_color(&self, state: BlockState, tint_index: i32, pos: [i32; 3]) -> Option<u32>;
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
     /// For a client mod: what each resolved block state draws on its six sides, preserving
     /// its properties without reparsing names. Resolve states once at load. Each face's sprite (array and
-    /// layer, as `WorldDrawn::block_sprites` cuts them), where it lies on the side, how its texture runs across it,
-    /// its tint source and whether it is cut out, translucent or animated; its particle sprite; whether it is a plain
+    /// layer, as `WorldDrawn::block_sprites` cuts them) and its texture by the name `cube` and `quad` take,
+    /// where it lies on the side, how its texture runs across it (`FaceSprite::quad_on` draws it on another
+    /// block's box, turned as its model turns it), its tint source and index (`block_tint_color`) and
+    /// whether it is cut out, translucent or animated; its particle sprite; whether it is a plain
     /// cube. None for a block the game does not know. The model is the state's first random variant. API
     /// 380.
     #[access(PublishedResources)]

@@ -1,0 +1,118 @@
+name: hnmod-compat
+# Whether the website's native mods (.hnmod, horizon-rust.github.io/horizon-mods, written against Horizon's main API)
+# still build on a Starling commit: each mod alone, as a phone's build prepares it, then `cargo ndk check` for
+# arm64-v8a (tools/starling/hnmod_compat.sh), in parallel shards. The summary compares with the mods that built on
+# the last measured Starling (tools/starling/hnmod_compat_baseline.txt) and names every one that no longer does.
+#
+# By hand only (each run is a few hours of runner time): Actions > hnmod-compat > Run workflow, or
+#   gh workflow run hnmod-compat.yml --ref BRANCH
+# and, while it is not on the default branch yet, through sync-check.yml:
+#   gh workflow run sync-check.yml --ref sync-horizon-7 -f full=false -f compat=true
+# GitHub's runners hold no secrets here (contents: read, no secrets used), so mods with crates of their own run too.
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Parallel jobs
+        default: '8'
+      mods:
+        description: Only these mod ids, separated by spaces (none, every mod of the index)
+        required: false
+  # sync-check.yml's `compat` (a workflow is dispatched only once it is on the default branch).
+  workflow_call:
+    inputs:
+      shards:
+        type: string
+        default: '8'
+      mods:
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: hnmod-compat-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: The index's native mods, unpacked (no mod code runs)
+        run: python3 -I tools/starling/hnmod_fetch.py "$RUNNER_TEMP/mods"
+      - id: split
+        env:
+          SHARDS: ${{ inputs.shards }}
+          ONLY: ${{ inputs.mods }}
+        run: |
+          if [ -n "$ONLY" ]; then
+            python3 -I -c 'import json, os; print("shards=" + json.dumps([" ".join(os.environ["ONLY"].split())]))' >> "$GITHUB_OUTPUT"
+          else
+            echo "shards=$(python3 -I tools/starling/hnmod_fetch.py --shards "${SHARDS:-8}" "$RUNNER_TEMP/mods")" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mods
+          path: ${{ runner.temp }}/mods
+          retention-days: 3
+  check:
+    needs: list
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        mods: ${{ fromJSON(needs.list.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mods
+          path: ${{ runner.temp }}/mods
+      - name: Rust for Android, cargo-ndk and the NDK build_apk.py pins
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          bash tools/ci/rustup_install.sh --profile minimal --target aarch64-linux-android
+          cargo install cargo-ndk --version 3.5.4 --locked
+      # The build folder on the larger disk where the runner has one.
+      - name: Room
+        run: |
+          base="$RUNNER_TEMP"
+          if [ -d /mnt ] && sudo mkdir -p /mnt/hnmod && sudo chown "$USER" /mnt/hnmod; then base=/mnt/hnmod; fi
+          echo "WORK=$base/work" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$base/target" >> "$GITHUB_ENV"
+          df -h / "$base" | tail -n +1
+      - name: Check each mod
+        env:
+          MODS: ${{ matrix.mods }}
+        run: |
+          # shellcheck disable=SC2086
+          bash tools/starling/hnmod_compat.sh . "$RUNNER_TEMP/mods" "$RUNNER_TEMP/out" $MODS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: check-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+  summary:
+    needs: [list, check]
+    if: always() && needs.list.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: check-*
+          path: ${{ runner.temp }}/results
+      - name: Compare with the last measured Starling
+        run: python3 -I tools/starling/hnmod_compat_summary.py "$RUNNER_TEMP/results" tools/starling/hnmod_compat_baseline.txt >> "$GITHUB_STEP_SUMMARY"

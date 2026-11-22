@@ -635,7 +635,7 @@ impl Game<'_> {
             spectator: false,
             stepping_carefully: false,
             dampens: mob.is_some_and(|m| m.species() == Species::Warden),
-            targetable: mob.is_some_and(|m| m.alive() && m.species() != Species::Warden),
+            targetable: mob.is_some_and(warden::can_be_targeted),
             living: true,
             player: mob.is_some_and(|m| m.rider.is_some()),
         }
@@ -657,7 +657,11 @@ impl Game<'_> {
     }
 
     /// `GameEvent.Context.of(entity, state)` for a non-living entity.
-    pub(super) fn entity_event_context(&self, id: u32, state: Option<BlockStateId>) -> Context {
+    pub(in crate::game) fn entity_event_context(
+        &self,
+        id: u32,
+        state: Option<BlockStateId>,
+    ) -> Context {
         let dampens = self
             .dropped
             .iter()
@@ -702,7 +706,12 @@ impl Game<'_> {
     // ---- posting ----
 
     /// `Level.gameEvent`: tell the listeners within reach.
-    pub(super) fn post_game_event(&mut self, event: &'static str, pos: [f64; 3], ctx: Context) {
+    pub(in crate::game) fn post_game_event(
+        &mut self,
+        event: &'static str,
+        pos: [f64; 3],
+        ctx: Context,
+    ) {
         #[cfg(test)]
         TEST_POSTED_EVENTS.with(|events| {
             if let Some(events) = events.borrow_mut().as_mut() {
@@ -857,6 +866,19 @@ impl Game<'_> {
         }
         if self.mobs[index].species() == Species::Allay && self.mobs[index].alive() {
             self.allay_listen(index, event, pos, ctx);
+            // Allay.JukeboxListener, its own listener beside the vibrations'.
+            let playing = match event {
+                "minecraft:jukebox_play" => Some(true),
+                "minecraft:jukebox_stop_play" => Some(false),
+                _ => None,
+            };
+            let m = &mut self.mobs[index];
+            if let Some(playing) = playing
+                && allay::hears_jukebox(m, pos)
+            {
+                let at = pos.map(|v| v.floor() as i32);
+                allay::set_jukebox_playing(m, at, playing);
+            }
         }
     }
     /// A game event at a block (`Level.gameEvent(source, event, pos)`).
@@ -963,7 +985,7 @@ impl Game<'_> {
                 // The sensor does not hear its own placement or removal.
                 let own = source_block == [key.0, key.1, key.2]
                     && matches!(event, "minecraft:block_destroy" | "minecraft:block_place");
-                let frequency = sculk::frequency(event);
+                let frequency = self.mob_maps().vibration_frequency(event);
                 let calibrated_out = kind == SculkKind::Calibrated && {
                     let back = self.calibrated_signal(key);
                     back != 0 && frequency != back
@@ -1025,8 +1047,9 @@ impl Game<'_> {
     /// `Warden.VibrationUser`: accept a vibration for the warden at `index`.
     fn warden_listen(&mut self, index: usize, event: &'static str, pos: [f64; 3], ctx: &Context) {
         let now = self.world.game_time;
+        let ctx = warden::heard_by(*ctx, &self.mob_teams(), self.mobs[index].id);
         let (occludes, world) = (&self.sculk.tables.occludes, &self.world);
-        let avoided = warden::listen(&mut self.mobs[index], now, event, pos, ctx, |a, b| {
+        let avoided = warden::listen(&mut self.mobs[index], now, event, pos, &ctx, |a, b| {
             sculk::is_occluded(a, b, |p| {
                 let state = world.block(p.x, p.y, p.z);
                 occludes.get(state.0 as usize).copied().unwrap_or(false)
@@ -1159,6 +1182,23 @@ impl Game<'_> {
                     let source = PositionSource::Block([key.0, key.1, key.2]);
                     self.vibration_particle(source, info.pos, center(key), travel);
                 }
+                if let Some((info, travel)) = tick.resumed {
+                    let source = PositionSource::Block([key.0, key.1, key.2]);
+                    let dest = center(key);
+                    let initial = info.distance.floor() as i32;
+                    // `tryReloadVibrationParticle` works in doubles.
+                    let alpha = if initial > 0 {
+                        1.0 - f64::from(travel) / f64::from(initial)
+                    } else {
+                        0.0
+                    };
+                    let current_pos = [
+                        info.pos[0] + (dest[0] - info.pos[0]) * alpha,
+                        info.pos[1] + (dest[1] - info.pos[1]) * alpha,
+                        info.pos[2] + (dest[2] - info.pos[2]) * alpha,
+                    ];
+                    self.vibration_particle(source, current_pos, dest, travel);
+                }
                 if let Some(info) = tick.received {
                     self.sculk_receive(key, info)?;
                 }
@@ -1198,7 +1238,7 @@ impl Game<'_> {
             SculkKind::Sensor | SculkKind::Calibrated => {
                 let state = self.world.block(key.0, key.1, key.2);
                 if self.res.behaviours().sculk_sensor_can_activate(state) {
-                    let frequency = sculk::frequency(info.event);
+                    let frequency = self.mob_maps().vibration_frequency(info.event);
                     if let Some(e) = self.sculk_entity(key) {
                         e.last_frequency = frequency;
                     }
@@ -1583,12 +1623,7 @@ impl Game<'_> {
         if self.potions.effects.get("conduit_power").is_some()
             && let Some(eye) = self.eye_position()
         {
-            let in_water = horizon_client::fog::fog_type(
-                &self.world,
-                self.res.facts(),
-                eye,
-                &self.near_plane(),
-            ) == FogType::Water;
+            let in_water = self.camera_fog_type(eye) == FogType::Water;
             return self.fog.water_vision(in_water);
         }
         0.0
@@ -1912,7 +1947,12 @@ impl Game<'_> {
     }
     /// Retain the projectile as the landing event source and the
     /// shooter as its owner, even when the projectile is held out for ticking.
-    pub(super) fn projectile_landed_event(&mut self, id: u32, owner: Option<Who>, at: [f64; 3]) {
+    pub(in crate::game) fn projectile_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        at: [f64; 3],
+    ) {
         let ctx = Context {
             source: (id != 0).then_some(EventSource::Entity(id)),
             owner,
@@ -1920,6 +1960,50 @@ impl Game<'_> {
             ..Context::default()
         };
         self.post_game_event("minecraft:projectile_land", at, ctx);
+    }
+    /// A projectile's own event (`gameEvent(event)`, `Context.of(this, state)`):
+    /// its owner as the projectile's owner, `state` the affected state. A
+    /// guest's projectile posts as theirs, or with no owner once they have left
+    /// (`Projectile.getOwner`), as its shot does.
+    pub(super) fn projectile_own_event(
+        &mut self,
+        event: &'static str,
+        owner: Option<Who>,
+        guest: Option<u32>,
+        at: [f64; 3],
+        state: Option<BlockStateId>,
+    ) {
+        if let Some(conn) = guest.filter(|conn| owner.is_some() && self.lan_acting != Some(*conn)) {
+            let posted = self
+                .as_guest(conn, |g| {
+                    g.projectile_own_event(event, owner, None, at, state);
+                })
+                .is_some();
+            if !posted {
+                self.projectile_own_event(event, None, None, at, state);
+            }
+            return;
+        }
+        let mut ctx = Context {
+            dampening_state: self.state_dampens(state),
+            ..Context::default()
+        };
+        ctx.owner = owner;
+        ctx.player = owner == Some(Who::Player) || self.rides_player(owner);
+        self.post_game_event(event, at, ctx);
+    }
+    /// The state HIT_GROUND names for an entity of `bounds` landing at
+    /// `position` (`Entity.checkFallDamage`): its supporting block's
+    /// (`mainSupportingBlockPos`), else the block at `getOnPosLegacy`.
+    pub(super) fn landing_state(&self, position: Vec3, bounds: Aabb) -> BlockStateId {
+        let p = self.supporting_block(position, bounds).unwrap_or_else(|| {
+            BlockPos::new(
+                position.x.floor() as i32,
+                (position.y - 0.2).floor() as i32,
+                position.z.floor() as i32,
+            )
+        });
+        self.world.block(p.x, p.y, p.z)
     }
     /// The player shot or threw something.
     pub(super) fn player_projectile_shot(&mut self) {
@@ -1986,20 +2070,17 @@ impl Game<'_> {
     }
 
     /// `Entity.checkFallDamage` emits HIT_GROUND after the block's fallOn.
-    pub(super) fn post_landing_event(&mut self, position: Vec3, bounds: Aabb, living: bool) {
+    pub(in crate::game) fn post_landing_event(
+        &mut self,
+        position: Vec3,
+        bounds: Aabb,
+        living: bool,
+    ) {
         if self.remote.is_some() || self.options.execution_role.is_client() {
             return;
         }
         self.sculk_prepare();
-        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
-        let state = match self.supporting_block(position, bounds) {
-            Some(support) => self.world.block(support.x, support.y, support.z),
-            None => self.world.block(
-                position.x.floor() as i32,
-                (position.y - 0.2).floor() as i32,
-                position.z.floor() as i32,
-            ),
-        };
+        let state = self.landing_state(position, bounds);
         let mut context = self.who_context(None, Some(state));
         context.living = living;
         self.post_game_event(
@@ -2321,7 +2402,7 @@ impl Game<'_> {
             == horizon_client::blocks::Fluid::Water
     }
     /// `Entity.checkSupportingBlock`: the block under this box closest to the
-    /// entity. Everything but the player works it out when it asks.
+    /// entity. Everything but the player works it out when it asks (Breeze ground dust too).
     pub(in crate::game) fn supporting_block(
         &self,
         position: Vec3,
@@ -2549,7 +2630,10 @@ fn darkness_target(e: &EffectInstance) -> f32 {
 /// `MobEffectInstance.BlendState.tick` for the darkness effect: from the
 /// (previous, current) factors, the next ones. It fades in and out over 22
 /// ticks; with no darkness it is gone.
-pub(super) fn darkness_blend_tick(effects: &PlayerEffects, (_, current): (f32, f32)) -> (f32, f32) {
+pub(in crate::game) fn darkness_blend_tick(
+    effects: &PlayerEffects,
+    (_, current): (f32, f32),
+) -> (f32, f32) {
     let next = match effects.get("darkness") {
         Some(e) => {
             let step = 1.0 / DARKNESS_BLEND as f32;
@@ -2674,8 +2758,8 @@ mod tests {
     #[ignore = "needs prepared resources"]
     fn vanilla_game_event_carries_the_affected_state() {
         use crate::game::native_entity_refs::tests::with_game;
-        use mod_api::testing::with_mods;
         use mod_api::{Hooks, ModEntry, VanillaGameEventEvent};
+        use mod_platform::testing::with_mods;
         use std::sync::{Arc, Mutex};
 
         struct Heard(Arc<Mutex<Vec<Option<BlockStateId>>>>);
@@ -3156,3 +3240,8 @@ mod shriek_capture_tests {
         }
     }
 }
+
+// Milking and shearing farm animals; lives here for `TEST_POSTED_EVENTS`.
+#[cfg(test)]
+#[path = "tests/farm_animal_interaction_tests.rs"]
+mod farm_animal_interaction_tests;

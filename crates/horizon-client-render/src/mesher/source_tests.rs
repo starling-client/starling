@@ -103,6 +103,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         connected: Default::default(),
         fusion: Default::default(),
         mod_animations: Default::default(),
+        mod_pipelines: Default::default(),
         generation: 1,
     };
     let assets = Assets {

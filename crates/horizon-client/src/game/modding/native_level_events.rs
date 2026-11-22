@@ -5,9 +5,11 @@
 //! writes, they act on the level in place, the one the hook runs in; a parked
 //! level, a stale handle or a client returns false. Reaching a parked level, as `play_sound` and the
 //! reads do through `native_level_world`, is a follow-up.
-use super::{Game, GameLevel, native_explosions::NativeBlast};
+use super::{Game, GameLevel};
 use horizon_world::level::{BlockEventData, LevelEvent};
-use mod_api::{BlockKey, ExplosionInteraction, LevelRef};
+use mod_api::{
+    BlockKey, EntityRef, ExplodeError, ExplosionInteraction, ExplosionSettings, LevelRef,
+};
 
 /// A position inside the world's horizontal and vertical bounds.
 fn in_bounds(at: [f64; 3]) -> bool {
@@ -68,6 +70,25 @@ impl Game<'_> {
         self.level_event_at(id, pos, data);
         true
     }
+    /// Plays level event `id` for every player on the server
+    /// (`ServerLevel.globalLevelEvent`), or for the players near `pos` when the
+    /// `global_sound_events` rule is off. Refuses what `level_level_event` refuses.
+    pub(super) fn level_global_level_event(
+        &mut self,
+        level: LevelRef,
+        id: i32,
+        pos: [i32; 3],
+        data: i32,
+    ) -> bool {
+        if !self.level_in_place(level) {
+            return false;
+        }
+        if !level_event_data_ok(id, data, self.res.facts().states.len()) {
+            return false;
+        }
+        self.global_level_event(id, pos, data);
+        true
+    }
     /// Sends game event `event` (`minecraft:block_change`...) from `at`, as
     /// `Level.gameEvent(event, at, context)`, with validated source and state.
     pub(super) fn level_game_event(
@@ -114,30 +135,36 @@ impl Game<'_> {
         });
         true
     }
-    /// Explodes at `center` with no source entity, as `Level.explode(null,
-    /// x, y, z, radius, fire, interaction)` does (`native_explode`): `fire`
-    /// lights some of the air around, `interaction` says what happens to
-    /// blocks: `None`, `Block` or `Tnt` (vanilla's `Mob` and `Trigger` aren't
-    /// offered yet). False for a chunk that isn't loaded or a radius outside
-    /// `0 < radius <= 32`.
+    /// Explodes at `center` as vanilla's full `Level.explode(source,
+    /// damageSource, calculator, x, y, z, radius, fire, interaction, particles...,
+    /// sound)` does (`native_explode`), the causing entity derived from
+    /// `source`. Refused, with nothing exploded, for another level, a stale
+    /// `source` or one in another level, once the entity ids are exhausted, and as
+    /// `native_explode` refuses.
     pub(super) fn level_explode(
         &mut self,
         level: LevelRef,
+        source: Option<EntityRef>,
         center: [f64; 3],
         radius: f32,
         fire: bool,
         interaction: ExplosionInteraction,
-    ) -> bool {
-        if !self.level_in_place(level) {
-            return false;
+        settings: ExplosionSettings,
+    ) -> Result<(), ExplodeError> {
+        if self.entity_ids_exhausted() {
+            return Err(ExplodeError::Unavailable);
         }
-        let blast = match interaction {
-            ExplosionInteraction::None => NativeBlast::Keep,
-            ExplosionInteraction::Block => NativeBlast::Block,
-            ExplosionInteraction::Tnt => NativeBlast::Tnt,
-            _ => unreachable!("ExplosionInteraction: unhandled variant"),
+        if !self.level_in_place(level) {
+            return Err(ExplodeError::Unavailable);
+        }
+        let source = match source {
+            Some(entity) => Some(
+                self.native_explosion_source(entity)
+                    .ok_or(ExplodeError::Unavailable)?,
+            ),
+            None => None,
         };
-        self.native_explode(level.dimension_id(), center, radius, fire, blast)
+        self.native_explode(source, center, radius, fire, interaction, settings)
     }
     /// Strikes lightning at `at`, as summoning a `minecraft:lightning_bolt`
     /// does: it sets fire, hurts and converts what it hits (a pig to a
@@ -207,8 +234,8 @@ mod tests {
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_queued_block_event_runs_the_blocks_trigger_once() {
         use horizon_core::position::BlockPos;
-        use mod_api::__private::part_tests::block_key;
         use mod_api::{LevelRef, WorldEpoch};
+        use mod_platform::__private::part_tests::block_key;
         super::super::native_entity_refs::tests::with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
@@ -276,7 +303,7 @@ mod tests {
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("level-events", Box::new(EventsMod))].into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_guest_turn_tests::with_guests(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world.chunks.insert(
@@ -343,6 +370,162 @@ mod tests {
                     [before, at(1500, 1, 1, 0), at(2005, 2, 2, 7)]
                 );
             });
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_global_level_event_reaches_every_player_or_falls_back_to_a_plain_one() {
+        use horizon_client::gamerules::Value;
+        use mod_api::{LevelRef, WorldEpoch};
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let level = game.level(game.dim.id()).unwrap();
+            let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
+            game.audio.capture = Some(Vec::new());
+            game.lan_global_events.clear();
+            game.lan_events.clear();
+
+            // An End portal opening: one packet with the global flag for every player.
+            assert!(level.global_level_event(game, 1038, [10, 64, -3], 0));
+            assert_eq!(
+                game.lan_global_events,
+                [("minecraft:overworld", 1038, [10, 64, -3], 0)]
+            );
+            assert!(
+                game.lan_events.is_empty(),
+                "no plain event while the rule is on"
+            );
+            assert!(
+                !level.global_level_event(game, 2001, [0, 64, 0], -1),
+                "2001 carries a block state"
+            );
+            assert!(!stale.global_level_event(game, 1038, [0, 64, 0], 0));
+            assert_eq!(game.lan_global_events.len(), 1, "refusals send nothing");
+
+            // ServerLevel.globalLevelEvent without global_sound_events: levelEvent(null, ...).
+            assert!(game.ui.rules.set("global_sound_events", Value::Bool(false)));
+            game.lan_global_events.clear();
+            assert!(level.global_level_event(game, 1038, [10, 64, -3], 0));
+            assert!(game.lan_global_events.is_empty());
+            assert_eq!(
+                game.lan_events,
+                [super::super::QueuedLevelEvent {
+                    kind: 1038,
+                    pos: [10, 64, -3],
+                    data: 0,
+                    source: None,
+                }]
+            );
+        });
+    }
+
+    /// `ServerLevel.globalLevelEvent` with `global_sound_events` off is
+    /// `levelEvent(null, ...)`: a player within 64 blocks gets the plain packet
+    /// at the event's position, and one further away gets nothing.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn with_the_rule_off_a_global_level_event_reaches_a_player_in_range_as_a_plain_one() {
+        use super::super::lan::LanSettings;
+        use horizon_client::gamerules::Value;
+        use horizon_client::lan::{
+            Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig,
+        };
+        use horizon_protocol::packets::{
+            configuration::ClientInformation,
+            play::{Clientbound, LevelEvent},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicI32, AtomicUsize},
+        };
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let net = NetConfig {
+                listen: false,
+                announce: false,
+                lod_distance: 0,
+                ..NetConfig::lan(0, String::new(), 2)
+            };
+            let config = HubConfig {
+                default_game_mode: 0,
+                guest_commands: false,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: game.dim.id().to_owned(),
+                allow_flight: true,
+                seed: 0,
+                max_players: 2,
+                integrated: true,
+                levels: game.level_shapes,
+            };
+            let settings = LanSettings {
+                port: 0,
+                guest_commands: false,
+                force_game_mode: false,
+            };
+            game.lan_host(settings, net, config).unwrap();
+            let mut guest_at = |conn: u32, at: [f64; 3]| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let mut guest = Guest::new(
+                    Joined {
+                        conn,
+                        uuid: u128::from(conn),
+                        name: format!("guest{conn}"),
+                        properties: Vec::new(),
+                        info: ClientInformation::new(8),
+                        brand: String::new(),
+                        sender: PlayerSender::new(tx, Arc::new(AtomicUsize::new(0))),
+                        latency: Arc::new(AtomicI32::new(0)),
+                        address: "127.0.0.1:1".parse().unwrap(),
+                        expected: false,
+                    },
+                    conn as i32,
+                    at,
+                    10,
+                );
+                guest.placed = true;
+                guest.dimension = game.dim.id().to_owned();
+                game.lan.as_mut().unwrap().hub.guests.push(guest);
+                rx
+            };
+            let near = guest_at(12, [30.5, 64.0, -3.5]);
+            let far = guest_at(13, [110.5, 64.0, -3.5]);
+            let events = |rx: &std::sync::mpsc::Receiver<Out>| {
+                rx.try_iter()
+                    .flat_map(|out| match out {
+                        Out::Packet(body) => vec![body],
+                        Out::Packets(bodies) => bodies,
+                        Out::Disconnect(_) => panic!("unexpected disconnect"),
+                    })
+                    .filter_map(|body| {
+                        let mut reader = horizon_protocol::buf::Reader::new(&body);
+                        let id = reader.varint().unwrap();
+                        match Clientbound::decode(id, reader.rest()) {
+                            Ok(Clientbound::LevelEvent(p)) => Some(p),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            game.lan_flush_effects();
+            events(&near);
+            events(&far);
+            game.audio.capture = Some(Vec::new());
+            assert!(game.ui.rules.set("global_sound_events", Value::Bool(false)));
+            let level = game.level(game.dim.id()).unwrap();
+            assert!(level.global_level_event(game, 1038, [10, 64, -3], 0));
+            game.lan_flush_effects();
+            assert_eq!(
+                events(&near),
+                [LevelEvent {
+                    kind: 1038,
+                    pos: [10, 64, -3],
+                    data: 0,
+                    global: false,
+                }]
+            );
+            assert!(events(&far).is_empty(), "100 blocks away is out of range");
         });
     }
 }

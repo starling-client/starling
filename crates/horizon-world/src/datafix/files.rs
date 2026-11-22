@@ -832,7 +832,7 @@ fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> 
     for (pos, record) in &records {
         writer.write(*pos, record)?;
     }
-    writer.finish()?;
+    writer.finish_staged()?;
     fs::rename(&temporary, path)
 }
 

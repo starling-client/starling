@@ -1,5 +1,8 @@
 import argparse
+import contextlib
+import io
 import datetime
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -17,7 +21,7 @@ PACKAGES = {"horizon-core": "crates/horizon-core", "horizon-client": "crates/hor
 LIBRARIES = set(PACKAGES) - {"xtask"}
 DEPENDENCIES = {"horizon-client": {"horizon-core"}}
 MODS = ""
-CLIPPY = pr_ready.CI_CLIPPY + " && " + pr_ready.CI_CLIPPY_SERVER
+CLIPPY = f'status=0\n{pr_ready.CI_CLIPPY} || status=$?\n{pr_ready.CI_CLIPPY_SERVER} || status=$?\nexit "$status"'
 # The bash on PATH: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is WSL's
 # (#5383), which has none of the host's paths. Git Bash on PATH runs the launcher's snippets as on Linux.
 BASH = shutil.which("bash")
@@ -25,8 +29,8 @@ POSIX_BASH = BASH is not None and not (
     os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
-def args(host="local", quick=False):
-    return argparse.Namespace(host=host, quick=quick)
+def args(host="local", quick=False, harnesses=False):
+    return argparse.Namespace(host=host, quick=quick, harnesses=harnesses)
 
 
 class GitChangedPathsTests(unittest.TestCase):
@@ -55,6 +59,51 @@ class GitChangedPathsTests(unittest.TestCase):
     def commit(self):
         self.git("add", ".")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base")
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX symlinks and FIFO")
+    def test_revision_snapshot_never_reads_symlink_targets_or_nonregular_files(self):
+        self.write("tracked.txt", "base\n")
+        self.commit()
+        (self.root / "dangling").symlink_to("absent")
+        (self.root / "directory-link").symlink_to(self.root, target_is_directory=True)
+        os.mkfifo(self.root / "pipe")
+        actual_git = pr_ready.git
+        def git(*arguments):
+            if arguments[0] == "ls-files":
+                # Git may omit nonregular files; exercise the refusal even if listed.
+                return "dangling\0directory-link\0pipe\0"
+            return actual_git(*arguments)
+        with mock.patch.object(pr_ready, "git", side_effect=git), \
+                mock.patch.object(Path, "open", side_effect=AssertionError("must not read untracked objects")):
+            before = pr_ready.revision_state()
+            self.assertTrue(before[1])
+            self.assertIn("absent", before[2])
+            self.assertIn("pipe", before[2])
+            (self.root / "dangling").unlink()
+            (self.root / "dangling").symlink_to("another-absent")
+            after = pr_ready.revision_state()
+        self.assertNotEqual(before, after)
+
+    def test_self_check_header_identifies_commit_and_dirty_state(self):
+        self.write("tracked.txt", "base\n")
+        self.write(".gitignore", "ignored-output/\n")
+        self.commit()
+        head = self.git("rev-parse", "HEAD").strip()
+        def header():
+            return pr_ready.block(args(), "HEAD", head, [], {}, [], "skip-release", 0,
+                                  pr_ready.revision_state()).splitlines()[0]
+        self.assertIn(f"commit `{head}`", header())
+        self.assertIn("host `", header())
+        self.assertNotIn(" dirty", header())
+        self.write("ignored-output/log.txt", "ignored\n")
+        self.assertNotIn(" dirty", header())
+        self.write("untracked.txt", "new\n")
+        self.assertIn(f"commit `{head}` dirty", header())
+        (self.root / "untracked.txt").unlink()
+        self.write("tracked.txt", "edited\n")
+        self.assertIn(" dirty", header())
+        self.git("add", "tracked.txt")
+        self.assertIn(" dirty", header())
 
     def test_unicode_paths_select_checks_and_keep_line_counts(self):
         tracked = "crates/horizon-core/src/caf\u00e9 edit.rs"
@@ -94,9 +143,32 @@ class GitChangedPathsTests(unittest.TestCase):
 
 
 class PrReadyTests(unittest.TestCase):
+    @unittest.skipUnless(POSIX_BASH and os.name != "nt", "executes the POSIX self-check")
+    def test_cold_clippy_hint_precedes_the_step_and_respects_sccache(self):
+        for wrapper in (None, "", "other-wrapper", "sccache", "/opt/bin/sccache", "sccache.exe"):
+            with self.subTest(wrapper=wrapper):
+                env = dict(os.environ)
+                env.pop("RUSTC_WRAPPER", None)
+                if wrapper is not None:
+                    env["RUSTC_WRAPPER"] = wrapper
+                steps = [pr_ready.Step(name, "printf 'ran\\n'")
+                         for name in ("clippy", "registry clippy", "launcher clippy")]
+                with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stderr(io.StringIO()) as log:
+                    pr_ready.run_script(steps, "local", verbose=False)
+                self.assertEqual([(step.status, step.output.strip()) for step in steps], [("pass", "ran")] * 3)
+                expected = wrapper in (None, "", "other-wrapper")
+                self.assertEqual(log.getvalue().count(pr_ready.CLIPPY_CACHE_HINT), int(expected))
+                if expected:
+                    self.assertLess(log.getvalue().index(pr_ready.CLIPPY_CACHE_HINT), log.getvalue().index("  clippy..."))
+        step = pr_ready.Step("tests", "printf 'ran\\n'")
+        with mock.patch.dict(os.environ, {"RUSTC_WRAPPER": ""}), contextlib.redirect_stderr(io.StringIO()) as log:
+            pr_ready.run_script([step], "local", verbose=False)
+        self.assertNotIn(pr_ready.CLIPPY_CACHE_HINT, log.getvalue())
+
     def test_data_backed_summary_with_and_without_prepared_data(self):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(pr_ready, "ROOT", Path(directory) / "checkout/repo"), \
+                mock.patch.object(pr_ready, "git", side_effect=lambda *args: "a" * 40 if args[0] == "rev-parse" else ""), \
                 mock.patch.dict(os.environ):
             os.environ.pop("HORIZON_TEST_RESOURCES", None)
             step = pr_ready.Step("content root tests", summary=pr_ready.tests_passed)
@@ -104,7 +176,8 @@ class PrReadyTests(unittest.TestCase):
             step.status = "pass"
             step.detail = pr_ready.tests_passed(step.output)
             def render():
-                return pr_ready.block(args(), "origin/main", "abcdef123", [], {}, [step], "skip-release", 0)
+                return pr_ready.block(args(), "origin/main", "abcdef123", [], {}, [step], "skip-release", 0,
+                                      ("a" * 40, "", ""))
             self.assertIn("data-backed tests not run: no prepared data here", render())
             prepared = pr_ready.ROOT / ".local/horizon-client/26.3"
             prepared.mkdir(parents=True)
@@ -131,6 +204,7 @@ class PrReadyTests(unittest.TestCase):
             os.environ.pop("CARGO_BUILD_JOBS", None)
             popen.return_value.__enter__.return_value.stdout = []
             popen.return_value.__enter__.return_value.wait.return_value = 0
+            popen.return_value.__enter__.return_value.returncode = 0
             pr_ready.run_windows([step], False)
         self.assertEqual(popen.call_args.args[0],
                          ["cargo", "test", "--manifest-path", "a/Cargo.toml", "--locked"])
@@ -187,6 +261,21 @@ class PrReadyTests(unittest.TestCase):
         self.assertEqual(by_name["doc tests"].command, "cargo test --locked -p horizon-client --doc")
         self.assertIsNone(by_name["doc tests"].status)
 
+    def test_file_size_is_skipped_only_on_a_shallow_clone(self):
+        def file_size_step(shallow):
+            with mock.patch.object(pr_ready, "affected_here", return_value=[]), \
+                    mock.patch.object(pr_ready.subprocess, "run",
+                                      return_value=subprocess.CompletedProcess([], 0, stdout=shallow)) as run:
+                steps = pr_ready.plan(args(quick=True), "origin/main", {"tools/pr_ready.py"}, PACKAGES, LIBRARIES, DEPENDENCIES)
+            run.assert_called_once_with(["git", "rev-parse", "--is-shallow-repository"], cwd=pr_ready.ROOT,
+                                        capture_output=True, text=True)
+            return {step.name: step for step in steps}["File size"]
+        shallow = file_size_step("true\n")
+        self.assertEqual((shallow.status, shallow.detail), ("skip", "not checked on a shallow clone"))
+        full = file_size_step("false\n")
+        self.assertIsNone(full.status)
+        self.assertEqual(full.command, "python3 tools/check_file_size.py --base origin/main")
+
     def test_content_root_tests_run_only_when_what_they_load_changes(self):
         def content_step(path):
             with mock.patch.object(pr_ready, "affected_here", return_value=[]):
@@ -239,6 +328,30 @@ class PrReadyTests(unittest.TestCase):
                                  "cargo test --locked --workspace" + MODS + " --tests")
                 self.assertEqual(by_name["doc tests"].command, "cargo test --locked --workspace --doc")
 
+    def test_holder_actor_is_built_before_applicable_tests(self):
+        packages = {**PACKAGES, "horizon-mod-package": "crates/horizon-mod-package"}
+        for path in ("Cargo.lock", "crates/unknown/src/lib.rs",
+                     "crates/horizon-mod-package/src/holder.rs", "launcher/src/main.rs"):
+            with self.subTest(path=path), mock.patch.object(pr_ready, "affected_here", return_value=[]):
+                steps = pr_ready.plan(args(quick=True), "origin/main", {path}, packages,
+                                      LIBRARIES, DEPENDENCIES)
+                by_name = {step.name: step for step in steps}
+                actor = by_name["holder actor"]
+                self.assertIsNone(actor.skip)
+                self.assertEqual(actor.command, "cargo build --locked -p horizon-mod-package "
+                                 "--features runtime-process --example holder_actor")
+                # No cd, target-dir or profile override: actor() finds the sibling
+                # examples directory in the root test target, including CARGO_TARGET_DIR.
+                self.assertLess(steps.index(actor), next(i for i, step in enumerate(steps)
+                                if step.name.startswith("tests")))
+                self.assertLess(steps.index(actor), steps.index(by_name["launcher tests"]))
+        for path in ("README.md", "crates/horizon-core/src/lib.rs"):
+            with self.subTest(path=path), mock.patch.object(pr_ready, "affected_here", return_value=[]):
+                steps = pr_ready.plan(args(quick=True), "origin/main", {path}, packages,
+                                      LIBRARIES, DEPENDENCIES)
+                self.assertEqual(next(step for step in steps if step.name == "holder actor").skip,
+                                 "holder tests untouched")
+
     def test_tests_get_the_features_ci_s_workspace_run_gives_them(self):
         self.assertEqual(pr_ready.mod_features(["horizon-world"]), "")
         self.assertEqual(pr_ready.mod_features(["horizon-client"]), "")
@@ -256,6 +369,7 @@ class PrReadyTests(unittest.TestCase):
                 by_name = {step.name: step for step in steps}
                 self.assertIsNone(by_name["clippy"].skip)
                 self.assertIsNone(by_name["rustfmt"].skip)
+                self.assertEqual(by_name["rustfmt"].command, "python3 tools/ci/format_scan.py")
                 tests = next(step for step in steps if step.name.startswith("tests:"))
                 self.assertIsNone(tests.skip)
                 self.assertEqual(tests.command, "cargo test --locked -p horizon-client -p horizon-client-render "
@@ -270,6 +384,17 @@ class PrReadyTests(unittest.TestCase):
         by_name = {step.name: step for step in steps}
         for name in ("launcher rustfmt", "launcher clippy", "launcher tests"):
             self.assertIsNone(by_name[name].skip)
+
+    @unittest.skipUnless(os.name == "nt", "the Windows runner's own jobs")
+    def test_a_windows_check_ends_what_it_left_running(self):
+        """A check that exits leaving a child that holds its output: the run goes on, and the child is ended."""
+        leaving = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']);"
+                   " print('left one')")
+        step = pr_ready.Step("leaving", f"python3 -c \"{leaving}\"")
+        started = time.monotonic()
+        pr_ready.run_windows([step], verbose=False)
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual((step.status, step.output.strip()), ("pass", "left one"))
 
     @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
     def test_windows_launcher_checks_include_binary_tests(self):
@@ -304,7 +429,8 @@ class PrReadyTests(unittest.TestCase):
                                         ("Darwin", True, []), ("Linux", False, [])):
             with self.subTest(uname=uname, metal=metal):
                 self.assertEqual(self.launcher_step_arguments(command, uname, metal),
-                                 ["clippy", "--all-targets", "--locked", *features, "--", "-D", "warnings"])
+                                 ["clippy", "--keep-going", "--all-targets", "--locked", *features,
+                                  "--message-format=json-diagnostic-rendered-ansi", "--", "--cap-lints=warn"])
 
     def launcher_step_arguments(self, command, uname, metal):
         """Run a launcher step's shell snippet with fake uname, xcrun, pkg-config and cargo; what the fake
@@ -314,7 +440,7 @@ class PrReadyTests(unittest.TestCase):
                        "xcrun": f"#!/bin/sh\nexit {0 if metal else 1}\n",
                        # xkbcommon found: Linux never looks for nix-shell (a NixOS host would have it).
                        "pkg-config": "#!/bin/sh\nexit 0\n",
-                       "cargo": "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"}
+                       "cargo": '#!/bin/sh\nif [ "$1" = metadata ]; then echo \'{"workspace_members": []}\'; else printf \'%s\\n\' "$@"; fi\n'}
             for name, script in scripts.items():
                 path = os.path.join(fake_bin, name)
                 # LF on every host: text mode makes the shebang "#!/bin/sh\r" on
@@ -434,15 +560,54 @@ class PrReadyTests(unittest.TestCase):
     def test_affected_harnesses_come_from_the_parity_runner(self):
         found = {"food": "tools/test_food_parity.py", "datafix#1": "tools/test_datafix_parity.py",
                  "datafix#2": "tools/test_datafix_parity.py"}
-        with mock.patch.object(pr_ready.parity, "harnesses", return_value=found), \
-                mock.patch.object(pr_ready.parity, "load_state", return_value={"harnesses": {
-                    "food": {"dependencies": ["crates/horizon-world/src/food.rs"]},
-                    "datafix#1": {"dependencies": ["crates/horizon-world/src/datafix.rs"]},
-                    "datafix#2": {"dependencies": ["crates/horizon-world/src/datafix.rs"]}}}), \
-                mock.patch.object(pr_ready.parity, "ROOT", pr_ready.parity.Path(".")):
-            self.assertEqual(pr_ready.affected_here({"crates/horizon-world/src/datafix.rs"}), ["datafix"])
-            self.assertEqual(pr_ready.affected_here({"README.md"}), [])
-            self.assertEqual(pr_ready.affected_here({"Cargo.lock"}), ["food", "datafix"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Exercise the real selector/SourceGraph on the records' tiny workspace, not
+            # every crate in this checkout. All three selection cases share this input.
+            (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/horizon-world"]\n')
+            crate = root / "crates/horizon-world"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "horizon-world"\nversion = "0.0.0"\n')
+            (crate / "src/lib.rs").write_text('pub mod food;\npub mod datafix;\n')
+            for module in ("food", "datafix"):
+                (crate / f"src/{module}.rs").write_text('pub fn run() {}\n')
+            found = {name: str(root / script) for name, script in found.items()}
+            with mock.patch.object(pr_ready.parity, "harnesses", return_value=found), \
+                    mock.patch.object(pr_ready.parity, "load_state", return_value={"harnesses": {
+                        "food": {"dependencies": ["crates/horizon-world/src/food.rs"]},
+                        "datafix#1": {"dependencies": ["crates/horizon-world/src/datafix.rs"]},
+                        "datafix#2": {"dependencies": ["crates/horizon-world/src/datafix.rs"]}}}), \
+                    mock.patch.object(pr_ready.parity, "ROOT", root), \
+                    mock.patch.object(pr_ready.parity, "SHARED", root / "cache"), \
+                    mock.patch.object(pr_ready.parity, "STATE_DIR", root / "cache"):
+                self.assertEqual(pr_ready.affected_here({"crates/horizon-world/src/datafix.rs"}), ["datafix"])
+                self.assertEqual(pr_ready.affected_here({"README.md"}), [])
+                self.assertEqual(pr_ready.affected_here({"Cargo.lock"}), ["food", "datafix"])
+
+    def test_actual_sources_place_food_probe_and_select_reached_source(self):
+        # Parse the checkout's actual manifest, probe and reached implementation,
+        # not another synthetic Rust program. A narrow root avoids rebuilding the
+        # whole-workspace graph whose cost this test-only change removes.
+        parity = pr_ready.parity
+        probe = "crates/horizon-world/examples/probe/food_fixture.rs"
+        source = "crates/horizon-world/src/food.rs"
+        dependencies = {
+            "crates/horizon-world/examples/probe/main.rs", probe,
+            "crates/horizon-world/src/lib.rs", source,
+        }
+        artifacts = [("example", "probe", None, ["-p", "horizon-world"])]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in dependencies | {"crates/horizon-world/Cargo.toml"}:
+                destination = root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(pr_ready.ROOT / path, destination)
+            graph = parity.parity_reach.SourceGraph(root, parity.rust_code)
+            entries = graph.entries(artifacts, dependencies)
+            self.assertIn(probe, entries or (), "the actual probe must be placed, not fallback-selected")
+            self.assertIn(source, graph.reachable(entries, dependencies),
+                          "the actual food probe must reach its food implementation")
 
     def test_harnesses_are_listed_when_they_cannot_run(self):
         changed = {"crates/horizon-world/src/food.rs"}
@@ -456,9 +621,29 @@ class PrReadyTests(unittest.TestCase):
         self.assertEqual(by_name["launcher clippy"].status, "skip")
         self.assertIsNone(by_name["clippy"].status)
         with mock.patch.object(pr_ready, "affected_here", return_value=["food"]):
-            steps = pr_ready.plan(args(host="macmini"), "origin/main", changed, {"horizon-world": "crates/horizon-world"}, {"horizon-world"}, {})
+            steps = pr_ready.plan(args(host="macmini", harnesses=True), "origin/main", changed, {"horizon-world": "crates/horizon-world"}, {"horizon-world"}, {})
         self.assertIn("--changed-files", steps[-1].command)
         self.assertIn("crates/horizon-world/src/food.rs", steps[-1].command)
+
+    def test_harnesses_run_only_where_ci_s_parity_job_would(self):
+        packages = {"horizon-world": "crates/horizon-world"}
+        code = {"crates/horizon-world/src/food.rs"}
+        self.assertFalse(pr_ready.runs_parity(code))
+        for path in ("tools/test_food_parity.py", "tools/parity.py", "tools/lab.py", "tools/parity_hosts.json",
+                     "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaFoodOracle.java",
+                     "crates/horizon-world/examples/food_probe.rs", "crates/horizon-client/src/game/sculk_fixture.rs",
+                     ".github/workflows/parity-main.yml"):
+            with self.subTest(path=path):
+                self.assertTrue(pr_ready.runs_parity(code | {path}))
+        with mock.patch.object(pr_ready, "affected_here", return_value=["food", "light"]):
+            steps = pr_ready.plan(args(host="macmini"), "origin/main", code, packages, {"horizon-world"}, {})
+            self.assertEqual(steps[-1].status, "list")
+            self.assertIsNone(steps[-1].command)
+            self.assertIn("2 affected, left to parity-main on main", steps[-1].detail)
+            self.assertIn("--harnesses runs them here", steps[-1].detail)
+            steps = pr_ready.plan(args(host="macmini"), "origin/main", code | {"tools/test_food_parity.py"}, packages,
+                                  {"horizon-world"}, {})
+            self.assertIn("--changed-files", steps[-1].command)
 
     def test_ci_s_rust_follows_the_six_week_train(self):
         self.assertEqual(pr_ready.ci_rust(datetime.date(2025, 2, 20)), 85)
@@ -499,6 +684,26 @@ class PrReadyTests(unittest.TestCase):
                                                  "their current inputs.\nNothing to run: every harness passed."),
                          "no harness affected")
         self.assertEqual(pr_ready.duration(125), "2 min 5 s")
+
+    def test_unittest_summary_keeps_skips_and_expected_failures(self):
+        class Outcomes(unittest.TestCase):
+            def test_pass(self):
+                self.assertTrue(True)
+
+            @unittest.skip("fixture platform is unavailable")
+            def test_skip(self):
+                self.fail("must not run")
+
+            @unittest.expectedFailure
+            def test_expected_failure(self):
+                self.fail("known fixture failure")
+
+        stream = io.StringIO()
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(Outcomes)
+        result = unittest.TextTestRunner(stream=stream).run(suite)
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(pr_ready.unittest_passed(stream.getvalue()),
+                         "3 run, OK (skipped=1, expected failures=1)")
 
     def test_python_checks_run_beside_cargo_and_harnesses_after_it(self):
         steps = pr_ready.plan(args(), "origin/main", {"crates/horizon-core/src/lib.rs"}, PACKAGES, LIBRARIES,

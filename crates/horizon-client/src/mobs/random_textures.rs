@@ -150,7 +150,9 @@ pub fn choose(
         .collect();
     let profession =
         matches!(m.species(), Species::Villager | Species::ZombieVillager).then(|| {
-            let name = super::villager::profession(m.extra.profession.index().unwrap_or(0)).id;
+            let name = super::villager::profession(m.extra.profession.index().unwrap_or(0))
+                .id
+                .as_str();
             (format!("minecraft:{name}"), m.extra.villager_level.max(1))
         });
     let facts = Facts {
@@ -271,7 +273,7 @@ mod tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         }
     }
 

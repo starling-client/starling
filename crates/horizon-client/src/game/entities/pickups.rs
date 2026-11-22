@@ -111,7 +111,7 @@ impl Game<'_> {
     }
     /// `handleTakeItemEntity`: `particleEngine.add(new ItemPickupParticle(...))` when the
     /// collector is known; it joins the group at the end of the next particle tick.
-    pub(super) fn add_pickup(&mut self, taken: Taken, collector: Collector) {
+    pub(in crate::game) fn add_pickup(&mut self, taken: Taken, collector: Collector) {
         // The clients add the particle from ClientboundTakeItemEntityPacket;
         // the server's own is never drawn, so a mob's take has to be sent (#12493).
         if let (Collector::Mob(id), Some(host), None) = (collector, &self.lan, &self.remote) {
@@ -176,6 +176,7 @@ mod tests {
         let at = horizon_core::geometry::Vec3::new(x, y, z);
         Taken::Orb(Box::new(ExperienceOrb {
             attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -189,6 +190,7 @@ mod tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
         }))
     }

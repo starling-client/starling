@@ -24,45 +24,7 @@ pub(super) fn has_official(stage: &Path) -> bool {
     stage.join("crates/horizon-official/Cargo.toml").is_file()
 }
 
-/// The package the game build compiles: the generated executable when trait mods need one, else
-/// the game the release ships for `target` (the server build is horizon-client's, without
-/// Horizon's parts, as `game-build.yml`'s).
-pub(super) fn game_package(stage: &Path, target: super::Target, has_api: bool) -> &'static str {
-    if has_api {
-        PACKAGE
-    } else if target == super::Target::Client && has_official(stage) {
-        OFFICIAL
-    } else if stage.join("crates/horizon-game/src/main.rs").is_file() {
-        "horizon-game"
-    } else {
-        "horizon-client"
-    }
-}
-
-/// The executable `package` builds.
-pub(super) fn executable(package: &str) -> &str {
-    if package == OFFICIAL {
-        OFFICIAL
-    } else {
-        "horizon-client"
-    }
-}
-
 /// The official game, once built into `out`, under the game's name, as the release ships it.
-pub(super) fn as_client(
-    stage: &Path,
-    target: super::Target,
-    has_api: bool,
-    out: &Path,
-) -> Result<(), String> {
-    if game_package(stage, target, has_api) != OFFICIAL {
-        return Ok(());
-    }
-    let official = format!("{OFFICIAL}{}", std::env::consts::EXE_SUFFIX);
-    fs::copy(out.join(official), out.join(crate::backend::CLIENT))
-        .map(drop)
-        .map_err(|e| format!("{}: {e}", out.display()))
-}
 /// Where the generated executable's package is staged, in the workspace.
 const GAME: &str = "crates/native-game";
 
@@ -84,73 +46,35 @@ pub(super) fn main_rs(
     mods: &[&horizon_mod_package::Manifest],
     catalog: &internals::Catalog,
 ) -> String {
-    let (listed, sites) = (&catalog.points, &catalog.sites);
+    // Own the bytes even when the staged SDK template references a static in a dylib.
+    let template = template.replace(
+        "std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
+        "#[used] static HOLDER_CAPABILITY: [u8; horizon_mod_package::holder::CAPABILITY.len()] = horizon_mod_package::holder::CAPABILITY; std::hint::black_box(&HOLDER_CAPABILITY);",
+    );
+    let listed = &catalog.points;
     let entries = mods
         .iter()
         .enumerate()
         .map(|(i, m)| format!("        {:?} => mod_{i}::hooks,\n", m.id))
         .collect::<String>();
     let inventory = mods.iter().map(|m| format!(
-        "    horizon_mod_package::runtime::BuiltMod {{ id: {:?}, version: {:?}, side: horizon_mod_package::Side::{:?} }},\n",
+        "    mod_api::__private::native::BuiltMod {{ id: {:?}, version: {:?}, side: mod_api::Side::{:?} }},\n",
         m.id, m.version, m.side,
     )).collect::<String>();
-    let raw = mods.iter().enumerate().flat_map(|(i, manifest)| {
-        super::slots::points(listed, manifest).map(move |injection| {
-            let point = listed.iter().find(|point| internals::plain_path(&point.target) == internals::plain_path(&injection.target)).expect("raw target checked");
-            let place = point.place(injection.at_return);
-            let entry = manifest.inject.iter().find(|entry| entry.id == injection.id)
-                .expect("unified point entry");
-            if entry.kind == horizon_mod_package::manifest::inject::Kind::Replace {
-                let replace = horizon_mod_point_emit::internals_replace(entry, &manifest.id, &point.emitted(), &format!("mod_{i}_internals::raw::{place}"), &format!("mod_{i}::{}", entry.with))
-                    .expect("internals replace checked");
-                return format!("        {replace}, // injection {:?}\n", injection.id);
-            }
-            let order = format!(".ordered({}, {:?})", entry.priority, entry.id);
-            format!("        mod_{i}_internals::raw::{place}({:?}, mod_{i}::{}){order}, // injection {:?}\n", manifest.id, injection.method, injection.id)
-        })
-    }).collect::<String>();
-    // An addon's internals listeners at another mod's points (#2339).
-    let raw = raw
-        + &(0..mods.len())
-            .map(|i| super::mod_points::internals(catalog, mods, i))
-            .collect::<String>();
     let api_points = listed
         .iter()
         .map(super::inject::ListedPoint::emitted)
-        .chain(super::mod_points::emitted(catalog, mods))
         .collect::<Vec<_>>();
-    let raw = raw
-        + &mods
-            .iter()
-            .enumerate()
-            .flat_map(|(i, manifest)| {
-                horizon_mod_point_emit::api(manifest, &api_points, &format!("mod_{i}::"))
-                    .expect("API slots checked")
-                    .into_iter()
-                    .map(|expression| format!("        {expression},\n"))
-            })
-            .collect::<String>();
-    let raw = raw
-        + &mods
-            .iter()
-            .enumerate()
-            .flat_map(|(index, manifest)| {
-                super::slots::sites(sites, manifest).map(move |(entry, site)| {
-                    let adapter = super::sites::adapter(
-                        entry.kind,
-                        &format!("mod_{index}::{}", entry.with),
-                        site.once,
-                    );
-                    format!(
-                        "        mod_{index}_internals::raw::{}({:?}, {}, {:?}, {adapter}),\n",
-                        site.constructor(),
-                        manifest.id,
-                        entry.priority,
-                        entry.id
-                    )
-                })
-            })
-            .collect::<String>();
+    let raw = mods
+        .iter()
+        .enumerate()
+        .flat_map(|(i, manifest)| {
+            horizon_mod_point_emit::api(manifest, &api_points, &format!("mod_{i}::"))
+                .expect("API slots checked")
+                .into_iter()
+                .map(|expression| format!("        {expression},\n"))
+        })
+        .collect::<String>();
     let markers = [
         ("/* MOD_SLOTS */", &raw),
         ("/* MOD_ENTRIES */", &entries),
@@ -180,9 +104,8 @@ pub(super) struct Project<'a> {
 }
 
 /// The mod API's package, the one crate every mod depends on.
-pub(super) const API_PACKAGE: &str = "horizon-mod-api";
-/// The injection points' package, which a mod that listens at points also depends on (#589).
 pub(super) const POINTS_PACKAGE: &str = "horizon-mod-points";
+pub(super) const API_PACKAGE: &str = "horizon-mod-api";
 
 /// The per-mod facade's package, rewritten to its generated crate.
 pub(super) const INTERNALS_PACKAGE: &str = "horizon-internals";
@@ -192,6 +115,49 @@ pub(super) const PACKAGES: [(&str, &str); 3] = [
     (POINTS_PACKAGE, "mod_points"),
     (INTERNALS_PACKAGE, "internals"),
 ];
+
+/// Where a mod's `Cargo.toml` names the SDK package `package`: the copy of its pinned build that
+/// `cargo horizon-mod` fetches into the project (`.horizon/sdk/`).
+pub(super) fn sdk_path(package: &str) -> String {
+    format!(".horizon/sdk/api/crates/{package}")
+}
+
+/// Whether `value`, a mod's dependency `key` on the SDK package `package`, names the SDK the one
+/// way the launcher takes: by the path to the mod tool's copy of the pinned SDK ([`sdk_path`]).
+/// The launcher builds against its own copy of the same build. Every other form is refused under
+/// one code, each with its own reason: the git form the path form replaced, a version alone (which
+/// Cargo would resolve from crates.io), any other source selector, and a path elsewhere.
+pub(super) fn sdk_source(key: &str, package: &str, value: &toml::Value) -> Result<(), String> {
+    let path = sdk_path(package);
+    let why = if value.get("git").is_some() {
+        "the SDK is no longer named by git".to_owned()
+    } else if let Some(selector) = [
+        "registry",
+        "registry-index",
+        "branch",
+        "tag",
+        "rev",
+        "workspace",
+    ]
+    .into_iter()
+    .find(|selector| value.get(*selector).is_some())
+    {
+        format!("{selector} does not name the SDK")
+    } else {
+        match value.get("path") {
+            None => format!(
+                "a version names no source, so Cargo would take {package} from crates.io, where anyone can publish that name"
+            ),
+            Some(written) if written.as_str() != Some(path.as_str()) => {
+                format!("the path must be \"{path}\", the pinned SDK the mod tool fetches")
+            }
+            Some(_) => return Ok(()),
+        }
+    };
+    Err(format!(
+        "E_SDK_SOURCE: {key}: {why}; write {key} = {{ path = \"{path}\" }}, then any cargo horizon-mod command fetches the pinned SDK there"
+    ))
+}
 
 /// A dependency on one of [`PACKAGES`], under `[dependencies]` or a `[target.*]` table.
 struct ApiDependency {
@@ -254,6 +220,15 @@ impl std::fmt::Display for ProjectError {
 impl std::error::Error for ProjectError {}
 
 impl<'a> Project<'a> {
+    /// The mod's crate name: its `[lib] name`, or its package name with `_` for `-`.
+    pub(super) fn crate_name(&self) -> String {
+        self.cargo
+            .get("lib")
+            .and_then(|l| l.get("name"))
+            .and_then(toml::Value::as_str)
+            .map_or_else(|| self.package.replace('-', "_"), str::to_owned)
+    }
+
     pub(super) fn read(bundle: &'a Bundle) -> Result<Self, ProjectError> {
         let mod_id = || bundle.manifest.id.clone();
         let cargo = read(&bundle.dir.join("Cargo.toml")).map_err(|reason| ProjectError::Cargo {
@@ -309,32 +284,11 @@ impl<'a> Project<'a> {
                         .get("package")
                         .and_then(toml::Value::as_str)
                         .unwrap_or(key);
-                    if PACKAGES.iter().any(|(sdk, _)| *sdk == package) {
-                        for selector in [
-                            "registry",
-                            "registry-index",
-                            "branch",
-                            "tag",
-                            "workspace",
-                            "path",
-                        ] {
-                            if value.get(selector).is_some() {
-                                return Err(ProjectError::Cargo {
-                                    mod_id: mod_id(),
-                                    reason: format!(
-                                        "{key}: {selector} is not a launcher-owned SDK source"
-                                    ),
-                                });
-                            }
-                        }
-                        if value.get("git").is_some()
-                            && (value.get("git").and_then(toml::Value::as_str)
-                                != Some(horizon_addresses::NATIVE_MOD_SDK_SOURCE)
-                                || value.get("rev").and_then(toml::Value::as_str)
-                                    != Some(bundle.native().horizon.as_str()))
-                        {
-                            return Err(ProjectError::Cargo { mod_id: mod_id(), reason: format!("{key}: SDK git dependency must name the exact pinned Horizon repository and revision") });
-                        }
+                    if let Some(&(sdk, _)) = PACKAGES.iter().find(|(sdk, _)| *sdk == package) {
+                        sdk_source(key, sdk, value).map_err(|reason| ProjectError::Cargo {
+                            mod_id: mod_id(),
+                            reason,
+                        })?;
                     } else {
                         for selector in [
                             "git",
@@ -406,7 +360,7 @@ impl<'a> Project<'a> {
         dependency_tables(&self.cargo)
     }
 
-    /// The names the mod's code calls the game's packages by (`mod_api`, `mod_points`, or a
+    /// The names the mod's code calls the game's packages by (`mod_api` or a
     /// renamed dependency's key), each with its package's library name.
     pub(super) fn api_dependencies(&self) -> std::collections::BTreeSet<(String, &'static str)> {
         self.api_deps
@@ -467,7 +421,6 @@ pub(super) fn stage(
     for name in [
         "horizon-client",
         "horizon-mod-api",
-        "horizon-mod-points",
         "horizon-threads",
         "horizon-mod-package",
     ] {
@@ -483,7 +436,7 @@ pub(super) fn stage(
         let relative = format!("native-api/{}", bundle.manifest.id);
         let dest = stage.join(&relative);
         super::copy_bundle(bundle, &dest)?;
-        super::mod_points::stage(&dest, &catalog.wire)?;
+
         let path = dest.join("Cargo.toml");
         let mut manifest = project.cargo.clone();
         let package = project.package.clone();
@@ -668,37 +621,60 @@ pub(super) fn stage(
 mod tests {
     use super::*;
 
-    #[test]
-    fn engine_only_revisions_keep_their_executable_package() {
-        let stage = super::super::tests::dir("game-package-owner");
-        fs::create_dir_all(stage.join("crates/horizon-game/src")).unwrap();
-        fs::write(
-            stage.join("crates/horizon-game/Cargo.toml"),
-            "[package]\nname='horizon-game'\n",
-        )
-        .unwrap();
-        assert_eq!(
-            game_package(&stage, super::super::Target::Server, false),
-            "horizon-client"
-        );
-        fs::write(
-            stage.join("crates/horizon-game/src/main.rs"),
-            "fn main() {}\n",
-        )
-        .unwrap();
-        assert_eq!(
-            game_package(&stage, super::super::Target::Server, false),
-            "horizon-game"
-        );
-        fs::remove_dir_all(stage).unwrap();
-    }
-
     fn fixture() -> std::path::PathBuf {
         let name = std::thread::current().name().unwrap().replace(':', "-");
         let dir = super::super::tests::dir(&name);
         super::super::tests::write_bundle(&dir, "example", "");
-        fs::write(dir.join("Cargo.toml"), "[package]\nname='example-mod'\nversion='9.0.0'\nedition='2024'\n[dependencies]\nhorizon-mod-api='0.1'\n").unwrap();
+        fs::write(dir.join("Cargo.toml"), "[package]\nname='example-mod'\nversion='9.0.0'\nedition='2024'\n[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\n").unwrap();
         dir
+    }
+
+    #[test]
+    #[ignore = "daily: starts rustc"]
+    fn wrapper_owns_holder_marker() {
+        let dir = fixture();
+        let source = dir.join("main.rs");
+        let output = dir.join(std::env::consts::EXE_SUFFIX.to_owned() + "wrapper");
+        let library_source = dir.join("library.rs");
+        fs::write(&library_source, "pub mod holder { pub static CAPABILITY: [u8; 26] = *b\"horizon-private-holder-v2;\"; }").unwrap();
+        let library = dir.join(format!(
+            "{}horizon_mod_package{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        assert!(std::process::Command::new("rustc")
+            .args([
+                "--crate-type=dylib",
+                "--crate-name=horizon_mod_package",
+                "-Cprefer-dynamic"
+            ])
+            .arg(&library_source)
+            .arg("-o")
+            .arg(&library)
+            .status()
+            .unwrap()
+            .success());
+        let template =
+            "fn main() { std::hint::black_box(&horizon_mod_package::holder::CAPABILITY); }";
+        fs::write(
+            &source,
+            main_rs(template, &[], &internals::Catalog::default()),
+        )
+        .unwrap();
+        assert!(std::process::Command::new("rustc")
+            .args(["--edition=2021", "-O", "-Cprefer-dynamic", "--extern"])
+            .arg(format!("horizon_mod_package={}", library.display()))
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .unwrap()
+            .success());
+        assert!(fs::read(&output)
+            .unwrap()
+            .windows(26)
+            .any(|w| w == b"horizon-private-holder-v2;"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -706,16 +682,16 @@ mod tests {
         let dir = fixture();
         for (dependencies, game) in [
             (
-                "[dependencies]\nhorizon-mod-api='0.1'\nhorizon-client='0.1'",
+                "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nhorizon-client='0.1'",
                 Some("horizon-client"),
             ),
             (
-                "[dependencies.api]\npackage='horizon-mod-api'\nversion='0.1'\n[target.'cfg(unix)'.dependencies.game]\npackage='horizon-client'\nversion='0.1'",
+                "[dependencies.api]\npackage='horizon-mod-api'\npath='.horizon/sdk/api/crates/horizon-mod-api'\n[target.'cfg(unix)'.dependencies.game]\npackage='horizon-client'\nversion='0.1'",
                 Some("game"),
             ),
             ("[dependencies]\nserde='1'", None),
             (
-                "[target.'cfg(unix)'.dependencies]\nhorizon-mod-api='0.1'",
+                "[target.'cfg(unix)'.dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}",
                 None,
             ),
         ] {
@@ -732,6 +708,52 @@ mod tests {
                     matches!(&error, ProjectError::ApiDependency { .. }),
                     "{error}"
                 ),
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_sdk_is_taken_only_by_its_path_form_and_every_other_form_is_refused_by_name() {
+        let dir = fixture();
+        for (form, refusal) in [
+            ("{ path = '.horizon/sdk/api/crates/horizon-mod-api' }", None),
+            (
+                "{ path = '.horizon/sdk/api/crates/horizon-mod-api', features = ['testing'] }",
+                None,
+            ),
+            (
+                "{ git = 'https://github.com/arismoko/horizon', rev = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }",
+                Some("example: E_SDK_SOURCE: horizon-mod-api: the SDK is no longer named by git; write horizon-mod-api = { path = \".horizon/sdk/api/crates/horizon-mod-api\" }"),
+            ),
+            (
+                "'0.1'",
+                Some("example: E_SDK_SOURCE: horizon-mod-api: a version names no source, so Cargo would take horizon-mod-api from crates.io"),
+            ),
+            (
+                "{ version = '0.1', features = ['testing'] }",
+                Some("example: E_SDK_SOURCE: horizon-mod-api: a version names no source"),
+            ),
+            (
+                "{ workspace = true }",
+                Some("example: E_SDK_SOURCE: horizon-mod-api: workspace does not name the SDK"),
+            ),
+            (
+                "{ path = '../horizon/crates/horizon-mod-api' }",
+                Some("example: E_SDK_SOURCE: horizon-mod-api: the path must be \".horizon/sdk/api/crates/horizon-mod-api\""),
+            ),
+        ] {
+            let text = format!(
+                "[package]\nname='example-mod'\nversion='1.0.0'\n[dependencies]\nhorizon-mod-api = {form}\n"
+            );
+            fs::write(dir.join("Cargo.toml"), text).unwrap();
+            let bundle = super::super::bundle_in(&dir).unwrap().unwrap();
+            match (Project::read(&bundle), refusal) {
+                (Ok(_), None) => {}
+                (Err(error), Some(refusal)) => {
+                    assert!(error.to_string().starts_with(refusal), "{error}")
+                }
+                (result, _) => panic!("{form}: {:?}", result.err()),
             }
         }
         fs::remove_dir_all(dir).unwrap();
@@ -759,16 +781,17 @@ mod tests {
 
     #[test]
     fn generated_main_keeps_mod_order() {
-        let template = include_str!("../../../crates/horizon-client/src/native_main.rs.template");
+        let template =
+            include_str!("../../../crates/horizon-client/src/native_mod_entry.rs.template");
         let dir = fixture();
         let mut base = horizon_mod_package::Package::read(&dir).unwrap().manifest;
         base.id = "base".into();
         base.version = "1.2.3".into();
-        base.side = horizon_mod_package::Side::Both;
+        base.side = mod_vocab::Side::Both;
         let mut extra = base.clone();
         extra.id = "extra".into();
         extra.version = "2.0.0".into();
-        extra.side = horizon_mod_package::Side::Client;
+        extra.side = mod_vocab::Side::Client;
         let mods = [&base, &extra];
         for count in 0..=2 {
             let text = main_rs(template, &mods[..count], &internals::Catalog::default());
@@ -799,208 +822,11 @@ mod tests {
             assert_eq!(
                 inventory,
                 &[
-                    "    horizon_mod_package::runtime::BuiltMod { id: \"base\", version: \"1.2.3\", side: horizon_mod_package::Side::Both },",
-                    "    horizon_mod_package::runtime::BuiltMod { id: \"extra\", version: \"2.0.0\", side: horizon_mod_package::Side::Client },",
+                    "    mod_api::__private::native::BuiltMod { id: \"base\", version: \"1.2.3\", side: mod_api::Side::Both },",
+                    "    mod_api::__private::native::BuiltMod { id: \"extra\", version: \"2.0.0\", side: mod_api::Side::Client },",
                 ][..count]
             );
         }
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn shared_api_emitter_preserves_native_slot_bytes() {
-        use horizon_mod_package::manifest::inject::{Access, Inject, Kind};
-        let dir = fixture();
-        let mut manifest = horizon_mod_package::Package::read(&dir).unwrap().manifest;
-        manifest.id = "fixture".into();
-        manifest.inject = [Kind::Head, Kind::Return, Kind::Replace]
-            .into_iter()
-            .enumerate()
-            .map(|(index, kind)| Inject {
-                local: None,
-                local_type: None,
-                position: None,
-                expr: None,
-                id: format!("listen_{index}"),
-                at: "game::Game<'_>::tick".into(),
-                kind,
-                with: format!("listen_{index}"),
-                access: Access::Api,
-                priority: 12,
-                hash: Some("pin".into()),
-                call: None,
-                nth: None,
-                ctx: None,
-            })
-            .collect();
-        let listed = [super::super::inject::ListedPoint {
-            name: "tick".into(),
-            private: false,
-            record_name: None,
-            target: "game::Game::tick".into(),
-            raw: true,
-            at_return: true,
-            api_refusal: None,
-            returns: "cancel".into(),
-            host: "both".into(),
-            raw_shape: None,
-            return_ty: Some("()".into()),
-            listener: None,
-            return_listener: None,
-        }];
-        let output = main_rs(
-            "/* MOD_ENTRIES */START\n/* MOD_SLOTS */END/* BUILT_MODS */",
-            &[&manifest],
-            &internals::Catalog {
-                points: listed.to_vec(),
-                ..Default::default()
-            },
-        );
-        let slots = output
-            .split_once("START\n")
-            .unwrap()
-            .1
-            .split_once("END")
-            .unwrap()
-            .0;
-        assert_eq!(slots, concat!(
-            "        mod_points::listeners::tick(\"fixture\", 12, \"listen_0\", mod_0::listen_0),\n",
-            "        mod_points::listeners::tick_return(\"fixture\", 12, \"listen_1\", mod_0::listen_1),\n",
-            "        mod_points::replace!(mod_points::listeners::tick, cancel, host, \"fixture\", 12, \"listen_2\", mod_0::listen_2),\n",
-        ));
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn stages_api_without_a_dependency_cycle() {
-        let dir = fixture();
-        let cargo = fs::read_to_string(dir.join("Cargo.toml")).unwrap()
-            + "[target.'cfg(unix)'.dependencies.api]\npackage = 'horizon-mod-api'\nversion = '0.1'\nfeatures = ['testing']\n";
-        fs::write(dir.join("Cargo.toml"), cargo).unwrap();
-        let bundle = super::super::bundle_in(&dir).unwrap().unwrap();
-        let stage_dir = dir.with_extension("workspace");
-        let _ = fs::remove_dir_all(&stage_dir);
-        fs::create_dir_all(stage_dir.join("crates/horizon-client/src")).unwrap();
-        fs::write(stage_dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
-        fs::write(
-            stage_dir.join("crates/horizon-client/Cargo.toml"),
-            "[package]\nname = 'horizon-client'\nversion = '0.1.0'\n",
-        )
-        .unwrap();
-        let resolution = super::super::dependencies::Resolution { order: vec![0] };
-        let project = Project::read(&bundle).unwrap();
-        let err = stage(
-            &stage_dir,
-            std::slice::from_ref(&project),
-            &[vec![]],
-            &resolution,
-            &internals::Catalog::default(),
-        )
-        .unwrap_err();
-        assert!(err.contains("Update Horizon"), "{err}");
-        fs::write(
-            stage_dir.join(MAIN_TEMPLATE),
-            "fn main() { /* MOD_ENTRIES */ }",
-        )
-        .unwrap();
-        assert!(stage(
-            &stage_dir,
-            std::slice::from_ref(&project),
-            &[vec![]],
-            &resolution,
-            &internals::Catalog::default(),
-        )
-        .is_err());
-        assert!(!stage_dir.join("native-api").exists());
-        fs::write(
-            stage_dir.join(MAIN_TEMPLATE),
-            include_str!("../../../crates/horizon-client/src/native_main.rs.template"),
-        )
-        .unwrap();
-        assert!(stage(
-            &stage_dir,
-            std::slice::from_ref(&project),
-            &[vec![]],
-            &resolution,
-            &internals::Catalog::default(),
-        )
-        .unwrap());
-        let root = read(&stage_dir.join("Cargo.toml")).unwrap();
-        let members = root["workspace"]["members"].as_array().unwrap();
-        assert!(members
-            .iter()
-            .any(|v| v.as_str() == Some("native-api/example")));
-        assert!(members.iter().any(|v| v.as_str() == Some(GAME)));
-        let engine = read(&stage_dir.join("native-api/example/Cargo.toml")).unwrap();
-        assert_eq!(
-            engine["dependencies"]["horizon-mod-api"]["path"].as_str(),
-            Some("../../crates/horizon-mod-api")
-        );
-        let platform = &engine["target"]["cfg(unix)"]["dependencies"]["api"];
-        assert_eq!(
-            platform["path"].as_str(),
-            Some("../../crates/horizon-mod-api")
-        );
-        assert_eq!(platform["package"].as_str(), Some("horizon-mod-api"));
-        assert_eq!(platform["features"][0].as_str(), Some("testing"));
-        let game = read(&stage_dir.join(GAME).join("Cargo.toml")).unwrap();
-        assert_eq!(
-            game["dependencies"]["horizon-mod-package"]["path"].as_str(),
-            Some("../horizon-mod-package")
-        );
-        assert!(!game["dependencies"]
-            .as_table()
-            .unwrap()
-            .contains_key("horizon-mods"));
-        assert_eq!(
-            game["dependencies"]["mod_0"]["package"].as_str(),
-            Some("example-mod")
-        );
-        assert_eq!(
-            game["dependencies"]["mod_0"]["path"].as_str(),
-            Some("../../native-api/example")
-        );
-        assert_eq!(
-            game["package"]["build"].as_str(),
-            Some("../horizon-client/build.rs")
-        );
-        assert!(stage_dir
-            .join(GAME)
-            .join(
-                game["dependencies"]["horizon-client"]["path"]
-                    .as_str()
-                    .unwrap()
-            )
-            .ends_with("crates/native-game/../horizon-client"));
-        // The game's default features are the generated package's alone, so a server build's
-        // `--no-default-features` reaches horizon-client.
-        assert_eq!(
-            game["dependencies"]["horizon-client"]["default-features"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            game["features"]["default"][0].as_str(),
-            Some("horizon-client/default")
-        );
-        let main = || fs::read_to_string(stage_dir.join(GAME).join("src/main.rs")).unwrap();
-        assert!(main().contains(r#""example" => mod_0::hooks,"#));
-        fs::write(stage_dir.join("crates/horizon-client/Cargo.toml"), "[package]\nname = 'horizon-client'\nversion = '0.1.0'\n[build-dependencies]\nhorizon-mod-api-gen = { path = '../horizon-mod-api-gen' }\n").unwrap();
-        let bundle = super::super::bundle_in(&dir).unwrap().unwrap();
-        let project = Project::read(&bundle).unwrap();
-        stage(
-            &stage_dir,
-            &[project],
-            &[vec![]],
-            &resolution,
-            &internals::Catalog::default(),
-        )
-        .unwrap();
-        assert!(main().contains(r#""example" => mod_0::hooks,"#));
-        let game = read(&stage_dir.join(GAME).join("Cargo.toml")).unwrap();
-        assert_eq!(
-            game["build-dependencies"]["horizon-mod-api-gen"]["path"].as_str(),
-            Some("../horizon-mod-api-gen")
-        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1011,7 +837,10 @@ mod tests {
         let _ = fs::remove_dir_all(&stage_dir);
         let source = stage_dir.join("crates/horizon-client/src");
         fs::create_dir_all(&source).unwrap();
-        let resolution = super::super::dependencies::Resolution { order: vec![0] };
+        let resolution = super::super::dependencies::Resolution {
+            order: vec![0],
+            warnings: Vec::new(),
+        };
         for text in ["", "pub struct ModEntry { id: &'static str }"] {
             fs::write(source.join("mod_api.rs"), text).unwrap();
             let bundle = super::super::bundle_in(&dir).unwrap().unwrap();
@@ -1032,7 +861,10 @@ mod tests {
             &stage_dir,
             &[],
             &[],
-            &super::super::dependencies::Resolution { order: vec![] },
+            &super::super::dependencies::Resolution {
+                order: vec![],
+                warnings: Vec::new(),
+            },
             &internals::Catalog::default(),
         )
         .unwrap());

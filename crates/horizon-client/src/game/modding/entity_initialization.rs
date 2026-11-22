@@ -44,6 +44,19 @@ impl Game<'_> {
         let previous = self.entity_initialization.active.replace(holder);
         self.native_entity_constructing(holder, kind);
         self.entity_initialization.active = previous;
+        // Listener stores skip binding while their holder is being constructed.
+        // A resident part has no separate join callback, so finish its binding
+        // here even when construction was triggered by an inspection.
+        if self.native_authoritative()
+            && let Holder::Entity(id) = holder
+            && self
+                .entity_attachments
+                .get(&id)
+                .is_some_and(|map| map.has_index_entries())
+            && let Err(error) = self.bind_resident_entity_attachments(id)
+        {
+            log::warn!("constructor attachment binding failed for entity {id}: {error:?}");
+        }
     }
 
     /// `initialize_entity` for a holder whose attachments are about to be read, its type
@@ -55,7 +68,10 @@ impl Game<'_> {
         }
         match holder {
             Holder::Entity(id) => {
-                let Some(kind) = self.entity(id).and_then(|entity| self.entity_kind(entity)) else {
+                let Some(kind) = self
+                    .entity(id)
+                    .and_then(|entity| self.entity_kind(entity).map(|kind| kind.id(self)))
+                else {
                     return;
                 };
                 self.initialize_entity(holder, &kind);
@@ -66,6 +82,11 @@ impl Game<'_> {
     }
 
     pub(super) fn forget_entity_initialization(&mut self, holder: Holder) {
+        if let Holder::Entity(id) = holder
+            && let Some(mob) = self.mobs.iter_mut().find(|mob| mob.id == id)
+        {
+            mob.accepted_hit = None;
+        }
         self.entity_initialization.initialized.remove(&holder);
     }
 
@@ -128,6 +149,21 @@ impl Game<'_> {
 pub(super) struct TransferredEntityState {
     attachments: Option<horizon_mod_runtime::attachments::Attachments>,
     initialized: bool,
+    accepted_hit: Option<std::sync::Arc<horizon_client::health::AcceptedHit>>,
+    died: bool,
+}
+
+impl TransferredEntityState {
+    /// Move the single accepted-hit owner onto a reconstructed living body.
+    pub(in crate::game) fn restore_mob(&mut self, mob: &mut horizon_client::mobs::Mob) {
+        if mob.health > 0.0 {
+            self.died = false;
+        }
+        if let Some(hit) = self.accepted_hit.take() {
+            mob.last_damage = hit.committed;
+            mob.accepted_hit = Some(hit);
+        }
+    }
 }
 
 impl Game<'_> {
@@ -138,8 +174,14 @@ impl Game<'_> {
         if let Some(map) = &mut attachments {
             map.unbind_index();
         }
+        let accepted_hit = self
+            .mob_object_mut(id)
+            .and_then(|mob| mob.accepted_hit.take());
+        let died = self.died.remove(&id);
         TransferredEntityState {
             attachments,
+            accepted_hit,
+            died,
             initialized: self
                 .entity_initialization
                 .initialized
@@ -154,6 +196,10 @@ impl Game<'_> {
         id: u32,
         state: TransferredEntityState,
     ) {
+        self.journal_arrival(id);
+        if state.died {
+            self.died.insert(id);
+        }
         // Even an empty map marks this as runtime state for `remember_uuid`.
         self.entity_attachments
             .insert(id, state.attachments.unwrap_or_default());

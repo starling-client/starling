@@ -194,7 +194,7 @@ impl Game<'_> {
             return;
         };
         let table = table.to_string_lossy();
-        let mut tag = save::encode_block_entity(
+        let mut tag = save::block_entity_encode::encode(
             key,
             &BlockEntity::Brushable(b.clone()),
             "minecraft:brushable_block",
@@ -210,7 +210,7 @@ impl Game<'_> {
         );
         if let Some(BlockEntity::Brushable(b)) = self.world.block_entities.get_mut(&key) {
             b.loot_table = tag.get("LootTable").cloned();
-            b.loot_seed = tag.get("LootTableSeed").cloned();
+            b.table_seed_tag = tag.get("LootTableSeed").cloned();
             b.item = tag.get("item").and_then(save::item_from_nbt);
         }
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));

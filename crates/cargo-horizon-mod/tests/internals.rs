@@ -1,4 +1,4 @@
-//! Exercise both commands without downloads, using the pin-keyed catalog cache.
+//! Exercise both commands without downloads, using each pin's cached build data.
 use horizon_mod_package::{Manifest, manifest::MANIFEST};
 use std::{
     fs,
@@ -21,15 +21,24 @@ impl Project {
             .join(format!("internals-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(MANIFEST), format!("# A modder's description\nid = 'example'\nname = 'Example'\nversion = '0.1.0'\napi = '0.2'\ncapabilities = ['registries']\n{declarations}\n[native] # native settings\ngame = '26.3'\nhorizon = '{OLD}' # pinned game\nmixins = '{}'\n", "a".repeat(40))).unwrap();
-        fs::write(dir.join("Cargo.toml"), format!("# Keep this comment\n[package]\nname = 'example'\nversion = '0.1.0'\n[dependencies]\nhorizon-mod-api = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # API pin\nhorizon-internals = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # facade pin\n")).unwrap();
+        fs::write(dir.join("Cargo.toml"), "# Keep this comment\n[package]\nname = 'example'\nversion = '0.1.0'\n[dependencies]\nhorizon-mod-api = { path = '.horizon/sdk/api/crates/horizon-mod-api' } # API pin\nhorizon-internals = { path = '.horizon/sdk/api/crates/horizon-internals' } # facade pin\n").unwrap();
         let project = Self { dir };
         project.catalog(OLD, OLD_CATALOG);
         project.catalog(NEW, NEW_CATALOG);
         project
     }
     fn catalog(&self, revision: &str, text: &str) {
-        let dir = self.dir.join("target/horizon-mod/prebuilt").join(revision);
+        // A verified fetch leaves the build's stamp and its unpacked build data.
+        let build = self.dir.join(".horizon/cache").join(revision);
+        let dir = build.join("build-data");
         fs::create_dir_all(&dir).unwrap();
+        fs::write(build.join("build"), revision).unwrap();
+        // A bare entry list gets the build-data header of `revision`.
+        let text = if text.trim_start().starts_with('[') {
+            format!(r#"{{"schema":1,"build":{{"commit":"{revision}"}},"internals":{text}}}"#)
+        } else {
+            text.to_owned()
+        };
         fs::write(dir.join("internals.json"), text).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
@@ -37,6 +46,8 @@ impl Project {
             .arg("horizon-mod")
             .args(args)
             .current_dir(&self.dir)
+            // An SDK base with no releases: nothing is downloaded.
+            .env("HORIZON_SDK_BASE", self.dir.join("no-sdk"))
             .output()
             .unwrap()
     }
@@ -63,6 +74,7 @@ fn success(output: &Output) -> String {
 }
 
 #[test]
+#[ignore = "daily"]
 fn internals_add_writes_pinned_hashes_and_preserves_the_rest_of_the_manifest() {
     let project = Project::new("add", "");
     let output = project.run(&[
@@ -94,6 +106,7 @@ fn internals_add_writes_pinned_hashes_and_preserves_the_rest_of_the_manifest() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn internals_commands_refuse_wasm_mods_without_edits() {
     let project = Project::new("wasm-refused", "");
     let manifest = format!(
@@ -113,6 +126,7 @@ fn internals_commands_refuse_wasm_mods_without_edits() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn native_sync_refuses_repo() {
     let project = Project::new("sync-native-repo", "");
     let output = project.run(&["internals", "sync", "--repo", "."]);
@@ -121,6 +135,7 @@ fn native_sync_refuses_repo() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn internals_add_refuses_missing_gated_and_shape_only_paths_without_partial_edits() {
     let project = Project::new("refusals", "");
     for (path, code, wording) in [
@@ -171,6 +186,7 @@ fn internals_add_refuses_missing_gated_and_shape_only_paths_without_partial_edit
 }
 
 #[test]
+#[ignore = "daily"]
 fn update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declarations() {
     let project = Project::new(
         "update",
@@ -216,17 +232,16 @@ fn update_diffs_signatures_refreshes_present_hashes_and_keeps_missing_declaratio
     ] {
         assert!(project.text().contains(comment), "{comment}");
     }
+    // The SDK is named by path: only the manifest's pin moves.
     let cargo = fs::read_to_string(project.dir.join("Cargo.toml")).unwrap();
-    let doc: toml::Value = toml::from_str(&cargo).unwrap();
-    for package in ["horizon-mod-api", "horizon-internals"] {
-        assert_eq!(doc["dependencies"][package]["rev"].as_str(), Some(NEW));
-    }
+    assert!(!cargo.contains(NEW), "{cargo}");
     assert!(cargo.starts_with("# Keep this comment"));
     assert!(cargo.contains("# API pin"));
     assert!(cargo.contains("# facade pin"));
 }
 
 #[test]
+#[ignore = "daily"]
 fn table_declarations_keep_their_format_when_adding_and_refreshing() {
     let project = Project::new(
         "tables",
@@ -251,6 +266,7 @@ fn table_declarations_keep_their_format_when_adding_and_refreshing() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn internals_add_requires_kind_for_ambiguous_paths_and_update_keeps_it() {
     let path = "horizon_client::game::Round::listening";
     for kind in ["fn", "method"] {
@@ -307,6 +323,7 @@ fn internals_add_requires_kind_for_ambiguous_paths_and_update_keeps_it() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn unreadable_new_catalog_does_not_move_either_pin_or_hashes() {
     let project = Project::new(
         "bad-catalog",
@@ -327,8 +344,28 @@ fn unreadable_new_catalog_does_not_move_either_pin_or_hashes() {
 
 #[cfg(unix)]
 #[test]
-fn internals_sync_invokes_the_launcher_and_never_edits_on_failure() {
+#[ignore = "fixture writer subprocess only"]
+fn write_launcher_actor() {
     use std::os::unix::fs::PermissionsExt;
+    if let Some(destination) = std::env::var_os("HORIZON_TEST_LAUNCHER_WRITER") {
+        use std::io::Write;
+        let mut file = fs::File::create(&destination).unwrap();
+        file.write_all(
+            std::env::var("HORIZON_TEST_LAUNCHER_SCRIPT")
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        fs::set_permissions(destination, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "daily"]
+fn internals_sync_invokes_the_launcher_and_never_edits_on_failure() {
     let project = Project::new(
         "sync-command",
         "internals = [{ path = 'Unused', hash = 'old' }]\n",
@@ -342,15 +379,35 @@ fn internals_sync_invokes_the_launcher_and_never_edits_on_failure() {
             .output()
             .unwrap()
     };
-    fs::write(&launcher, "#!/bin/sh\nexit 1\n").unwrap();
-    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+    // A separate, exact-test writer cannot leak writable fds into other tests'
+    // fork children. CLOEXEC would only close those descriptors at exec.
+    let write_launcher = |script: &str| {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "write_launcher_actor", "--ignored"])
+            .env("HORIZON_TEST_LAUNCHER_WRITER", &launcher)
+            .env("HORIZON_TEST_LAUNCHER_SCRIPT", script)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .any(|line| {
+                    line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ")
+                })
+        );
+    };
+    write_launcher("#!/bin/sh\nexit 1\n");
     let before = project.text();
     assert!(!invoke().status.success());
     assert_eq!(project.text(), before);
-    fs::write(&launcher, r#"#!/bin/sh
+    write_launcher(
+        r#"#!/bin/sh
 [ "$1" = native-build ] && [ "$2" = --sync-internals ] && [ "$3" = --trust-native-code ] && [ "$4" = "$PWD" ] || exit 2
 printf '%s\n' '[{"path":"Used","kind":"struct","signature":"struct Used","hash":"compiler"}]'
-"#).unwrap();
+"#,
+    );
     let report = success(&invoke());
     assert!(report.contains("added: Used (struct)"));
     assert!(report.contains("removed: Unused"));
@@ -359,7 +416,7 @@ printf '%s\n' '[{"path":"Used","kind":"struct","signature":"struct Used","hash":
     assert_eq!(manifest.internals[0].hash.as_deref(), Some("compiler"));
     assert!(project.text().contains("# native settings"));
     let before = project.text();
-    fs::write(&launcher, "#!/bin/sh\nprintf 'not JSON'\n").unwrap();
+    write_launcher("#!/bin/sh\nprintf 'not JSON'\n");
     assert!(!invoke().status.success());
     assert_eq!(project.text(), before);
 }

@@ -560,18 +560,22 @@ impl<'p> Stage<'p> {
     /// it): in a compatibility-profile stage it stays a uniform of the frame, read as zero.
     /// `textureMatrix` is `gl_TextureMatrix[0]` in the vertex stage only: our probes read the
     /// identity in Iris 1.11.7's terrain and shadow vertex stages, and zero in the terrain
-    /// fragment stage (#9080).
+    /// fragment stage (#9080). The inverses (Pixel Perfect, Round World) only when the stage
+    /// declares them as uniforms. A full-screen pass reads its own transform for the ones it
+    /// declares as uniforms; undeclared ones stay errors there. A compute program has none.
     pub(super) fn core_matrix(&self, name: &str) -> Option<&'static str> {
-        let (matrix, ty) = match name {
-            "projectionMatrix" => ("hz_ProjectionMatrix", "mat4"),
-            "modelViewMatrix" => ("hz_ModelViewMatrix", "mat4"),
-            "normalMatrix" if self.core_profile() => ("hz_NormalMatrix", "mat3"),
-            "textureMatrix" if self.kind == ShaderStage::Vertex => ("hz_TextureMatrix[0]", "mat4"),
-            _ => return None,
+        let &(_, ty, matrix) = CORE_MATRICES.iter().find(|m| m.0 == name)?;
+        let applies = match name {
+            "normalMatrix" => self.core_profile(),
+            "textureMatrix" => self.kind == ShaderStage::Vertex,
+            _ => true,
         };
-        if !self.gbuffers
-            || (self.globals.contains(name)
-                && !self.uniforms.iter().any(|(n, t, _)| n == name && t == ty))
+        let declared = self.uniforms.iter().any(|(n, t, _)| n == name && t == ty);
+        let inverse = name.ends_with("Inverse");
+        if !applies
+            || self.kind == ShaderStage::Compute
+            || (!self.gbuffers && !declared)
+            || (!declared && (inverse || self.globals.contains(name)))
         {
             return None;
         }

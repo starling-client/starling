@@ -1,6 +1,6 @@
 use super::{
     Hdr, Output,
-    tests::{gpu, legacy_light, texel},
+    tests::{gpu, legacy_light, texel, writers_lift},
 };
 use wgpu::TextureFormat as F;
 use wgpu::util::DeviceExt;
@@ -465,7 +465,7 @@ impl<'a> Draw<'a> {
     }
 
     fn material(&mut self, api: horizon_shader_api::Api) {
-        let source = super::super::native_material::coverage_test_shader(api);
+        let source = super::super::native_material::coverage_test_shader((api, false));
         self.shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -478,7 +478,8 @@ impl<'a> Draw<'a> {
             Vec::new(),
             Default::default(),
             None,
-            api,
+            (api, false),
+            None,
         );
         self.queue.write_buffer(
             &frame.buffer,
@@ -648,7 +649,7 @@ impl<'a> Draw<'a> {
         }
         if !written && !self.raw {
             let light = hdr.frame(self.device, [1, 1]);
-            legacy_light(self.device, &mut encoder, hdr, &frame, &light);
+            legacy_light(self.device, &mut encoder, writers_lift(hdr), &frame, &light);
             return texel(self.device, self.queue, encoder, &light);
         }
         texel(self.device, self.queue, encoder, &frame)
@@ -657,12 +658,13 @@ impl<'a> Draw<'a> {
 
 #[test]
 fn float_plain_fragments_keep_rgb_and_write_only_coverage() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         eprintln!("plain float GPU unavailable");
         return;
     };
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let mut cases = 0;
     for hdr_on in [false, true] {
         let globals = super::super::Globals {
@@ -677,7 +679,7 @@ fn float_plain_fragments_keep_rgb_and_write_only_coverage() {
             hdr_windows: hdr.windows(),
             hdr_light: [0.8, 0.8, f32::from(u8::from(hdr_on)), 0.0],
             hdr_settings: settings,
-            hdr_shares: shares,
+            hdr_gains: gains,
             ..bytemuck::Zeroable::zeroed()
         };
         for terrain in [true, false] {
@@ -703,11 +705,27 @@ fn float_plain_fragments_keep_rgb_and_write_only_coverage() {
                     ("fs_sky_celestial", coverage),
                 ]
             };
-            for plain in [false, true] {
+            // `HDR_LIGHTING` is only a pipeline constant for terrain, so entity
+            // pipelines are identical for both values and need one pass.
+            for plain in if terrain {
+                vec![false, true]
+            } else {
+                vec![false]
+            } {
                 draw.hdr_lighting = !plain;
                 for &(entry, alpha) in &entries {
-                    for tier in [0, 3, 4] {
-                        for overlay in if terrain { vec![0, 1] } else { vec![0, 6] } {
+                    // These vertex functions never read `TEST_TIER` or
+                    // `TEST_OVERLAY`, so one combination covers them.
+                    let fixed =
+                        matches!(entry, "fs_native_model" | "fs_native_fluid" | "fs_sunrise");
+                    for tier in if fixed { vec![0] } else { vec![0, 3, 4] } {
+                        for overlay in if fixed {
+                            vec![0]
+                        } else if terrain {
+                            vec![0, 1]
+                        } else {
+                            vec![0, 6]
+                        } {
                             let old = draw.render(&mut hdr, false, entry, tier, overlay, [0.0; 4]);
                             let float = draw.render(&mut hdr, true, entry, tier, overlay, [0.0; 4]);
                             assert_eq!(
@@ -735,11 +753,12 @@ fn float_plain_fragments_keep_rgb_and_write_only_coverage() {
 
 #[test]
 fn float_stars_keep_the_original_rgb_with_brightness_as_coverage() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         return;
     };
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     // Frozen f030d9c80 fragment: the original written branch and its marked fallback.
     let source = include_str!("../hdr_light.wgsl").to_owned()
         + include_str!("stars.wgsl")
@@ -750,7 +769,7 @@ fn float_stars_keep_the_original_rgb_with_brightness_as_coverage() {
 @fragment fn reference() -> @location(0) vec4<f32> {
     let b = stars.color.a;
     if HDR_WRITE_LIGHT && stars.hdr_light.w != 0.0 {
-        return vec4(hdr_written(stars.color.rgb * b, 0.175, stars.hdr_settings, stars.hdr_shares), b);
+        return vec4(hdr_written(stars.color.rgb * b, 0.175, stars.hdr_settings, stars.hdr_gains), b);
     }
     return vec4(stars.color.rgb * b, 0.175);
 }
@@ -763,7 +782,7 @@ fn float_stars_keep_the_original_rgb_with_brightness_as_coverage() {
         let mut data = [0.0_f32; 32];
         data[16..20].copy_from_slice(&[0.7, 0.8, 0.9, 0.35]);
         data[20..24].copy_from_slice(&settings);
-        data[24..28].copy_from_slice(&shares);
+        data[24..28].copy_from_slice(&gains);
         data[31] = gain;
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
@@ -838,6 +857,7 @@ fn float_stars_keep_the_original_rgb_with_brightness_as_coverage() {
 
 #[test]
 fn float_material_wrappers_keep_rgb_and_coverage_including_displacement() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let instance = super::super::test_gpu::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
         return;
@@ -895,6 +915,7 @@ fn float_material_wrappers_keep_rgb_and_coverage_including_displacement() {
 
 #[test]
 fn actual_opaque_writers_match_the_legacy_non_float_oracle() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         eprintln!("HDR draw GPU unavailable");
         return;
@@ -908,7 +929,7 @@ fn actual_opaque_writers_match_the_legacy_non_float_oracle() {
     }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
     (hdr.paper_white, hdr.peak) = (203.0, 1000.0);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let mut count = 0;
     for fog in [0.0, 0.5, 1.0] {
         for visibility in [1.0, 0.4] {
@@ -921,7 +942,7 @@ fn actual_opaque_writers_match_the_legacy_non_float_oracle() {
                 hdr_windows: hdr.windows(),
                 hdr_light: [0.8, 0.8, 1.0, 1.0],
                 hdr_settings: settings,
-                hdr_shares: shares,
+                hdr_gains: gains,
                 ..bytemuck::Zeroable::zeroed()
             };
             for terrain in [true, false] {
@@ -963,12 +984,13 @@ fn actual_opaque_writers_match_the_legacy_non_float_oracle() {
 
 #[test]
 fn actual_translucent_writers_blend_their_own_light() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         eprintln!("HDR blend GPU unavailable");
         return;
     };
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let globals = super::super::Globals {
         fog: [0.0, 100.0, 0.0, 100.0],
         fog_ends: [100.0, 100.0, 0.0, 0.0],
@@ -977,7 +999,7 @@ fn actual_translucent_writers_blend_their_own_light() {
         hdr_windows: hdr.windows(),
         hdr_light: [0.8, 0.8, 1.0, 1.0],
         hdr_settings: settings,
-        hdr_shares: shares,
+        hdr_gains: gains,
         ..bytemuck::Zeroable::zeroed()
     };
     // Texel alpha 100 is clear glass's kind of texel, below the 0.6 the marked frame's
@@ -1024,6 +1046,7 @@ fn actual_translucent_writers_blend_their_own_light() {
 
 #[test]
 fn unmarked_entity_users_keep_their_source_gain() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         return;
     };
@@ -1035,14 +1058,14 @@ fn unmarked_entity_users_keep_their_source_gain() {
         return;
     }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let globals = super::super::Globals {
         fog: [0.0, 100.0, 0.0, 100.0],
         fog_ends: [100.0, 100.0, 0.0, 0.0],
         hdr_windows: hdr.windows(),
         hdr_light: [1.0, 1.0, 1.0, 1.0],
         hdr_settings: settings,
-        hdr_shares: shares,
+        hdr_gains: gains,
         ..bytemuck::Zeroable::zeroed()
     };
     let draw = Draw::new(&device, &queue, false, &globals, 255);
@@ -1068,6 +1091,7 @@ fn unmarked_entity_users_keep_their_source_gain() {
 
 #[test]
 fn additive_texels_below_the_mark_cutoff_keep_their_gain() {
+    let _gpu = crate::gfx::test_gpu::lock();
     let Some((device, queue)) = gpu() else {
         return;
     };
@@ -1079,13 +1103,13 @@ fn additive_texels_below_the_mark_cutoff_keep_their_gain() {
         return;
     }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let globals = super::super::Globals {
         fog: [0.0, 100.0, 0.0, 100.0],
         hdr_windows: hdr.windows(),
         hdr_light: [1.0, 1.0, 1.0, 1.0],
         hdr_settings: settings,
-        hdr_shares: shares,
+        hdr_gains: gains,
         ..bytemuck::Zeroable::zeroed()
     };
     let draw = Draw::new(&device, &queue, false, &globals, 16);
@@ -1129,7 +1153,7 @@ fn check_oit_writer(terrain: bool, kind: &str, overlay: u32, tier: u32, alphas: 
     }))
     .unwrap();
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let (settings, shares) = hdr.draw_params(true);
+    let (settings, gains) = hdr.draw_params(true);
     let globals = super::super::Globals {
         fog: [0.0, 100.0, 0.0, 100.0],
         fog_ends: [100.0, 100.0, 0.0, 0.0],
@@ -1138,7 +1162,7 @@ fn check_oit_writer(terrain: bool, kind: &str, overlay: u32, tier: u32, alphas: 
         hdr_windows: hdr.windows(),
         hdr_light: [0.8, 0.8, 1.0, 1.0],
         hdr_settings: settings,
-        hdr_shares: shares,
+        hdr_gains: gains,
         ..bytemuck::Zeroable::zeroed()
     };
     for &alpha in alphas {
@@ -1186,17 +1210,21 @@ fn check_oit_writer(terrain: bool, kind: &str, overlay: u32, tier: u32, alphas: 
 
 #[test]
 fn actual_oit_terrain_writes_its_own_light_including_clear_glass() {
+    let _gpu = crate::gfx::test_gpu::lock();
     check_oit_writer(true, "terrain", 0, 0, &[180, 100]);
 }
 #[test]
 fn actual_oit_particle_writes_its_own_light() {
+    let _gpu = crate::gfx::test_gpu::lock();
     check_oit_writer(false, "entity", 0, 3, &[180]);
 }
 #[test]
 fn actual_oit_cloud_writes_its_own_light() {
+    let _gpu = crate::gfx::test_gpu::lock();
     check_oit_writer(false, "cloud", 4, 0, &[180]);
 }
 #[test]
 fn actual_oit_additive_adds_converted_light_without_coverage() {
+    let _gpu = crate::gfx::test_gpu::lock();
     check_oit_writer(false, "lightning", 0, 4, &[180]);
 }

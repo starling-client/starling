@@ -23,9 +23,9 @@ Usage: horizon-server [--dir DIR] <command>
               Up or not, TPS, MSPT, players, RAM and CPU
   cmd COMMAND...
               Run a console command on the running server and print what it answers
-  report [SECONDS]
-              Record a performance report for SECONDS (default 60): where the ticks' time goes,
-              entities, chunks, network, memory; saved in reports/ (JSON and text, no player data)
+  report [SECONDS] [--no-samples]
+              Record a performance capture for SECONDS (default 60) into reports/profile-<time>Z.hzperf
+              (no player data); prints its path and where to open it
   logs [-f] [-n N]
               The last N lines of the log (default 50); -f follows it
   console     Attach to the running server: its log as it happens, TPS, MSPT, players and RAM at the
@@ -91,6 +91,10 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `view_distance` | `10` | `view-distance` | chunks sent around each player |
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
 | `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
+| `max_viewed_loaded_chunks` | `2048` | `horizon-max-viewed-loaded-chunks` | chunks a mod may keep loaded for one player in another level (0: none; at most 2048 for now) |
+| `max_viewed_ticking_chunks` | `441` | `horizon-max-viewed-ticking-chunks` | of them, ticking (one player's simulation area at distance 10) |
+| `max_viewed_loaded_chunks_per_level` | `16384` | `horizon-max-viewed-loaded-chunks-per-level` | the same for all players together, per level |
+| `max_viewed_ticking_chunks_per_level` | `3528` | `horizon-max-viewed-ticking-chunks-per-level` | ticking, all players together, per level |
 | `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
 | `accept_older_clients` | `false` | `horizon-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
@@ -116,6 +120,7 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `resources` | `""` |  | the prepared game files; empty: resources/ here, else the usual places |
 | `restart_on_crash` | `true` |  | start the game again when it crashes |
 | `low_memory` | `false` |  | true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time |
+| `parallel_tick` | `false` |  | reserved: parallel phases are currently disabled in this fork |
 
 ### `[backups]`
 

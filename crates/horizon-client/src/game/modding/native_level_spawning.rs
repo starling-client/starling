@@ -1,5 +1,5 @@
 //! Mob spawning and a level's natural spawning policy through a `LevelRef`
-//! (docs/modding/src/how-to/spawning.md, "Spawning from a level"): a mob made
+//! (docs/modding/src/how-to/world/spawning.md, "Spawning from a level"): a mob made
 //! as `EntityType.spawn` makes one, the per-category limits and the flags
 //! natural spawning reads (`natural_spawning::SpawnPolicy`), and the chunk
 //! question it asks (`ServerLevel.canSpawnEntitiesInChunk`).
@@ -19,6 +19,9 @@ impl Game<'_> {
         pos: [f64; 3],
         reason: mod_api::SpawnReason,
     ) -> Option<EntityRef> {
+        if self.entity_ids_exhausted() {
+            return None;
+        }
         if !self.level_in_place(level) || !pos.iter().all(|v| v.is_finite()) {
             return None;
         }
@@ -122,7 +125,7 @@ mod tests {
             "level-spawning",
             Box::new(Listener(heard.clone())),
         )];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             with_game(|game| {
                 game.world
                     .chunks
@@ -136,7 +139,10 @@ mod tests {
                         mod_api::SpawnReason::Command,
                     )
                     .unwrap();
-                assert_eq!(game.entity_kind(cow).as_deref(), Some("minecraft:cow"));
+                assert_eq!(
+                    game.entity_kind(cow).map(|kind| kind.id(game)).as_deref(),
+                    Some("minecraft:cow")
+                );
                 assert_eq!(game.entity_position(cow), Some([8.5, 64.0, 8.25]));
                 let mob = game.mobs.iter().find(|m| m.id == cow.id()).unwrap();
                 assert!(!mob.persistent);

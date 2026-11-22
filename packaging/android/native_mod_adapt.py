@@ -44,6 +44,13 @@ CALLS = (
 # chat's completion, a camera's own eye height, the bounds of a dimension lower than the overworld, a
 # world's own set of mods and the note about preparing them when a mod calls `content_root` again.
 CHANGED = (
+    # The main hand's key was a string (its item and components); it is the stack now.
+    (r"\.main_hand_key\(\)", ".main_hand_key_old()"),
+    # The inventory tweaks' menu test is in extras' mouse_tweaks since the fork split game::tweaks.
+    (r"\bsuper::tweaks::tweak_menu\b", "super::extras::mouse_tweaks::tweak_menu"),
+    (r"\bcrate::game::tweaks::tweak_menu\b", "crate::game::extras::mouse_tweaks::tweak_menu"),
+    # A mod's module inside the old tweaks file is in extras/sorting.rs now (MOVED_FILES).
+    (r"\bcrate::game::tweaks::", "crate::game::extras::sorting::"),
     (r"GuestUse::Entity\(Hand::Main\)", "GuestUse::Entity(Hand::Main, _)"),
     # A text's hover is shared now.
     (r"(\bhover:\s*Some\(\s*)Box::new\(", r"\1std::sync::Arc::new("),
@@ -227,6 +234,10 @@ OLD_SHAPES = (
     # now), and the inventory screen's slot of a menu's.
     (".menu_click(", 3, ".menu_click_old("),
     ("Game::menu_slot(", 2, "Game::menu_slot_old("),
+    # Who wears the item, which the fork's unbreaking roll takes now: the player, as before.
+    (".durability_loss(", 2, ".durability_loss_old("),
+    # The title's draw takes the render phases' callback now.
+    (".draw_with_items(", 6, ".draw_with_items_old("),
     # Inventory.add, the stack that did not fit back: `give` takes an item key and a count now.
     (".give(", 1, ".add_stack_to_inventory("),
 )
@@ -533,11 +544,21 @@ def relocate(target, tree):
     return f"{found[0]}::{spelled}::{name}" if kind else f"{found[0]}::{name}"
 
 
+# Game files the fork split under another module name, by what a mod's `[[module]]` inside them reaches: the
+# inventory tweaks' sort buttons (`SORT_BUTTON`, `draw_sort_buttons`) are in extras/sorting.rs since 2026-11.
+MOVED_FILES = {
+    "crates/horizon-client/src/game/tweaks.rs": "crates/horizon-client/src/game/interface/extras/sorting.rs",
+    "crates/horizon-client/src/game/interface/tweaks.rs": "crates/horizon-client/src/game/interface/extras/sorting.rs",
+}
+
+
 def relocate_file(path, tree, source):
     """A `[[module]]`'s destination file when it moved: the file the module its old path names is in
     now (Horizon moved the game's files into area folders, keeping their module paths)."""
     if (source / path).exists() or not path.endswith(".rs"):
         return path
+    if path in MOVED_FILES and (source / MOVED_FILES[path]).exists():
+        return MOVED_FILES[path]
     for crate, root in CRATES.items():
         folder = root.rsplit("/", 1)[0] + "/"
         if not path.startswith(folder):
@@ -633,6 +654,61 @@ def rebind(text, tree, hooks):
     return "".join(blocks)
 
 
+# Parameters Horizon folded into a tuple with another, by target: the old parameter's name, the
+# tuple's, the tuple's type and the old one's. A binding to the old parameter binds the tuple with
+# the tuple's type, and the helper takes the tuple where it took the old one: the calls it made with
+# it want the tuple now. The fork reads the frame's linear light beside the shading API there
+# (`line: (api, linear)`); horizon_physics hands `api` on to `shader_source`.
+FOLDED_PARAMETERS = {
+    "horizon_client_render::gfx::native_material::module": (
+        "api",
+        "line",
+        "(horizon_shader_api::Api, bool)",
+        "horizon_shader_api::Api",
+    ),
+}
+
+
+def fold(text, mod_dir):
+    """Each injection's bindings to a parameter Horizon folded into a tuple (FOLDED_PARAMETERS) bind
+    the tuple, and its helper (in `mod_dir`) takes the tuple; the manifest's new text."""
+    blocks = re.split(r"(?=^\[\[injection\]\])", text, flags=re.M)
+    for i, block in enumerate(blocks):
+        target = re.search(r'^\s*target\s*=\s*"([^"]*)"', block, re.M)
+        folded = target and FOLDED_PARAMETERS.get(target[1])
+        if not folded:
+            continue
+        old, tuple_name, tuple_ty, old_ty = folded
+        binding = re.compile(
+            r'\{\s*name\s*=\s*"(\w+)"\s*,\s*ty\s*=\s*"'
+            + re.escape(old_ty)
+            + r'"\s*,\s*value\s*=\s*"'
+            + old
+            + r'"\s*\}'
+        )
+        names = binding.findall(block)
+        if not names:
+            continue
+        blocks[i] = binding.sub(
+            lambda m: f'{{ name = "{m[1]}", ty = "{tuple_ty}", value = "{tuple_name}" }}', block
+        )
+        helper = re.search(r'^\s*helper\s*=\s*"([^"]*)"', block, re.M)
+        helper_file = mod_dir / helper[1] if helper else None
+        if helper_file and helper_file.is_file():
+            code_text = helper_file.read_text(encoding="utf-8", errors="surrogateescape")
+            new_code = code_text
+            for name in names:
+                new_code = re.sub(
+                    rf"\b{name}\s*:\s*{re.escape(old_ty)}(?=\s*[,)])",
+                    f"{name}: {tuple_ty}",
+                    new_code,
+                )
+            if new_code != code_text:
+                helper_file.write_text(new_code, encoding="utf-8", errors="surrogateescape")
+        print(f"native_mod_adapt: {mod_dir.name}: {target[1]}'s {old} is its {tuple_name} now")
+    return "".join(blocks)
+
+
 INCLUDE = re.compile(r'^include!\("([\w/]+\.rs)"\);\n', re.M)
 
 
@@ -666,6 +742,99 @@ def inline_includes(source):
                 file.unlink()
 
 
+# The embedded-content injection of the bundles that carry their content mod in `data/` (Deepbore Quarry,
+# Wayfarer Stones, Eating Animation): written against `content_root(root, enabled, [disabled,] dev) -> PathBuf`,
+# while the fork's is `content_root(root, sources: &ModsState) -> Result<ResourceRoot>`, whose `dev` it reads.
+# The injection gets `sources`, and its helper adds the written file to a copy of their `dev`.
+CONTENT_ROOT_BINDINGS = (
+    'bindings = [\n'
+    '  { name = "root", ty = "&std::path::Path", value = "root" },\n'
+    '  { name = "sources", ty = "&ModsState", value = "sources" },\n'
+    ']'
+)
+CONTENT_ROOT_HELPER = re.compile(
+    r"(fn \w+_embedded_content\(\s*root: &std::path::Path,).*?\) -> core::ops::ControlFlow<std::path::PathBuf> \{",
+    re.S,
+)
+CONTENT_ROOT_TAIL = re.compile(
+    r"let mut with = dev\.to_vec\(\);\s*with\.push\(file\);\s*"
+    r"core::ops::ControlFlow::Break\(content_root\(root, [^;]*?&with\)\)"
+)
+
+
+def embedded_content(text, mod_dir):
+    """The embedded-content injection and its helper, on the fork's `content_root`."""
+    blocks = re.split(r"(?m)^(?=\[\[injection\]\])", text)
+    for i, block in enumerate(blocks):
+        target = re.search(r'^\s*target\s*=\s*"([^"]*)"', block, re.M)
+        helper = re.search(r'^\s*helper\s*=\s*"([^"]*)"', block, re.M)
+        if not (target and helper and target[1].endswith("::content_root")):
+            continue
+        path = mod_dir / helper[1]
+        if not path.is_file():
+            continue
+        code = path.read_text(encoding="utf-8")
+        new = CONTENT_ROOT_HELPER.sub(
+            r"\1\n    sources: &ModsState,\n) -> core::ops::ControlFlow<"
+            r"horizon_client::Result<horizon_assets::resource_source::ResourceRoot>> {",
+            code,
+        )
+        new = new.replace("if dev.contains(&file)", "if sources.dev.contains(&file)")
+        new = CONTENT_ROOT_TAIL.sub(
+            "let mut with = sources.clone();\n    with.dev.push(file);\n"
+            "    core::ops::ControlFlow::Break(content_root(root, &with))",
+            new,
+        )
+        if new == code or "dev.to_vec()" in new:
+            continue
+        path.write_text(new, encoding="utf-8")
+        blocks[i] = re.sub(r"(?ms)^bindings\s*=\s*\[.*?^\]", CONTENT_ROOT_BINDINGS, block)
+        print(f"native_mod_adapt: {mod_dir.name}: embedded content on the fork's content_root")
+    return "".join(blocks)
+
+
+# Cancellable injections whose target returns more on the fork than the Nightly the mod was written for: the
+# helper's ControlFlow carries the new return type, and its Break the value meaning "drawn, nothing more".
+RETURNS_NOW = {
+    # Nothing then; the tooltip the panel wants drawn now (JEI, REI).
+    "draw_mod_browser": (
+        (r"ControlFlow<\(\)>", "ControlFlow<Option<BrowserTooltip>>"),
+        (r"ControlFlow::Break\(\(\)\)", "ControlFlow::Break(None)"),
+    ),
+    # Nothing then; the tooltip lines now (Cinematic Interactions).
+    "draw_recipe_book": (
+        (r"ControlFlow<\(\)>", "ControlFlow<Option<Vec<(Text, u32)>>>"),
+        (r"ControlFlow::Break\(\(\)\)", "ControlFlow::Break(None)"),
+    ),
+    # The hand's vertices then; with their textured runs now (Fair Freecam).
+    "hand_geometry": (
+        (r"ControlFlow<Vec<Vertex>>", "ControlFlow<(Vec<Vertex>, Vec<(u32, i32)>)>"),
+        (r"ControlFlow::Break\(Vec::new\(\)\)", "ControlFlow::Break((Vec::new(), Vec::new()))"),
+    ),
+}
+
+
+def returns_now(text, mod_dir):
+    """The helpers of cancellable injections at a target in RETURNS_NOW, on its new return type."""
+    for block in re.split(r"(?m)^(?=\[\[injection\]\])", text):
+        target = re.search(r'^\s*target\s*=\s*"([^"]*)"', block, re.M)
+        helper = re.search(r'^\s*helper\s*=\s*"([^"]*)"', block, re.M)
+        if not (target and helper and re.search(r"^\s*cancellable\s*=\s*true", block, re.M)):
+            continue
+        rules = RETURNS_NOW.get(target[1].rsplit("::", 1)[-1])
+        path = mod_dir / helper[1]
+        if not rules or not path.is_file():
+            continue
+        code = path.read_text(encoding="utf-8")
+        new = code
+        for old, replacement in rules:
+            new = re.sub(old, replacement, new)
+        if new != code:
+            path.write_text(new, encoding="utf-8")
+            print(f"native_mod_adapt: {mod_dir.name}/{helper[1]}: {target[1]} returns more now")
+    return text
+
+
 def main():
     source, mods = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     modules = owners(source)
@@ -675,6 +844,8 @@ def main():
     for manifest in mods.glob("*/horizon-mixin.toml"):
         old = manifest.read_text(encoding="utf-8")
         new = adapt(old, source, modules)
+        new = embedded_content(new, manifest.parent)
+        new = returns_now(new, manifest.parent)
 
         def moved(match, name=manifest.parent.name):
             target = relocate(match[2], tree)
@@ -690,6 +861,7 @@ def main():
             flags=re.M,
         )
         new = rebind(new, tree, hooks)
+        new = fold(new, manifest.parent)
         if new != old:
             manifest.write_text(new, encoding="utf-8")
             print(f"native_mod_adapt: {manifest.parent.name} pointed at where things went")

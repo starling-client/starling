@@ -48,7 +48,7 @@ fn observe(test: impl FnOnce(Calls)) {
         Box::new(Listener(calls.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || test(calls));
+    mod_platform::testing::with_mods(mods, || test(calls));
 }
 
 fn tag(kind: &str, uuid: i32) -> Tag {
@@ -104,7 +104,7 @@ fn spawn_summon_and_disk_load_initialize_before_first_attachment_read() {
                 let uuid = 101 + i as i32;
                 game.world
                     .loaded_entities
-                    .push(((0, 0), vec![tag(kind, uuid)]));
+                    .push(((0, 0), vec![tag(kind, uuid).into()]));
                 game.spawn_loaded_entities();
                 let id = *game
                     .persist
@@ -168,6 +168,7 @@ fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
             game.detach_entity(id);
             game.enter_level(Dim::Nether).unwrap();
             let moved = game.load_mob_transferred(saved, None, Some(state)).unwrap();
+            assert_eq!(game.persist.uuid_of(moved), Some(uuid));
             assert_eq!(VALUE.get(game, Holder::Entity(moved)), Ok(41));
             assert_eq!(calls.lock().unwrap().len(), 1);
             game.forget_entity(moved);
@@ -483,7 +484,7 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
         Box::new(Saving(kinds.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             let mut saved = horizon_mod_runtime::attachments::Attachments::default();
@@ -495,7 +496,7 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
                     Tag::Compound(saved.to_nbt()),
                 );
             }
-            game.world.loaded_entities.push(((0, 0), vec![pig]));
+            game.world.loaded_entities.push(((0, 0), vec![pig.into()]));
             game.spawn_loaded_entities();
             let id = *game
                 .persist
@@ -641,7 +642,7 @@ fn marker_constructor_store_reaches_its_real_owned_map() {
         }
     }
     let ran = Arc::new(AtomicBool::new(false));
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![mod_api::ModEntry::new(
             "store",
             Box::new(Store(ran.clone())),
@@ -674,7 +675,7 @@ fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
         }
     }
     let calls = Calls::default();
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![
             mod_api::ModEntry::new("constructing", Box::new(Listener(calls.clone()))),
             mod_api::ModEntry::new("cancel", Box::new(Cancel)),
@@ -696,10 +697,84 @@ fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
                     .is_none()
                 );
                 assert_eq!(calls.lock().unwrap().len(), 1);
-                assert_eq!(game.persist.uuids, before);
+                assert_eq!(*game.persist.uuids, before);
                 assert!(game.entity_attachments.is_empty());
                 assert!(game.entity_initialization.initialized.is_empty());
             });
         },
     );
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn dragon_part_constructor_first_read_indexes_payload_and_same_id_replacement_reconstructs() {
+    use mod_api::AttachmentQueries;
+    observe(|calls| {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.native_level_opened(Dim::Overworld);
+            game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
+            let holder = Holder::Entity(421);
+            // Only an inspection outside dispatch: the constructor listener
+            // performs the store, and there is no subsequent explicit store.
+            assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
+            assert!(game.dragon.as_mut().unwrap().parts[0].2.is_bound());
+            let batch = game.query(&VALUE).unwrap();
+            let rows: Vec<_> = batch.iter().collect();
+            assert_eq!(rows.len(), 1);
+            let row = rows[0].as_ref().unwrap();
+            assert_eq!(row.value, &41);
+            assert_eq!(
+                row.holder,
+                mod_api::AttachmentHolder::Entity(game.entity(421).unwrap())
+            );
+            game.prune_entity_attachments();
+            game.prune_entity_memory();
+            assert!(game.entity_attachments.contains_key(&421));
+            assert!(game.entity_initialization.initialized.contains(&holder));
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, h)| *h == holder)
+                    .count(),
+                1
+            );
+
+            game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
+            assert!(!game.entity_attachments.contains_key(&421));
+            assert!(!game.entity_initialization.initialized.contains(&holder));
+            assert!(game.query(&VALUE).unwrap().iter().next().is_none());
+            assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, h)| *h == holder)
+                    .count(),
+                2
+            );
+            assert_eq!(game.query(&VALUE).unwrap().iter().count(), 1);
+            game.remove_remote_dragon(420);
+            // No prune pass between removal and network-ID reuse.
+            assert!(!game.entity_attachments.contains_key(&421));
+            assert!(!game.entity_initialization.initialized.contains(&holder));
+            game.spawn_remote_dragon(420, [1.0, 80.0, 1.0], 0.0);
+            assert!(!game.entity_attachments.contains_key(&421));
+            assert!(game.query(&VALUE).unwrap().iter().next().is_none());
+            assert_eq!(VALUE.get_existing(game, holder), Ok(Some(41)));
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, h)| *h == holder)
+                    .count(),
+                3
+            );
+            assert_eq!(game.query(&VALUE).unwrap().iter().count(), 1);
+        });
+    });
 }

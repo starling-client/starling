@@ -3,6 +3,7 @@
 //! unpacked as `RandomizableContainer.unpackLootTable` would on first open.
 use crate::{containers::BlockEntity, items::ItemStack};
 use std::{
+    cell::RefCell,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -13,7 +14,7 @@ use {
 
 /// The `custom_data` key holding an exploration map's search until the game
 /// runs it (vanilla runs `ExplorationMapFunction` when the chest is unpacked,
-/// on first open; here loot is rolled with the chunk).
+/// on first access; the search is deferred until the game can resolve it).
 const PENDING_MAP: &str = "horizon:exploration_map";
 const CUSTOM_DATA: &str = "minecraft:custom_data";
 
@@ -128,7 +129,7 @@ struct LoadedLoot {
 }
 static LOOT: Mutex<Option<LoadedLoot>> = Mutex::new(None);
 
-/// A world's atomically replaceable loot snapshot, shared by its chunk workers.
+/// A world's atomically replaceable loot snapshot, shared by gameplay loot readers.
 #[derive(Clone, Default)]
 pub struct LootSnapshot(Arc<std::sync::RwLock<Option<Arc<LootData>>>>);
 
@@ -142,6 +143,31 @@ impl LootSnapshot {
     pub fn set(&self, loot: Option<Arc<LootData>>) {
         *self.0.write().unwrap_or_else(|e| e.into_inner()) = loot;
     }
+}
+
+thread_local! {
+    /// Loot data this thread keeps to itself, read ahead of [`LOOT`]. A game
+    /// never sets it: a test that installs a world pack's tables does, so the
+    /// tables reach its own rolls only and never a test running beside it
+    /// (each test runs on its own thread; #14266).
+    static THREAD_LOOT: RefCell<Option<Arc<LootData>>> = const { RefCell::new(None) };
+}
+
+fn thread_loot() -> Option<Arc<LootData>> {
+    THREAD_LOOT.with(|own| own.borrow().clone())
+}
+
+/// Load the loot data of `root` with `overlay` for this thread alone:
+/// [`loot_data`] and [`loaded_loot_data`] return it on this thread, while
+/// other threads keep the process's copy. For tests whose world has packs.
+pub fn load_thread_loot_data(
+    root: &Path,
+    overlay: &horizon_world::loot::PackOverlay,
+    defaults: &ItemDefaults,
+) -> Option<Arc<LootData>> {
+    let data = load_loot(root, overlay, defaults).data;
+    THREAD_LOOT.with(|own| *own.borrow_mut() = data.clone());
+    data
 }
 
 /// The resource root and the packs' files the loot data was loaded from.
@@ -181,6 +207,9 @@ pub fn loot_data(
     overlay: &horizon_world::loot::PackOverlay,
     defaults: &ItemDefaults,
 ) -> Option<Arc<LootData>> {
+    if let Some(own) = thread_loot() {
+        return Some(own);
+    }
     let mut loot = LOOT.lock().unwrap_or_else(|e| e.into_inner());
     if loot
         .as_ref()
@@ -224,6 +253,9 @@ fn reuse_or_load(
 
 /// The loot data `loot_data` loaded, if it ran.
 pub fn loaded_loot_data(defaults: &ItemDefaults) -> Option<Arc<LootData>> {
+    if let Some(own) = thread_loot() {
+        return Some(own);
+    }
     LOOT.lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
@@ -235,46 +267,6 @@ pub fn loaded_loot_data(defaults: &ItemDefaults) -> Option<Arc<LootData>> {
 /// (game/world/world_loading.rs). The next `loot_data` loads it again.
 pub fn forget_loot_data() {
     *LOOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
-/// `RandomizableContainer.unpackLootTable` of a container at `pos`: `table`
-/// rolled into `slots`. A missing or zero seed is the level's random in
-/// vanilla; Horizon derives one from the position. Without loot data the
-/// container stays empty and still saves its table.
-pub fn roll_container(
-    slots: &mut [Option<ItemStack>],
-    loot: Option<&LootData>,
-    table: String,
-    saved_seed: Option<i64>,
-    pos: (i32, i32, i32),
-    biome: &str,
-) -> crate::save::RolledLoot {
-    let seed = saved_seed.filter(|s| *s != 0).unwrap_or_else(|| {
-        horizon_core::random::position_seed(horizon_core::position::BlockPos::new(
-            pos.0, pos.1, pos.2,
-        ))
-    });
-    if let Some(loot) = loot {
-        // LootTable.fill spreads the items over the container's own size.
-        let rolled = loot.fill(&table, seed, slots.len(), Some(biome));
-        for (slot, stack) in slots.iter_mut().zip(rolled) {
-            // With what the rolls put on them: enchantments
-            // (enchant_with_levels in End city chests), potions and an
-            // ominous bottle's level.
-            *slot = stack.map(|s| loot_item_with_components(&s));
-        }
-    }
-    crate::save::RolledLoot {
-        pos,
-        table,
-        seed: saved_seed,
-        items: crate::save::encode_items(slots),
-    }
-}
-
-/// A saved `LootTableSeed`, if any.
-pub fn loot_seed(nbt: &Tag) -> Option<i64> {
-    horizon_client_core::nbt_value::number(nbt.get("LootTableSeed"))
 }
 
 fn text(nbt: &Compound, key: &str) -> Option<String> {
@@ -321,36 +313,29 @@ fn generated_block_entity(block: &str, nbt: &Compound) -> Option<BlockEntity> {
 }
 
 /// Client block entities for the generated block entities of a chunk, and the
-/// loot rolled into its containers.
+/// pending loot metadata of its containers.
 pub fn block_entities(
     chunk: &ProtoChunk,
-    loot: Option<&LootData>,
 ) -> (
     Vec<((i32, i32, i32), BlockEntity)>,
-    Vec<crate::save::RolledLoot>,
+    std::collections::HashMap<(i32, i32, i32), crate::save::PendingContainerLoot>,
 ) {
     let mut out = Vec::new();
-    let mut rolled = Vec::new();
+    let mut pending = std::collections::HashMap::new();
     for (pos, nbt) in &chunk.block_entities {
         let [x, y, z] = *pos;
-        let block = chunk.block_name(x, y, z);
-        let Some(mut entity) = generated_block_entity(block, nbt) else {
+        let Some(entity) = generated_block_entity(chunk.block_name(x, y, z), nbt) else {
             continue;
         };
-        if let (BlockEntity::Chest(slots), Some(table)) = (&mut entity, text(nbt, "LootTable")) {
-            let seed = loot_seed(&Tag::Compound(nbt.clone()));
-            rolled.push(roll_container(
-                slots,
-                loot,
-                table,
-                seed,
-                (x, y, z),
-                chunk.biome_at(x, y, z),
-            ));
+        if matches!(entity, BlockEntity::Chest(_))
+            && let Some(loot) =
+                crate::save::PendingContainerLoot::from_tag(&Tag::Compound(nbt.clone()))
+        {
+            pending.insert((x, y, z), loot);
         }
         out.push(((x, y, z), entity));
     }
-    (out, rolled)
+    (out, pending)
 }
 
 #[cfg(test)]
@@ -359,19 +344,23 @@ mod tests {
     use horizon_world::loot::{ExplorationMap, LootStack};
 
     #[test]
+    #[ignore = "daily"]
     fn declared_structure_entities_keep_template_payload_not_template_type() {
         const CHILD: &str = "HORIZON_TEST_DECLARED_STRUCTURE_ENTITY";
         if std::env::var_os(CHILD).is_none() {
-            assert!(
-                std::process::Command::new(std::env::current_exe().unwrap())
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
                     .args([
+                        "--include-ignored",
                         "--exact",
                         "structure_blocks::tests::declared_structure_entities_keep_template_payload_not_template_type",
                     ])
                     .env(CHILD, "1")
-                    .status()
-                    .unwrap()
-                    .success()
+                    .output()
+                    .unwrap();
+            assert!(
+                output.status.success(),
+                "test=structure_blocks::tests::declared_structure_entities_keep_template_payload_not_template_type exit_code={:?} category=fixture-child-failed",
+                output.status.code()
             );
             return;
         }
@@ -402,18 +391,6 @@ mod tests {
             );
             assert_eq!(entity.items[0].as_ref().unwrap().count, 3);
         }
-    }
-
-    #[test]
-    fn a_loot_seed_is_any_number() {
-        assert_eq!(
-            loot_seed(&Tag::compound([("LootTableSeed", Tag::Int(42))])),
-            Some(42)
-        );
-        assert_eq!(
-            loot_seed(&Tag::compound([("LootTableSeed", Tag::Long(7))])),
-            Some(7)
-        );
     }
 
     #[test]
@@ -536,24 +513,6 @@ mod tests {
         assert!(Arc::ptr_eq(&in_flight, &first));
         assert!(Arc::ptr_eq(&worker.get().unwrap(), &other));
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_container_rolled_without_loot_data_saves_its_table() {
-        let mut slots = vec![None; 27];
-        let rolled = roll_container(
-            &mut slots,
-            None,
-            "minecraft:chests/simple_dungeon".into(),
-            Some(7),
-            (1, 2, 3),
-            "minecraft:plains",
-        );
-        let mut saved = horizon_core::nbt::Compound::new();
-        saved.insert("Items".into(), crate::save::encode_items(&slots));
-        assert!(rolled.restore(&mut saved));
-        assert!(!saved.contains_key(&"Items".into()));
-        assert_eq!(saved.get(&"LootTableSeed".into()), Some(&Tag::Long(7)));
     }
 
     #[test]

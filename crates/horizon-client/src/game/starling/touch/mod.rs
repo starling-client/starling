@@ -65,6 +65,53 @@ pub(super) struct ControlFace {
     pub(super) shape: Shape,
 }
 
+/// Whether the keyboard is wanted after a tap on `context`'s screen: `on` says whether the tap
+/// was on the text box (None where its place is not known), `below_line` that it was below the
+/// chat's line, `was_context` and `was_wanted` the state before it.
+pub(super) fn keyboard_wanted_after_tap(
+    context: &str,
+    on: Option<bool>,
+    below_line: bool,
+    was_context: Option<&str>,
+    was_wanted: bool,
+) -> bool {
+    match (context, on) {
+        // Its line, above the keyboard, keeps it; a tap on the rest puts it away, and with it
+        // away any tap brings it back.
+        ("chat", _) => !was_wanted || below_line,
+        (_, Some(on)) => on,
+        // Its place isn't known (the recipe book's search): the tap that focused it opens it, then
+        // a tap goes either way.
+        (_, None) => was_context != Some(context) || !was_wanted,
+    }
+}
+
+/// The screen a finger lands on, to tell a tap that opened another one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct ScreenMark {
+    screen: std::mem::Discriminant<Screen>,
+    title: Option<&'static str>,
+    preparing: bool,
+}
+
+impl ScreenMark {
+    /// `title` is the title screen's id and whether it is preparing the next one, when it shows.
+    pub(super) fn new(screen: &Screen, title: Option<(&'static str, bool)>) -> Self {
+        Self {
+            screen: std::mem::discriminant(screen),
+            title: title.map(|(id, _)| id),
+            preparing: title.is_some_and(|(_, preparing)| preparing),
+        }
+    }
+}
+
+/// Whether the tap that ended on `now` opened another screen than the one it landed on (the
+/// button of a title screen that opens Create New World, its name box focused): it was not a tap
+/// on that screen's text box, wherever the box is.
+pub(super) fn tap_opened_screen(landed: Option<ScreenMark>, now: ScreenMark) -> bool {
+    landed.is_some_and(|landed| landed != now)
+}
+
 /// A wide button: 16 GUI pixels tall, as wide as its label, as vanilla's buttons.
 const WIDE_HEIGHT: f32 = 16.0;
 
@@ -118,6 +165,8 @@ pub(super) struct Touch {
     context: Option<&'static str>,
     /// Where the last finger landed: lifted about there, it was a tap (`keyboard_after_tap`).
     tap_from: Option<[f32; 2]>,
+    /// The screen that finger landed on: a tap that opened another one decided nothing.
+    tap_screen: Option<ScreenMark>,
     /// A tap checked after drawing, when even an unknown screen has reported its focused box.
     field_tap: Option<[f32; 2]>,
     focused_field: Option<[f32; 4]>,
@@ -643,8 +692,13 @@ impl Game<'_> {
     }
 
     /// A short buzz of the phone (Bedrock's "Vibrate when breaking blocks" and "when splitting
-    /// items"): while the touch screen plays and the layout leaves vibration on.
+    /// items"): while the touch screen plays and the layout leaves vibration on. Only the client's
+    /// game buzzes: the integrated server's breaks the same block (`player_break_block`) with
+    /// controls it never loaded, so their default left the phone buzzing with vibration off.
     pub(super) fn touch_vibrate(&self, millis: u32) {
+        if !self.options.execution_role.is_client() {
+            return;
+        }
         #[cfg(target_os = "android")]
         let on = self.mobile.controls.settings.vibrate;
         #[cfg(not(target_os = "android"))]
@@ -735,6 +789,10 @@ impl Game<'_> {
         let WindowEvent::Touch(t) = event else {
             return false;
         };
+        // Calibrate... holds the camera: no finger moves it until it ends (Back stops it).
+        if self.perf_calibrating() {
+            return true;
+        }
         self.touch.seen = true;
         // The touch controls come back with a touch after a keyboard, a mouse or a controller.
         self.input_used(InputMode::Touch);
@@ -751,6 +809,7 @@ impl Game<'_> {
         let p = [t.location.x as f32, t.location.y as f32];
         if t.phase == TouchPhase::Started {
             self.touch.tap_from = Some(p);
+            self.touch.tap_screen = Some(self.screen_mark());
         }
         // The chat bar: a tap is its key, and the finger stays the bar's until it lifts.
         if t.phase == TouchPhase::Started
@@ -1032,52 +1091,44 @@ impl Game<'_> {
 
     /// A tap decides the keyboard wherever it landed, a slot too: on the text field it comes up,
     /// beside it it goes away. A finger that moved (a list scrolling) leaves it as it is.
-    pub(super) fn keyboard_after_tap(&mut self, t: &winit::event::Touch, p: [f32; 2]) {
+    /// True when the tap opened another screen (it decided nothing: see [`tap_opened_screen`]).
+    pub(super) fn keyboard_after_tap(&mut self, t: &winit::event::Touch, p: [f32; 2]) -> bool {
         if t.phase != TouchPhase::Ended {
-            return;
+            return false;
         }
         let Some(from) = self.touch.tap_from.take() else {
-            return;
+            return false;
         };
+        let landed = self.touch.tap_screen.take();
         let layout = self.touch_layout();
         let slop = touch::slop(layout.width, layout.height);
         if (p[0] - from[0]).hypot(p[1] - from[1]) >= slop {
-            return;
+            return false;
         }
-        let Some(context) = self.text_context() else {
-            let batch = HudBatch::new(
-                self.touch_size(),
-                horizon_client::hud::GuiScale {
-                    requested: 0,
-                    unicode: false,
-                },
-            );
-            self.touch.field_tap = Some([p[0] / batch.scale, p[1] / batch.scale]);
-            return;
-        };
-        let batch = HudBatch::new(
-            self.touch_size(),
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
-        let gui = (p[0] / batch.scale, p[1] / batch.scale);
+        if tap_opened_screen(landed, self.screen_mark()) {
+            // The screen it opened has a focused box (Create New World's name) that was not
+            // tapped: nothing asks for the keyboard, and one up for the screen left goes.
+            self.touch.wanted = false;
+            self.touch.field_tap = None;
+            return true;
+        }
+        let batch = self.interface_batch(self.touch_size());
+        let gui = self.interface_point(p, batch.scale);
         self.touch.field_tap = Some([gui.0, gui.1]);
+        let Some(context) = self.text_context() else {
+            return false;
+        };
         let cursor = std::mem::replace(&mut self.cursor, gui);
         let on = self.on_text_field();
         self.cursor = cursor;
-        let wanted = match (context, on) {
-            // Its line, above the keyboard, keeps it; a tap on the rest puts it away, and with it
-            // away any tap brings it back.
-            ("chat", _) => {
-                let lift = self.keyboard_height() as f32 / batch.scale;
-                !self.touch.wanted || gui.1 + lift >= batch.height - 16.0
-            }
-            (_, Some(on)) => on,
-            // Its place isn't known: the tap that focused it opens it, then a tap goes either way.
-            (_, None) => self.touch.context != Some(context) || !self.touch.wanted,
-        };
+        let lift = self.keyboard_height() as f32 / batch.scale;
+        let wanted = keyboard_wanted_after_tap(
+            context,
+            on,
+            gui.1 + lift >= batch.height - 16.0,
+            self.touch.context,
+            self.touch.wanted,
+        );
         self.touch.wanted = wanted;
         // A tap that just focused the field (the options' boxes start without the focus): the frame
         // must not take it for a new screen's and put the keyboard away.
@@ -1085,6 +1136,13 @@ impl Game<'_> {
             self.touch.context = Some(context);
             self.touch.keyboard_request = true;
         }
+        false
+    }
+
+    /// What the screen shown is, for [`tap_opened_screen`].
+    fn screen_mark(&self) -> ScreenMark {
+        let title = self.title.as_ref().map(|t| (t.mode.id(), t.preparing()));
+        ScreenMark::new(&self.screen, title)
     }
 
     /// Whether a text field that holds the focus shows it: with fingers, while the keyboard is up.
@@ -1201,13 +1259,7 @@ impl Game<'_> {
     /// The text field's box in GUI pixels, a little larger for a finger, on the screens that
     /// draw one at a known place (vanilla's layouts).
     fn text_field_rect(&self, context: &str) -> Option<[f32; 4]> {
-        let batch = HudBatch::new(
-            self.touch_size(),
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let batch = self.interface_batch(self.touch_size());
         let w = batch.width;
         match context {
             // SignEditScreen and HangingSignEditScreen's board, around (w / 2, 90..125).
@@ -1233,10 +1285,16 @@ impl Game<'_> {
     /// Whether a finger landing at window pixel `p` is on a scrollbar's track, which it should
     /// drag like a held mouse instead of scrolling the list.
     pub(super) fn on_scrollbar(&self, p: [f32; 2]) -> bool {
-        let batch = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs());
-        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
+        let batch = self.interface_batch(self.touch_size());
+        let (x, y) = self.interface_point(p, batch.scale);
         // A custom button's canvas: a finger paints, it doesn't scroll.
-        if self.screen == Screen::Options && self.ui.options.painting() {
+        if self.screen == Screen::Options
+            && (self.ui.options.painting()
+                || self
+                    .ui
+                    .options
+                    .wardrobe_preview_at((batch.width, batch.height), (x, y)))
+        {
             return true;
         }
         // The title screen's player turns under the finger whichever way it moves.
@@ -1250,6 +1308,18 @@ impl Game<'_> {
         false
     }
 
+    #[cfg(target_os = "android")]
+    pub(super) fn on_wardrobe_preview(&self, p: [f32; 2]) -> bool {
+        if self.screen != Screen::Options {
+            return false;
+        }
+        let batch = self.interface_batch(self.touch_size());
+        self.ui.options.wardrobe_preview_at(
+            (batch.width, batch.height),
+            self.interface_point(p, batch.scale),
+        )
+    }
+
     /// Whether a finger landing at window pixel `p` is on a button of the options (a cycle button,
     /// a row of Video Settings), which a drag starting sideways would press: it only scrolls.
     fn on_options_button(&mut self, p: [f32; 2]) -> bool {
@@ -1260,8 +1330,8 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        let cursor = (p[0] / batch.scale, p[1] / batch.scale);
+        let batch = self.interface_batch(size);
+        let cursor = self.interface_point(p, batch.scale);
         self.ui
             .options
             .list_button_at(&self.settings, (batch.width, batch.height), cursor)
@@ -1277,8 +1347,8 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        let cursor = (p[0] / batch.scale, p[1] / batch.scale);
+        let batch = self.interface_batch(size);
+        let cursor = self.interface_point(p, batch.scale);
         self.ui
             .options
             .list_slider_at(&self.settings, (batch.width, batch.height), cursor)
@@ -1453,6 +1523,10 @@ impl Game<'_> {
     /// The controls over the HUD while playing (or the layout editor), the close button over
     /// screens.
     pub(super) fn draw_touch(&self, batch: &mut HudBatch) {
+        // Calibrate... shows nothing over the test world but its line above the hotbar.
+        if self.perf_calibrating() {
+            return;
+        }
         #[cfg(target_os = "android")]
         if self.mobile_controls_enabled() {
             self.mobile_draw(batch);
@@ -1693,8 +1767,7 @@ impl Game<'_> {
     fn chat_bar(&self, batch: &HudBatch) -> [[f32; 4]; 6] {
         let (w, h, gap) = (24.0, 16.0, 2.0);
         let y = batch.height - 14.0 - h - 2.0;
-        let right = batch.width - self.safe_gui_insets(batch.scale)[2];
-        let left = right - 2.0 - 6.0 * w - 5.0 * gap;
+        let left = batch.width - 2.0 - 6.0 * w - 5.0 * gap;
         std::array::from_fn(|i| [left + i as f32 * (w + gap), y, w, h])
     }
     /// The chat bar's button under window pixel `p`.
@@ -1702,15 +1775,10 @@ impl Game<'_> {
         if !self.chat_bar_shown() {
             return None;
         }
-        let batch = HudBatch::new(
-            self.touch_size(),
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let batch = self.interface_batch(self.touch_size());
         let lift = self.keyboard_height() as f32 / batch.scale;
-        let (x, y) = (p[0] / batch.scale, p[1] / batch.scale + lift);
+        let (x, y) = self.interface_point(p, batch.scale);
+        let y = y + lift;
         self.chat_bar(&batch)
             .iter()
             .position(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
@@ -1762,48 +1830,6 @@ impl Game<'_> {
             return crate::android::ime_height();
         }
         0
-    }
-
-    /// How far the camera cutout reaches into the window from each edge (left, top, right,
-    /// bottom), in pixels, while the touch settings keep clear of it (Android, #166).
-    fn safe_insets(&self) -> [u32; 4] {
-        #[cfg(target_os = "android")]
-        if self.mobile.controls.settings.avoid_cutout {
-            return crate::android::safe_insets();
-        }
-        [0; 4]
-    }
-
-    /// [`Self::safe_insets`] in whole GUI pixels at `scale`.
-    pub(in crate::game) fn safe_gui_insets(&self, scale: f32) -> [f32; 4] {
-        if scale <= 0.0 {
-            return [0.0; 4];
-        }
-        self.safe_insets()
-            .map(|pixels| (pixels as f32 / scale).ceil())
-    }
-
-    /// `draw` laid out on the part of `batch` between the camera cutout's strips at the left
-    /// and right ([`Self::safe_gui_insets`]) as if that were the whole width, then moved in
-    /// from the left with the controller targets it made: what keeps to an edge keeps to the
-    /// strip's. `draw` is told how far it moves, to take a pointer into its layout. Without a
-    /// strip it draws as it always did.
-    pub(in crate::game) fn draw_clear_of_cutout(
-        &self,
-        batch: &mut HudBatch,
-        draw: impl FnOnce(&mut HudBatch, f32),
-    ) {
-        let [left, _, right, _] = self.safe_gui_insets(batch.scale);
-        let (start, targets, width) = (
-            batch.vertices.len(),
-            horizon_client::widgets::targets_mark(),
-            batch.width,
-        );
-        batch.width = (width - left - right).max(0.0);
-        draw(batch, left);
-        batch.width = width;
-        batch.translate_since(start, left, 0.0);
-        horizon_client::widgets::shift_targets(targets, left);
     }
 
     /// How far, in GUI pixels at `scale`, [`Self::lift_over_keyboard`] moves the chat up: what a
@@ -2168,5 +2194,87 @@ impl Game<'_> {
             skin,
             shape: Shape::Round,
         }
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tap_tests {
+    use super::keyboard_wanted_after_tap as wanted;
+
+    #[test]
+    fn a_tap_beside_a_known_text_box_puts_the_keyboard_away_and_one_on_it_brings_it_back() {
+        assert!(!wanted(
+            "creative",
+            Some(false),
+            false,
+            Some("creative"),
+            true
+        ));
+        assert!(wanted(
+            "creative",
+            Some(true),
+            false,
+            Some("creative"),
+            false
+        ));
+    }
+
+    #[test]
+    fn an_item_tapped_after_typing_in_the_recipe_search_puts_the_keyboard_away() {
+        // The recipe book's search has no known place: with its keyboard up (`wanted`, for the
+        // same context) any tap goes away from it; with it away the next tap opens it again.
+        assert!(!wanted("recipe", None, false, Some("recipe"), true));
+        assert!(wanted("recipe", None, false, Some("recipe"), false));
+        assert!(wanted("recipe", None, false, None, false));
+    }
+
+    #[test]
+    fn the_chat_keeps_the_keyboard_for_a_tap_on_its_line_only() {
+        assert!(wanted("chat", Some(false), true, Some("chat"), true));
+        assert!(!wanted("chat", Some(false), false, Some("chat"), true));
+        assert!(wanted("chat", Some(false), false, Some("chat"), false));
+    }
+
+    /// The slot path of the phone's menus is the one a tap on an item takes (it does not reach
+    /// `android_menu_touch`): it must decide the keyboard too, or an item tapped after typing in
+    /// the recipe or creative search leaves the keyboard up.
+    #[test]
+    fn a_tap_on_a_slot_of_the_phones_menus_decides_the_keyboard() {
+        let source = include_str!("../mobile_controls/mod.rs");
+        let call = source
+            .find("self.slot_touch_event(events, id, t)")
+            .expect("mobile_touch hands the menus' slots to slot_touch_event");
+        let branch = &source[call..];
+        let branch = &branch[..branch.find("return;").expect("the branch returns")];
+        assert!(
+            branch.contains("self.keyboard_after_tap("),
+            "the slot branch of mobile_touch must call keyboard_after_tap before it returns"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tap_screen_tests {
+    use super::{Screen, ScreenMark, tap_opened_screen};
+
+    #[test]
+    fn a_tap_that_opens_create_world_is_not_a_tap_on_its_name_box() {
+        let select = ScreenMark::new(&Screen::Playing, Some(("select_world", false)));
+        let preparing = ScreenMark::new(&Screen::Playing, Some(("select_world", true)));
+        let create = ScreenMark::new(&Screen::Playing, Some(("create_world", false)));
+        // The title's button opens it at once (no saved worlds), or after the read it starts.
+        assert!(tap_opened_screen(Some(select), create));
+        assert!(tap_opened_screen(Some(select), preparing));
+        // A tap on the screen that stays is a tap there; so is one with no landing recorded.
+        assert!(!tap_opened_screen(Some(create), create));
+        assert!(!tap_opened_screen(None, create));
+    }
+
+    #[test]
+    fn a_tap_that_opens_a_game_screen_over_the_title_or_the_world_counts_too() {
+        let world = ScreenMark::new(&Screen::Playing, None);
+        let inventory = ScreenMark::new(&Screen::Inventory, None);
+        assert!(tap_opened_screen(Some(world), inventory));
+        assert!(!tap_opened_screen(Some(inventory), inventory));
     }
 }

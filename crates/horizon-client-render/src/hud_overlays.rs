@@ -38,11 +38,13 @@ pub fn text_with_backdrop(
     background: u32,
 ) {
     if background != 0 {
+        // GuiGraphicsExtractor.textWithBackdrop adds two pixels around the
+        // text's advance and the font's nine-pixel line height.
         out.push(fill(
             x - 2,
             y - 2,
             x + w + 2,
-            y + 9 + 2,
+            y + 11,
             multiply(background, color),
         ));
     }
@@ -100,8 +102,9 @@ pub struct EffectIcon {
     pub id: String,
     /// `MobEffect.isBeneficial`.
     pub beneficial: bool,
-    /// `MobEffect.getColor`.
-    pub color: i32,
+    /// `IMobEffectExtension.getSortOrder`: `MobEffect.getColor` unless a content mod declared
+    /// an order.
+    pub sort_order: i32,
     pub ambient: bool,
     /// Remaining ticks, -1 for infinite.
     pub duration: i32,
@@ -115,7 +118,7 @@ impl From<&crate::effects::EffectInstance> for EffectIcon {
             id: effect.id.to_owned(),
             beneficial: def
                 .is_some_and(|d| d.category == horizon_client_core::potions::Category::Beneficial),
-            color: def.map_or(0, |d| d.color as i32),
+            sort_order: def.map_or(0, |d| d.sort_order),
             ambient: effect.ambient,
             duration: effect.duration,
             show_icon: effect.show_icon,
@@ -123,16 +126,18 @@ impl From<&crate::effects::EffectInstance> for EffectIcon {
     }
 }
 
-/// `MobEffectInstance.compareTo`.
+/// `MobEffectInstance.compareTo`, with NeoForge's sort order in the colour's place.
 pub(crate) fn compare_effects(a: &EffectIcon, o: &EffectIcon) -> Ordering {
     if (a.duration <= 32147 || o.duration <= 32147) && !(a.ambient && o.ambient) {
         a.ambient
             .cmp(&o.ambient)
             .then((a.duration == -1).cmp(&(o.duration == -1)))
             .then(a.duration.cmp(&o.duration))
-            .then(a.color.cmp(&o.color))
+            .then(a.sort_order.cmp(&o.sort_order))
     } else {
-        a.ambient.cmp(&o.ambient).then(a.color.cmp(&o.color))
+        a.ambient
+            .cmp(&o.ambient)
+            .then(a.sort_order.cmp(&o.sort_order))
     }
 }
 
@@ -440,12 +445,29 @@ pub struct HeldName {
     /// The stack has `CUSTOM_NAME`.
     pub custom_name: bool,
 }
+impl HeldName {
+    /// The name as `Hud.extractSelectedItemName` draws it: the hover name in
+    /// its rarity colour, italic when the stack has a custom name.
+    pub fn styled(&self) -> Text {
+        let name = self.hover_name.clone().with_color(self.rarity_color);
+        if !self.custom_name {
+            return name;
+        }
+        name.with_style(&Style {
+            italic: Some(true),
+            ..Style::default()
+        })
+    }
+}
 
 /// `Hud.toolHighlightTimer` and `lastToolHighlight`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolHighlight {
     pub timer: i32,
     pub last: Option<HeldName>,
+    /// A part's `highlight_tip` for `last`, asked each tick the name shows:
+    /// drawn in place of `last`'s styled name. It never restarts the timer.
+    pub tip: Option<Text>,
 }
 impl ToolHighlight {
     /// The selected-item part of `Hud.tick`; `display_time` is the
@@ -486,13 +508,7 @@ impl ToolHighlight {
         if self.timer <= 0 {
             return out;
         }
-        let mut name = last.hover_name.clone().with_color(last.rarity_color);
-        if last.custom_name {
-            name = name.with_style(&Style {
-                italic: Some(true),
-                ..Style::default()
-            });
-        }
+        let name = self.tip.clone().unwrap_or_else(|| last.styled());
         let str_width = width(font, &name);
         let x = (w - str_width) / 2;
         let mut y = h - 59;
@@ -1493,6 +1509,7 @@ mod text_position_tests {
         let mut highlight = ToolHighlight {
             last: Some(held()),
             timer: 40,
+            tip: None,
         };
         let f = font();
         let draws = highlight.draw(320, 240, true, &f, 0);
@@ -1504,6 +1521,38 @@ mod text_position_tests {
         // No timer, no name.
         highlight.timer = 0;
         assert!(highlight.draw(320, 240, true, &f, 0).is_empty());
+    }
+
+    /// A part's `highlight_tip` is drawn as it is in place of the styled
+    /// name, centred on its own width; without one, a renamed item is italic.
+    #[test]
+    fn a_highlight_tip_is_drawn_in_place_of_the_name() {
+        let f = font();
+        let drawn = |highlight: &ToolHighlight| {
+            highlight
+                .draw(320, 240, true, &f, 0)
+                .into_iter()
+                .find_map(|d| match d {
+                    GuiDraw::Text { text, x, .. } => Some((text, x)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let tip = Text::literal("Charge: 5");
+        let mut highlight = ToolHighlight {
+            last: Some(held()),
+            timer: 40,
+            tip: Some(tip.clone()),
+        };
+        assert_eq!(
+            drawn(&highlight),
+            (tip.clone(), (320 - width(&f, &tip)) / 2)
+        );
+        highlight.tip = None;
+        let mut renamed = held();
+        renamed.custom_name = true;
+        highlight.last = Some(renamed.clone());
+        assert_eq!(drawn(&highlight).0, renamed.styled());
     }
 
     /// `Hud.extractOverlayMessage`: the action bar and its text translate to
@@ -1592,5 +1641,88 @@ mod boss_bar_room_tests {
                 .max();
             assert_eq!(bottom, Some(boss_bars_bottom(h, bars.len())), "height {h}");
         }
+    }
+}
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+
+    /// `GuiGraphicsExtractor.textWithBackdrop`: two pixels around the advance
+    /// and the nine-pixel font line, independently of glyph-background drawing.
+    #[test]
+    fn the_backdrop_frames_the_text_by_two_pixels() {
+        let mut out = Vec::new();
+        text_with_backdrop(
+            &mut out,
+            Text::literal("X"),
+            10,
+            20,
+            6,
+            u32::MAX,
+            0xFF00_0000,
+        );
+        let Some(GuiDraw::Fill { x0, y0, x1, y1, .. }) = out.first() else {
+            panic!("a backdrop is a fill first");
+        };
+        assert_eq!((*x0, *y0, *x1, *y1), (8, 18, 18, 31));
+    }
+}
+
+#[cfg(test)]
+mod effect_order_tests {
+    use super::*;
+
+    fn icon(sort_order: i32, ambient: bool, duration: i32) -> EffectIcon {
+        EffectIcon {
+            id: "speed".to_owned(),
+            beneficial: true,
+            sort_order,
+            ambient,
+            duration,
+            show_icon: true,
+        }
+    }
+
+    /// Short effects order by their time left first and the sort order last; two long ones, or two
+    /// ambient ones, order by the sort order alone.
+    #[test]
+    fn both_comparator_branches_use_the_sort_order() {
+        assert_eq!(
+            compare_effects(&icon(9, false, 100), &icon(1, false, 200)),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_effects(&icon(9, false, 100), &icon(1, false, 100)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_effects(&icon(9, false, 40_000), &icon(1, false, 50_000)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_effects(&icon(9, true, 100), &icon(1, true, 200)),
+            Ordering::Greater
+        );
+    }
+
+    /// The HUD lists the highest sort order nearest the corner, and the extremes of `i32` compare
+    /// without wrapping.
+    #[test]
+    fn the_hud_lists_the_highest_sort_order_first() {
+        let icons = [
+            icon(i32::MIN, false, -1),
+            icon(i32::MAX, false, -1),
+            icon(0, false, -1),
+        ];
+        let corners: Vec<(i32, i32)> = effects(200, false, &icons)
+            .iter()
+            .filter_map(|d| match d {
+                GuiDraw::Sprite { sprite, x, y, .. } if sprite == "hud/effect_background" => {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(corners, [(175, 1), (150, 1), (125, 1)]);
     }
 }

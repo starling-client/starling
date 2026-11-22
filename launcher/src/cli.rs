@@ -1,5 +1,8 @@
 //! `horizon-launcher <subcommand>`: the same steps as the window, from a terminal. Every
 //! command goes through `backend`; this file only parses arguments and prints.
+mod progress;
+use progress::{native_progress, progress};
+
 use clap::{Parser, Subcommand};
 use horizon_launcher::account::{self, Accounts};
 use horizon_launcher::backend::{self, Release};
@@ -28,7 +31,7 @@ fn parse_storage_row(value: &str) -> Result<ClearStorage, String> {
             .ok_or_else(|| tr("Unknown").into())
     }
 }
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[derive(Parser)]
@@ -703,7 +706,7 @@ enum Cmd {
     /// Download and install a release (a tag such as v2026.10.13, or "latest")
     Install { tag: String },
     /// Install a local unsigned developer build from a trusted checkout
-    #[command(about = tr("Install a local unsigned developer build from a trusted checkout"), after_help = tr("Example: horizon-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/horizon-client --trust-unsigned\nThis executes the checkout's build code and an unsigned game with your rights. Trust both before continuing."), long_about = tr("Install a local unsigned developer build. This runs the checkout's build code through cargo run -p xtask -- package. Commit tracked changes and rebuild first. Build horizon-ctl, horizon-prepare and horizon-server beside the game, and compile exporters into the checkout's exporters folder. Native builds use the saved local source commit, including unpublished commits. Select this base explicitly; automatic updates never replace it."))]
+    #[command(about = tr("Install a local unsigned developer build from a trusted checkout"), after_help = tr("Example: horizon-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/horizon-client --trust-unsigned\nThis executes the checkout's build code and an unsigned game with your rights. Trust both before continuing."), long_about = tr("Install a local unsigned developer build. This runs the checkout's build code through cargo run -p xtask -- package. Commit tracked changes and rebuild first. Build horizon-ctl, horizon-prepare and horizon-server beside the game, generate horizon-wasm-std.wasm beside it with cargo run --locked -p cargo-horizon-mod -- wasm-std PATH, and compile exporters into the checkout's exporters folder. Native builds use the saved local source commit, including unpublished commits. Select this base explicitly; automatic updates never replace it."))]
     DeveloperInstall(developer_builds::DeveloperInstall),
     /// Remove an installed version
     Remove { tag: String },
@@ -744,7 +747,7 @@ enum Cmd {
         /// Allow missing original Java asset/data jars to be downloaded from Modrinth
         #[arg(long)]
         allow_jar_downloads: bool,
-        #[arg(long)]
+        #[arg(long, help = "Installed version to play (default: instance version)")]
         version: Option<String>,
         /// The instance to play (its name or id; default: the selected one). A Java instance
         /// starts its Minecraft: Java Edition, downloaded with its Java the first time
@@ -846,17 +849,25 @@ enum Cmd {
         #[arg(long)]
         version: Option<String>,
         /// Move to the newest installed release or Nightly instead of the Horizon the instance
-        /// plays (a full rebuild)
+        /// plays (rebuilds the mods for that pinned SDK)
         #[arg(long, conflicts_with = "version")]
         update: bool,
         /// Allow native code for this install (remembered; revoke in Settings, Storage)
         #[arg(long)]
         trust_native_code: bool,
-        /// This instance's build mode: optimized, balanced or developer. Remembers an explicit
-        /// choice for this instance; otherwise uses its saved choice, starting at Balanced.
-        /// Without a picker reason or explicit choice, installed mods use the prebuilt route.
+        /// Native mods use the pinned SDK's optimized compilation settings.
+        /// The game is never rebuilt by a mod build.
         #[arg(long, value_enum)]
         profile: Option<native_mods::Profile>,
+        /// Build the horizon-mixins tool from its pinned source instead of downloading the
+        /// prebuilt one: for CI, which keeps that path proven
+        #[arg(long, hide = true)]
+        mixins_from_source: bool,
+        /// When a mod this build can't use was saved into the instance's worlds, back those
+        /// worlds up (into the game folder's backups/) and build without it. Without this the
+        /// build stops and names the worlds, leaving the instance as it is
+        #[arg(long, conflicts_with = "server_output")]
+        back_up_worlds: bool,
     },
     /// Show a release's patch notes (default: the newest)
     Notes { tag: Option<String> },
@@ -1151,14 +1162,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
     Ok(())
 }
 
-/// Every launcher setting, as `settings` shows them.
 /// Runs a subcommand and returns the exit code, or None when the window should open.
-fn registry_consent(inventory: &native_mods::RegistryInventory) -> bool {
-    eprintln!("{}\n{}", inventory.label(), inventory.detail());
-    // The headless native route has already required explicit native-code permission.
-    true
-}
-
 pub fn run() -> Option<i32> {
     use clap::FromArgMatches;
     let no_ai = backend::no_ai();
@@ -1189,23 +1193,6 @@ pub fn run() -> Option<i32> {
             1
         }
     })
-}
-
-/// Download progress on one terminal line, only when stderr is a terminal and the percentage moves.
-fn progress(label: String) -> impl Fn(f32) {
-    let last = std::cell::Cell::new(-1);
-    let tty = std::io::stderr().is_terminal();
-    move |p| {
-        let pct = (p * 100.) as i32;
-        if !tty || pct == last.replace(pct) {
-            return;
-        }
-        eprint!("\r{label} {pct:>3}%");
-        let _ = std::io::stderr().flush();
-        if p >= 1.0 {
-            eprintln!();
-        }
-    }
 }
 
 fn json(value: serde_json::Value) {
@@ -1342,8 +1329,11 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             update,
             trust_native_code,
             profile,
+            mixins_from_source,
+            back_up_worlds,
         } => {
             native_permission(trust_native_code)?;
+            native_mods::mixins_from_source(mixins_from_source);
             if catalog {
                 let discovered =
                     native_mods::pinned_catalog_with_modules(&folder.expect("required by clap"))?;
@@ -1360,7 +1350,12 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 );
                 return Ok(0);
             }
-            let steps = |step: native_mods::Step| eprintln!("{}", step.label());
+            let progress = native_progress(std::io::stderr().is_terminal());
+            let steps = |step| {
+                if let Some(label) = progress(step) {
+                    eprintln!("{label}");
+                }
+            };
             if let Some(output) = server_output {
                 // Export mode: a standalone server engine in `output`. No instance is read
                 // or changed, and no launcher config is written; `folder` is required (clap).
@@ -1376,7 +1371,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     &base,
                     &folder,
                     &output,
-                    profile.unwrap_or_default(),
+                    profile,
                     allow_jar_downloads,
                     steps,
                     registry_consent,
@@ -1421,7 +1416,17 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             };
             let profile = explicit.then_some(target.native_profile);
             let built =
-                native_mods::build(&base, &folder, &target, profile, steps, registry_consent).map_err(|error| {
+                native_mods::build(&base, &folder, &target, profile, back_up_worlds, steps, registry_consent).map_err(|error| {
+                    if let native_mods::Failed::Worlds(stake) = &error {
+                        return trf(
+                            "{error}\n{stay}: nothing changed. Or run again with --back-up-worlds to back them up into {backups} and build without the mods named.",
+                            &[
+                                ("error", &stake.text),
+                                ("stay", &native_mods::fit::stay(&stake.stay)),
+                                ("backups", &stake.backups.display().to_string()),
+                            ],
+                        );
+                    }
                     let error = String::from(error);
                     if error.starts_with(native_mods::MISMATCH) {
                         trf("{error} Run `cargo horizon-mod update --horizon {commit}` in each mod's folder to pin it to this game, then build again.", &[("error", &error), ("commit", &base)])
@@ -3969,6 +3974,15 @@ mod tests {
             })
         ));
         assert!(parse(&["mods", "--allow-jar-downloads"]).is_err());
+        // Backing up worlds is for an instance's build; a server export switches nothing off.
+        assert!(matches!(
+            parse(&["--back-up-worlds"]).unwrap().command,
+            Some(Cmd::NativeBuild {
+                back_up_worlds: true,
+                ..
+            })
+        ));
+        assert!(parse(&["mods", "--server-output", "engine-out", "--back-up-worlds"]).is_err());
         // The mod folder is explicit in export mode: no default from an instance.
         assert!(parse(&["--server-output", "engine-out"]).is_err());
         // Export mode never touches an instance.
@@ -4050,7 +4064,7 @@ mod catalog_tests;
 
 #[path = "cli_native_permission.rs"]
 mod native_permission_impl;
-use native_permission_impl::{github_native, native_permission};
+use native_permission_impl::{github_native, native_permission, registry_consent};
 
 mod developer_builds;
 

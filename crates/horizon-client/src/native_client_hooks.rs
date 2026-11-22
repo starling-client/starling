@@ -1,13 +1,14 @@
 //! Callbacks into the executable for native trait mods' client-library hooks.
-use crate::items::ItemStack;
 use horizon_core::position::BlockPos;
 use horizon_world::native_load_context::LoopContext;
 use horizon_world::registry::BlockStateId;
+use mod_api::{BlockSoundCause, BlockSoundType};
 use std::sync::OnceLock;
 
 /// Client-library hooks, installed before any menu, entity or recipe is used.
 pub struct NativeClientHooks {
-    pub menu_slot_rules: fn(&LoopContext, &str, usize, &ItemStack, &mut bool, &mut u32),
+    pub menu_still_valid: fn(&LoopContext, u128, &str, [i32; 3], [f64; 3], &mut bool),
+    pub menu_still_valid_listens: fn(&str) -> bool,
     pub item_stacked_on_other: fn(&LoopContext, &mut crate::menu::StackedOnOther<'_>, &mut bool),
     pub living_heal: fn(&LoopContext, u32, &mut f32, &mut bool),
     pub living_breathe: fn(&LoopContext, u32, &str, &mut bool, &mut i32, &mut i32),
@@ -15,7 +16,7 @@ pub struct NativeClientHooks {
     pub has_mods: fn() -> bool,
     pub player_name_format: fn(&LoopContext, &crate::text::Text, &mut crate::text::Text),
     pub player_tab_list_name_format: fn(&LoopContext, u128, &str, &mut Option<crate::text::Text>),
-    pub living_drown: fn(&LoopContext, u32, &str, &mut bool, &mut f32, i32, &mut bool),
+    pub living_drown: fn(&LoopContext, u32, &str, &mut bool, &mut f32, &mut i32, &mut bool),
     pub living_fall: fn(&LoopContext, u32, &str, &mut f64, &mut f32, &mut bool),
     pub living_jump: fn(&LoopContext, u32, &str),
     pub living_jump_power: fn(&LoopContext, u32, &str, &mut f32),
@@ -24,9 +25,22 @@ pub struct NativeClientHooks {
     pub block_jump_factor: fn(&LoopContext, BlockStateId, &mut f32),
     pub block_speed_factor: fn(&LoopContext, BlockStateId, &mut f32),
     pub is_ladder: fn(&LoopContext, u32, BlockPos, BlockStateId, &mut bool),
+    pub makes_open_trapdoor_above_climbable:
+        fn(&LoopContext, BlockStateId, BlockPos, BlockStateId, &mut bool),
+    pub friction: fn(&LoopContext, u32, &str, BlockPos, BlockStateId, &mut f32),
     pub player_stays_on_ground_surface: fn(&LoopContext, u32, &mut bool),
     pub ender_entity_teleport: fn(&LoopContext, u32, &str, [f64; 3], &mut [f64; 3], &mut bool),
     pub fluid_flow: fn(&LoopContext, &str, BlockPos, &mut [f64; 3]),
+    pub sound_type: fn(
+        &LoopContext,
+        BlockPos,
+        BlockStateId,
+        Option<(u32, &str)>,
+        BlockSoundCause,
+        &mut BlockSoundType,
+    ),
+    pub can_grindstone_repair: fn(&LoopContext, &crate::items::ItemStack, &mut bool),
+    pub can_fit_inside_container_items: fn(&LoopContext, &crate::items::ItemStack, &mut bool),
 }
 
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
@@ -36,17 +50,26 @@ pub fn install(hooks: NativeClientHooks) -> bool {
     HOOKS.set(hooks).is_ok()
 }
 
-pub(crate) fn menu_slot_rules(
+/// Ask the installed adapter for a mod menu type's `stillValid` answer; with
+/// none installed, `valid` keeps the game's answer.
+pub(crate) fn menu_still_valid(
     context: &LoopContext,
+    player: u128,
     menu: &str,
-    slot: usize,
-    stack: &ItemStack,
-    may_place: &mut bool,
-    max_stack: &mut u32,
+    pos: [i32; 3],
+    eye: [f64; 3],
+    valid: &mut bool,
 ) {
     if let Some(hooks) = HOOKS.get() {
-        (hooks.menu_slot_rules)(context, menu, slot, stack, may_place, max_stack);
+        (hooks.menu_still_valid)(context, player, menu, pos, eye, valid);
     }
+}
+
+/// Whether a part on the menu type `menu` answers `menu_still_valid`.
+pub(crate) fn menu_still_valid_listens(menu: &str) -> bool {
+    HOOKS
+        .get()
+        .is_some_and(|hooks| (hooks.menu_still_valid_listens)(menu))
 }
 
 pub(crate) fn item_stacked_on_other(
@@ -122,7 +145,7 @@ pub(crate) fn living_drown(
     kind: &str,
     is_drowning: &mut bool,
     damage_amount: &mut f32,
-    bubble_count: i32,
+    bubble_count: &mut i32,
     cancel: &mut bool,
 ) {
     if let Some(hooks) = HOOKS.get() {
@@ -199,6 +222,31 @@ pub(crate) fn is_ladder(
     }
 }
 
+pub(crate) fn makes_open_trapdoor_above_climbable(
+    context: &LoopContext,
+    state: BlockStateId,
+    pos: BlockPos,
+    trapdoor: BlockStateId,
+    climbable: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.makes_open_trapdoor_above_climbable)(context, state, pos, trapdoor, climbable);
+    }
+}
+
+pub(crate) fn friction(
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
+    pos: BlockPos,
+    state: BlockStateId,
+    friction: &mut f32,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.friction)(context, entity, kind, pos, state, friction);
+    }
+}
+
 pub(crate) fn player_stays_on_ground_surface(
     context: &LoopContext,
     entity: u32,
@@ -225,5 +273,38 @@ pub(crate) fn ender_entity_teleport(
 pub(crate) fn fluid_flow(context: &LoopContext, fluid: &str, pos: BlockPos, flow: &mut [f64; 3]) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.fluid_flow)(context, fluid, pos, flow);
+    }
+}
+
+pub(crate) fn sound_type(
+    context: &LoopContext,
+    pos: BlockPos,
+    state: BlockStateId,
+    entity: Option<(u32, &str)>,
+    cause: BlockSoundCause,
+    sound: &mut BlockSoundType,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.sound_type)(context, pos, state, entity, cause, sound);
+    }
+}
+
+pub(crate) fn can_grindstone_repair(
+    context: &LoopContext,
+    stack: &crate::items::ItemStack,
+    can_repair: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.can_grindstone_repair)(context, stack, can_repair);
+    }
+}
+
+pub(crate) fn can_fit_inside_container_items(
+    context: &LoopContext,
+    stack: &crate::items::ItemStack,
+    fits: &mut bool,
+) {
+    if let Some(hooks) = HOOKS.get() {
+        (hooks.can_fit_inside_container_items)(context, stack, fits);
     }
 }

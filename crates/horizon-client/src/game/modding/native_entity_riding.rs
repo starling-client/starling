@@ -64,6 +64,15 @@ impl Game<'_> {
             Target::Player => self.riding,
             Target::Guest(conn) => self.command_guest(conn)?.vehicle,
             Target::Mob(id) => self.mob_object(id).filter(|m| !m.removed)?.extra.mount,
+            // A general row rides the row its tree loaded with; a row queued
+            // for removal rides nothing, as a removed mob does not.
+            Target::General(id) => self
+                .resident_entities
+                .general
+                .rows
+                .iter()
+                .find(|row| row.id == id && !self.persist.removals.contains(&Target::General(id)))
+                .and_then(|row| row.mount),
             _ => None,
         }
     }
@@ -427,7 +436,20 @@ impl Game<'_> {
         if previous_vehicle.is_some() {
             match rider {
                 Target::Player => self.stop_riding(),
-                Target::Mob(id) => self.dismount_mob(id),
+                Target::Mob(id) => {
+                    if previous_vehicle.is_some_and(|v| {
+                        self.persist.mount_notifications.contains(&(id, v, false))
+                            && self.persist.removals.iter().any(|target| {
+                                matches!(*target, Target::Boat(n) | Target::Cart(n) if n == v)
+                            })
+                    }) {
+                        // This explicit callback mutation completes the in-flight edge,
+                        // rather than recursively notifying it a second time.
+                        self.dismount_mob_reentrant(id);
+                    } else {
+                        self.dismount_mob(id);
+                    }
+                }
                 _ => return false,
             }
             if self.native_vehicle_id(rider).is_some() {
@@ -608,17 +630,39 @@ impl Game<'_> {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
         };
-        if self.native_vehicle_id(t).is_none() {
+        let Some(vehicle) = self.native_vehicle_id(t) else {
             return false;
-        }
+        };
         match t {
             Target::Mob(id) => self.dismount_mob(id),
             Target::Player | Target::Guest(_) => {
                 self.for_player(t, |g| g.stop_riding());
             }
+            // A general row gets off by its mount link: the row keeps its
+            // identity and place, and the level's next walk sees it as a
+            // root (`Entity.stopRiding` clears the mount and nothing else).
+            // The mount rewrite also retires the rows' rider index, which
+            // the list's own write stamp does not see.
+            Target::General(id) => {
+                let Some(row) = self
+                    .resident_entities
+                    .general
+                    .rows
+                    .iter_mut()
+                    .find(|row| row.id == id)
+                else {
+                    return false;
+                };
+                row.mount = None;
+                self.resident_entities.general.mount_writes += 1;
+            }
             _ => return false,
         }
-        self.native_vehicle_id(t).is_none()
+        let stopped = self.native_vehicle_id(t).is_none();
+        if stopped {
+            self.release_removed_vehicle(vehicle);
+        }
+        stopped
     }
     /// Gets every passenger off the entity (`Entity.ejectPassengers`), last
     /// first as vanilla walks the list, so `mob_ride` hears them in its
@@ -706,7 +750,7 @@ mod tests {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 for (index, vehicle_kind) in [
@@ -816,7 +860,7 @@ mod tests {
             Box::new(MountObserver(events.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 for id in [40, 41, 42] {
@@ -841,7 +885,7 @@ mod tests {
             Box::new(MountObserver(events.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.ui.registries.permission = 4;
@@ -1633,7 +1677,7 @@ mod tests {
             Box::new(UnleashObserver(unleashed.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 lay_floor(game);

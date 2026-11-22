@@ -2,7 +2,8 @@
 """Select CI checks from one fail-closed Git diff.
 
 The default answers Rust selection; --launcher uses the launcher's dependency paths.
---all emits the shared Rust, launcher, sample and tooling decisions for dyna-checks.
+--all emits the shared Rust, launcher and tooling decisions for dyna-checks (the machine sample is a daily leg,
+machine-sample.yml, so dyna-checks selects nothing for it).
 """
 
 import argparse
@@ -21,8 +22,17 @@ LAUNCHER_CHECK = {".github/workflows/ci.yml", ".github/workflows/dyna-ci.yml",
                   "tools/ci/rust_changes.py", "tools/release_train.py"}
 
 
+# The Python under tools/ and tests/: verify's Python steps and the parity jobs run it, and no Rust build or test reads
+# it (Rust does read tools/native-hook-fragments/*.json and tools/ci/*.sh, so those still count). This script and the
+# module it imports decide whether Rust runs at all, so a change to them runs it.
+RUST_DECIDES = {"tools/ci/rust_changes.py", "tools/release_train.py"}
+
+
 def needs_rust(paths):
-    return any(not (path.startswith("docs/") or path.endswith(".md")) for path in paths)
+    return any(not (
+        path.startswith("docs/") or path.endswith(".md")
+        or path.startswith(("tools/", "tests/")) and path.endswith(".py") and path not in RUST_DECIDES
+    ) for path in paths)
 
 
 def needs_launcher(paths):
@@ -57,10 +67,9 @@ def needs_tooling(changes):
 
 def selections(changes):
     paths = [path for _, path in changes]
-    sample = needs_sample(paths)
-    return {"rust_required": needs_rust(paths) or sample,
+    return {"rust_required": needs_rust(paths),
             "launcher_required": needs_launcher(paths),
-            "tooling_required": needs_tooling(changes), "sample_required": sample}
+            "tooling_required": needs_tooling(changes)}
 
 
 def changed_entries(base, head):

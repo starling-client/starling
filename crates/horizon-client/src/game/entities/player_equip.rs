@@ -47,7 +47,16 @@ impl Game<'_> {
         new: Option<&ItemStack>,
     ) {
         if !same(old, new) {
-            self.player_equipped(slot, new);
+            if self.transactions.is_empty() {
+                self.player_equipped(slot, new);
+                return;
+            }
+            let uuid = self.native_acting_id();
+            self.after_commit(super::transactions::After::PlayerEquip(
+                uuid,
+                slot.to_owned(),
+                new.cloned(),
+            ));
         }
     }
 
@@ -65,12 +74,13 @@ impl Game<'_> {
             return;
         };
         let at = [at.x, at.y, at.z];
-        let equippable = new
-            .and_then(|s| self.items().get(&s.item))
-            .and_then(|info| {
-                let own = info.equip_slot.as_deref()?;
-                Some((own == slot, info.equip_sound.clone()))
-            });
+        let equippable = new.and_then(|stack| {
+            let equippable = horizon_client::item_sync::equippable(stack, self.items())?;
+            Some((
+                equippable.slot == slot,
+                horizon_client::item_sync::equip_sound(stack, self.items()),
+            ))
+        });
         if let Some((true, sound)) = &equippable {
             let sound = sound
                 .as_deref()
@@ -91,5 +101,54 @@ impl Game<'_> {
             let ctx = self.player_context(None);
             self.post_game_event(event, at, ctx);
         }
+    }
+}
+
+impl Game<'_> {
+    /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
+    pub(super) fn apply_equipment(&mut self) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        for (attribute, id) in std::mem::take(&mut self.applied_modifiers) {
+            let _ = player.set_modifier_unclamped(&attribute, &id, 0.0, "add_value", false);
+        }
+        let slots = ["head", "chest", "legs", "feet"];
+        let mut equipped: Vec<(Option<&ItemStack>, &str)> = self
+            .armor
+            .iter()
+            .zip(slots)
+            .map(|(s, n)| (s.as_ref(), n))
+            .collect();
+        equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
+        equipped.push((self.offhand.as_ref(), "offhand"));
+        for (stack, slot) in equipped {
+            let Some(stack) = stack else {
+                continue;
+            };
+            for horizon_items::item_data::ModifierRow {
+                attribute,
+                id,
+                amount,
+                operation: op,
+                slot: group,
+            } in horizon_client::item_attributes::attribute_modifiers(stack, world_items!(self))
+                .iter()
+            {
+                // The attack code still reads the held item's attack damage and
+                // speed directly; the map copy is what `/attribute` reports.
+                if !horizon_client::living_attributes::modifier_applies(group, slot) {
+                    continue;
+                }
+                if player
+                    .set_modifier_unclamped(attribute, id, *amount, op, true)
+                    .is_ok()
+                {
+                    self.applied_modifiers.push((attribute.clone(), id.clone()));
+                }
+            }
+        }
+        let _ = player.clamp_health_to_max();
+        self.apply_enchantment_attributes();
     }
 }

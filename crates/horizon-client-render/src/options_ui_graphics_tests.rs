@@ -39,12 +39,13 @@ fn opening_the_graphics_screen_keeps_the_offer_and_report() {
         ..Default::default()
     };
     let batch = || HudBatch::scratch([427, 240]);
-    ui.draw(
+    ui.draw_test_frame(
         &s,
         auto_window(Some(true)),
         &mut batch(),
         &atlas,
         (-1.0, -1.0),
+        &mut |_, _| {},
     );
     ui.show(Page::Graphics);
     assert!(calibrates(&mut ui, &mut s, &atlas));
@@ -68,20 +69,22 @@ fn a_changed_report_shows_without_an_apply() {
     };
     let batch = || HudBatch::scratch([427, 240]);
     ui.show(Page::Graphics);
-    ui.draw(
+    ui.draw_test_frame(
         &s,
         auto_window(Some(false)),
         &mut batch(),
         &atlas,
         (-1.0, -1.0),
+        &mut |_, _| {},
     );
     assert!(!calibrates(&mut ui, &mut s, &atlas));
-    ui.draw(
+    ui.draw_test_frame(
         &s,
         auto_window(Some(true)),
         &mut batch(),
         &atlas,
         (-1.0, -1.0),
+        &mut |_, _| {},
     );
     assert!(calibrates(&mut ui, &mut s, &atlas));
 }
@@ -162,7 +165,7 @@ fn a_held_hdr_start_shows_as_the_graphics_screen_opens() {
             ..Default::default()
         };
         let output = snapshot(&s.horizon, Default::default(), caps, reading);
-        ui.draw(
+        ui.draw_test_frame(
             &s,
             output,
             &mut HudBatch::new(
@@ -174,9 +177,66 @@ fn a_held_hdr_start_shows_as_the_graphics_screen_opens() {
             ),
             &atlas,
             (-1.0, -1.0),
+            &mut |_, _| {},
         );
         ui.show(Page::Graphics);
         assert!(calibrates(&mut ui, &mut s, &atlas) != held, "held {held}");
         assert_eq!(ui.graphics.screen.output.held, held);
     }
+}
+
+/// The slider position `Opt::ChatDelay`'s kind() gives the stored seconds.
+fn delay_pos(seconds: f64) -> f32 {
+    match values::kind(seconds) {
+        Kind::Slider(p) => p,
+        _ => panic!("the chat delay is a slider"),
+    }
+}
+/// `Options.chatDelay`: `IntRange(0, 60)` xmap(v / 10) — a slider in tenths of
+/// a second from 0 to 6, not a button with no value behind it.
+#[test]
+fn the_chat_delay_slider_steps_in_tenths() {
+    assert_eq!(delay_pos(0.0), 0.0);
+    assert!((delay_pos(3.0) - 0.5).abs() < 1e-6);
+    assert_eq!(delay_pos(6.0), 1.0);
+    // A value past the option's range clamps to its last step.
+    assert_eq!(delay_pos(6.5), 1.0);
+    assert_eq!(Opt::ChatDelay.slider_steps(), Some(60));
+    let mut s = Settings::default();
+    set_slider(Opt::ChatDelay, &mut s, 0.0);
+    assert_eq!(s.file.double("chatDelay"), 0.0);
+    set_slider(Opt::ChatDelay, &mut s, 0.5);
+    assert!((s.file.double("chatDelay") - 3.0).abs() < 1e-9);
+    set_slider(Opt::ChatDelay, &mut s, 1.0);
+    assert!((s.file.double("chatDelay") - 6.0).abs() < 1e-9);
+}
+
+/// `Options.chatDelay`'s message: None at zero, else the delay to one decimal.
+#[test]
+fn the_chat_delay_slider_says_its_delay() {
+    let mut s = Settings::default();
+    assert_eq!(chat_delay_label(&s).plain(), "options.chat.delay_none");
+    s.file.set("chatDelay", crate::options_file::V::Double(2.0));
+    assert_eq!(chat_delay_label(&s).plain(), "Chat Delay: 2.0 second(s)");
+    s.file.set("chatDelay", crate::options_file::V::Double(6.0));
+    assert_eq!(chat_delay_label(&s).plain(), "Chat Delay: 6.0 second(s)");
+    s.file.set("chatDelay", crate::options_file::V::Double(0.0));
+    assert_eq!(chat_delay_label(&s).plain(), "options.chat.delay_none");
+}
+
+#[test]
+fn the_graphics_preset_slider_uses_floor_stops() {
+    assert_eq!(preset_from_slider(0.0), 0);
+    assert_eq!(preset_from_slider(0.24), 0);
+    assert_eq!(preset_from_slider(0.25), 1);
+    assert_eq!(preset_from_slider(0.49), 1);
+    assert_eq!(preset_from_slider(0.5), 2);
+    assert_eq!(preset_from_slider(0.74), 2);
+    assert_eq!(preset_from_slider(0.75), 3);
+    assert_eq!(preset_from_slider(1.0), 3);
+    let mut s = Settings::default();
+    set_slider(Opt::Preset, &mut s, 0.2);
+    assert_eq!(s.graphics_preset, "fast");
+    set_slider(Opt::Preset, &mut s, 0.8);
+    assert_eq!(s.graphics_preset, "custom");
 }

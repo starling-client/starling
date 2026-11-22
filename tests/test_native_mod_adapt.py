@@ -381,6 +381,42 @@ bindings = [
         self.assertNotIn("native_gui_layer_post_old", adapt.rebind(INJECTION, tree(), {}))
 
 
+class Fold(unittest.TestCase):
+    def test_a_parameter_folded_into_a_tuple_is_bound_and_taken_as_the_tuple(self):
+        import tempfile
+
+        manifest = """[[injection]]
+id = "shader"
+kind = "HEAD"
+target = "horizon_client_render::gfx::native_material::module"
+helper = "shader.rs"
+bindings = [
+  { name = "vertex", ty = "bool", value = "vertex" },
+  { name = "api", ty = "horizon_shader_api::Api", value = "api" },
+]
+"""
+        helper = (
+            "fn shader(\n    vertex: bool,\n    api: horizon_shader_api::Api,\n) {\n"
+            "    let text = shader_source(source, tags, materials, (vertex, displaced), api);\n}\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            mod_dir = Path(root)
+            (mod_dir / "shader.rs").write_text(helper)
+            said = adapt.fold(manifest, mod_dir)
+            self.assertIn(
+                '{ name = "api", ty = "(horizon_shader_api::Api, bool)", value = "line" }', said
+            )
+            self.assertIn('{ name = "vertex", ty = "bool", value = "vertex" }', said)
+            code = (mod_dir / "shader.rs").read_text()
+            self.assertIn("api: (horizon_shader_api::Api, bool),", code)
+            # The call hands the tuple on as it is.
+            self.assertIn("(vertex, displaced), api);", code)
+
+    def test_another_target_is_left_as_it_is(self):
+        other = INJECTION.replace("native_gui_layer_post", "native_other")
+        self.assertEqual(adapt.fold(other, Path(".")), other)
+
+
 class Includes(unittest.TestCase):
     def test_an_included_file_beside_it_is_written_in(self):
         import tempfile

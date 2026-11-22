@@ -34,6 +34,10 @@ const GAME_ID: &str = "MINECRAFT";
 const MAX_PACKET: usize = 1460;
 /// `CHALLENGE_CHECK_INTERVAL`: tokens are dropped this often (every one made before the check goes).
 const PRUNE_EVERY: Duration = Duration::from_secs(30);
+/// Addresses holding a token at once. Vanilla keeps one per handshake until the next prune, so
+/// spoofed handshakes could grow the map with the packet rate; a real client asks again after a
+/// refusal, by which time the prune has made room.
+const MAX_CHALLENGES: usize = 65_536;
 /// `RESPONSE_CACHE_TIME`: the full stat is kept this long.
 const RULES_CACHE: Duration = Duration::from_secs(5);
 /// How long what the game said about its players is believed.
@@ -110,6 +114,9 @@ impl Query {
                 let mut ident = [0; 4];
                 for (at, byte) in ident.iter_mut().zip(packet.iter().skip(3)) {
                     *at = *byte;
+                }
+                if self.challenges.len() >= MAX_CHALLENGES && !self.challenges.contains_key(&from) {
+                    return None;
                 }
                 let token = token();
                 self.challenges.insert(from, Challenge { ident, token });
@@ -441,6 +448,38 @@ mod tests {
     }
 
     #[test]
+    fn handshakes_past_the_cap_wait_for_the_next_prune() {
+        let now = Instant::now();
+        let mut query = Query::new(now);
+        let from = |i: usize| SocketAddr::from(([10, (i >> 16) as u8, (i >> 8) as u8, i as u8], 1));
+        for i in 0..MAX_CHALLENGES {
+            assert!(
+                query
+                    .answer(&handshake([0; 4]), from(i), now, || 1, || None)
+                    .is_some()
+            );
+        }
+        let new = from(MAX_CHALLENGES);
+        assert_eq!(
+            query.answer(&handshake([0; 4]), new, now, || 1, || None),
+            None
+        );
+        // An address already holding a token still gets a fresh one.
+        assert!(
+            query
+                .answer(&handshake([0; 4]), from(0), now, || 2, || None)
+                .is_some()
+        );
+        // After the prune there is room again.
+        let later = now + PRUNE_EVERY;
+        assert!(
+            query
+                .answer(&handshake([0; 4]), new, later, || 3, || None)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn a_session_id_with_bytes_outside_ascii_is_echoed_as_text() {
         let now = Instant::now();
         let mut query = Query::new(now);
@@ -684,6 +723,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_listener_on_a_real_socket_answers_the_handshake_and_both_stats() {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let server = socket.local_addr().unwrap();

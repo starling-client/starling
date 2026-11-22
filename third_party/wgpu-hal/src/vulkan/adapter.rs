@@ -4,7 +4,7 @@ use core::{ffi::CStr, marker::PhantomData};
 use ash::{ext, google, khr, vk};
 use parking_lot::Mutex;
 
-use crate::{vulkan::semaphore_list::SemaphoreList, AllocationSizes};
+use crate::{AllocationSizes, vulkan::semaphore_list::SemaphoreList};
 
 use super::semaphore_list::SemaphoreListMode;
 
@@ -617,8 +617,7 @@ impl PhysicalDeviceFeatures {
             } else {
                 None
             },
-            fragment_shading_rate: if enabled_extensions
-                .contains(&khr::fragment_shading_rate::NAME)
+            fragment_shading_rate: if enabled_extensions.contains(&khr::fragment_shading_rate::NAME)
                 && phd_features
                     .fragment_shading_rate
                     .is_some_and(|f| f.pipeline_fragment_shading_rate != 0)

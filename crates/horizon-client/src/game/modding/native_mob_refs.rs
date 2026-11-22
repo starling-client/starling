@@ -116,7 +116,11 @@ impl Game<'_> {
                 let Some(other) = self.mobs.iter().find(|m| m.id == id && !m.removed) else {
                     return false;
                 };
-                let seen = [super::creatures::seen(other, self.level.player_uuid)];
+                let seen = [super::creatures::seen(
+                    other,
+                    self.level.player_uuid,
+                    self.items(),
+                )];
                 mob.valid_target(
                     &self.mob_world_base(&seen),
                     &mobs::goals::TargetFacts::Mob {
@@ -789,7 +793,7 @@ mod tests {
             Box::new(Redirect(redirect.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 super::super::native_item_places::tests::open_to_lan(game);
                 let level = game.level(game.dim.id()).unwrap();

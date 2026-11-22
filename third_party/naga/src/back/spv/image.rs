@@ -1295,13 +1295,24 @@ impl BlockContext<'_> {
             _ => {}
         }
 
-        write.generate(
-            &mut self.writer.id_gen,
-            coordinates.value_id,
-            None,
-            None,
-            block,
-        );
+        // A store outside the image is dropped by GL and by Vulkan with `robustImageAccess`, and
+        // undefined without it: a shader pack's compute program runs whole work groups past the
+        // screen's edge and stores there unchecked (Derivative's `deferred8`), which a GPU without
+        // it can take as a fault. Stores have no policy of their own: loads are checked exactly
+        // when the device lacks that robustness (wgpu-hal's adapter), and then a store outside
+        // the image is skipped here.
+        match self.writer.bounds_check_policies.image_load {
+            crate::proc::BoundsCheckPolicy::Unchecked => write.generate(
+                &mut self.writer.id_gen,
+                coordinates.value_id,
+                None,
+                None,
+                block,
+            ),
+            crate::proc::BoundsCheckPolicy::Restrict
+            | crate::proc::BoundsCheckPolicy::ReadZeroSkipWrite => self
+                .write_conditional_image_access(image_id, coordinates, None, None, block, &write)?,
+        }
 
         Ok(())
     }

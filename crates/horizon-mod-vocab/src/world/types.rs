@@ -290,6 +290,9 @@ pub struct PlayerRespawnConfig {
 pub struct LevelRef {
     pub(crate) epoch: WorldEpoch,
     pub(crate) dimension: DimensionKey,
+    /// Which open of a runtime level this names: 0 for a level every world has, the number the
+    /// host gave one open of a level a mod created at run time.
+    pub(crate) generation: u32,
 }
 
 impl LevelRef {
@@ -297,7 +300,27 @@ impl LevelRef {
     // hidden: a game-side helper, not part of the mod surface
     #[doc(hidden)]
     pub fn new(epoch: WorldEpoch, dimension: DimensionKey) -> Self {
-        Self { epoch, dimension }
+        Self {
+            epoch,
+            dimension,
+            generation: 0,
+        }
+    }
+    /// Create a handle for one open of a runtime level.
+    // hidden: a game-side helper, not part of the mod surface
+    #[doc(hidden)]
+    pub fn with_generation(epoch: WorldEpoch, dimension: DimensionKey, generation: u32) -> Self {
+        Self {
+            epoch,
+            dimension,
+            generation,
+        }
+    }
+    /// The open of a runtime level the handle names; 0 for a level every world has.
+    // hidden: a game-side helper; a handle of an earlier open reads as stale
+    #[doc(hidden)]
+    pub fn generation(self) -> u32 {
+        self.generation
     }
     /// The level's dimension. `level.dimension().id(host)` gives its name.
     pub fn dimension(self) -> DimensionKey {
@@ -325,6 +348,36 @@ impl LevelRef {
     /// The open of the world the handle belongs to.
     pub fn epoch(self) -> WorldEpoch {
         self.epoch
+    }
+}
+
+/// A mod-owned watered area in one server level. Created by [`LevelRef::add_water_ticket`].
+/// Explicit removal, owner disable and level unload invalidate it. Never saved.
+#[derive(horizon_mod_api_macros::Wire)]
+#[wire(internal_field_layouts)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct WaterTicket {
+    pub(crate) level: LevelRef,
+    pub(crate) id: u64,
+}
+
+impl WaterTicket {
+    /// Construct a handle at the game boundary.
+    // hidden: a game-side constructor; mods receive tickets from `add_water_ticket`
+    #[doc(hidden)]
+    pub fn new(level: LevelRef, id: u64) -> Self {
+        Self { level, id }
+    }
+    /// The level this transient ticket belongs to.
+    pub fn level(self) -> LevelRef {
+        self.level
+    }
+    /// The session-only identity used by the game.
+    // hidden: a game-side helper; mods use the handle's methods
+    #[doc(hidden)]
+    pub fn id(self) -> u64 {
+        self.id
     }
 }
 
@@ -503,8 +556,108 @@ pub enum ExplosionInteraction {
     /// Blocks break and drop by the `block_explosion_drop_decay` rule (`BLOCK`).
     #[default]
     Block,
+    /// Blocks break and drop by the `mob_explosion_drop_decay` rule when the
+    /// source may grief (its `entity_mob_griefing` answer; with no source, the
+    /// `mob_griefing` rule), and stay when it may not (`MOB`).
+    Mob,
     /// Blocks break and drop by the `tnt_explosion_drop_decay` rule (`TNT`).
     Tnt,
+    /// No block breaks; buttons, levers, doors, trapdoors, fence gates, bells
+    /// and candles react as to a wind charge's burst (`TRIGGER`).
+    Trigger,
+}
+
+/// The resistance a blast meets in one cell (`ExplosionDamageCalculator.getBlockExplosionResistance`),
+/// as [`LevelRef::explosion_resistance`](crate::LevelRef::explosion_resistance) reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum ExplosionResistance {
+    /// No answer: the chunk isn't loaded, the level or the source is stale, or the cell holds a
+    /// state the game doesn't know.
+    Unavailable,
+    /// No resistance at all (air with no fluid, or a cell an immune-blocks calculator does not
+    /// name): a ray loses only its fixed step there. Not the same as a resistance of 0.
+    NoResistance,
+    /// This resistance: a ray's step through the cell takes `(r + 0.3) * 0.3` of its power.
+    Resists(f32),
+}
+
+/// The cells a batched explosion resistance read covers
+/// ([`LevelRef::explosion_resistances`](crate::LevelRef::explosion_resistances)), in the order
+/// the answers come.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum ResistanceCells {
+    /// Every cell from `min` to `max`, both included: x fastest, then z, then y
+    /// (index `((y - min.y) * dz + (z - min.z)) * dx + (x - min.x)`).
+    Box {
+        /// The low corner.
+        min: [i32; 3],
+        /// The high corner, included.
+        max: [i32; 3],
+    },
+    /// Each column `(x, z)` in the order given, from `min_y` up to `max_y`, both included.
+    Columns {
+        /// The columns, a repeated one read again.
+        columns: Vec<(i32, i32)>,
+        /// The lowest cell of each column.
+        min_y: i32,
+        /// The highest cell of each column, included.
+        max_y: i32,
+    },
+}
+
+impl ResistanceCells {
+    /// The most cells one batched read covers; a larger one is refused.
+    pub const MAX: u64 = 262_144;
+}
+
+/// Why a batched explosion resistance read was refused, with nothing read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum ResistanceCellsError {
+    /// A box whose `max` is below its `min` on some axis, or columns whose `max_y` is below `min_y`.
+    Inverted,
+    /// More cells than [`ResistanceCells::MAX`]: this many.
+    TooMany(u64),
+    /// A host without a game.
+    NoGame,
+}
+
+impl crate::NoBackend for ResistanceCellsError {
+    fn no_backend() -> Self {
+        Self::NoGame
+    }
+}
+
+/// Why [`LevelRef::explosion_destroy_blocks`](crate::LevelRef::explosion_destroy_blocks)
+/// destroyed nothing, with nothing changed and no hook told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum ExplosionDestroyError {
+    /// More positions than [`ExplosionDestroyError::MAX_POSITIONS`]: this many.
+    TooMany(u64),
+    /// A stale level, or one not in place; a stale source or one in another level; a client.
+    Unavailable,
+    /// A centre or radius that isn't finite, or a negative radius.
+    InvalidBlast,
+    /// A host without a game.
+    NoGame,
+}
+
+impl ExplosionDestroyError {
+    /// The most positions one call takes.
+    pub const MAX_POSITIONS: u64 = 65_536;
+}
+
+impl crate::NoBackend for ExplosionDestroyError {
+    fn no_backend() -> Self {
+        Self::NoGame
+    }
 }
 
 /// What made a `tags_updated` notice fire (`TagsUpdatedEvent`'s two subclasses).
@@ -861,7 +1014,7 @@ pub enum ClipBlock {
     Outline,
 }
 
-/// Fluid mode for a level ray. More modes are a follow-up.
+/// Fluid mode for a level ray. Only the listed modes are supported.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
 pub enum ClipFluid {
@@ -958,7 +1111,7 @@ impl TickId {
     }
 }
 
-/// The world phases (`native_world_lifecycle`'s `phase`).
+/// The world phases (`world_lifecycle`'s `phase`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// The phase names are the hook log's stable vocabulary (the Debug text
 /// the mixins write); keep them despite the shared prefix.
@@ -993,7 +1146,7 @@ pub enum ServerTickPhase {
 
 /// Context for every world lifecycle phase.
 /// `authority` is the server role. LocalAuthoritative and RemoteClient never
-/// fire today. `epoch` identifies the open attempt, including failed opens;
+/// fire. `epoch` identifies the open attempt, including failed opens;
 /// the same epoch identifies its ready, final-close, or failed-close event.
 /// `tick` counts non-paused server ticks since the world opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1052,6 +1205,26 @@ pub struct BlockSoundType {
     pub hit: std::sync::Arc<str>,
     /// `getFallSound`: landed on.
     pub fall: std::sync::Arc<str>,
+}
+
+/// Why a block's sound type is read (`BlockPart::sound_type`): which of its sounds the game is
+/// about to play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum BlockSoundCause {
+    /// An entity steps on it (`Entity.playStepSound`): the step sound at volume × 0.15.
+    Step,
+    /// A living entity lands on it hard enough to be hurt (`LivingEntity.playBlockFallSound`):
+    /// the fall sound at volume × 0.5, pitch × 0.75.
+    Fall,
+    /// It is placed (`BlockItem.place`): the place sound at `(volume + 1) / 2`, pitch × 0.8.
+    Place,
+    /// It is broken (level event 2001): the break sound at `(volume + 1) / 2`, pitch × 0.8.
+    Break,
+    /// A sniffer digs it (`Sniffer.emitDiggingParticles`): the hit sound at a fixed volume 0.5
+    /// and pitch 0.5, whatever the answer's volume and pitch.
+    Dig,
 }
 
 /// A vector of doubles, as vanilla's `Vec3`.
@@ -1326,7 +1499,7 @@ pub trait LevelWriteHost: LevelTicksHost + LevelRandomHost {
     ) -> bool {
         unimplemented!("LevelWriteHost::set_block_property")
     }
-    /// Play a sound for nearby players through `native_play_sound`.
+    /// Play a sound for nearby players through `play_sound`.
     fn play_sound(
         &mut self,
         _sound: &str,
@@ -1401,4 +1574,12 @@ impl StructureSearchResult {
             position,
         }
     }
+}
+
+/// Why a server-wide game rule read was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
+#[non_exhaustive]
+pub enum GameRuleReadError {
+    /// No rule has this identifier.
+    UnknownRule,
 }

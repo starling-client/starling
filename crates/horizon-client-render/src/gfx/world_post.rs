@@ -373,13 +373,13 @@ impl Post {
         &mut self,
         gain: bool,
         settings: [f32; 4],
-        shares: [f32; 4],
+        gains: [f32; 4],
         windows: [[f32; 4]; 2],
     ) {
         // These uniforms do not change baked colour without gain. Keep compatibility
         // history stable when only its final display settings change.
         let key = Some(if gain {
-            (true, settings, shares, windows)
+            (true, settings, gains, windows)
         } else {
             (false, [0.0; 4], [0.0; 4], [[0.0; 4]; 2])
         });
@@ -873,6 +873,7 @@ mod tests {
 
     #[test]
     fn culling_uses_the_next_taa_size_before_the_first_jitter_or_resize() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = test_device() else {
             return;
         };
@@ -897,6 +898,7 @@ mod tests {
 
     #[test]
     fn baked_light_changes_and_returning_from_a_pack_reject_taa_history() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = test_device() else {
             eprintln!("TAA baked-light GPU skipped: no test device");
             return;
@@ -945,7 +947,7 @@ mod tests {
         post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
         assert_eq!(post.taa_this_frame.jitter[2], 0.0);
         eprintln!(
-            "TAA baked-light GPU checked gain, all settings/shares/windows and the first frame after a pack"
+            "TAA baked-light GPU checked gain, all settings/gains/windows and the first frame after a pack"
         );
     }
 
@@ -957,6 +959,7 @@ mod tests {
 
     #[test]
     fn world_post_pipelines_compile_or_fall_back() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = test_device() else {
             return;
         };

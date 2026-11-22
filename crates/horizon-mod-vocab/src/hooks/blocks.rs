@@ -7,9 +7,9 @@ pub trait Hooks {
     /// push a `mod_api::Block` per block, the same declaration
     /// a content mod's `data/<id>/horizon/block/<path>.json` holds (a
     /// vanilla `template`, `properties`, `state_properties`, `shapes`...),
-    /// with its id in a namespace owned by your mod's manifest. `item: true` gives it a block
-    /// item, as a file does unless told not to (`..Default::default()`
-    /// leaves it false). They join the content mods' blocks: the one whose
+    /// with its id in a namespace owned by your mod's manifest. It has a block
+    /// item, as a file's does, unless `item` is false (`Block::with_item(false)`).
+    /// They join the content mods' blocks: the one whose
     /// id is that namespace when it is on (your models, textures, loot and
     /// recipes are its files), else one of their own, with the template's
     /// look. Ids, saves and the check that a joining client has the same
@@ -22,7 +22,7 @@ pub trait Hooks {
     #[notes = r#"## Villager farming
 
 Farmers recognize mod blocks made from farmland and `CropBlock` templates, including declarations from
-`native_blocks`. A crop block's generated item is its seed: add that item to
+`blocks`. A crop block's generated item is its seed: add that item to
 `minecraft:villager_plantable_seeds` to let farmers plant its default block state from their inventory.
 Untagged items and tagged items without a block are skipped. Crop maturity follows the template's class:
 beetroots mature at age 3, ordinary crops at 7; torchflower crops never reach their maximum age 2 while

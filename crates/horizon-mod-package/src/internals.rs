@@ -1,9 +1,4 @@
 //! The staged game's internals catalog, shared by the launcher and mod tools.
-#[cfg(feature = "prebuilt")]
-mod archive;
-#[cfg(feature = "prebuilt")]
-pub use archive::{CatalogError, cache_catalogs};
-
 use crate::manifest::Internal;
 use std::{fs, path::Path};
 
@@ -79,7 +74,17 @@ impl std::error::Error for Error {}
 /// Read a catalog without compiling or executing game code.
 pub fn read(path: &Path) -> Result<Vec<ListedInternal>, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The entries of an `internals.json` text, after its build-data header is checked.
+pub fn parse(text: &str) -> Result<Vec<ListedInternal>, String> {
+    #[derive(serde::Deserialize)]
+    struct Internals {
+        internals: Vec<ListedInternal>,
+    }
+    let (_, body) = crate::build_data::read::<Internals>(crate::build_data::INTERNALS, text)?;
+    Ok(body.internals)
 }
 
 /// Resolve an exposed, unconditional entry. Shape-only entries never grant access.

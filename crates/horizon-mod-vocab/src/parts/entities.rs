@@ -19,26 +19,31 @@ where
 pub type EntityProvider<T, C = ()> = dyn EntityCapabilityProvider<T, C>;
 
 /// Whether any mod attached an entity part, so `Mob` construction asks for
-/// goals and the mob tick builds a goal read view.
+/// goals, the mob tick builds a goal read view, and the general entity tick
+/// asks its dispatch.
 pub fn has_entity_parts() -> bool {
     !crate::mods().is_empty()
         && installed().is_some_and(|installed| !installed.keys.entities.is_empty())
 }
 
-/// The entity parts attached to entity type `id` (`minecraft:zombie`), in
-/// dispatch order, for the goal registration at every `Mob` construction
-/// (#1077).
+/// The entity parts attached to entity type `id` (`minecraft:zombie`,
+/// `mymod:robot`), in dispatch order, for the goal registration at every
+/// `Mob` construction.
 pub fn entity_parts() -> PartsRef {
     let Some(installed) = installed() else {
         return PartsRef::Shared(&NO_PARTS);
     };
-    if let Some(parts) = GAME_PARTS.with_borrow(Option::clone) {
+    let (game_parts, game_thread) =
+        GAME_PARTS.with_borrow(|lookup| (lookup.parts.clone(), lookup.game_thread));
+    if let Some(parts) = game_parts {
         return PartsRef::Game(parts);
     }
-    if !GAME_THREAD.get() {
+    if !game_thread {
         let thread = std::thread::current();
         let thread = thread.name().unwrap_or("unnamed");
-        if !OFF_THREAD_WARNED.swap(true, Ordering::Relaxed) {
+        if crate::dispatch_scope::backend()
+            .is_none_or(|backend| (backend.diagnostics.first_off_thread_warning)())
+        {
             log::warn!(
                 "Native entity parts asked off a game thread ({thread}): a mob built there keeps no mod goals"
             );
@@ -50,9 +55,18 @@ pub fn entity_parts() -> PartsRef {
 impl Parts {
     /// The entity parts attached to entity type `id` (`minecraft:zombie`), in
     /// dispatch order, for the goal registration at every `Mob` construction
-    /// (#1077).
+    ///.
     pub fn entity_parts(&self, id: &str) -> &[Attached<dyn EntityPart>] {
         self.entities.get(id).map_or(&[], Vec::as_slice)
+    }
+}
+
+impl HookParts {
+    pub(crate) fn entity<'k>(
+        &self,
+        id: impl FnOnce() -> Option<&'k str>,
+    ) -> &[Attached<dyn EntityPart>] {
+        attached(&self.entities, id)
     }
 }
 
@@ -80,7 +94,7 @@ pub fn entity_providers<T: ?Sized + 'static, C: Copy + 'static>(
         .keys
         .entity_capabilities
         .get(key.name)?
-        .get(&*entity.kind(host)?)?;
+        .get(entity.kind(host)?.id(host).as_str())?;
     Some(EntityProviders {
         parts,
         entity,
@@ -121,7 +135,7 @@ impl dyn Registrar + '_ {
     /// Attach `part` to the entity type `entity` (`minecraft:zombie`): its
     /// [`EntityPart::register_goals`] runs at every `Mob` construction of that
     /// type, spawning or loading, and its goals join the mob's selectors
-    /// beside vanilla's (#1077).
+    /// beside vanilla's.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn entity_part<P: EntityPart>(&mut self, entity: &str, part: P) {
         self.attach_entity_part(entity, type_name::<P>(), Arc::new(part));
@@ -160,160 +174,14 @@ impl dyn Registrar + '_ {
     }
 }
 
-/// Fixtures that tests of other crates use to install Parts.
-#[cfg(any(test, feature = "testing"))]
-pub mod tests {
-    use crate::parts::tests::*;
-    use crate::*;
-
-    #[test]
-    pub(crate) fn entity_parts_refuse_unnamespaced_ids_and_doubles() {
-        struct Once;
-        #[mod_api::horizon_part]
-        impl super::EntityPart for Once {
-            fn register_goals(&self, goals: &mut crate::GoalRegistrar<'_>) {
-                let _ = goals;
-            }
-        }
-        struct Twice;
-        #[mod_api::horizon_part]
-        impl super::EntityPart for Twice {
-            fn register_goals(&self, goals: &mut crate::GoalRegistrar<'_>) {
-                let _ = goals;
-            }
-        }
-        struct Invalid;
-        #[mod_api::__subscriptions]
-        impl crate::Hooks for Invalid {
-            fn register(&self, r: &mut dyn Registrar, _: &crate::RegistrationContext) {
-                r.entity_part("zombie", Twice);
-                r.entity_part("minecraft:zombie", Once);
-                r.entity_part("minecraft:zombie", Once);
-            }
-        }
-        let errors = install_parts(
-            &[ModEntry::new("test", Box::new(Invalid))],
-            &crate::parts::tests::rule_schema(),
-            |_| false,
-        )
-        .unwrap_err();
-        assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(
-            errors[0].contains("to \"zombie\", which is not a namespaced id"),
-            "{errors:?}"
-        );
-        assert!(
-            errors[1].contains("attached to minecraft:zombie twice"),
-            "{errors:?}"
-        );
-    }
-
-    pub(crate) struct EntityBattery(pub(crate) EntityRef);
-    impl EnergyHandler for EntityBattery {
-        fn amount(&self, host: &mut dyn ServerHost) -> u32 {
-            ROBOT_ENERGY
-                .get_existing(host, Holder::Entity(self.0.id()))
-                .unwrap()
-                .unwrap_or(0)
-        }
-        fn capacity(&self, _: &mut dyn ServerHost) -> u32 {
-            1000
-        }
-        fn insert(&self, host: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
-            let held = self.amount(host);
-            let moved = amount.min(1000 - held);
-            ROBOT_ENERGY
-                .set(host, Holder::Entity(self.0.id()), held + moved)
-                .unwrap();
-            moved
-        }
-        fn extract(&self, host: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
-            let held = self.amount(host);
-            let moved = amount.min(held);
-            ROBOT_ENERGY
-                .set(host, Holder::Entity(self.0.id()), held - moved)
-                .unwrap();
-            moved
-        }
-    }
-
-    pub(crate) struct EntityTank(pub(crate) EntityRef);
-    impl ResourceHandler<FluidResource> for EntityTank {
-        fn size(&self, _: &mut dyn ServerHost) -> usize {
-            1
-        }
-        fn resource(&self, host: &mut dyn ServerHost, _: usize) -> Option<FluidResource> {
-            (self.amount(host, 0) > 0).then(|| {
-                FluidResource::of(&FluidStack::new(
-                    crate::content::registry_keys::fluid_key("minecraft:water").unwrap(),
-                    1,
-                ))
-            })
-        }
-        fn amount(&self, host: &mut dyn ServerHost, _: usize) -> u32 {
-            ROBOT_FLUID
-                .get_existing(host, Holder::Entity(self.0.id()))
-                .unwrap()
-                .unwrap_or(0)
-        }
-        fn capacity(&self, _: &mut dyn ServerHost, index: usize, resource: &FluidResource) -> u32 {
-            if index == 0
-                && resource
-                    == &FluidResource::of(&FluidStack::new(
-                        crate::content::registry_keys::fluid_key("minecraft:water").unwrap(),
-                        1,
-                    ))
-            {
-                1000
-            } else {
-                0
-            }
-        }
-        fn insert(
-            &self,
-            host: &mut dyn ServerHost,
-            _: &Transaction,
-            index: usize,
-            resource: &FluidResource,
-            amount: u32,
-        ) -> u32 {
-            let held = self.amount(host, index);
-            let moved = amount.min(self.capacity(host, index, resource).saturating_sub(held));
-            ROBOT_FLUID
-                .set(host, Holder::Entity(self.0.id()), held + moved)
-                .unwrap();
-            moved
-        }
-        fn extract(
-            &self,
-            host: &mut dyn ServerHost,
-            _: &Transaction,
-            index: usize,
-            resource: &FluidResource,
-            amount: u32,
-        ) -> u32 {
-            let held = self.amount(host, index);
-            let moved = if self.capacity(host, index, resource) > 0 {
-                amount.min(held)
-            } else {
-                0
-            };
-            ROBOT_FLUID
-                .set(host, Holder::Entity(self.0.id()), held - moved)
-                .unwrap();
-            moved
-        }
-    }
-}
-
 /// Registrar operations for entities.
 pub trait EntitiesRegistrar {
     /// Attach `part`, of kind `kind`, to the entity type `entity`
     /// (`minecraft:zombie`, `mymod:golem`): its `register_goals` runs at every
-    /// `Mob` construction of that type (#1077).
+    /// `Mob` construction of that type.
     ///
     /// Not on wasm: the goal surface a part's `register_goals` hands the game
-    /// does not cross yet (#1077); entity parts are a native mod's for now.
+    /// does not cross; entity parts are a native mod's .
     /// The gate keeps a wasm mod's call a compile error, not a runtime one;
     /// the generator still keeps the method off the wasm world by this doc.
     #[cfg(not(target_arch = "wasm32"))]
@@ -328,32 +196,6 @@ pub trait EntitiesRegistrar {
         before_game: bool,
         provider: EntityProviderOf,
     );
-}
-
-impl EntitiesRegistrar for PartRegistrar {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn attach_entity_part(&mut self, entity: &str, kind: &'static str, part: Arc<dyn EntityPart>) {
-        self.attach(|p| &mut p.entities, kind, entity, part);
-    }
-
-    fn provide_entity_capability(
-        &mut self,
-        name: &'static str,
-        kind: &str,
-        before_game: bool,
-        provider: EntityProviderOf,
-    ) {
-        self.capability(
-            |p| &mut p.entity_capabilities,
-            name,
-            ProviderTarget::Id(kind),
-            before_game,
-            {
-                let handler = provider.handler();
-                (provider, handler)
-            },
-        );
-    }
 }
 
 /// CapabilityProviders operations for entities.

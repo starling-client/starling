@@ -7,9 +7,23 @@
 //! player's plain items: count, take, give. They act on the server's own
 //! players (the hub's: a dedicated server's, a LAN host's, single player's
 //! server thread's), never on a client's.
+#[path = "native_server/argument_kinds.rs"]
+mod argument_kinds;
+#[cfg(test)]
+#[path = "native_server/selector_tests.rs"]
+mod selector_tests;
+#[cfg(test)]
+#[path = "native_server/wasm_selector_tests.rs"]
+mod wasm_selector_tests;
+
 use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::{Dim, Game, commands::execute, lan::LanHost, respawn_anchor::RespawnConfig};
 use crate::game::level_control_hooks::LevelControl;
+pub(super) use argument_kinds::{CommandArguments, command_arguments};
+use argument_kinds::{
+    UNCENTERED, argument_type, custom_value, dimension_value, nbt_value, parsed_type, parser,
+    positional_value, resource_parser,
+};
 use mod_api::__private::game::*;
 // Their old home, for mixin code that names them here.
 use horizon_client::{
@@ -49,69 +63,6 @@ pub(crate) struct NativeSidebar {
 /// The objective a mod's sidebar is sent as: the player's client only; the
 /// server's scoreboard never holds it.
 const SIDEBAR_OBJECTIVE: &str = "horizon:native_sidebar";
-
-/// The argument kinds a native usage may name, each with a [`parser`].
-const KINDS: [&str; 8] = [
-    "word",
-    "text",
-    "integer",
-    "number",
-    "boolean",
-    "player",
-    "item",
-    "block_pos",
-];
-
-/// The custom argument types the mods registered, by namespaced id, for the command tree being
-/// built and its server dispatcher.
-pub(super) type CommandArguments = HashMap<String, Arc<dyn mod_api::CommandArgumentType>>;
-
-/// The argument types the installed mods registered at startup.
-pub(super) fn command_arguments() -> CommandArguments {
-    mod_api::__private::command_argument_types()
-        .into_iter()
-        .collect()
-}
-
-/// The brigadier parser of an argument kind, its properties and its dispatcher type.
-fn parser(kind: &str) -> Option<(&'static str, Value, ArgType)> {
-    Some(match kind {
-        "word" => ("brigadier:string", json!({"type": "word"}), ArgType::Word),
-        "text" => (
-            "brigadier:string",
-            json!({"type": "greedy"}),
-            ArgType::Greedy,
-        ),
-        "integer" => (
-            "brigadier:integer",
-            Value::Null,
-            ArgType::Integer {
-                min: i32::MIN,
-                max: i32::MAX,
-            },
-        ),
-        "number" => (
-            "brigadier:double",
-            Value::Null,
-            ArgType::Double {
-                min: f64::MIN,
-                max: f64::MAX,
-            },
-        ),
-        "boolean" => ("brigadier:bool", Value::Null, ArgType::Bool),
-        "player" => (
-            "minecraft:entity",
-            json!({"amount": "single", "type": "players"}),
-            ArgType::Entity {
-                single: true,
-                players: true,
-            },
-        ),
-        "item" => ("minecraft:item_stack", Value::Null, ArgType::Item),
-        "block_pos" => ("minecraft:block_pos", Value::Null, ArgType::BlockPos),
-        _ => return None,
-    })
-}
 
 /// The report's name of an operator level (`commands.json`'s
 /// `permissions`).
@@ -154,8 +105,14 @@ fn usage_nodes(
         if optional_seen && !optional {
             return Err(format!("`{usage}`: `{word}` follows an optional argument"));
         }
-        let (parser, properties, greedy, custom) = match parser(kind) {
-            Some((parser, properties, _)) => (parser, properties, kind == "text", None),
+        let resource = kind
+            .strip_prefix("resource:")
+            .map(|registry| resource_parser(registry).map_err(|e| format!("`{usage}`: {e}")))
+            .transpose()?;
+        let builtin =
+            resource.or_else(|| parser(kind).map(|(parser, properties, _)| (parser, properties)));
+        let (parser, properties, greedy, custom) = match builtin {
+            Some((parser, properties)) => (parser, properties, kind == "text", None),
             None => {
                 let Some(argument) = custom.get(kind) else {
                     return Err(format!("`{usage}`: unknown kind `{kind}`"));
@@ -181,6 +138,9 @@ fn usage_nodes(
         let mut node = json!({"type": "argument", "parser": parser});
         if !properties.is_null() {
             node["properties"] = properties;
+        }
+        if kind == "vec3_uncentered" {
+            node[UNCENTERED] = true.into();
         }
         if let Some(id) = custom {
             // A client that does not know the type parses a word (or the rest of the line).
@@ -237,6 +197,7 @@ pub(super) fn command_tree(
                 || entry["parser"] != node["parser"]
                 || entry["properties"] != node["properties"]
                 || entry["custom_argument"] != node["custom_argument"]
+                || entry[UNCENTERED] != node[UNCENTERED]
             {
                 conflict = Some(name);
                 break;
@@ -361,84 +322,6 @@ pub(super) fn register_dispatcher(
     if let Some(children) = tree["children"].as_object() {
         add(dispatcher, 0, children, handler, arguments);
     }
-}
-
-/// The message a mod's argument parser refused with, as the engine's text. A text the
-/// boundary cannot carry is reported as its own diagnostic: the refusal still fails the
-/// argument, never silently passing it.
-fn refused_argument_text(error: mod_api::CommandArgumentError) -> Text {
-    let message: mod_api::Text = error.into();
-    match message.try_into_engine(&()) {
-        Ok(text) => text,
-        Err(error) => Text::literal(error.to_string()),
-    }
-}
-
-/// The dispatcher type of one validated tree node: a vanilla kind, or the mod's registered
-/// argument type with its parser and suggestions.
-fn argument_type(node: &Value, arguments: &CommandArguments) -> ArgType {
-    if let Some(id) = node["custom_argument"].as_str() {
-        let argument = arguments
-            .get(id)
-            .unwrap_or_else(|| panic!("native command tree names unregistered argument type {id}"));
-        let parse = argument.clone();
-        let suggest = argument.clone();
-        // Use the validated tree property rather than calling mod code again.
-        let kind = if node["properties"]["type"] == "greedy" {
-            horizon_client::command::CustomArgumentKind::Greedy
-        } else {
-            horizon_client::command::CustomArgumentKind::Word
-        };
-        return ArgType::Custom(horizon_client::command::CustomArgument::new(
-            id,
-            kind,
-            move |input| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse.parse(input)))
-                    .map_err(|_| Text::tr("commands.generic.failed", &[]))?
-                    .map_err(refused_argument_text)
-            },
-            move |prefix| {
-                let Ok(results) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    suggest.suggest(prefix)
-                })) else {
-                    eprintln!("mod command argument completer panicked");
-                    return Vec::new();
-                };
-                // Suggestions use STRING_UTF8 (Java UTF-16 length). Tooltips are
-                // literal NBT strings, whose modified UTF-8 byte length is unsigned u16.
-                if results.iter().any(|s| {
-                    s.text.encode_utf16().count() > 32767
-                        || s.tooltip.as_ref().is_some_and(|tip| {
-                            tip.encode_utf16()
-                                .map(|unit| match unit {
-                                    1..=0x7f => 1,
-                                    0..=0x7ff => 2,
-                                    _ => 3,
-                                })
-                                .sum::<usize>()
-                                > 65535
-                        })
-                }) {
-                    eprintln!("mod command argument completion exceeds the protocol string limit");
-                    return Vec::new();
-                }
-                results
-                    .into_iter()
-                    .map(|suggestion| horizon_client::command::CustomSuggestion {
-                        text: suggestion.text,
-                        tooltip: suggestion.tooltip,
-                    })
-                    .collect()
-            },
-        ));
-    }
-    KINDS
-        .into_iter()
-        .filter_map(parser)
-        .find_map(|(id, properties, ty)| {
-            (node["parser"] == id && node["properties"] == properties).then_some(ty)
-        })
-        .expect("native command tree contains registered parsers")
 }
 
 /// The live player body, or a guest record outside a player swap.
@@ -607,6 +490,7 @@ impl Game<'_> {
     /// Discard state belonging to an already removed connectionless guest.
     pub(super) fn cleanup_fake_player(&mut self, host: &mut super::lan::LanHost, guest: &Guest) {
         host.play.remove(&guest.conn);
+        host.forget_menus(guest.conn);
         host.poses.remove(&guest.conn);
         host.mob_players.retain(|_, conn| *conn != guest.conn);
         self.destroying.remove(&guest.entity_id);
@@ -679,6 +563,7 @@ impl Game<'_> {
         let host = self.lan.as_mut().expect("validated fake's host");
         host.hub.guests.update(gi, |guest| state.swap(guest));
         let play = host.play.insert(conn, Default::default());
+        let menus = host.menus.insert(conn, Default::default());
         let outcome = self.perform_fake_action(gi, conn, action);
         let host = self.lan.as_mut().expect("guest turns retain the host");
         let (held, other) = host.hub.guests.update(gi, |guest| {
@@ -698,6 +583,10 @@ impl Game<'_> {
             state.swap(guest);
             (held, other)
         });
+        host.menus.remove(&conn);
+        if let Some(menus) = menus {
+            host.menus.insert(conn, menus);
+        }
         host.play.remove(&conn);
         if let Some(play) = play {
             host.play.insert(conn, play);
@@ -867,13 +756,17 @@ impl Game<'_> {
 
     /// The chunks players started and stopped watching that the hub
     /// recorded (`lan::chunk_watch`), told to the mods in the hub's order,
-    /// with no player's state swapped in. The player handle is built from
-    /// the record, so an unwatch after a disconnect still names them.
+    /// with no player's state swapped in, and a sent chunk's passages sent
+    /// after it. The player handle is built from the record, so an unwatch
+    /// after a disconnect still names them. Nothing while the log is empty.
     pub(super) fn run_chunk_watches(&mut self) {
         use horizon_client::lan::chunk_watch::ChunkWatchKind;
         let Some(host) = self.lan.as_mut() else {
             return;
         };
+        if host.hub.chunk_watches.is_empty() {
+            return;
+        }
         let runs = host.hub.chunk_watches.take();
         let Some(epoch) = self.native_lifecycle.epoch() else {
             return;
@@ -894,7 +787,10 @@ impl Game<'_> {
                 let chunk = mod_api::ChunkRef::new(level, watch.chunk);
                 match watch.kind {
                     ChunkWatchKind::Watch => self.native_chunk_watch(player, chunk),
-                    ChunkWatchKind::Sent => self.native_chunk_sent(player, chunk),
+                    ChunkWatchKind::Sent => {
+                        self.native_chunk_sent(player, chunk);
+                        self.send_chunk_passages(level, watch.uuid, watch.chunk);
+                    }
                     ChunkWatchKind::Unwatch => self.native_chunk_unwatch(player, chunk),
                 }
             }
@@ -1148,14 +1044,14 @@ impl Game<'_> {
         };
         let changed = self.player_selected_slot(player) != Some(slot);
         if !self.native_as_player_handle(player, |game| {
-            game.selected = slot;
             if changed
                 && game
                     .using
                     .is_some_and(|(held, _)| held != crate::game::shield::OFFHAND_SLOT)
             {
-                game.using = None;
+                game.stop_active_item_use();
             }
+            game.selected = slot;
         }) {
             return false;
         }
@@ -1181,6 +1077,9 @@ impl Game<'_> {
         stack: ItemStack,
         thrown_by_player: bool,
     ) -> Option<ItemStack> {
+        if self.entity_ids_exhausted() {
+            return Some(stack);
+        }
         if stack.count == 0 {
             return Some(stack);
         }
@@ -1313,7 +1212,7 @@ impl Game<'_> {
     /// the client's level. None for a stale or unavailable player.
     pub(super) fn player_level(&self, player: PlayerRef) -> Option<LevelRef> {
         let dim = self.player_dimension_key(player)?;
-        Some(LevelRef::new(player.fields().entity.epoch(), dim))
+        Some(self.level_ref(player.fields().entity.epoch(), dim))
     }
 
     /// The dimension the online player is in (`ServerPlayer.level().dimension()`):
@@ -1343,6 +1242,15 @@ impl Game<'_> {
             return Some(guest.brand.clone());
         }
         (self.native_acting_player() == Some(player)).then(String::new)
+    }
+
+    /// The plugin channels the player's client announced (`minecraft:register` less
+    /// `minecraft:unregister`), kept by its connection from configuration on.
+    pub(super) fn player_announced_channels(&self, player: PlayerRef) -> Option<Vec<String>> {
+        if let Some(guest) = self.online_player_record(player) {
+            return Some(guest.sender.announced.list());
+        }
+        (self.native_acting_player() == Some(player)).then(Vec::new)
     }
 
     /// Validate identity without requiring a live body: sending to an online
@@ -1680,7 +1588,7 @@ impl Game<'_> {
             host.hub
                 .chat_filter
                 .as_ref()
-                .is_none_or(|g| !g.filter.matches(text)),
+                .is_none_or(|g| !g.matches(text)),
         )
     }
     /// A system line in every player's chat and the server's log.
@@ -1749,21 +1657,42 @@ impl Game<'_> {
     /// acting player) are reachable; displaced outer players are excluded
     /// from name, UUID and selector resolution on this path only.
     pub(super) fn native_run_command(&mut self, line: &str) -> bool {
+        self.run_console_command(line, false).0
+    }
+    /// The one path `native_run_command` and `native_run_command_with_output` run a line
+    /// by: the console's source from the overworld's spawn, the native command filter on,
+    /// and the running command's own chat capture, so a call inside another capture leaves
+    /// the outer one as it was. With `capture`, the source is not silent and the feedback
+    /// comes back as the second value.
+    pub(super) fn run_console_command(
+        &mut self,
+        line: &str,
+        capture: bool,
+    ) -> (bool, Vec<horizon_client::text::Text>) {
         if self.lan.is_none() {
-            return false;
+            return (false, Vec::new());
         }
+        let base = self.server_source();
         let server = execute::Source {
             dimension: Dim::Overworld,
-            ..self.server_source()
+            silent: base.silent && !capture,
+            ..base
         };
         let outer = self.command_source.replace(server);
         let filter = std::mem::replace(&mut self.native_command_filter, true);
         let outer_exec = std::mem::take(&mut self.exec);
+        let outer_capture = capture.then(|| self.chat_capture.replace(Vec::new()));
         let ok = self.as_console(|g| g.run_command(line));
+        let lines = match outer_capture {
+            Some(outer_capture) => {
+                std::mem::replace(&mut self.chat_capture, outer_capture).unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         self.exec = outer_exec;
         self.native_command_filter = filter;
         self.command_source = outer;
-        ok
+        (ok, lines)
     }
     /// The open world's folder (`world/`, beside its `level.dat`): a server
     /// mod keeps its data in a folder of its own there, so the world's
@@ -1787,20 +1716,36 @@ fn orb_meets(position: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
         && position[2] + 0.25 > min[2]
 }
 
+/// The box `min`..`max` with each axis's pair in order, as vanilla's `AABB` takes it;
+/// None when a bound is not finite (NaN or infinite).
+fn ordered_box(min: [f64; 3], max: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    if !min.iter().chain(&max).all(|v| v.is_finite()) {
+        return None;
+    }
+    Some((
+        std::array::from_fn(|i| min[i].min(max[i])),
+        std::array::from_fn(|i| min[i].max(max[i])),
+    ))
+}
+
 /// Experience for server mods.
 #[allow(dead_code)]
 impl Game<'_> {
     /// The experience orbs of the server level `dimension` whose box meets
     /// the box `min`..`max`, in the level's order: what a mod reads before it
     /// cancels an orb in `native_entity_join_level`, to give its points with
-    /// `PlayerRef::give_experience_points`. Empty for a level not in place and on a
-    /// client of a server.
+    /// `PlayerRef::give_experience_points`. Empty for a level not in place, on a
+    /// client of a server and for a bound that is not finite (NaN or infinite); a
+    /// minimum above its maximum is the same box with the two swapped (`AABB`).
     pub(super) fn experience_orbs(
         &self,
         dimension: &str,
         min: [f64; 3],
         max: [f64; 3],
     ) -> Vec<mod_api::ExperienceOrb> {
+        let Some((min, max)) = ordered_box(min, max) else {
+            return Vec::new();
+        };
         if (self.serving.is_none() && self.options.dedicated.is_none())
             || dimension != self.dim.id()
         {
@@ -1822,7 +1767,10 @@ impl Game<'_> {
     /// (orbs merged into it, each worth `value`) and `age` (ticks lived; an orb
     /// despawns at 6000); a `None` is left as it is.
     /// False, and nothing written, for an orb not in the server level `dimension`, a
-    /// a `count` of 0, and on a client of a server.
+    /// `count` of 0 or above `i32::MAX`, a `value` outside -32768..=32767 (a save keeps
+    /// `Value` as a short and `Count` as an int, so a write it accepts reloads
+    /// unchanged), and on a client of a server. In `experience_orb_merge`, a write to
+    /// `into` is the merged orb.
     pub(super) fn set_experience_orb(
         &mut self,
         dimension: &str,
@@ -1834,6 +1782,8 @@ impl Game<'_> {
         if (self.serving.is_none() && self.options.dedicated.is_none())
             || dimension != self.dim.id()
             || count == Some(0)
+            || count.is_some_and(|c| c > crate::orb_limits::MAX_COUNT)
+            || value.is_some_and(|v| !crate::orb_limits::value_fits(v))
         {
             return false;
         }
@@ -1900,7 +1850,7 @@ impl Game<'_> {
     }
 }
 
-fn system_chat(line: &Text) -> C {
+pub(super) fn system_chat(line: &Text) -> C {
     C::SystemChat(play::SystemChat {
         content: component_nbt(&line.component()),
         overlay: false,
@@ -1969,6 +1919,8 @@ impl Game<'_> {
             tree: execution_tree,
             arguments,
         });
+        host.hub
+            .set_selector_tokens(super::native_entity_selectors::selector_tokens());
         if refresh {
             host.hub.store_mod_commands(0, tree);
         } else {
@@ -2067,7 +2019,7 @@ impl Game<'_> {
     }
 
     /// Resolve the source once at the command boundary, retaining its output origin.
-    fn native_command_origin(
+    pub(super) fn native_command_origin(
         &mut self,
         permission: u8,
     ) -> super::commands::R<mod_api::CommandSource> {
@@ -2128,52 +2080,131 @@ impl Game<'_> {
         }
     }
 
-    /// Convert the native tree's validated argument kinds using vanilla's source-aware paths.
+    fn native_command_player_target(&self, target: super::commands::Target) -> Option<PlayerRef> {
+        use super::commands::Target;
+        match target {
+            Target::Player => self.native_acting_player(),
+            Target::Guest(conn) => self
+                .command_guest(conn)
+                .and_then(|guest| self.player(guest.uuid)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn native_command_entity_target(
+        &mut self,
+        target: super::commands::Target,
+    ) -> Option<mod_api::EntityRef> {
+        if let Some(player) = self.native_command_player_target(target) {
+            return Some(player.entity());
+        }
+        let id = super::native_entities::target_id(target)?;
+        self.in_target_level(target, |game| game.entity(id))
+            .flatten()
+    }
+
+    /// `EntityArgument.getEntity` / `getEntities` / `getPlayer` / `getPlayers`:
+    /// convert validated arguments through the shared source-aware selector resolver.
     fn resolve_native_command(
         &mut self,
         context: Context,
     ) -> Result<mod_api::CommandInvocation, horizon_client::command::CommandError> {
-        use super::commands::{Target, err};
-        use mod_api::{CommandArgument, CommandArgumentValue as Value, CommandInvocation};
+        use super::commands::err;
+        use mod_api::{CommandArgument, CommandArgumentValue as Value};
         let mut arguments = Vec::with_capacity(context.args.len());
         for argument in context.args {
+            let ty = parsed_type(&self.ui.dispatcher.0, &context.nodes, argument.range);
             let value = match argument.value {
+                Arg::Str(text) if matches!(ty, Some(ArgType::Nbt)) => nbt_value(&text)?,
                 Arg::Str(value) => Value::String(value),
                 Arg::Int(value) => Value::Integer(value),
                 Arg::Double(value) => Value::Number(value),
                 Arg::Bool(value) => Value::Boolean(value),
                 Arg::Entity(selector) => {
-                    let targets = self.resolve_entity_argument(&selector, true)?;
-                    let [target] = targets.as_slice() else {
-                        return Err(err("argument.entity.toomany", &[]));
-                    };
-                    let player = match target {
-                        Target::Player => self.native_acting_player(),
-                        Target::Guest(conn) => self
-                            .command_guest(*conn)
-                            .and_then(|guest| self.player(guest.uuid)),
-                        _ => None,
+                    // The parsed node, not its name, determines cardinality: usages may
+                    // repeat an argument name or use different kinds on separate branches.
+                    let (single, players) = context
+                        .nodes
+                        .iter()
+                        .find_map(|(node, range)| {
+                            if *range != argument.range {
+                                return None;
+                            }
+                            match &self.ui.dispatcher.0.nodes[*node].kind {
+                                horizon_client::command::NodeKind::Argument {
+                                    ty: ArgType::Entity { single, players },
+                                    ..
+                                } => Some((*single, *players)),
+                                _ => None,
+                            }
+                        })
+                        .expect("parsed entity argument has its dispatcher node");
+                    let targets = self.resolve_entity_argument(&selector, players)?;
+                    if single && targets.len() > 1 {
+                        return Err(err(
+                            if players {
+                                "argument.player.toomany"
+                            } else {
+                                "argument.entity.toomany"
+                            },
+                            &[],
+                        ));
                     }
-                    .ok_or_else(|| err("argument.entity.notfound.player", &[]))?;
-                    Value::Player(player)
+                    if players {
+                        if single {
+                            Value::Player(
+                                self.native_command_player_target(targets[0])
+                                    .ok_or_else(|| err("argument.entity.notfound.player", &[]))?,
+                            )
+                        } else {
+                            let selected = targets
+                                .into_iter()
+                                .map(|target| {
+                                    self.native_command_player_target(target)
+                                        .ok_or_else(|| err("argument.entity.notfound.player", &[]))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Value::Players(selected)
+                        }
+                    } else if single {
+                        Value::Entity(
+                            self.native_command_entity_target(targets[0])
+                                .ok_or_else(|| err("argument.entity.notfound.entity", &[]))?,
+                        )
+                    } else {
+                        let selected: Vec<_> = targets
+                            .into_iter()
+                            .filter_map(|target| self.native_command_entity_target(target))
+                            .collect();
+                        if selected.is_empty() {
+                            return Err(err("argument.entity.notfound.entity", &[]));
+                        }
+                        Value::Entities(selected)
+                    }
                 }
-                Arg::Coords(coordinates) => {
-                    Value::BlockPos(self.resolve_coords(&coordinates).map(|v| v.floor() as i32))
-                }
+                Arg::Coords(coordinates) => positional_value(
+                    ty.as_ref(),
+                    &coordinates,
+                    self.resolve_coords(&coordinates),
+                    self.source_rotation(),
+                ),
                 Arg::Item(input) => Value::Item(
                     self.command_item_stack(&input, 1)?
                         .try_into_api()
                         .expect("command item validation resolves registered items"),
                 ),
-                Arg::Custom { kind, value } => Value::Custom {
-                    kind: kind.to_string(),
-                    value,
-                },
+                Arg::Resource(id) if matches!(ty, Some(ArgType::Dimension)) => {
+                    dimension_value(&id, |dimension| self.level(dimension))?
+                }
+                Arg::Resource(id) => Value::Id(
+                    mod_api::Identifier::parse(&id).map_err(|_| err("command.failed", &[]))?,
+                ),
+                Arg::Custom { kind, value } => custom_value(&kind, value),
                 _ => unreachable!("the native tree contains only registered native argument kinds"),
             };
             arguments.push(CommandArgument::new(argument.name, value));
         }
-        Ok(CommandInvocation::new(context.literals, arguments))
+        Ok(self.native_invocation(context.literals, arguments))
     }
 
     /// A guest's command for the mods, inside their swap
@@ -2375,6 +2406,55 @@ mod tests {
     use super::*;
     use horizon_client::items::ItemStack;
 
+    /// Box bounds come from mod code: one that is not finite reads no orb and never
+    /// panics, and an inverted box reads what the ordered one does.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn experience_orbs_refuse_bounds_that_are_not_finite_and_swap_an_inverted_box() {
+        let mut resources = None;
+        let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+        game.options.dedicated = Some(Vec::new());
+        let at = horizon_core::geometry::Vec3::new(1.0, 70.0, 1.0);
+        game.orbs.push(horizon_client::entities::ExperienceOrb {
+            attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id: 40,
+            position: at,
+            previous: at,
+            velocity: horizon_core::geometry::Vec3::ZERO,
+            value: 3,
+            age: 0,
+            on_ground: true,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            air: 300,
+            no_gravity: true,
+            following: None,
+        });
+        let dimension = game.dim.id().to_owned();
+        let ids = |game: &Game<'_>, min, max| -> Vec<u32> {
+            game.experience_orbs(&dimension, min, max)
+                .into_iter()
+                .map(|orb| orb.id)
+                .collect()
+        };
+        assert_eq!(ids(&game, [0.0, 69.0, 0.0], [2.0, 71.0, 2.0]), [40]);
+        for (min, max) in [
+            ([f64::NAN, 69.0, 0.0], [2.0, 71.0, 2.0]),
+            ([0.0, 69.0, 0.0], [2.0, f64::NAN, 2.0]),
+            ([f64::NEG_INFINITY, 69.0, 0.0], [2.0, 71.0, 2.0]),
+            ([0.0, 69.0, 0.0], [2.0, 71.0, f64::INFINITY]),
+            ([f64::NEG_INFINITY; 3], [f64::INFINITY; 3]),
+        ] {
+            assert_eq!(ids(&game, min, max), Vec::<u32>::new(), "{min:?} {max:?}");
+        }
+        assert_eq!(ids(&game, [2.0, 69.0, 0.0], [0.0, 71.0, 2.0]), [40]);
+        assert_eq!(ids(&game, [2.0, 71.0, 2.0], [0.0, 69.0, 0.0]), [40]);
+    }
+
     /// A mod's `announce` reaches the dedicated server's event stream and nothing else's.
     /// The integrated server thread keeps the launch configuration (`options.dedicated`) too,
     /// so it cannot be what decides.
@@ -2535,7 +2615,7 @@ mod tests {
             Box::new(Watcher(std::sync::Arc::clone(&heard))),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 super::super::native_item_places::tests::open_to_lan(game);
                 let here = game.dim.id();
@@ -2789,9 +2869,115 @@ mod tests {
         }
     }
 
+    const POSITIONED: &str = "kinds <at:vec3> <by:vec3_uncentered> <column:column_pos> \
+         <look:rotation> <level:dimension> <tag:nbt>";
+
+    #[test]
+    fn position_rotation_dimension_and_nbt_kinds_are_vanillas_parsers() {
+        let (tree, _, problems) = tree(&[mod_api::Command::new(POSITIONED)]);
+        assert!(problems.is_empty(), "{problems:?}");
+        let mut node = &tree["children"]["kinds"];
+        for (name, parser) in [
+            ("at", "minecraft:vec3"),
+            ("by", "minecraft:vec3"),
+            ("column", "minecraft:column_pos"),
+            ("look", "minecraft:rotation"),
+            ("level", "minecraft:dimension"),
+            ("tag", "minecraft:nbt_compound_tag"),
+        ] {
+            node = &node["children"][name];
+            assert_eq!(node["parser"], parser, "{name}");
+            assert_eq!(node["uncentered"] == true, name == "by", "{name}");
+        }
+    }
+
+    #[test]
+    fn vec3_and_vec3_uncentered_do_not_share_a_node() {
+        let (_, _, problems) = tree(&[
+            mod_api::Command::new("go <to:vec3>"),
+            mod_api::Command::new("go <to:vec3_uncentered>"),
+        ]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("another kind"), "{problems:?}");
+    }
+
+    #[test]
+    fn positions_and_rotations_resolve_against_the_source() {
+        let (tree, _, problems) = tree(&[mod_api::Command::new(POSITIONED)]);
+        assert!(problems.is_empty(), "{problems:?}");
+        let mut dispatcher = Dispatcher::new();
+        register_dispatcher(
+            &mut dispatcher,
+            &tree,
+            "native_mod_command",
+            &HashMap::new(),
+        );
+        let registries = horizon_client::command::Registries::default();
+        let (origin, rotation) = ([10.0, 70.0, -2.0], [45.0, 30.0]);
+        let value = |line: &str, name: &str, kind: &str| {
+            let parsed = dispatcher.parse(line, &registries);
+            let (context, _) = parsed.executable().unwrap();
+            let Some(Arg::Coords(coordinates)) = context.get(name) else {
+                panic!("{name} is a position")
+            };
+            let range = context.args.iter().find(|a| a.name == name).unwrap().range;
+            let ty = parsed_type(&dispatcher, &context.nodes, range);
+            assert_eq!(
+                format!("{ty:?}"),
+                format!("{:?}", Some(parser(kind).unwrap().2)),
+                "{name}: the type comes from the parsed node"
+            );
+            positional_value(
+                ty.as_ref(),
+                coordinates,
+                coordinates.position(origin, rotation),
+                rotation,
+            )
+        };
+        let relative = "kinds ~1 ~ ~-1 ~1 ~ ~-1 ~3 ~-4 ~10 ~-5 minecraft:the_nether {}";
+        assert_eq!(
+            value(relative, "at", "vec3"),
+            mod_api::CommandArgumentValue::Vec3([11.0, 70.0, -3.0])
+        );
+        assert_eq!(
+            value(relative, "column", "column_pos"),
+            mod_api::CommandArgumentValue::ColumnPos([13, -6])
+        );
+        assert_eq!(
+            value(relative, "look", "rotation"),
+            mod_api::CommandArgumentValue::Rotation([55.0, 25.0])
+        );
+        // A whole `x` and `z` is centred by `vec3` and kept by `vec3_uncentered`.
+        let absolute = "kinds 5 64 -7 5 64 -7 0 0 0 0 minecraft:overworld {}";
+        assert_eq!(
+            value(absolute, "at", "vec3"),
+            mod_api::CommandArgumentValue::Vec3([5.5, 64.0, -6.5])
+        );
+        assert_eq!(
+            value(absolute, "by", "vec3_uncentered"),
+            mod_api::CommandArgumentValue::Vec3([5.0, 64.0, -7.0])
+        );
+    }
+
+    #[test]
+    fn a_dimension_the_world_lacks_is_refused_and_an_nbt_argument_is_a_compound() {
+        let refusal = dimension_value("minecraft:nowhere", |_| None).unwrap_err();
+        assert_eq!(refusal.key, "argument.dimension.invalid");
+        let mut expected = horizon_core::nbt::Compound::new();
+        expected.insert("answer".into(), horizon_core::nbt::Tag::Byte(42));
+        assert_eq!(
+            nbt_value("{answer:42b}").unwrap(),
+            mod_api::CommandArgumentValue::Nbt(expected)
+        );
+    }
+
     #[test]
     fn every_supported_kind_has_a_parser() {
-        assert!(KINDS.into_iter().all(|kind| parser(kind).is_some()));
+        assert!(
+            argument_kinds::KINDS
+                .into_iter()
+                .all(|kind| parser(kind).is_some())
+        );
     }
 
     /// A test mod's argument type: named machines, one word, completed by prefix.
@@ -2922,7 +3108,7 @@ mod tests {
 
     #[test]
     fn a_registered_argument_type_parses_and_completes_its_values() {
-        mod_api::__private::part_tests::install_parts_fixture(&[mod_api::ModEntry::new(
+        mod_platform::__private::part_tests::install_parts_fixture(&[mod_api::ModEntry::new(
             "test",
             Box::new(Machines),
         )])
@@ -2970,6 +3156,76 @@ mod tests {
                 .map(|s| s.text.as_str())
                 .collect::<Vec<_>>(),
             ["press"]
+        );
+    }
+
+    #[test]
+    fn resource_and_mod_id_kinds_accept_only_known_ids() {
+        let mut arguments = command_arguments();
+        // The test process loads no package: stand in for one the way `command_arguments` does.
+        arguments.insert(
+            argument_kinds::MOD_ID.into(),
+            Arc::new(mod_api::ChoiceArgument::new(["demo"])),
+        );
+        let (tree, _, problems) = super::command_tree(
+            &[
+                mod_api::Command::new("spawnof <kind:resource:minecraft:entity_type>"),
+                mod_api::Command::new("about <id:mod_id>"),
+                mod_api::Command::new("bad <kind:resource:NotOk>"),
+                mod_api::Command::new("worse <kind:resource:a:b:c>"),
+                mod_api::Command::new("worst <kind:resource:a/b:c>"),
+            ],
+            |_| false,
+            &arguments,
+        );
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems
+                .iter()
+                .all(|p| p.contains("is not a `namespace:path` resource location")),
+            "{problems:?}"
+        );
+        for refused in ["bad", "worse", "worst"] {
+            assert!(tree["children"].get(refused).is_none(), "{refused}");
+        }
+        let kind = &tree["children"]["spawnof"]["children"]["kind"];
+        assert_eq!(kind["parser"], "minecraft:resource_key");
+        assert_eq!(
+            kind["properties"],
+            json!({"registry": "minecraft:entity_type"})
+        );
+        assert_eq!(
+            tree["children"]["about"]["children"]["id"]["custom_argument"],
+            argument_kinds::MOD_ID
+        );
+
+        let mut dispatcher = Dispatcher::new();
+        register_dispatcher(&mut dispatcher, &tree, "native_mod_command", &arguments);
+        let registries = horizon_client::command::Registries {
+            entity_types: vec!["minecraft:zombie".into()],
+            ..Default::default()
+        };
+        let parsed = dispatcher.parse("spawnof minecraft:zombie", &registries);
+        let (context, _) = parsed.executable().unwrap();
+        assert_eq!(
+            context.get("kind"),
+            Some(&Arg::Resource("minecraft:zombie".into()))
+        );
+        for refused in ["spawnof minecraft:nope", "about no_such_mod"] {
+            assert!(
+                dispatcher.parse(refused, &registries).executable().is_err(),
+                "{refused}"
+            );
+        }
+        let parsed = dispatcher.parse("about demo", &registries);
+        let (context, _) = parsed.executable().unwrap();
+        let Some(Arg::Custom { kind, value }) = context.get("id").cloned() else {
+            panic!("a mod id parses as the built-in custom kind");
+        };
+        assert_eq!(
+            custom_value(&kind, value),
+            mod_api::CommandArgumentValue::String("demo".into()),
+            "a loaded mod id reaches the mod as its plain string"
         );
     }
 
@@ -3062,7 +3318,7 @@ mod tests {
         }
         let changed = Arc::new(AtomicBool::new(false));
         let registrations = Arc::new(AtomicUsize::new(0));
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new(
                 "refresh",
                 Box::new(ChangingCommands {
@@ -3184,7 +3440,7 @@ mod tests {
             }
         }
         let heard = Arc::new(Mutex::new(Vec::new()));
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new(
                 "typed_commands",
                 Box::new(Commands(heard.clone())),
@@ -3353,7 +3609,7 @@ mod tests {
             }
         }
         let heard = Arc::new(Mutex::new(Vec::new()));
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new(
                 "origins",
                 Box::new(Commands(heard.clone())),
@@ -3456,7 +3712,7 @@ mod tests {
             Box::new(Commands(heard.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 super::super::native_item_places::tests::open_to_lan(game);
                 game.register_native_commands();
@@ -3689,7 +3945,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod fake_action_tests {
+pub(super) mod fake_action_tests {
     use super::super::Game;
     use super::{Acting, ActionOutcome, ActionRefused, FakeEffect, PlayerAction};
     use horizon_client::items::ItemStack;
@@ -3697,7 +3953,11 @@ mod fake_action_tests {
 
     /// A server with a real guest (uuid 1) and a fake (uuid 2) standing at (0.5, 64, 0.5) on
     /// a stone floor, holding `item`, in game mode `mode`: the fake's handle and both conns.
-    fn fake(game: &mut Game<'_>, item: Option<&str>, mode: i32) -> (PlayerRef, u32, u32) {
+    pub(in crate::game) fn fake(
+        game: &mut Game<'_>,
+        item: Option<&str>,
+        mode: i32,
+    ) -> (PlayerRef, u32, u32) {
         super::super::bossbars::audience_tests::add_real_and_fake(game);
         game.options.dedicated = Some(Vec::new());
         for (x, z) in (-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z))) {
@@ -4283,6 +4543,53 @@ mod fake_action_tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn scoped_fake_use_restores_the_persistent_menu_owner() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            let (player, conn, _) = fake(game, Some("minecraft:diamond"), 1);
+            let mut menu = Box::new(horizon_client::menu::Menu::new(
+                horizon_client::menu::Kind::Inventory,
+            ));
+            menu.carried = Some(ItemStack::new("minecraft:stick", 3));
+            let owner = (&*menu) as *const horizon_client::menu::Menu;
+            *game
+                .lan
+                .as_mut()
+                .unwrap()
+                .menus
+                .entry(conn)
+                .or_default()
+                .crafting
+                .inventory = Some(menu);
+            place(game, [1, 64, 0], "minecraft:chest");
+            let setup = mod_api::PlayerActionSetup::new(
+                Some(crate::game::api_values::test_snapshot(&ItemStack::new(
+                    "minecraft:oak_log",
+                    1,
+                ))),
+                [0.5, 64.0 + f64::from(1.62_f32), 0.5],
+                0.0,
+                90.0,
+                false,
+            );
+            let result = game
+                .player_perform_action_scoped(player, on_top([1, 64, 0]), setup)
+                .unwrap();
+            assert_eq!(
+                result.outcome,
+                ActionOutcome::EffectBlocked(FakeEffect::Menu)
+            );
+            let restored = game.lan.as_ref().unwrap().menus[&conn]
+                .crafting
+                .inventory
+                .as_ref()
+                .unwrap();
+            assert_eq!((&**restored) as *const horizon_client::menu::Menu, owner);
+            assert_eq!(restored.carried, Some(ItemStack::new("minecraft:stick", 3)));
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn scoped_fake_use_uses_viewpoint_secondary_use_and_restores_on_refusal() {
         use mod_api::PlayerActionSetup;
         super::super::native_entity_refs::tests::with_game(|game| {
@@ -4459,7 +4766,7 @@ mod fake_action_tests {
             }
         }
         let heard = Arc::new(AtomicBool::new(false));
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new(
                 "deny",
                 Box::new(Deny(heard.clone())),
@@ -4634,10 +4941,18 @@ mod fake_action_tests {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             // Half a fist's cooldown (delay 5 ticks): the charge is (2 + 0.5) / 5 = 0.5.
             with_game(|game| {
                 let (player, fake_conn, _) = fake(game, None, 0);
+                // A placed fake participates in actions, not online-player tracking.
+                // The packet attack gate must still reach the hook and damage below.
+                let host = game.lan.as_ref().unwrap();
+                let guest = host.hub.guest(fake_conn).unwrap();
+                assert!(guest.is_fake());
+                assert!(guest.placed);
+                assert_eq!(guest.dimension, host.hub.config.dimension);
+                assert!(!guest.participates_online());
                 game.lan
                     .as_mut()
                     .unwrap()
@@ -4766,7 +5081,7 @@ mod fake_action_tests {
             Box::new(ChargeWatcher(seen.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 let (player, fake_conn, _) = fake(game, None, 0);
                 game.lan
@@ -5273,7 +5588,7 @@ mod player_rule_tests {
             }
         }
         let mods = vec![mod_api::ModEntry::new("veto", Box::new(Veto))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_guests(|game| {
                 let a = game.player(12).unwrap();
                 let overworld = "minecraft:overworld";
@@ -5360,5 +5675,73 @@ mod player_rule_tests {
                 .unwrap();
             assert_eq!(seen, (Some(109), Some(true)));
         });
+    }
+}
+
+// Dedicated network settings stay engine-private; never expose the forwarding secret.
+#[allow(dead_code)]
+impl Game<'_> {
+    /// Whether the dedicated server runs in online mode (`online-mode` of server.properties):
+    /// its players sign in with their accounts. None off a dedicated server and before it listens.
+    /// API @API:server_settings@.
+    pub(super) fn native_online_mode(&self) -> Option<bool> {
+        Some(online_mode_of(&self.dedicated_lan()?.shared.config))
+    }
+    /// The port the dedicated server listens on: `server-port` of server.properties, or the
+    /// `--port` it was started with. None off a dedicated server and before it listens.
+    /// API @API:server_settings@.
+    pub(super) fn native_server_port(&self) -> Option<u16> {
+        Some(self.dedicated_lan()?.port)
+    }
+    /// How the dedicated server takes its players from a proxy: `"velocity"` when it signs the
+    /// forwarded player information with `forwarding.secret` (offline mode behind Velocity),
+    /// `"none"` when it doesn't; None off a dedicated server and before it listens. The secret
+    /// itself is never returned. API @API:server_settings@.
+    pub(super) fn native_proxy_forwarding(&self) -> Option<&'static str> {
+        Some(proxy_forwarding_of(&self.dedicated_lan()?.shared.config))
+    }
+    /// The listening socket of a dedicated server; None on any other side and before it listens.
+    fn dedicated_lan(&self) -> Option<&horizon_client::lan::Lan> {
+        self.options.dedicated.as_ref()?;
+        Some(&self.lan.as_ref()?.hub.lan)
+    }
+}
+
+/// The online mode a dedicated server's network config carries: it has an
+/// `OnlineMode` key (and so signs its logins) only in online mode.
+fn online_mode_of(config: &horizon_client::lan::NetConfig) -> bool {
+    config.online.is_some()
+}
+
+/// The proxy forwarding a dedicated server's network config carries: the secret
+/// is set only offline behind a proxy (game/dedicated.rs `forwarding_secret`).
+fn proxy_forwarding_of(config: &horizon_client::lan::NetConfig) -> &'static str {
+    if config.forwarding_secret.is_some() {
+        "velocity"
+    } else {
+        "none"
+    }
+}
+
+#[cfg(test)]
+mod network_settings_tests {
+    use super::*;
+    #[test]
+    #[ignore = "daily"]
+    fn server_settings_follow_the_network_config() {
+        use horizon_client::lan::{NetConfig, OnlineMode};
+        let mut config = NetConfig::loopback(25565, String::new(), 20);
+        // online-mode=false, no proxy: no key, no forwarding secret.
+        assert!(!online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "none");
+        // online-mode=false behind Velocity: the secret is set.
+        config.forwarding_secret = Some(b"secret".to_vec());
+        assert!(!online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "velocity");
+        // online-mode=true: the server's key, and forwarding stays off.
+        config.forwarding_secret = None;
+        config.online = Some(std::sync::Arc::new(OnlineMode::generate(false).unwrap()));
+        assert!(online_mode_of(&config));
+        assert_eq!(proxy_forwarding_of(&config), "none");
     }
 }

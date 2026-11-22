@@ -26,7 +26,26 @@ impl Game<'_> {
         self.next_entity += 1;
         self.next_entity
     }
+    /// Whether the id counter is within [`ENTITY_ID_HEADROOM`] of the end: then a mod's spawn is
+    /// refused and the tick spawns nothing of its own, named once in the log. Ids already handed
+    /// out are never taken back, so a stale handle never names a later entity.
+    pub(super) fn entity_ids_exhausted(&mut self) -> bool {
+        let exhausted = self.next_entity >= u32::MAX - ENTITY_ID_HEADROOM;
+        if exhausted && !self.native_lifecycle.ids_exhausted_told {
+            self.native_lifecycle.ids_exhausted_told = true;
+            log::error!(
+                "entity ids exhausted: {} of {} handed out; no entity spawns until the world reopens",
+                self.next_entity,
+                u32::MAX
+            );
+        }
+        exhausted
+    }
 }
+
+/// The ids kept back below `u32::MAX`: far more than one tick hands out (a whole ender dragon
+/// takes nine in a row) and the provisional ids a natural spawn pass counts down from the end.
+pub(super) const ENTITY_ID_HEADROOM: u32 = 1 << 24;
 
 fn add_state<'a>(
     out: &'a mut States,
@@ -402,11 +421,13 @@ impl Game<'_> {
             if f.invisible {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x20)));
             }
-            // HangingEntity.DATA_DIRECTION, south by default.
+            // HangingEntity.DATA_DIRECTION, south by default: a frame turned back to south
+            // (`entity_set_hanging_direction`) clears the clients' value.
             if f.facing != 3 {
                 e.meta
                     .push((8, serializer::DIRECTION, Value::Id(i32::from(f.facing))));
             }
+            e.defaults.push((8, serializer::DIRECTION, Value::Id(3)));
             if f.item.is_some() {
                 let Some(host) = self.lan.as_mut() else {
                     return;
@@ -450,6 +471,7 @@ impl Game<'_> {
             if facing != 3 {
                 e.meta.push((8, serializer::DIRECTION, Value::Id(facing)));
             }
+            e.defaults.push((8, serializer::DIRECTION, Value::Id(3)));
             // Painting.DATA_PAINTING_VARIANT_ID, a registry holder (id + 1),
             // set unless it is the registry's first variant (VariantUtils.getAny).
             let Some(host) = self.lan.as_ref() else {
@@ -674,6 +696,23 @@ impl Game<'_> {
                 e.forced_meta = *bits;
             }
         }
+    }
+
+    /// ServerEntity.sendChanges clears needsSync once it has looked, and
+    /// SteppedInterpolationTracker.updateTracking clears syncPosition: once the states for the
+    /// tracking pass are taken.
+    pub(super) fn lan_syncs_looked(&mut self) {
+        for m in &mut self.mobs {
+            m.needs_sync = false;
+            m.sync_position = false;
+        }
+        self.creatures
+            .projectiles
+            .for_each_mut(|p| p.needs_sync = false);
+        for d in &mut self.dropped {
+            d.needs_sync = false;
+        }
+        self.tridents.iter_mut().for_each(|t| t.needs_sync = false);
     }
 
     /// Gives the entities Horizon keeps without an id one (`Entity.id`, from

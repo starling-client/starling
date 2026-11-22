@@ -6,6 +6,8 @@
 //! game's settings, drawn in the low-budget skin the app carries (packaging/lowbudget).
 mod account_form;
 pub(super) mod fishing;
+#[cfg(target_os = "android")]
+mod onboarding;
 use account_form::{Form, Kind};
 
 use super::{Audio, Loading, UiResources};
@@ -44,12 +46,19 @@ enum Step {
         link: String,
     },
     /// The official files on their way: files and bytes so far, and in all.
-    Download([u64; 4]),
+    CheckingFiles,
+    Download(accounts::Progress),
     /// Java on its way: bytes so far, and in all.
-    Java(u64, u64),
+    Java(u64, u64, Option<std::time::Instant>),
     Unpacking,
     /// horizon-prepare's last line.
     Preparing(String),
+    /// First setup completed: choose what the app opens on subsequent starts.
+    #[cfg(target_os = "android")]
+    StartupScreen {
+        directly: bool,
+        error: Option<String>,
+    },
     /// Prepared: the game loads.
     Done,
     /// The last attempt failed, and why.
@@ -97,6 +106,8 @@ enum Action {
     Back,
     Settings,
     Diagnostics,
+    #[cfg(target_os = "android")]
+    FinishOnboarding(bool),
 }
 
 #[derive(Default)]
@@ -129,6 +140,8 @@ pub(super) struct Setup {
     /// Prepared and loading: the setup stays up until the menu's font is there (the loading
     /// screen without it draws every letter as an empty box).
     pub(super) starting: bool,
+    #[cfg(target_os = "android")]
+    onboarding: Option<onboarding::Onboarding>,
     /// The buttons as last drawn (dp): rectangle and what it does.
     buttons: Cell<[Option<([f32; 4], Action)>; 5]>,
     fishing: fishing::Fishing,
@@ -146,7 +159,34 @@ pub(super) struct Setup {
 /// The unpacked skin's folder and its menus, or why they did not load.
 type SkinLoad = (std::path::PathBuf, Result<UiResources, String>);
 
+fn setup_density(width: u32, height: u32) -> f32 {
+    (width as f32 / 1040.0)
+        .min(height as f32 / 700.0)
+        .clamp(1.0, 4.0)
+}
+
 impl Setup {
+    pub(in crate::game) fn onboarding_pending(&self) -> bool {
+        #[cfg(target_os = "android")]
+        return self.onboarding.is_some();
+        #[cfg(not(target_os = "android"))]
+        false
+    }
+
+    pub(in crate::game) fn onboarding_visible(&self) -> bool {
+        #[cfg(target_os = "android")]
+        return self.onboarding.as_ref().is_some_and(|setup| setup.visible);
+        #[cfg(not(target_os = "android"))]
+        false
+    }
+
+    pub(in crate::game) fn onboarding_already_chosen(&self) -> bool {
+        #[cfg(target_os = "android")]
+        return self.onboarding.as_ref().is_some_and(|setup| setup.chosen);
+        #[cfg(not(target_os = "android"))]
+        false
+    }
+
     /// How soon the screen draws again: often while the water or the settings show.
     pub(super) fn frame(&self, settings_open: bool) -> std::time::Duration {
         let lively = self.pond.get().is_some() || settings_open;
@@ -158,11 +198,22 @@ impl Setup {
 fn waiting(step: &Step) -> bool {
     matches!(
         step,
-        Step::Download(_) | Step::Java(..) | Step::Unpacking | Step::Preparing(_)
+        Step::CheckingFiles
+            | Step::Download(_)
+            | Step::Java(..)
+            | Step::Unpacking
+            | Step::Preparing(_)
     )
 }
 
 fn step(setup: &Setup, failure: &str) -> Step {
+    #[cfg(target_os = "android")]
+    if let Some(onboarding) = setup.onboarding.as_ref().filter(|setup| setup.visible) {
+        return Step::StartupScreen {
+            directly: onboarding.directly,
+            error: onboarding.error.clone(),
+        };
+    }
     if setup.starting {
         return Step::Done;
     }
@@ -170,7 +221,7 @@ fn step(setup: &Setup, failure: &str) -> Step {
         return Step::Failed(format!("The prepared game files did not load: {failure}"));
     }
     match preparer::stage() {
-        Stage::Java(done, total) => return Step::Java(done, total),
+        Stage::Java(done, total, started) => return Step::Java(done, total, Some(started)),
         Stage::Unpacking => return Step::Unpacking,
         Stage::Preparing(line) => return Step::Preparing(line),
         Stage::Done => return Step::Done,
@@ -178,13 +229,11 @@ fn step(setup: &Setup, failure: &str) -> Step {
         Stage::Idle => {}
     }
     match accounts::files() {
-        Files::Checking => return Step::Download([0; 4]),
-        Files::Downloading(p) => {
-            return Step::Download([p.files as u64, p.files_total as u64, p.bytes, p.bytes_total]);
-        }
+        Files::Checking => return Step::CheckingFiles,
+        Files::Downloading(progress) => return Step::Download(progress),
         Files::Failed(e) => return Step::Failed(e),
         // Ready: the preparing starts by itself (poll_setup).
-        Files::Ready => return Step::Java(0, 0),
+        Files::Ready => return Step::Java(0, 0, None),
         Files::Missing => {}
     }
     if setup.form.is_some() {
@@ -257,15 +306,15 @@ fn folder_offer(setup: &Setup) -> Option<super::files_offer::Stage> {
     })
 }
 
-/// Written once Horizon Android's worlds came over (Next here, Done over the title,
-/// game/files_offer.rs): the offer is not made again.
+/// Written once the player answered Horizon Android's offer (Next or Skip here, Done or Not now
+/// over the title, game/files_offer.rs): it is not made again. It came back on every start until
+/// the worlds came over, and a player keeping Horizon Android installed saw it every time.
 #[cfg(target_os = "android")]
 pub(super) fn horizon_answered() -> std::path::PathBuf {
     horizon_client::logging::private_home().join("horizon-android-import-answered")
 }
 
-/// Skip here or Not now over the title: not offered again until the next start, when the title
-/// offers it again while Horizon Android is installed.
+/// Answered in this start (the file above may not be writable).
 #[cfg(target_os = "android")]
 pub(super) static HORIZON_LATER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -285,6 +334,34 @@ fn horizon_offer(setup: &Setup) -> bool {
 
 fn mb(bytes: u64) -> String {
     format!("{:.0}", bytes as f64 / 1_000_000.0)
+}
+
+fn duration(seconds: u64) -> String {
+    if seconds >= 3600 {
+        format!("{}h {:02}m", seconds / 3600, seconds / 60 % 60)
+    } else {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
+}
+
+fn transfer_details(
+    received: u64,
+    remaining: u64,
+    elapsed: std::time::Duration,
+    stalled: bool,
+) -> String {
+    let mut details = format!("{} elapsed", duration(elapsed.as_secs()));
+    if stalled {
+        details.push_str(" · Waiting for the next file to finish");
+    } else if received > 0 && elapsed.as_secs() >= 3 {
+        let rate = received as f64 / elapsed.as_secs_f64();
+        let remaining = duration((remaining as f64 / rate).ceil() as u64);
+        details = format!(
+            "{:.2} MB/s avg · {details} · ~{remaining} left",
+            rate / 1_000_000.0
+        );
+    }
+    details
 }
 
 /// What the step says: title, body, and the line under it.
@@ -327,29 +404,65 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
             format!("On {link}, enter this code:"),
             Some(tr("waiting_browser")),
         ),
-        Step::Download([files, files_total, bytes, bytes_total]) => (
+        Step::CheckingFiles => (
+            "Checking game files",
+            "Checking the version and asset list.".into(),
+            None,
+        ),
+        Step::Download(progress) => (
             "Downloading the game",
             "From Mojang's servers, checked file by file.".into(),
-            Some(if *bytes_total > 0 {
+            Some(if let Some(started) = progress.transfer_started {
+                let stalled = progress
+                    .last_transfer
+                    .unwrap_or(started)
+                    .elapsed()
+                    .as_secs()
+                    >= 15;
+                let details = transfer_details(
+                    progress.downloaded_bytes,
+                    progress.bytes_total.saturating_sub(progress.bytes),
+                    started.elapsed(),
+                    stalled,
+                );
                 format!(
-                    "{files} of {files_total} files, {} of {} MB",
-                    mb(*bytes),
-                    mb(*bytes_total)
+                    "{} of {} MB · {} of {} files\n{details}",
+                    mb(progress.bytes),
+                    mb(progress.bytes_total),
+                    progress.files,
+                    progress.files_total
                 )
             } else {
-                "Checking the files".into()
+                format!(
+                    "Checking existing files · {} of {}",
+                    progress.files, progress.files_total
+                )
             }),
         ),
-        Step::Java(done, total) => (
-            "Preparing the game",
-            "Downloading Java, which prepares the game files.".into(),
-            (*total > 0).then(|| format!("{} of {} MB", mb(*done), mb(*total))),
+        Step::Java(done, total, started) => (
+            "Downloading Java",
+            "Java is needed to prepare the game files on this device.".into(),
+            started.map(|started| {
+                format!(
+                    "{} of {} MB\n{}",
+                    mb(*done),
+                    mb(*total),
+                    transfer_details(*done, total.saturating_sub(*done), started.elapsed(), false)
+                )
+            }),
         ),
         Step::Unpacking => ("Preparing the game", "Unpacking Java.".into(), None),
         Step::Preparing(line) => (
             "Preparing the game",
             "This takes a few minutes. Keep Starling open.".into(),
             Some(line.clone()),
+        ),
+        #[cfg(target_os = "android")]
+        Step::StartupScreen { error, .. } => (
+            "Starling is ready",
+            "Open the launcher or go straight to the game. Starling remembers your choice. Change it anytime in Settings > Launcher."
+                .into(),
+            error.clone(),
         ),
         Step::Done => (
             "Starting Starling",
@@ -363,9 +476,10 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
 /// The fraction done, for the bar.
 fn fraction(step: &Step) -> Option<f32> {
     match step {
-        Step::Download([_, _, bytes, total]) | Step::Java(bytes, total) if *total > 0 => {
-            Some((*bytes as f64 / *total as f64) as f32)
+        Step::Download(progress) if progress.bytes_total > 0 => {
+            Some((progress.bytes as f64 / progress.bytes_total as f64) as f32)
         }
+        Step::Java(bytes, total, _) if *total > 0 => Some((*bytes as f64 / *total as f64) as f32),
         _ => None,
     }
 }
@@ -391,6 +505,11 @@ fn buttons(step: &Step) -> Vec<(String, Action)> {
         Step::Horizon(true) => vec![
             literal("Next", Action::HorizonDone),
             literal("Pick the folder again", Action::Horizon),
+        ],
+        #[cfg(target_os = "android")]
+        Step::StartupScreen { .. } => vec![
+            literal("Game", Action::FinishOnboarding(true)),
+            literal("Launcher", Action::FinishOnboarding(false)),
         ],
         Step::Start => vec![
             (tr("setup.microsoft"), Action::SignIn),
@@ -547,15 +666,19 @@ impl Loading {
     }
 
     pub(super) fn draw_setup(&self, batch: &mut HudBatch, failure: &str) {
-        let Some(gui) = &self.gui else {
-            // The skin is still loading: the boot screen holds the window meanwhile.
-            let logs = horizon_client::logging::recent_lines();
-            horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
-            return;
+        let atlas = match &self.gui {
+            Some(gui) => &gui.atlas,
+            None if self.setup.onboarding_pending() => &self.boot,
+            None => {
+                // The boot screen holds the window while the setup skin loads.
+                let logs = horizon_client::logging::recent_lines();
+                horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
+                return;
+            }
         };
         let step = step(&self.setup, failure);
         let (title, body, note) = texts(&step);
-        let mut ui = Ui::new(&gui.atlas, batch, (-1.0, -1.0));
+        let mut ui = Ui::new(atlas, batch, (-1.0, -1.0));
         let (w, h) = (ui.w, ui.h);
         if let Some(form) = &self.setup.form {
             ui.fill(0., 0., w, h, color::bg());
@@ -695,7 +818,14 @@ impl Loading {
                     bw,
                     button_h,
                 ];
-                let (fill, ink) = if i == 0 {
+                let primary = match (&step, action) {
+                    #[cfg(target_os = "android")]
+                    (Step::StartupScreen { directly, .. }, Action::FinishOnboarding(choice)) => {
+                        directly == choice
+                    }
+                    _ => i == 0,
+                };
+                let (fill, ink) = if primary {
                     (color::ACCENT, color::ON_ACCENT)
                 } else {
                     (color::raised(), color::text())
@@ -769,7 +899,7 @@ impl Loading {
             .set(pond.map(|_| [0.0, below, w, h - below]));
         // The inbox's banner over it all, since the setup polls the inbox too: what its file
         // picker, or Horizon Android's folder, added.
-        self.imports.draw(&gui.atlas, batch);
+        self.imports.draw(atlas, batch);
     }
 
     pub(super) fn setup_key_event(&mut self, event: &winit::event::KeyEvent) -> bool {
@@ -816,8 +946,7 @@ impl Loading {
     pub(super) fn setup_touch(&mut self, touch: &Touch) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
-        let (pw, ph) = (size.width as f32, size.height as f32);
-        let density = (pw / 1040.0).min(ph / 700.0).clamp(1.0, 4.0);
+        let density = setup_density(size.width, size.height);
         let p = [
             touch.location.x as f32 / density,
             touch.location.y as f32 / density,
@@ -860,6 +989,10 @@ impl Loading {
             }
             return;
         }
+        self.setup_action_at(&inside);
+    }
+
+    fn setup_action_at(&mut self, inside: &impl Fn([f32; 4]) -> bool) {
         let hit = self
             .setup
             .buttons
@@ -872,6 +1005,8 @@ impl Loading {
     }
     fn setup_action(&mut self, action: Action) {
         match action {
+            #[cfg(target_os = "android")]
+            Action::FinishOnboarding(directly) => self.finish_onboarding(directly),
             Action::Ely => {
                 self.setup.provider = Some(Kind::Ely);
                 self.setup.dismiss_signin_error = true;
@@ -911,7 +1046,9 @@ impl Loading {
             }
             #[cfg(target_os = "android")]
             Action::Folder => match folder_offer(&self.setup) {
-                Some(super::files_offer::Stage::Restart) => crate::android::restart_app(),
+                Some(super::files_offer::Stage::Restart) => {
+                    super::files_offer::restart_moving_files()
+                }
                 _ => {
                     crate::android::open_file_access_settings();
                     self.setup.folder_asked = true;
@@ -936,11 +1073,9 @@ impl Loading {
             }
             #[cfg(target_os = "android")]
             Action::HorizonDone => {
-                if self.setup.horizon_picked {
-                    let _ = std::fs::write(horizon_answered(), b"");
-                } else {
-                    HORIZON_LATER.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                // Brought over or skipped, it is answered: the title doesn't ask on every start.
+                let _ = std::fs::write(horizon_answered(), b"");
+                HORIZON_LATER.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Action::SignIn => {
                 self.setup.form = None;

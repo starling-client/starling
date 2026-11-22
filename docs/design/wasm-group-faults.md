@@ -3,7 +3,7 @@
 Design note for #2766 (interruption counted by work, not by wall clock) and #2761 (one failing mod shouldn't
 disable its whole group). Both come down to one question: when a call into a group fails, what is still safe to run?
 This note answers that question. It changes no code. The facts below are from `crates/horizon-mod-wasm` at main
-fbf4f06490.
+fbf4f06490, except where a line says a stage has landed.
 
 ## Decisions
 
@@ -48,6 +48,14 @@ fbf4f06490.
   interruptions, import errors, the guest's `u32::MAX` error reply (`invoke`), and replies the host can't decode or
   that have trailing bytes. Only a busy group (`Refusal::Busy`) returns `None` without stopping it. Nothing clears
   the flag.
+- **Stage 1 has landed: refusals no longer stop the group.** `invoke` now classifies each `Err` as
+  `CallError::Refused` (guest code returned normally or never ran: the guest's error reply, a reply the host can't
+  decode or that has trailing bytes, a host-side encoding failure, input past `u32::MAX`) or `CallError::Fault`
+  (guest code cut off: a trap, the guest's panic, an import error, the epoch deadline). A refusal answers
+  unavailable and logs once per member and hook through the store's `refusals` set (`runtime.rs:776-781`); the
+  depth limit is a refusal that logs once per call path (`:716-722`); a busy group keeps today's `warn` (`:687`).
+  A fault still stops the whole group at `:774-794`, and nothing clears the flag. A refusal during a reply's
+  writeback decodes the whole reply before any field is assigned, so the record keeps its old value.
 - **The deadline counts wall clock.** `engine()` (`:74-90`) runs a thread that adds one epoch every millisecond. An
   outermost call sets a deadline of 100 epochs, or 30,000 for `Load` (`:587-593`). Nested calls keep the outer
   deadline. Epochs keep advancing while native code runs inside an import and while the guest thread is

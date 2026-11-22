@@ -51,7 +51,7 @@ impl LevelAccess for Cells {
         self.time
     }
     fn block_entity_analog_signal(
-        &self,
+        &mut self,
         pos: BlockPos,
         _state: BlockStateId,
         _direction: Direction,
@@ -194,6 +194,7 @@ impl Run<'_> {
                 may_build: true,
                 can_eat: false,
                 game_master: false,
+                respawn_point: None,
             };
             let state = self.level.block_state(pos);
             self.behaviours.use_without_item(

@@ -174,8 +174,8 @@ jobs:
       - name: Install Rust for Android and cargo-ndk
         if: runner.environment == 'github-hosted'
         run: |
-          rustup toolchain install stable --profile minimal --target aarch64-linux-android
-          rustup default stable
+          # The Rust Horizon pins (tools/ci/rust-version), as android.yml builds with, and its std's source.
+          bash tools/ci/rustup_install.sh --profile minimal --component rust-src --target aarch64-linux-android
           cargo install cargo-ndk --version 3.5.4 --locked
       # As android.yml's release build: the fast profile needs more than the runner's 16 GB.
       - name: Make room for the release build

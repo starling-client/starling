@@ -4,7 +4,7 @@ use mod_api::mod_api::client::hud_layout::GuiDraw;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq)]
 struct ItemStack {
     item: Arc<str>,
     count: u32,
@@ -21,7 +21,14 @@ impl ItemStack {
         ItemKey(&self.item)
     }
 }
+#[derive(Debug)]
+enum StackWriteError {}
 mod content {
+    pub(super) mod crash {
+        pub fn current_native_mod() -> Option<&'static str> {
+            None
+        }
+    }
     pub(super) mod registry_keys {
         pub(in crate::tests) fn block_key(name: &str) -> Option<super::super::BlockKey> {
             match name {
@@ -29,6 +36,11 @@ mod content {
                 "test:other" => Some(super::super::BlockKey::Other),
                 _ => None,
             }
+        }
+        pub(in crate::tests) fn block_entity_type_name(
+            _: super::super::BlockEntityTypeKey,
+        ) -> Option<&'static str> {
+            Some("test:counter")
         }
         pub(in crate::tests) fn item_id(key: super::super::ItemKey<'_>) -> Option<&str> {
             Some(key.0)
@@ -109,15 +121,19 @@ mod generated {
             pub id: String,
         }
         pub(super) use super::super::ItemStack;
+        // The generated standalone-model dispatch builds the stub `Answered` and names the type through this path.
+        pub(super) use super::super::Answered;
         pub(super) use super::super::{
             Command, Config, Dispensed, InteractionResult, MapDecoration, MapInfo, Minimap, Screen,
             Zoom,
         };
         pub struct FluidModel;
+        #[derive(Clone, Copy)]
+        pub struct EntityRef;
         include!(concat!(env!("OUT_DIR"), "/dispatch_fixtures_api.rs"));
     }
     include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));
-    pub(super) use self::mod_api::{BlockKey, BlockState};
+    pub(super) use self::mod_api::{BlockEntityTickReply, BlockFace, BlockKey, BlockState};
     pub use horizon_mod_api_macros::__subscriptions;
 }
 use generated::*;
@@ -149,6 +165,8 @@ fn install(mods: Arc<[ModEntry]>) {
     });
     let subscribers =
         horizon_mod_runtime::subscribers::Subscribers::new(HOOK_COUNT, mods.len(), subscriptions);
+    // A fresh installation starts poison-free, as the real runtime's does per session.
+    runtime::POISONED.with(|poisoned| poisoned.borrow_mut().clear());
     // Test dispatch needs the same static lifetime as the real installation.
     MODS.set(Some(Box::leak(Box::new(Installed { mods, subscribers }))));
 }
@@ -227,6 +245,7 @@ struct Parts {
     items: Vec<&'static dyn ItemPart>,
     menus: Vec<&'static dyn MenuPart>,
     fluids: Vec<&'static dyn FluidPart>,
+    entities: Vec<&'static dyn EntityPart>,
 }
 static NO_PARTS: Parts = Parts {
     blocks: Vec::new(),
@@ -234,6 +253,7 @@ static NO_PARTS: Parts = Parts {
     items: Vec::new(),
     menus: Vec::new(),
     fluids: Vec::new(),
+    entities: Vec::new(),
 };
 thread_local! {
     static PARTS: std::cell::Cell<&'static Parts> = const { std::cell::Cell::new(&NO_PARTS) };
@@ -253,6 +273,7 @@ fn has_part_hook(_: HookId) -> bool {
         || !parts.block_entities.is_empty()
         || !parts.items.is_empty()
         || !parts.menus.is_empty()
+        || !parts.entities.is_empty()
 }
 fn parts(_: HookId, _: &'static str) -> &'static Parts {
     PARTS.get()
@@ -292,6 +313,9 @@ impl Parts {
     }
     fn fluid<'k>(&self, _: impl FnOnce() -> Option<&'k str>) -> &[&'static dyn FluidPart] {
         &self.fluids
+    }
+    fn entity<'k>(&self, _: impl FnOnce() -> Option<&'k str>) -> &[&'static dyn EntityPart] {
+        &self.entities
     }
 }
 fn entered_parts<'a, P: ?Sized>(
@@ -365,10 +389,28 @@ impl MenuPart for Mod {
     fn menu_subscribed(&self) -> &'static [Option<HookId>] {
         &[]
     }
-    fn menu_slot_rules(&self, context: &dyn LoopContext, event: &mut MenuSlotRulesEvent<'_>) {
-        assert_eq!(context.side(), "loop");
+    fn menu_slot_rules(&self, _: &dyn Host, event: &mut MenuSlotRulesEvent<'_>) {
+        // The context arrives as the game passed it: who, where and the other slots.
+        let context = event.context;
+        assert_eq!((context.player, context.pos), (Some(7), Some([1, 2, 3])));
+        assert_eq!(event.container, MenuContainer::Grid);
+        assert_eq!(context.slots.len(), 2);
+        assert!(context.slots[1][0].is_none() && context.slots[1][1].is_some());
         event.may_place = false;
         event.max_stack = self.id;
+    }
+}
+impl EntityPart for Mod {
+    fn entity_subscribed(&self) -> &'static [Option<HookId>] {
+        &[]
+    }
+    fn general_entity_tick(
+        &self,
+        _host: &mut dyn ServerHost,
+        event: &mut GeneralEntityTickEvent<'_>,
+    ) {
+        assert_eq!(event.kind, "mymod:robot");
+        self.calls.lock().unwrap().push(self.id);
     }
 }
 impl ItemPart for Mod {
@@ -378,12 +420,12 @@ impl ItemPart for Mod {
     fn tooltip(&self, _: &dyn ClientHost, event: &mut TooltipEvent<'_>) {
         event.lines.push((Text, self.id));
     }
-    fn use_on(&self, _: &mut dyn ServerHost, _: &mut UseOnEvent<'_>) -> Flow {
+    fn use_on(&self, _: HostSide<'_>, _: &mut UseOnEvent<'_>) -> Option<InteractionResult> {
         self.calls.lock().unwrap().push(self.id);
         if self.id == 1 {
-            Flow::Cancel
+            Some(InteractionResult::SuccessServer)
         } else {
-            Flow::Continue
+            None
         }
     }
 }
@@ -391,7 +433,7 @@ impl ItemPart for Mod {
 impl Hooks for Mod {
     fn living_entity_use_item_finish(
         &self,
-        _: &mut dyn ServerHost,
+        _: HostSide,
         event: &mut LivingEntityUseItemFinishEvent<'_>,
     ) {
         *event.result = None;
@@ -471,244 +513,6 @@ fn part(id: u32, calls: &Arc<Mutex<Vec<u32>>>) -> &'static Mod {
 }
 
 mod stubs {
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    pub(super) struct BlockStateId;
-    #[derive(Clone, Copy)]
-    pub(super) struct LevelRef;
-    #[derive(Clone, Copy)]
-    pub(super) struct BlockPos;
-    #[derive(Clone, Copy)]
-    pub(super) struct Direction;
-    #[derive(Clone, Copy)]
-    pub(super) struct LevelDimension;
-    #[derive(Clone, Copy)]
-    pub(super) struct PlayerRef;
-    #[derive(Clone, Copy)]
-    pub(super) enum SoundSource {}
-    pub(super) struct NeighbourUpdate;
-    #[derive(Clone, Copy)]
-    pub(super) struct ConnectionKind;
-    pub(super) struct GlobalPos;
-    pub(super) struct AttributeModifier;
-    #[derive(Clone, Copy)]
-    pub(super) enum AttributeOperation {}
-    #[derive(Clone, Copy)]
-    pub(super) enum ModifierLifetime {}
-    #[derive(Clone, Copy)]
-    pub(super) enum EquipmentSlotGroup {}
-    pub(super) struct ItemAttributeModifier;
-    pub(super) struct ItemAttributeModifiers;
-    pub(super) struct ItemEnchantments;
-    pub(super) struct Identifier;
-    pub(super) trait LevelHost {
-        fn state_block(&self, _: BlockStateId) -> Option<&str> {
-            None
-        }
-    }
-    pub(super) trait LevelTicksHost: LevelHost {}
-    pub(super) trait LevelRandomHost: LevelHost {}
-    pub(super) trait LevelWriteHost: LevelTicksHost + LevelRandomHost {}
-    pub(super) struct Difficulty;
-    pub(super) struct SpawnSource;
-    pub(super) struct Tag;
-    pub(super) struct FeatureFlags(pub ());
-    pub(super) struct NoteInstrument;
-    pub(super) struct ScreenView<'a>(pub &'a ());
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) struct EffectKey(pub(super) u32);
-    #[derive(Debug, PartialEq)]
-    pub(super) enum ScreenOpening {
-        Cancel,
-        ModScreen,
-    }
-    #[derive(Debug, PartialEq)]
-    pub(super) struct Answered<T> {
-        pub(super) answer: T,
-        pub(super) mod_id: &'static str,
-    }
-    pub(super) struct StackedOnOther<'a> {
-        pub(super) _lifetime: std::marker::PhantomData<&'a mut ()>,
-    }
-    pub(super) struct ClientPacket;
-    #[derive(Default)]
-    pub(super) struct HudBatch(pub Vec<u32>);
-    #[derive(Clone, Copy)]
-    pub(super) struct TooltipPlace;
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum Hand {
-        Main,
-        Off,
-    }
-    #[derive(Clone, Copy)]
-    pub(super) struct BlockHit;
-    pub(super) struct BlockClick<'a>(pub &'a ());
-    #[derive(Clone, Copy)]
-    pub(super) enum BonemealSource {
-        Interaction,
-    }
-    pub(super) struct TooltipDisplay<'a>(pub &'a ());
-    pub(super) struct TriState;
-    pub(super) struct InteractionResult;
-    pub(super) struct HurtSource<'a> {
-        pub(super) damage_type: &'a str,
-        pub(super) position: Option<[f64; 3]>,
-    }
-    pub(super) struct Victim {
-        pub(super) position: [f64; 3],
-        pub(super) view: [f64; 3],
-    }
-    pub(super) use crate::tests::mod_api::mod_api::DamageContainer;
-    #[derive(Default)]
-    pub(super) struct ModBlockEntity {
-        id: String,
-        pub(super) data: Vec<i32>,
-    }
-    impl ModBlockEntity {
-        pub(super) fn new(id: &str) -> Self {
-            Self {
-                id: id.into(),
-                ..Default::default()
-            }
-        }
-        pub(super) fn id(&self) -> &str {
-            &self.id
-        }
-    }
-    pub(super) struct ModBlockEntityView<'a> {
-        id: &'a str,
-        pub(super) data: &'a mut Vec<i32>,
-    }
-    impl<'a> ModBlockEntityView<'a> {
-        pub(super) fn new(entity: &'a mut ModBlockEntity) -> Self {
-            Self {
-                id: &entity.id,
-                data: &mut entity.data,
-            }
-        }
-        pub(super) fn id(&self) -> &str {
-            self.id
-        }
-    }
-    pub(super) struct LootStack;
-    pub(super) struct LootContext;
-    pub(super) trait Tags {}
-    pub(super) struct NativeReloadListener;
-    #[derive(Clone)]
-    pub(super) struct RecipePropertyAddition;
-    pub(super) struct AdvancementProgress {
-        pub done: bool,
-    }
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum ProgressType {
-        Grant,
-        Revoke,
-    }
-    pub(super) struct RegistrationContext(pub &'static str);
-    pub(super) trait DataLoadContext {
-        fn origin(&self) -> &'static str;
-    }
-    impl DataLoadContext for Load {
-        fn origin(&self) -> &'static str {
-            self.0
-        }
-    }
-    pub(super) trait LoopContext {
-        fn side(&self) -> &'static str;
-    }
-    pub(super) struct Loop(pub &'static str);
-    impl LoopContext for Loop {
-        fn side(&self) -> &'static str {
-            self.0
-        }
-    }
-    pub(super) struct SoundPlay;
-    pub(super) struct ChannelRef;
-    #[derive(Clone, Copy)]
-    pub(super) struct PlayerFood;
     pub(super) use super::generated::mod_api::LivingRef;
-    #[derive(Clone, Copy)]
-    pub(super) struct EntityRef;
-    #[derive(Clone, Copy)]
-    pub(super) struct MinecartRef;
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum MinecartKind {
-        Rideable,
-    }
-    pub(super) struct EffectTickChange;
-    #[derive(Clone, Copy)]
-    pub(super) struct EquipmentSlot;
-}
-
-mod api {
-    // API values are deliberately distinct from the engine BlockStateId stub.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum BlockKey {
-        Test,
-        Other,
-    }
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct BlockState {
-        block: BlockKey,
-        ordinal: u16,
-    }
-    impl BlockState {
-        pub fn new(block: BlockKey, ordinal: u16) -> Self {
-            Self { block, ordinal }
-        }
-        pub fn block(self) -> BlockKey {
-            self.block
-        }
-        pub fn ordinal(self) -> u16 {
-            self.ordinal
-        }
-    }
-    pub struct DamageContainer(pub f32);
-    #[derive(Clone, Copy)]
-    pub struct LivingRef;
-
-    #[derive(Clone, Copy)]
-    pub struct FluidKey;
-
-    pub mod mod_chunk_tickets {
-        pub trait TicketValidation {}
-    }
-    pub use mod_chunk_tickets::TicketValidation;
-
-    pub mod client {
-        pub use super::fog;
-        pub mod camera {
-            pub struct CameraEntity;
-            pub struct FovPlayer;
-        }
-        pub mod first_person {
-            #[derive(Clone, Copy)]
-            pub struct Hand;
-        }
-        pub mod widgets {
-            pub struct TextEdit;
-        }
-        pub mod hud_layout {
-            pub struct HealthInputs;
-            pub struct GuiDraw;
-            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-            pub enum HeartKind {}
-        }
-    }
-    pub mod item {
-        pub mod menu {
-            pub struct MenuButtonContext {
-                pub player: u128,
-                pub player_entity_id: i32,
-                pub pos: [i32; 3],
-                pub id: i32,
-            }
-            pub struct AnvilCraft;
-            pub struct AnvilUpdate;
-            pub struct GrindstonePlace;
-            pub struct GrindstoneTake;
-        }
-        pub mod stations {
-            pub struct EnchantmentRow<'a>(std::marker::PhantomData<&'a ()>);
-        }
-    }
+    pub(super) use crate::tests::mod_api::mod_api::{BlockEntityTickReply, DamageContainer};
 }

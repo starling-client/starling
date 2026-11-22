@@ -34,6 +34,17 @@ fn catalog_shelf(shelf: horizon_client::options_ui::CatalogShelf) -> starling_ca
     }
 }
 
+/// Starling: on a phone a menu over the world (pause, inventory, ...) draws at most 60 frames a
+/// second. A paused game's menu draws its kept backdrop (`menu_blur_cache`) so cheaply that it
+/// ran at 300+ FPS, warming the phone for nothing. A computer keeps its limit.
+fn menu_frame_cap(limit: i32, has_screen: bool) -> i32 {
+    if cfg!(target_os = "android") && has_screen {
+        limit.min(60)
+    } else {
+        limit
+    }
+}
+
 impl Game<'_> {
     /// One of the game's folders (packs, shader packs, mods) in the file manager. On a phone the
     /// Files app shows it through Starling's own provider, wherever the game keeps it. A folder it
@@ -195,7 +206,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let b = self.interface_batch(size);
         (b.width, b.height)
     }
     /// Open the options screens (OptionsScreen) from the title or pause menu.
@@ -211,9 +222,12 @@ impl Game<'_> {
         self.set_screen(Screen::Options);
         self.options_from_title = from_title;
         let minecart_improvements = self.minecart_improvements();
+        // Restore fullbright when leaving another server.
+        self.hold_fullbright();
         let ui = &mut self.ui.options;
         // The game puts the skin on (game/own_skin.rs).
         ui.skin_page = true;
+        ui.wardrobe_enabled = cfg!(target_os = "android");
         ui.profile_name = horizon_client::accounts::player_name();
         ui.profile_key = horizon_client::accounts::player_key();
         ui.skin_cloud = horizon_client::accounts::skin_cloud();
@@ -267,6 +281,7 @@ impl Game<'_> {
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
         self.watch_pack_folder();
         self.poll_diagnostics();
+        self.perf_calibrate_page();
         let context = self.controller_settings_context();
         self.show_skin_cloud();
         let mut ui = std::mem::take(&mut self.ui.options);
@@ -274,12 +289,24 @@ impl Game<'_> {
             ui.set_controller_context(context);
         }
         let cursor = self.options_pointer(&mut ui);
+        self.ui.options = ui;
         let output = self
             .renderer
             .as_ref()
             .map_or(Default::default(), |r| r.output());
-        ui.draw(&self.settings, output, batch, &self.gui.atlas, cursor);
-        self.ui.options = ui;
+        self.ui
+            .options
+            .draw_background(&self.settings, output, batch, &self.gui.atlas);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        self.ui
+            .options
+            .draw_contents(&self.settings, batch, &self.gui.atlas, cursor);
+        #[cfg(target_os = "android")]
+        self.draw_wardrobe_preview(batch);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
+        self.ui
+            .options
+            .draw_overlays(batch, &self.gui.atlas, cursor);
         self.show_calibration((batch.width, batch.height));
     }
     /// Whose controller settings these are and what this game sees (`controller_ui`): the
@@ -462,6 +489,7 @@ impl Game<'_> {
                 Event::DiagnosticsRecord => self.toggle_diagnostic_recording(),
                 Event::DiagnosticsGpu => self.toggle_diagnostic_gpu(),
                 Event::PerfLab(i) => self.perf_lab_next(i),
+                Event::Calibrate(i) => self.perf_calibrate_button(i),
                 Event::ButtonClick => self.audio.play_button_click(),
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
@@ -470,7 +498,7 @@ impl Game<'_> {
                     self.settings.save(&Self::options_path());
                     self.settings.keys.sync_action_bindings();
                     self.apply_settings();
-                    self.switch_mods();
+                    self.switch_mods(false);
                     self.sync_native_switches();
                     self.sync_pregen_option();
                     self.sync_agent_control();
@@ -507,6 +535,8 @@ impl Game<'_> {
                     #[cfg(target_os = "android")]
                     self.mobile_options_apply(true);
                     self.settings.save(&Self::options_path());
+                    // The mods switched on the Mods page, in one reload (`switch_mods`).
+                    self.switch_mods(true);
                     let to_game = self.options_from_title;
                     let back = if let Some(screen) = self.panel.recipes_settings_return.take() {
                         screen
@@ -540,6 +570,17 @@ impl Game<'_> {
                 Event::OpenPackFolder => self.open_game_folder(&super::packs::packs_dir()),
                 Event::OpenModFolder => {
                     self.open_game_folder(&Self::game_dir().join(horizon_client::mod_list::DIR))
+                }
+                Event::ImportPacks(paths) => {
+                    let additional = self.discover_mod_packs(mod_api::PackType::ClientResources);
+                    let vanilla = self.vanilla_root();
+                    super::packs::import_resource_packs(
+                        &mut self.ui.options,
+                        &vanilla,
+                        &self.server_packs.active,
+                        &paths,
+                        &additional,
+                    );
                 }
                 // Horizon's own Add button: the screen picked a hit, the game
                 // owns the folder it lands in.
@@ -622,6 +663,13 @@ impl Game<'_> {
                     }
                 }
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
+                Event::ImportGpuDriver => {
+                    horizon_client::platform::pick_file();
+                }
+                Event::RestartGame => {
+                    #[cfg(target_os = "android")]
+                    crate::android::restart_app();
+                }
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeSetting(i, j) => self.native_setting_event(i, j),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
@@ -649,10 +697,41 @@ impl Game<'_> {
             match action {
                 SkinAction::Name(name) => self.keep_player_name(&name),
                 SkinAction::Choice(choice) => self.choose_own_skin(choice),
+                SkinAction::Cape(choice) => {
+                    #[cfg(target_os = "android")]
+                    self.choose_own_cape(choice);
+                    #[cfg(not(target_os = "android"))]
+                    let _ = choice;
+                }
+                SkinAction::PickCape => {
+                    #[cfg(target_os = "android")]
+                    self.pick_wardrobe_png(crate::ha_launcher::skins::library::Kind::Cape);
+                }
+                SkinAction::LoadAccountCapes =>
+                {
+                    #[cfg(target_os = "android")]
+                    if let Err(error) = self.account_capes(None) {
+                        self.ui.options.skin_warning(error);
+                    }
+                }
+                SkinAction::SaveWardrobe { cape, skin } => {
+                    #[cfg(target_os = "android")]
+                    self.save_wardrobe(cape, skin);
+                    #[cfg(not(target_os = "android"))]
+                    let _ = (cape, skin);
+                }
                 SkinAction::OpenFolder => self.open_game_folder(&Self::skins_dir()),
+                SkinAction::OpenWardrobeFolder => {
+                    #[cfg(target_os = "android")]
+                    self.open_game_folder(&Self::wardrobe_root().join("images"));
+                }
                 SkinAction::PickFile => self.pick_skin_file(),
                 SkinAction::ElyBy(on) => self.keep_elyby(on),
-                SkinAction::Upload(choice) => self.upload_own_skin(choice),
+                SkinAction::Upload(choice) => {
+                    if let Err(error) = self.upload_own_skin(choice) {
+                        self.ui.options.skin_warning(error);
+                    }
+                }
                 SkinAction::ElySite => self.open_ely_skins(),
             }
         }
@@ -701,6 +780,7 @@ impl Game<'_> {
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
         let scale = self.world_scale();
+        horizon_client::parallel::set_setting(self.settings.horizon.parallel_tick);
         if horizon_client_render::mipmap::set_dither_cutouts(
             self.settings.horizon.dither_cutout_mips,
         ) {
@@ -715,10 +795,10 @@ impl Game<'_> {
         {
             self.settings.horizon.save(dir);
         }
+        self.hold_fullbright();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
-            r.fullbright = s.extras.fullbright;
             r.improved_transparency = s.improved_transparency;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
@@ -728,6 +808,10 @@ impl Game<'_> {
                 s.file.int("textureFiltering"),
                 s.file.int("maxAnisotropyBit"),
             );
+            // Dynamic Resolution turned off starts over at the floor.
+            if !s.horizon.dynamic_resolution {
+                self.dynamic_resolution.reset();
+            }
             r.set_world_post(
                 scale,
                 s.horizon.fxaa,
@@ -897,15 +981,10 @@ impl Game<'_> {
             .settings
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused);
-        // Starling: on a phone a menu over the world (pause, inventory, ...) draws at most 60
-        // frames a second. A paused game's menu draws its kept backdrop (`menu_blur_cache`) so
-        // cheaply that it ran at 300+ FPS, warming the phone for nothing.
-        #[cfg(target_os = "android")]
-        let limit = if context.has_screen {
-            limit.min(60)
-        } else {
-            limit
-        };
+        // Starling: a phone's menu over the world draws at most 60 frames a second
+        // (`menu_frame_cap`). No `cfg` here: dynamic_fps_for_rust hooks this function, and
+        // horizon-mixins refuses a target body with one.
+        let limit = menu_frame_cap(limit, context.has_screen);
         // A native mod may only lower it (`native_framerate_limit`).
         let mut hooked = limit;
         self.native_framerate_limit(
@@ -938,6 +1017,30 @@ impl Game<'_> {
             }
         }
     }
+}
+
+impl Game<'_> {
+    /// Fullbright as this window may draw it (`fullbright_held`): the renderer's flag and the
+    /// graphics screen's row. Each tick (`tick_frame_visuals`) and when settings apply, so
+    /// joining or leaving a server needs no call of its own.
+    pub(super) fn hold_fullbright(&mut self) {
+        let held = fullbright_held(
+            self.remote.as_ref().map(|_| self.integrated.is_some()),
+            self.replay.playing(),
+        );
+        self.settings.fullbright_held = held;
+        if let Some(r) = self.renderer.as_mut() {
+            r.fullbright = self.settings.extras.fullbright && !held;
+        }
+    }
+}
+
+/// Fullbright is held off on another's server, where it would light what the server shows
+/// dark: a connection without this window's integrated server, as a multiplayer server
+/// or a LAN guest has. Single player, a LAN host and Replay Studio keep it.
+/// `connection`: none, or whether it plays on this window's integrated server.
+fn fullbright_held(connection: Option<bool>, studio: bool) -> bool {
+    connection == Some(false) && !studio
 }
 
 /// The named device can be a connected pad that has not driven the game yet.
@@ -998,7 +1101,8 @@ mod resize_state_tests {
         ) {
             return;
         }
-        use mod_api::{ClientHost, Hooks, ModEntry, WindowResizeEvent, testing::with_mods};
+        use mod_api::{ClientHost, Hooks, ModEntry, WindowResizeEvent};
+        use mod_platform::testing::with_mods;
         use std::sync::{Arc, Mutex};
         struct Listener(Arc<Mutex<Vec<(u32, u32, u32, u32)>>>);
         #[mod_api::__subscriptions]
@@ -1106,6 +1210,23 @@ mod resize_state_tests {
 }
 
 #[cfg(test)]
+mod fullbright_tests {
+    use super::fullbright_held;
+
+    #[test]
+    fn fullbright_is_held_only_on_another_servers_world() {
+        // The title screen, with no connection.
+        assert!(!fullbright_held(None, false));
+        // Single player and a LAN host play their own save; so does a splitscreen seat in P1's.
+        assert!(!fullbright_held(Some(true), false));
+        // A multiplayer server, or another player's world opened to LAN.
+        assert!(fullbright_held(Some(false), false));
+        // Replay Studio plays a recording, not a server.
+        assert!(!fullbright_held(Some(false), true));
+    }
+}
+
+#[cfg(test)]
 mod controller_context_tests {
     use super::detected_controller_style;
     use horizon_client::{controller_ui::Device, gamepad::GlyphStyle};
@@ -1130,5 +1251,20 @@ mod controller_context_tests {
             detected_controller_style(None, GlyphStyle::PlayStation),
             GlyphStyle::PlayStation
         );
+    }
+}
+
+#[cfg(test)]
+mod menu_frame_cap_tests {
+    use super::menu_frame_cap;
+
+    /// A phone's menu over the world draws at most 60 FPS; the world itself, and a computer's
+    /// menu, keep the limit.
+    #[test]
+    fn a_menu_caps_the_frame_rate_on_a_phone_only() {
+        let capped = if cfg!(target_os = "android") { 60 } else { 300 };
+        assert_eq!(menu_frame_cap(300, true), capped);
+        assert_eq!(menu_frame_cap(300, false), 300);
+        assert_eq!(menu_frame_cap(30, true), 30);
     }
 }

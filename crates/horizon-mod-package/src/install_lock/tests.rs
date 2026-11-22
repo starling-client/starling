@@ -87,11 +87,13 @@ fn process_probe() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn processes_serialize_the_entire_manifest_transaction() {
     let home = scratch("process");
     let guard = lock_home(&home).unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
+            "--include-ignored",
             "--exact",
             "install_lock::tests::process_probe",
             "--nocapture",
@@ -146,4 +148,13 @@ fn symlinked_homes_share_the_reentrant_lock() {
     drop(first);
     drop(second);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Android's shared storage answers a file lock with ENOSYS: the catalog installs there anyway
+/// (Starling's catalog refused every install with "Function not implemented (os error 38)").
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[test]
+fn a_filesystem_without_file_locks_does_not_refuse_the_install() {
+    assert!(locks_unsupported(&io::Error::from_raw_os_error(38)));
+    assert!(!locks_unsupported(&io::Error::from_raw_os_error(13)));
 }

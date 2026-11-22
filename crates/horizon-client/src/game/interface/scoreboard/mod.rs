@@ -225,6 +225,7 @@ impl Game<'_> {
             | Target::Other(id)
             | Target::Fangs(id)
             | Target::Cloud(id)
+            | Target::General(id)
             | Target::Hook(id) => Some(uuid_text(self.uuid_for(id))),
             // It keeps its UUID with itself.
             Target::Spawner(id) => self
@@ -241,7 +242,7 @@ impl Game<'_> {
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
         let name = self.holder_name(t)?;
-        let shown = self.target_name(t);
+        let shown = feedback_name(self.target_name(t), &name);
         Some(Holder {
             display: Some(literal(&shown.plain())),
             text: shown,
@@ -250,8 +251,15 @@ impl Game<'_> {
     }
     /// The entity with the given scoreboard name.
     fn target_of_holder(&self, name: &str) -> Option<Target> {
-        if name == self.acting_player_name() {
+        // `PlayerList.getPlayerByName` (any case); a mod's nicknames are not scoreboard names.
+        if self.player.is_some() && name.eq_ignore_ascii_case(self.acting_player_name()) {
             return Some(Target::Player);
+        }
+        if let Some(g) = self
+            .command_players()
+            .find(|g| g.name.eq_ignore_ascii_case(name))
+        {
+            return Some(Target::Guest(g.conn));
         }
         let uuid = uuid_from_text(name).filter(|_| name.len() == 36)?;
         self.target_with_uuid(uuid)
@@ -273,6 +281,7 @@ impl Game<'_> {
             | Target::Crystal(id)
             | Target::Dragon(id)
             | Target::Rocket(id)
+            | Target::General(id)
             | Target::Trident(id)
             | Target::Other(id)
             | Target::Fangs(id)
@@ -328,10 +337,15 @@ impl Game<'_> {
                         ok = false;
                     }
                 }
-                let team = holder
-                    .as_deref()
-                    .and_then(|h| self.score.board.players_team(h))
-                    .map(|t| t.name.clone());
+                // TamableAnimal.getTeam: a tamed pet with no team of its own
+                // answers with its root owner's.
+                let team = match t {
+                    Target::Mob(id) => self.mob_team(id).map(|t| t.name.clone()),
+                    _ => holder
+                        .as_deref()
+                        .and_then(|h| self.score.board.players_team(h))
+                        .map(|t| t.name.clone()),
+                };
                 for (want, negated) in &s.teams {
                     let matches = match &team {
                         Some(name) => name == want,
@@ -528,15 +542,22 @@ impl Game<'_> {
             |v| v.wrapping_add(1),
         );
     }
-    /// `ServerPlayer.awardKillScore`: total kills and the team kill counts.
+    /// `ServerPlayer.awardKillScore`: total kills, the player kills and the
+    /// team kill counts, for the victim `victim`.
     pub(super) fn score_player_killed(&mut self, victim: Target) {
-        let victim_name = self.holder_name(victim);
+        let name = self.holder_name(victim);
+        self.score_player_killed_named(name, matches!(victim, Target::Player | Target::Guest(_)));
+    }
+    /// [`score_player_killed`](Self::score_player_killed) with the victim's
+    /// scoreboard name at hand: a guest's record is out of `self.lan` during
+    /// its turn (`ServerPlayer.die` runs there).
+    pub(super) fn score_player_killed_named(&mut self, victim_name: Option<String>, player: bool) {
         let display = self.player_display_comp();
         let me = self.acting_player_name().to_owned();
         let board = &mut self.score.board;
         let inc = |v: i32| v.wrapping_add(1);
         board.for_all_objectives_with(sb::CRITERIA_TOTAL_KILLS, &me, Some(&display), inc);
-        if victim == Target::Player {
+        if player {
             board.for_all_objectives_with(sb::CRITERIA_PLAYER_KILLS, &me, Some(&display), inc);
         }
         let color_of =
@@ -639,7 +660,7 @@ impl Game<'_> {
         pet_team(&self.score.board, &own, Some(&owner_name))
     }
     /// A mob's own team, else its tamed owner's (`owner` is asked only then).
-    fn team_with_owner(
+    pub(super) fn team_with_owner(
         &self,
         id: u32,
         owner: impl FnOnce() -> Option<[i32; 4]>,
@@ -699,6 +720,31 @@ impl Game<'_> {
                 })
                 .collect(),
         }
+    }
+    /// The carts (indices into `carts`, as `near` holds them) that cart `i`
+    /// pushes this tick, as `OldMinecartBehavior.pushAndPickupEntities` asks
+    /// `EntitySelector.pushableBy(cart)`: a moving rideable cart keeps only
+    /// what its own team's and the target's collision rules allow; a still or
+    /// unrideable cart pushes every minecart in its box (no team filter).
+    pub(super) fn cart_push_allowed(
+        &self,
+        carts: &[super::minecarts::Minecart],
+        i: usize,
+        near: &[u32],
+    ) -> Vec<bool> {
+        let v = carts[i].velocity;
+        let moving =
+            carts[i].kind == super::minecarts::CartKind::Rideable && v.x * v.x + v.z * v.z >= 0.01;
+        if !moving {
+            return vec![true; near.len()];
+        }
+        let own = self.team_with_owner(carts[i].id, || None);
+        near.iter()
+            .map(|&j| {
+                let target = &carts[j as usize];
+                sb::pushable_by(own, self.team_with_owner(target.id, || None), true)
+            })
+            .collect()
     }
     /// The mobs on the player's team (`isAlliedTo`).
     pub(super) fn player_allies(&self) -> HashSet<u32> {
@@ -796,7 +842,7 @@ impl Game<'_> {
             other => other,
         }
     }
-    fn resolve_selector_text(&mut self, raw: &str) -> String {
+    pub(super) fn resolve_selector_text(&mut self, raw: &str) -> String {
         let mut reader = horizon_client::command::Reader::new(raw);
         let ty = horizon_client::command::args::ArgType::Entity {
             single: false,
@@ -1024,6 +1070,34 @@ pub(super) fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlaye
     players
 }
 
+/// `ScoreHolder.getFeedbackDisplayName`: the holder's display name with its
+/// hover replaced by `HoverEvent.ShowText` of its scoreboard name (a player's
+/// name, an entity's UUID string); the insertion stays.
+fn feedback_name(display: Text, scoreboard_name: &str) -> Text {
+    let mut component = display.component();
+    if let serde_json::Value::Object(o) = &mut component {
+        o.insert(
+            "hover_event".into(),
+            serde_json::json!({"action": "show_text", "value": scoreboard_name}),
+        );
+    }
+    display.with_component(component)
+}
+
+/// `TriggerCommand.suggestObjectives`: the trigger objectives `holder` has an
+/// unlocked score in.
+pub(super) fn trigger_objectives_for(board: &Scoreboard, holder: &str) -> Vec<String> {
+    let mut names: Vec<String> = board
+        .objectives
+        .iter()
+        .filter(|o| o.criteria == "trigger")
+        .filter(|o| board.score(holder, &o.name).is_some_and(|s| !s.locked))
+        .map(|o| o.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
 /// The commands' view of the game.
 struct GameEnv<'a, 'b> {
     g: &'a mut Game<'b>,
@@ -1064,7 +1138,7 @@ impl Env for GameEnv<'_, '_> {
             Target::Mob(id) | Target::Item(id) => uuid_text(self.g.uuid_for(id)),
             _ => return None,
         };
-        let text = self.g.target_name(entity);
+        let text = feedback_name(self.g.target_name(entity), &name);
         Some((
             Holder {
                 display: Some(literal(&text.plain())),
@@ -1173,6 +1247,26 @@ mod tab_list_tests {
 #[cfg(test)]
 mod team_tests {
     use super::*;
+    /// #14279: `ScoreHolder.getFeedbackDisplayName` keeps the display name and
+    /// its insertion, and shows the scoreboard name (an entity's UUID) on hover.
+    #[test]
+    fn a_feedback_name_shows_the_scoreboard_name_on_hover() {
+        let uuid = "00000001-0000-0002-0000-000300000004";
+        let display = Text::translate("entity.minecraft.pig", &[]).with_component_fields(vec![
+            (
+                "hover_event".into(),
+                serde_json::json!({"action": "show_entity", "id": "minecraft:pig", "uuid": uuid}),
+            ),
+            ("insertion".into(), uuid.into()),
+        ]);
+        let c = feedback_name(display, uuid).component();
+        assert_eq!(c["translate"], "entity.minecraft.pig");
+        assert_eq!(c["insertion"], uuid);
+        assert_eq!(
+            c["hover_event"],
+            serde_json::json!({"action": "show_text", "value": uuid})
+        );
+    }
 
     const WOLF: [i32; 4] = [1, 2, 3, 4];
     const CAT: [i32; 4] = [5, 6, 7, 8];
@@ -1264,3 +1358,9 @@ mod criterion_tests;
 mod empty_tag_tests;
 #[cfg(test)]
 mod guest_advancement_tests;
+
+#[cfg(test)]
+mod source_holder_tests;
+
+#[cfg(test)]
+mod selector_option_tests;

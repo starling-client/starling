@@ -14,8 +14,8 @@ use super::{BlockEntity, Game};
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
 use crate::game::world_loading::WorldRequest;
 use mod_api::{
-    BlockEntityFluidsEvent, BlocksEvent, FLUIDS, FluidResource, FluidStack, Hooks, Host,
-    HostTransaction, LevelRef, ModEntry, ModFluidTanks, Mods, Registrar, RegistrationContext,
+    BlocksEvent, FLUIDS, FluidResource, FluidStack, Hooks, HostTransaction, LevelRef, ModEntry,
+    ModFluidTanks, Mods, Registrar, RegistrationContext,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -29,25 +29,20 @@ impl Hooks for Tanks {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         r.declare_fluid("brine");
         r.block_entity_type("tank").blocks(&[TANK]).build();
+        let mut tanks = ModFluidTanks::default();
+        tanks.tanks = vec![4000, 2000];
+        tanks.inputs = vec![0, 1];
+        tanks.outputs = vec![0, 1];
+        tanks.faces = std::array::from_fn(|_| vec![0, 1]);
+        let block = r.block_key(TANK);
+        assert!(!r.is_block_capability_registered(&FLUIDS, &block));
+        r.block_fluids(&block, tanks);
+        assert!(r.is_block_capability_registered(&FLUIDS, &block));
     }
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
         event
             .blocks
             .push(mod_api::Block::new(TANK, "minecraft:stone"));
-    }
-    fn block_entity_fluids(
-        &self,
-        _: &dyn Host,
-        event: &mut BlockEntityFluidsEvent<'_>,
-    ) -> Option<ModFluidTanks> {
-        (event.block == TANK).then(|| {
-            let mut tanks = ModFluidTanks::default();
-            tanks.tanks = vec![4000, 2000];
-            tanks.inputs = vec![0, 1];
-            tanks.outputs = vec![0, 1];
-            tanks.faces = std::array::from_fn(|_| vec![0, 1]);
-            tanks
-        })
     }
 }
 
@@ -120,7 +115,7 @@ fn a_committed_mod_tank_survives_a_world_save_close_and_reopen() {
         return;
     }
     let mods: Mods = vec![ModEntry::new("tank_reopen", Box::new(Tanks))].into();
-    mod_api::__private::install(mods.clone());
+    mod_platform::__private::install(mods.clone());
     crate::game::api_values::install_parts(&mods).unwrap();
     let base = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let root = crate::game::mods::content_root(&base, &Default::default())

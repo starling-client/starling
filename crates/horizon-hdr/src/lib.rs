@@ -6,6 +6,50 @@
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
+/// The opt-in for wgpu's experimental features, which device creation refuses without.
+/// The game crates forbid unsafe code, so the acknowledgment lives here. Only the
+/// ray-query feature is ever asked for, with a plain device as the fallback.
+pub fn enable_experimental_features() -> wgpu::ExperimentalFeatures {
+    // Safety: the token itself opens nothing; it only permits the request.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
+/// The Vulkan device extensions wgpu's `EXPERIMENTAL_RAY_QUERY` needs, in the order
+/// `wgpu-hal` checks them: without all four the adapter offers no ray queries and the
+/// Ray Tracing switch stays greyed out.
+pub const RAY_QUERY_EXTENSIONS: [&str; 4] = [
+    "VK_KHR_deferred_host_operations",
+    "VK_KHR_acceleration_structure",
+    "VK_KHR_buffer_device_address",
+    "VK_KHR_ray_query",
+];
+
+/// Which of [`RAY_QUERY_EXTENSIONS`] this adapter's driver does not list (`None` without
+/// a Vulkan adapter to ask). Empty means the driver lists everything ray queries need.
+#[cfg(not(target_os = "macos"))]
+pub fn ray_query_missing_extensions(adapter: &wgpu::Adapter) -> Option<Vec<&'static str>> {
+    use wgpu::hal::api::Vulkan;
+    // Safety: read-only enumeration on the adapter's own physical device.
+    let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
+    let instance = hal.shared_instance().raw_instance();
+    let offered =
+        unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) }
+            .ok()?;
+    Some(
+        RAY_QUERY_EXTENSIONS
+            .into_iter()
+            .filter(|need| {
+                !offered.iter().any(|have| {
+                    have.extension_name_as_c_str()
+                        .ok()
+                        .and_then(|n| n.to_str().ok())
+                        == Some(*need)
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.
 /// `None` leaves opening to wgpu.

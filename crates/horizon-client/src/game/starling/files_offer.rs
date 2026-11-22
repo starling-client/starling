@@ -5,8 +5,8 @@
 //! `game_folder`). Turned down, it comes back from the folder buttons (Open Pack Folder...).
 //!
 //! After it, the offer of Horizon Android's worlds and resource packs (HorizonImport.java), for a
-//! player who set Starling up before the setup made it (game/setup.rs): on every start while
-//! Horizon Android is installed, until they came over.
+//! player who set Starling up before the setup made it (game/setup.rs): on a start while Horizon
+//! Android is installed, until they answer it (Bring them over, then Done; or Not now).
 use super::Game;
 use super::setup::{HORIZON_LATER, horizon_answered};
 use horizon_client::{
@@ -50,6 +50,15 @@ pub(super) struct FilesOffer {
     checked: Option<Instant>,
     /// The buttons as last drawn (UI units): the primary's and the other's rectangles.
     buttons: Cell<[[f32; 4]; 2]>,
+}
+
+/// The restart that moves the player's files into the Starling folder (android.rs
+/// `game_folder`), saying so meanwhile.
+pub(super) fn restart_moving_files() {
+    crate::android::restart_app_saying(&horizon_client::lang::get_or(
+        "starling.restart.files",
+        "Moving your files into the Starling folder…",
+    ));
 }
 
 /// Written when the player turns the offer down (here or in the setup, game/setup.rs): it is not
@@ -253,7 +262,7 @@ impl Game<'_> {
                 crate::android::open_file_access_settings();
                 offer.stage = Some(Stage::Waiting);
             }
-            (Card::Folder(Stage::Restart), 0) => crate::android::restart_app(),
+            (Card::Folder(Stage::Restart), 0) => restart_moving_files(),
             (Card::Folder(stage), _) => {
                 if stage != Stage::Restart {
                     let _ = std::fs::write(declined(), b"");
@@ -274,6 +283,8 @@ impl Game<'_> {
                 offer.horizon = None;
             }
             (Card::Horizon(false), _) => {
+                // Not now: not asked again on the next start either (setup.rs `horizon_answered`).
+                let _ = std::fs::write(horizon_answered(), b"");
                 HORIZON_LATER.store(true, std::sync::atomic::Ordering::Relaxed);
                 offer.horizon = None;
             }

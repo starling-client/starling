@@ -7,13 +7,30 @@ use crate::*;
 pub struct ModEntry {
     pub(crate) id: &'static str,
     pub(crate) hooks: Box<dyn Hooks>,
+    /// Whether the game loaded it as a wasm module: what its registrations are checked against,
+    /// whatever the module says of itself.
+    pub(crate) wasm: bool,
 }
 
 impl ModEntry {
     /// Bind a hook implementation to its nonempty bundle id.
     pub fn new(id: &'static str, hooks: Box<dyn Hooks>) -> Self {
         assert!(!id.is_empty(), "native mod id must not be empty");
-        Self { id, hooks }
+        Self {
+            id,
+            hooks,
+            wasm: false,
+        }
+    }
+
+    /// Bind a loaded wasm module's hook proxy to its bundle id.
+    // hidden: the wasm runtime's side, not part of the mod surface
+    #[doc(hidden)]
+    pub fn wasm(id: &'static str, hooks: Box<dyn Hooks>) -> Self {
+        Self {
+            wasm: true,
+            ..Self::new(id, hooks)
+        }
     }
 
     /// Marks the thread as inside this mod's `hook` until the guard drops, so a panic in it
@@ -33,6 +50,13 @@ pub(crate) struct Installed {
     pub(crate) mods: Mods,
     pub(crate) subscribers: horizon_mod_runtime::subscribers::Subscribers,
     pub(crate) disabled: Box<[std::sync::atomic::AtomicBool]>,
+    /// The poison sets of the hooks whose dispatch isolates every listener
+    /// (#2414 ruling): a listener that unwound is skipped by that one hook
+    /// for the rest of the session. One set per hook, filled only on a panic;
+    /// `poison_free` answers through one atomic load, so a dispatch with no
+    /// poison pays nothing.
+    poisons: std::sync::Mutex<Option<Box<[Option<std::collections::HashSet<&'static str>>]>>>,
+    poison_free: std::sync::atomic::AtomicBool,
 }
 
 impl Installed {
@@ -68,6 +92,8 @@ impl Installed {
             mods,
             subscribers,
             disabled,
+            poisons: std::sync::Mutex::new(None),
+            poison_free: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -104,6 +130,40 @@ pub(crate) fn install(mods: Mods) -> &'static Installed {
     }
 }
 
+/// Mark `id`'s listener of `hook` poisoned for the session (#2414 ruling):
+/// it is skipped by that one hook alone — its other hooks and Parts are
+/// untouched, unlike a whole-mod disable. Called only from a listener's
+/// `catch_unwind` handler, so an installation is always in place.
+pub(crate) fn poison(hook: generated::HookId, id: &'static str) {
+    let installed = installed().expect("a poison lands inside a dispatch");
+    let mut poisons = installed.poisons.lock().unwrap();
+    let sets =
+        poisons.get_or_insert_with(|| std::vec![None; generated::HOOK_COUNT].into_boxed_slice());
+    sets[hook as usize]
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(id);
+    installed
+        .poison_free
+        .store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether `id`'s listener of `hook` is poisoned for the session.
+pub(crate) fn poisoned(hook: generated::HookId, id: &str) -> bool {
+    // One atomic load on the usual path: the sets only fill on a panic.
+    installed().is_some_and(|installed| {
+        !installed
+            .poison_free
+            .load(std::sync::atomic::Ordering::Acquire)
+            && installed
+                .poisons
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|poisons| poisons[hook as usize].as_ref())
+                .is_some_and(|poisoned| poisoned.contains(id))
+    })
+}
+
 /// The process-wide list in dispatch order, or an empty list before installation.
 pub(crate) fn mods() -> &'static [ModEntry] {
     installed().map_or(&[], |installed| &installed.mods)
@@ -111,6 +171,15 @@ pub(crate) fn mods() -> &'static [ModEntry] {
 
 pub(crate) fn listened(hook: generated::HookId) -> bool {
     installed().is_some_and(|installed| installed.subscribers.contains_any(hook as usize))
+}
+
+pub(crate) fn enabled_listened(hook: generated::HookId) -> bool {
+    installed().is_some_and(|installed| {
+        installed
+            .subscribers
+            .indices(hook as usize)
+            .any(|index| !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed))
+    })
 }
 
 /// Switch an installed trait mod's subsequent dispatches on or off.
@@ -121,11 +190,25 @@ pub(crate) fn set_mod_enabled(id: &str, on: bool) -> bool {
     let mut found = false;
     for (entry, disabled) in installed.mods.iter().zip(&*installed.disabled) {
         if entry.id == id {
-            disabled.store(!on, std::sync::atomic::Ordering::Relaxed);
+            if disabled.swap(!on, std::sync::atomic::Ordering::Relaxed) == on {
+                MODS_SWITCHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if !on {
+                    horizon_mod_runtime::water_tickets::remove_owner(id);
+                }
+            }
             found = true;
         }
     }
     found
+}
+
+/// How many times a mod was switched on or off: what a kept capability compares to tell that a
+/// provider may have come or gone (`BlockCapabilityCache`).
+static MODS_SWITCHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The count of mod switches so far.
+pub(crate) fn mods_switched() -> u64 {
+    MODS_SWITCHED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether an installed mod subscribes to an injected hook.
@@ -152,11 +235,15 @@ pub(crate) fn mod_index_on(index: usize) -> bool {
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
 /// panic in it names the mod. The generated dispatch loops over it.
-pub(crate) fn entered_registration<'a>(mods: &'a [ModEntry], hook: &'static str) -> Entered<'a> {
+pub fn entered_registration<'a>(
+    mods: &'a [ModEntry],
+    hook: &'static str,
+) -> impl Iterator<Item = &'a dyn Hooks> + 'a {
     Entered {
         mods: mods.iter(),
         hook,
         guard: None,
+        scope: None,
     }
 }
 
@@ -182,10 +269,17 @@ pub(crate) fn entered_subscribers(
     hook_id: generated::HookId,
     hook: &'static str,
 ) -> impl Iterator<Item = &'static ModEntry> {
-    let mut crash_guard = None;
+    let mut crash_guard = crate::dispatch_scope::ModGuard::empty();
+    let scope = crate::dispatch_scope::snapshot();
     listening(hook_id).map(move |(_, entry)| {
-        drop(crash_guard.take());
-        crash_guard = Some(mark_mod(entry.id, hook));
+        scope.replace(
+            &mut crash_guard,
+            crate::content::crash::ModCall {
+                id: entry.id,
+                hook,
+                part: None,
+            },
+        );
         entry
     })
 }
@@ -204,20 +298,21 @@ pub(crate) fn entered_parts<'a, P: ?Sized>(
     parts: &'a [Attached<P>],
     hook: &'static str,
 ) -> impl Iterator<Item = &'a P> {
-    let mut guard = None;
+    let mut guard = crate::dispatch_scope::ModGuard::empty();
+    let scope = crate::dispatch_scope::snapshot();
     parts
         .iter()
         .filter(|attached| mod_index_on(attached.mod_index))
         .map(move |attached| {
             // The last part's mark goes first, as in `Entered`.
-            drop(guard.take());
-            guard = Some(crate::content::crash::enter_native_mod(
+            scope.replace(
+                &mut guard,
                 crate::content::crash::ModCall {
                     id: attached.mod_id,
                     hook,
                     part: Some(attached.type_name),
                 },
-            ));
+            );
             &*attached.part
         })
 }
@@ -226,6 +321,7 @@ pub(crate) struct Entered<'a> {
     pub(crate) mods: std::slice::Iter<'a, ModEntry>,
     pub(crate) hook: &'static str,
     pub(crate) guard: Option<crate::content::crash::ModGuard>,
+    scope: Option<crate::dispatch_scope::Scope>,
 }
 
 impl<'a> Iterator for Entered<'a> {
@@ -235,7 +331,15 @@ impl<'a> Iterator for Entered<'a> {
         // The last mod's mark goes first, so the next one's puts back what was there before.
         drop(self.guard.take());
         let entry = self.mods.next()?;
-        self.guard = Some(mark_mod(entry.id, self.hook));
+        self.guard = Some(
+            self.scope
+                .get_or_insert_with(crate::dispatch_scope::snapshot)
+                .enter(crate::content::crash::ModCall {
+                    id: entry.id,
+                    hook: self.hook,
+                    part: None,
+                }),
+        );
         Some(&*entry.hooks)
     }
 }
@@ -289,7 +393,7 @@ pub(crate) fn receives_cancelled(hook: generated::HookId) -> bool {
 
 /// A cancel hook's enabled subscribers in dispatch order, each with whether it is still told
 /// once the event is cancelled. Unlike [`entered`], nothing is marked: the dispatch enters only
-/// the mods it calls, through [`enter_listener`].
+/// the mods it calls, through [`ListenerScope::enter`].
 pub(crate) fn listening(
     hook_id: generated::HookId,
 ) -> impl Iterator<Item = (bool, &'static ModEntry)> {
@@ -310,9 +414,32 @@ pub(crate) fn listening(
 }
 
 /// Marks the thread as inside `entry`'s `hook` until the guard drops, and hands back its hooks.
-pub(crate) fn enter_listener(
-    entry: &'static ModEntry,
-    hook: &'static str,
-) -> (crate::content::crash::ModGuard, &'static dyn Hooks) {
-    (mark_mod(entry.id, hook), &*entry.hooks)
+/// One reusable instrumentation slot for loops that filter cancellation or ownership.
+pub(crate) struct ListenerScope {
+    scope: crate::dispatch_scope::Scope,
+    guard: crate::dispatch_scope::ModGuard,
+}
+impl ListenerScope {
+    pub(crate) fn new() -> Self {
+        Self {
+            scope: crate::dispatch_scope::snapshot(),
+            guard: crate::dispatch_scope::ModGuard::empty(),
+        }
+    }
+    #[inline]
+    pub(crate) fn enter(
+        &mut self,
+        entry: &'static ModEntry,
+        hook: &'static str,
+    ) -> &'static dyn Hooks {
+        self.scope.replace(
+            &mut self.guard,
+            crate::content::crash::ModCall {
+                id: entry.id,
+                hook,
+                part: None,
+            },
+        );
+        &*entry.hooks
+    }
 }

@@ -2,14 +2,15 @@ name: android
 # All four Starling APKs, on GitHub's runners: branch pushes and pull requests build each ABI and keep it
 # as an artifact, signed with the debug key in STARLING_DEBUG_KEYSTORE_BASE64 so one installs over another (a
 # throwaway key where that secret is missing, as in a fork's pull request). A tag v* signs it with the release key held
-# in the repository's secrets (STARLING_KEYSTORE_BASE64, STARLING_KEY_ALIAS, STARLING_STORE_PASSWORD, STARLING_KEY_PASSWORD)
-# and publishes it as the latest release, with packaging/android/release-notes.md. The APK holds no game files: players
-# prepare those from their own copy.
+# in the secrets of the `release` environment (STARLING_KEYSTORE_BASE64, STARLING_KEY_ALIAS, STARLING_STORE_PASSWORD,
+# STARLING_KEY_PASSWORD) and publishes it as the latest release, with packaging/android/release-notes.md. The APK holds
+# no game files: players prepare those from their own copy.
 #
-# Only JuanLuci/starling holds the release key (the merge agreement with Horizon Android). Everywhere else, as in
-# starling-client/starling, every build is Starling Preview (io.github.juanluci.starling.preview, build_apk.py
-# --preview), installed beside the release and signed with that repository's own test key in
-# STARLING_DEBUG_KEYSTORE_BASE64 (alias horizon-debug, password android); a tag there publishes nothing.
+# The release key is starling-client/starling's, in its `release` environment, which only the protected `starling`
+# branch and v* tags reach (a ruleset lets only admins push those tags); JuanLuci/starling held it before. Every other
+# build, and every build elsewhere, is Starling Preview (io.github.juanluci.starling.preview, build_apk.py --preview),
+# installed beside the release and signed with the repository's own test key in STARLING_DEBUG_KEYSTORE_BASE64 (alias
+# horizon-debug, password android); a tag elsewhere publishes nothing.
 on:
   push:
     branches: [android, starling, integration]
@@ -30,11 +31,15 @@ on:
         description: A test with these native mods of native-mods/ compiled in (ids, separated by spaces), by native_build.sh
         type: string
         default: ''
+      wasm_probe:
+        description: Also build packaging/android/wasm-probe, a wasm mod that says its hooks ran, as an artifact (arm64)
+        type: boolean
+        default: false
 permissions:
   contents: read
 env:
-  RELEASE_BUILD: ${{ (github.repository == 'JuanLuci/starling' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_key)) && 'true' || 'false' }}
-  PREVIEW: ${{ github.repository != 'JuanLuci/starling' && 'true' || 'false' }}
+  RELEASE_BUILD: ${{ (github.repository == 'starling-client/starling' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_key)) && 'true' || 'false' }}
+  PREVIEW: ${{ !(github.repository == 'starling-client/starling' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_key)) && 'true' || 'false' }}
 concurrency:
   group: android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -48,6 +53,8 @@ jobs:
           - { abi: armeabi-v7a, target: armv7-linux-androideabi }
           - { abi: x86, target: i686-linux-android }
           - { abi: x86_64, target: x86_64-linux-android }
+    # The release key's environment, for a release build only (none otherwise).
+    environment: ${{ (github.repository == 'starling-client/starling' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_key)) && 'release' || '' }}
     runs-on: ubuntu-latest
     # A release's fast profile builds slower (fewer codegen units, fewer at once: below).
     timeout-minutes: 150
@@ -67,8 +74,9 @@ jobs:
             "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
       - name: Install Rust for Android and cargo-ndk
         run: |
-          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-          rustup default stable
+          # The Rust Horizon pins (tools/ci/rust-version), as its CI and the launcher's native mods build with.
+          # rust-src: build_apk.py builds the std with the game (its TLS_FLAGS).
+          bash tools/ci/rustup_install.sh --profile minimal --component rust-src --target ${{ matrix.target }}
           cargo install cargo-ndk --version 3.5.4 --locked
       - uses: Swatinem/rust-cache@v2
         with:
@@ -106,8 +114,15 @@ jobs:
           test -n "$KEYSTORE" || exit 0
           mkdir -p target/android
           echo "$KEYSTORE" | base64 -d > target/android/debug.keystore
+      # Compile v2: the arm64 APK's game is a set of Rust libraries (the mod API's crates and the mod host among
+      # them), so a native mod plays from a small library of its own beside them, which mod-builds' store builds
+      # for this commit and profile (its store-base.yml runs this same build). The other ABIs have no store.
+      - name: The game and the mod API as dylibs
+        if: matrix.abi == 'arm64-v8a' && !inputs.native_mods
+        run: python3 tools/android_native_sdk.py prepare
       - name: Build the APK
         env:
+          RUSTFLAGS: ${{ matrix.abi == 'arm64-v8a' && !inputs.native_mods && '-C prefer-dynamic' || '' }}
           ABI: ${{ matrix.abi }}
           HORIZON_ANDROID_KEY_ALIAS: ${{ env.RELEASE_BUILD == 'true' && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
@@ -149,11 +164,22 @@ jobs:
           path: target/android/lib*-symbols.so
           if-no-files-found: ignore
           retention-days: 90
+      # With the cargo-horizon-mod and the Rust build_apk.py built the wasm std with (build_apk.py `wasm_std`).
+      - name: Build the wasm probe mod
+        if: inputs.wasm_probe && matrix.abi == 'arm64-v8a'
+        working-directory: packaging/android/wasm-probe
+        run: ../../../target/debug/cargo-horizon-mod horizon-mod build --wasm
+      - uses: actions/upload-artifact@v4
+        if: inputs.wasm_probe && matrix.abi == 'arm64-v8a'
+        with:
+          name: starling-wasm-probe
+          path: packaging/android/wasm-probe/target/horizon-mod/*.hmod
+          if-no-files-found: error
 
   release:
     # Publish once, only after every architecture has built and signed successfully.
     needs: apk
-    if: github.repository == 'JuanLuci/starling' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'starling-client/starling' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -185,4 +211,4 @@ jobs:
         if: env.RELEASE_BUILD == 'true' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run native-mods.yml -R "$GITHUB_REPOSITORY" --ref android -f version="${GITHUB_REF_NAME#v}"
+        run: gh workflow run native-mods.yml -R "$GITHUB_REPOSITORY" --ref starling -f version="${GITHUB_REF_NAME#v}"

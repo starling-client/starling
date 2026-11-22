@@ -100,18 +100,20 @@ impl Auth {
     fn redeem(&mut self, code: &str) -> Result<String, Response> {
         self.failures
             .retain(|at| at.elapsed() < Duration::from_secs(60));
-        if self.failures.len() >= FAILURES_PER_MINUTE {
-            return Err(page_error(
-                429,
-                "Too many failed logins: wait a minute, then open a new link.",
-            ));
-        }
         self.codes.retain(|(_, at)| at.elapsed() < LINK_LIFE);
         let Some(i) = self
             .codes
             .iter()
             .position(|(c, _)| api::same_token(c, code))
         else {
+            // Only wrong codes are slowed: a stranger's guesses must not lock the owner's real
+            // link out (a code is 256 random bits, so the limit only spares the log).
+            if self.failures.len() >= FAILURES_PER_MINUTE {
+                return Err(page_error(
+                    429,
+                    "Too many failed logins: wait a minute, then open a new link.",
+                ));
+            }
             self.failures.push_back(Instant::now());
             return Err(page_error(
                 403,
@@ -333,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn login_links_name_an_address_a_browser_can_open() {
         let tailnet: SocketAddr = "100.100.1.2:8130".parse().unwrap();
         assert_eq!(reachable(tailnet), tailnet);
@@ -364,6 +367,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn sign_in_with_a_link() {
         let dir = std::env::temp_dir().join(format!("horizon-server-panel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -435,6 +439,11 @@ mod tests {
         for _ in 1..FAILURES_PER_MINUTE {
             assert!(get("/login?code=nope", "").0.starts_with("HTTP/1.1 403"));
         }
+        assert!(get("/login?code=nope", "").0.starts_with("HTTP/1.1 429"));
+        // A real link still signs in while the wrong ones are refused.
+        let url = shared.panel.lock().unwrap().login_link().unwrap();
+        let path = url.split_once(&address.to_string()).unwrap().1.to_owned();
+        assert!(get(&path, "").0.starts_with("HTTP/1.1 303"));
         assert!(get("/login?code=nope", "").0.starts_with("HTTP/1.1 429"));
         std::fs::remove_dir_all(&dir).unwrap();
     }

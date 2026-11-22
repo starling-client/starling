@@ -83,7 +83,7 @@ impl Game<'_> {
         if CREATIVE_SHIFT.get() == 0.0 {
             return;
         }
-        let width = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs()).width;
+        let width = self.interface_batch(self.touch_size()).width;
         self.bedrock_show(slot < Creative::DISPLAY, width);
     }
     /// Where the creative screen's window, or both of Bedrock Inventory's, start and end across.
@@ -96,8 +96,12 @@ impl Game<'_> {
     /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
     /// `itemGroup.<mod>`), else `title` as English text.
     pub(super) fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
-        if let Some((name, _)) = &tab.name {
-            return name.clone();
+        if let Some((name, _, translate)) = &tab.name {
+            return if *translate {
+                self.translate(name).unwrap_or_else(|| name.clone())
+            } else {
+                name.clone()
+            };
         }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate_with_fallback(key, &tab.title),
@@ -254,6 +258,9 @@ impl Game<'_> {
             let (tx, ty) = Creative::tab_position(tab);
             batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
         }
+        if !panel {
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        }
         for t in tabs
             .iter()
             .filter(|t| !panel && self.creative_screen.on_page(t))
@@ -398,6 +405,8 @@ impl Game<'_> {
         let inventory = self.creative_screen.tab().inventory;
         let hovered = self.creative_hovered.take();
         let effect_tip = self.creative_effect_tip.take();
+        let browser_tip = self.draw_mod_browser(batch);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
         for t in tabs
             .iter()
             .filter(|t| self.bedrock_items.is_none() && self.creative_screen.on_page(t))
@@ -445,6 +454,16 @@ impl Game<'_> {
         }
         if let Some(lines) = effect_tip {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
+        }
+        // CreativeModeInventoryScreen.checkTabHovering: a tab says its name.
+        if let Some(i) = Creative::hovered_tab(&tabs, (ox, oy), self.cursor)
+            && let Some(t) = tabs.get(i)
+        {
+            let title = self.creative_tab_title(t);
+            self.tooltip(batch, &title, self.cursor.0, self.cursor.1);
+        }
+        if let Some(tooltip) = browser_tip {
+            self.draw_mod_browser_tooltip(batch, tooltip);
         }
     }
     pub(super) fn creative_trash_hovered(batch: &HudBatch, cursor: (f32, f32)) -> bool {
@@ -503,7 +522,7 @@ impl Game<'_> {
         else {
             return false;
         };
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let batch = self.interface_batch(size);
         if !self.creative_catalog_at(&batch, self.cursor) {
             return false;
         }
@@ -594,7 +613,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let batch = self.interface_batch(size);
         self.bedrock_side(self.cursor.0, batch.width);
         self.bedrock_held = true;
         let (ox, oy) = Self::creative_origin(&batch);

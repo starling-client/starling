@@ -20,7 +20,6 @@ impl Game<'_> {
         self.lan_menu_links_tick();
         self.lan_containers_tick();
         self.tick_lan_mount_menus();
-        self.tick_player_menus();
         self.native_players_equipment();
         self.announce_guest_advancements();
         // Entity.commonTick belongs to each player, including spectators and
@@ -64,6 +63,7 @@ impl Game<'_> {
             let play = host.play.entry(conn).or_default();
             play.chat_spam = play.chat_spam.saturating_sub(1);
             play.command_spam = play.command_spam.saturating_sub(1);
+            play.recipe_checks = play.recipe_checks.saturating_sub(1);
             // commandSuggestionsProvider.tick: one answer a tick, to the latest request.
             play.suggestion_budget = true;
             self.guest_try_suggestions(conn);
@@ -74,7 +74,9 @@ impl Game<'_> {
             let Some(host) = self.lan.as_mut() else {
                 return;
             };
-            if host.hub.guests[gi].dead {
+            if host.hub.guests[gi].dead
+                || (host.hub.guests[gi].health <= 0.0 && host.hub.guests[gi].death_canceled)
+            {
                 self.guest_tick_death(gi);
                 if let Some(host) = self.lan.as_ref() {
                     refresh_building_player(host, conn);
@@ -198,16 +200,11 @@ impl Game<'_> {
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];
-            let held = g
-                .inventory
-                .get(g.selected)
-                .cloned()
-                .flatten()
-                .map(|s| s.item);
+            let held = crate::game::held_items::held_attack_item(&g.inventory, g.selected);
             let play = host.play.entry(conn).or_default();
-            if play.attack_item != held {
+            if play.attack_item.as_ref() != held {
                 play.attack_ticks = 0;
-                play.attack_item = held;
+                play.attack_item = held.cloned();
             }
             self.guest_delayed_destroy(conn);
             self.guest_server_tick(conn);
@@ -389,6 +386,10 @@ impl Game<'_> {
             return;
         };
         let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+        // Each move the player sent put it somewhere (`handleMovePlayer`'s `setPos`).
+        let (id, end) = (g.entity_id as u32, g.position);
+        self.entity_section_walked(id, end, moves.iter().map(|m| m.0));
+        let g = self.lan.as_ref().unwrap().hub.guest(conn).unwrap();
         if g.spectator() {
             // ServerPlayer.doTick runs the player's whole tick for a spectator
             // too, unless its box touches an unloaded chunk
@@ -435,11 +436,12 @@ impl Game<'_> {
         {
             self.as_guest(conn, |game| game.server_spin_attack());
         }
-        let in_wall = !sleeping && self.in_wall(at, dimensions);
+        let in_wall = !sleeping && self.in_wall(conn, at, dimensions);
         let mut soul = None;
         let events = self.as_guest(conn, |game| {
             let (rules, motion) = (game.world.health_rules, game.motion);
             let health = &motion.health;
+            let leather_boots = super::super::worn_boots::leather_boots(&game.armor);
             let freeze_immune = game.wears_freeze_immune();
             let burn_immune = game.wears_burn_from_stepping_immunity();
             let boat = game.riding_boat_fluid_box();
@@ -528,6 +530,7 @@ impl Game<'_> {
             // lit campfires and grown sweet berry bushes hurt (#1305).
             w.player.shift_key_down = sneaking;
             let _ = w.player.set_sleeping(sleeping);
+            w.player.leather_boots = leather_boots;
             w.player.freeze_immune = freeze_immune;
             w.player.burn_from_stepping_immune = burn_immune;
             let _ = w.server_block_damage(start);
@@ -546,20 +549,23 @@ impl Game<'_> {
                 w.server_player_pose_tick()
             };
             let mut events = std::mem::take(&mut w.player.events);
-            // LayeredCauldronBlock.handleEntityOnFireInside along those moves.
-            for event in &events {
-                match event {
-                    MotionEvent::CauldronExtinguish { pos } => game.cauldron_extinguish(*pos),
-                    MotionEvent::PowderSnowMelt { pos } => game.powder_snow_melt(*pos),
-                    _ => {}
-                }
-            }
+            // Powder snow and cauldrons put the fire out along those moves.
+            game.block_extinguish_player(&events);
             // Entity.baseTick: rain puts out a burning player.
             game.rain_extinguish_player();
-            // WitherRoseBlock.entityInside along those moves.
+            // WitherRoseBlock.entityInside along those moves, and an
+            // `entity_inside` part's typed effect writes.
             for event in &events {
-                if matches!(event, MotionEvent::InsideWitherRose) {
-                    game.wither_rose_contact();
+                match event {
+                    MotionEvent::InsideWitherRose => game.wither_rose_contact(),
+                    MotionEvent::InsideEffect {
+                        id,
+                        duration,
+                        amplifier,
+                    } if game.remote.is_none() && game.ui.difficulty != 0 => {
+                        game.give_player_effect(id, *duration, i32::from(*amplifier));
+                    }
+                    _ => {}
                 }
             }
             // ServerGamePacketListenerImpl.handleMovePlayer:
@@ -719,6 +725,34 @@ impl Game<'_> {
                         host.hub.entity_event(id, event as i8);
                     }
                 }
+                MotionEvent::Fall(horizon_client::landing::FallEvent::BlockFallSound {
+                    position,
+                    state,
+                }) => {
+                    let entity = self
+                        .lan
+                        .as_ref()
+                        .and_then(|host| host.hub.guest(conn))
+                        .map(|g| (g.entity_id as u32, "minecraft:player"));
+                    let sound = self.block_sound_type(
+                        [position.x, position.y, position.z],
+                        state,
+                        entity,
+                        mod_api::BlockSoundCause::Fall,
+                    );
+                    self.audio.play_unshared(
+                        &sound.fall,
+                        Some(at),
+                        sound.volume * 0.5,
+                        sound.pitch * 0.75,
+                    );
+                    self.send_level_sound(
+                        // `Player.playSound` plays in the players' source.
+                        LevelSound::new(&sound.fall, at, sound.volume * 0.5, sound.pitch * 0.75)
+                            .in_source(mod_api::SoundSource::Players),
+                        Some(conn),
+                    );
+                }
                 MotionEvent::Fall(event) => {
                     let player = self
                         .lan
@@ -746,14 +780,18 @@ impl Game<'_> {
                 }
                 // LivingEntity.baseTick's entity event 67, to every client
                 // tracking the guest and its own; this window draws it too.
-                MotionEvent::Drown => {
+                // A mod's other bubble count goes out as particles instead.
+                MotionEvent::Drown(bubbles) => {
+                    if !self.drown_bubbles(at, [0.0; 3], bubbles) {
+                        continue;
+                    }
                     if let Some(host) = self.lan.as_ref()
                         && let Some(g) = host.hub.guest(conn)
                     {
                         host.hub
                             .entity_event(g.entity_id, crate::game::combat::DROWN_EVENT);
                     }
-                    self.drown_particles(at, [0.0; 3]);
+                    self.drown_particles(at, [0.0; 3], 8);
                 }
                 // ServerPlayer.onInsideBlock: the enter_block trigger, for the
                 // player who moved.
@@ -817,3 +855,7 @@ impl Game<'_> {
 #[cfg(test)]
 #[path = "tests/building_cache.rs"]
 mod building_cache_tests;
+
+#[cfg(test)]
+#[path = "tests/fall_sound_tests.rs"]
+mod fall_sound_tests;

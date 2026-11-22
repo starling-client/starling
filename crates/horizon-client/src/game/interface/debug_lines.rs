@@ -9,8 +9,8 @@ use horizon_client::{
     debug_entries::{self, ENTRIES},
     debug_overlay as overlay,
     debug_overlay::Displayer,
-    java_text,
 };
+use horizon_core::java_number;
 use horizon_world::{
     heightmap::{HeightmapState, HeightmapType},
     worldgen::terrain::TerrainBlockStates,
@@ -132,7 +132,7 @@ impl Game<'_> {
                             "position",
                             [format!(
                                 "Speed: {} blocks/tick",
-                                java_text::format_fixed(speed.length(), 3)
+                                java_number::format_fixed(speed.length(), 3)
                             )],
                         );
                     }
@@ -176,6 +176,19 @@ impl Game<'_> {
                     });
                     if self.debug && !own_lines.is_empty() {
                         d.group("Horizon passes", own_lines);
+                    }
+                    let detail_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
+                        let support = r.pass_detail_support().filter(|_| r.pass_detail());
+                        support.map_or_else(Vec::new, |support| {
+                            overlay::pass_detail_lines(
+                                &r.own_pass_parts(),
+                                &r.own_pass_counters(),
+                                support,
+                            )
+                        })
+                    });
+                    if self.debug && !detail_lines.is_empty() {
+                        d.group("Horizon pass detail", detail_lines);
                     }
                 }
                 "tps" => self.debug_tps_line(d),

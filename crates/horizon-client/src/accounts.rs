@@ -4,7 +4,8 @@
 //! [`crate::auth`] for online-mode servers, renewed in the background before it runs out. The
 //! game's official files are fetched from Mojang's servers here too. Without a
 //! keystore (a desktop build, `STARLING_ACCOUNTS=1`) the secrets stay in memory for the run.
-use starling_account::files::{Pins, Progress, Sources, Wanted};
+pub use starling_account::files::Progress;
+use starling_account::files::{Pins, Sources, Wanted};
 pub use starling_account::skins::ELY_SKINS;
 pub use starling_account::{Account, Provider, SignInStage};
 use starling_account::{Endpoints, MemoryStore, SecretStore, SignIn, SignInState};
@@ -212,6 +213,17 @@ pub fn profiles() -> starling_account::Accounts {
         .clone()
 }
 
+#[cfg(target_os = "android")]
+pub fn reflect_cape(key: &str, cape: Option<String>) {
+    let mut state = shared();
+    state.profiles = Some(starling_account::Accounts::load(&dir()));
+    if let State::SignedIn(account) = &mut state.state
+        && account.key() == key
+    {
+        account.cape = cape;
+    }
+}
+
 pub fn player_name() -> Option<String> {
     if !in_game() {
         return None;
@@ -281,12 +293,12 @@ pub fn skin_cloud() -> crate::own_skin::Cloud {
 /// Send `png` (checked and written anew: `own_skin::upload_png`) as the skin of the Microsoft
 /// profile `key`, with slim or classic arms, off the window thread; [`skin_cloud`] tells how it
 /// goes. One upload at a time.
-pub fn upload_skin(key: String, png: Vec<u8>, slim: bool) {
+pub fn upload_skin(key: String, png: Vec<u8>, slim: bool) -> bool {
     use crate::own_skin::Upload;
     {
         let mut s = shared();
         if matches!(s.skin_upload, Some((_, Upload::Sending))) {
-            return;
+            return false;
         }
         s.skin_upload = Some((key.clone(), Upload::Sending));
     }
@@ -317,6 +329,7 @@ pub fn upload_skin(key: String, png: Vec<u8>, slim: bool) {
         };
         s.skin_upload = Some((key, upload));
     });
+    true
 }
 
 fn begin(state: State) -> (u64, Arc<AtomicBool>) {
@@ -546,10 +559,18 @@ pub fn download_files() {
     let working = KeepWorking::new("files", "Downloading the game files");
     std::thread::spawn(move || {
         let _working = working;
+        let started = std::time::Instant::now();
         let result = (|| {
             let root = files_root();
             let _ = std::fs::remove_file(root.join(FILES_DONE));
             let progress = |p: Progress| {
+                if p.files == 0 && p.transfer_started.is_none() {
+                    log::info!(
+                        "Starling: verifying and fetching {} game files ({} MB)",
+                        p.files_total,
+                        p.bytes_total / 1_000_000
+                    );
+                }
                 let mut s = shared();
                 if matches!(s.files, Files::Checking | Files::Downloading(_)) {
                     s.files = Files::Downloading(p);
@@ -579,7 +600,13 @@ pub fn download_files() {
         let mut s = shared();
         s.files_cancel = None;
         s.files = match result {
-            Ok(()) => Files::Ready,
+            Ok(()) => {
+                log::info!(
+                    "Starling: game files verified in {:.1} s",
+                    started.elapsed().as_secs_f64()
+                );
+                Files::Ready
+            }
             Err(_) if cancel.load(Ordering::Relaxed) => Files::Missing,
             Err(e) => {
                 log::warn!("Horizon: the game files were not fetched: {e}");

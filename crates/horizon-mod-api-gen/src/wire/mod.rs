@@ -5,7 +5,11 @@ mod append;
 mod borrowed;
 mod calls;
 mod host;
+mod prepared;
+#[cfg(test)]
+mod prepared_tests;
 pub use host::{generate_coverage, generate_host};
+mod trait_roles;
 mod ty;
 
 use crate::capability_providers::key_shapes;
@@ -36,6 +40,7 @@ pub(super) const IMPORTS: &[&str] = &[
     "Levels",
     "Messages",
     "Players",
+    "RuntimeLevels",
     "ClientSession",
     "RenderAssets",
     "InstanceGroups",
@@ -57,11 +62,15 @@ pub(super) const IMPORTS: &[&str] = &[
     "PackFinders",
     "ColorResolvers",
     "BlockTintSources",
+    "CauldronInteractions",
     "SectionGeometryRenderers",
     "SectionGeometryContext",
     "ParticleProviders",
     "EnchantmentDamageEffects",
     "PoiTypeExtensions",
+    "VillagerProfessions",
+    "LoadConditions",
+    "CauldronFluidContents",
     "BlockAndTintGetter",
     "GroundLevel",
     "BlockMetadata",
@@ -72,11 +81,12 @@ pub(super) const IMPORTS: &[&str] = &[
 
 /// Imported traits a call never hands over, each reached through another's method instead.
 pub(super) const REACHED: &[(&str, &str, &str)] = &[
-    ("ConfigFiles", "host", "Ok(h.config_files())"),
+    ("ConfigFiles", "", ""),
     ("Commands", "server_host_mut", "Ok(h.commands())"),
     ("Levels", "server_host", "Ok(h.levels())"),
     ("Messages", "server_host", "Ok(h.messages())"),
     ("Players", "server_host", "Ok(h.players())"),
+    ("RuntimeLevels", "server_host_mut", "Ok(h.runtime_levels())"),
     ("ClientSession", "client_host", "Ok(h.client_session())"),
     ("RenderAssets", "client_host", "Ok(h.render_assets())"),
     ("InstanceGroups", "client_host", "Ok(h.instance_groups())"),
@@ -113,11 +123,19 @@ pub(super) const REACHED: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Bounded file-capability selectors, shared by the guest proxy and host dispatch.
+pub(super) const FILE_ROOTS: &[(u8, &str, &str)] = &[
+    (0, "Host", "config_files"),
+    (1, "Host", "data_files"),
+    (2, "ServerHost", "world_data_files"),
+];
+
 /// Traits a mod implements: their methods are the world's exports. The handler traits the
 /// capability keys name join them (`exports`).
 const EXPORTS: &[&str] = &[
     "Hooks",
     "ReloadApply",
+    "BlockEntityTransform",
     "StructureType",
     "StructurePiece",
     "BlockPart",
@@ -126,14 +144,17 @@ const EXPORTS: &[&str] = &[
     "MenuPart",
     "FluidPart",
     "ServerReloadListener",
+    "LoadCondition",
     "GameTestFunction",
     "ClientReloadListener",
     "BiomeColorResolver",
     "BlockTintSource",
+    "Interaction",
     "SectionGeometry",
     "ParticleProvider",
     "EnchantmentDamageEffect",
     "CommandArgumentType",
+    "EntitySelectorType",
     "GroundStateProvider",
     "PlaceProvider",
     "TooltipAppender",
@@ -144,7 +165,12 @@ const EXPORTS: &[&str] = &[
 /// (`ResourceHandler<ItemResource>`), each instance of a generic one its own export. Set once,
 /// by `surface`.
 pub(super) fn exports() -> &'static [&'static str] {
-    EXPORTED.get().map_or(EXPORTS, Vec::as_slice)
+    trait_roles::exports()
+}
+
+/// All imported traits, including discovered per-item declarations.
+pub(super) fn imports() -> &'static [&'static str] {
+    trait_roles::imports()
 }
 
 /// Whether the game also hands a mod objects of exported trait `owner` (a capability's handler,
@@ -168,6 +194,7 @@ const LOAD_CONTEXTS: &[&str] = &[
 /// the worldgen workers, its block tint sources, colour resolvers and section geometry on the
 /// meshing workers. They keep no mutable state and get no `Host`.
 const WORKERS: &[&str] = &[
+    "BlockEntityTransform",
     "StructureType",
     "StructurePiece",
     "BlockTintSource",
@@ -175,27 +202,28 @@ const WORKERS: &[&str] = &[
     "SectionGeometry",
 ];
 
-/// What a call of `method` is to the runtime, for its limits and its wait.
+/// What a call of `method` is to the runtime, for its limits and its wait. A method given the
+/// worldgen context (`alter_ground`, a worldgen Part method) runs on the worldgen workers too.
 pub(super) fn call_class(types: &ty::Types<'_>, method: &Method) -> &'static str {
-    if WORKERS.contains(&method.owner) {
+    if WORKERS.contains(&method.owner) || takes(types, method, &["WorldgenHost"]) {
         "super::Call::Worker"
-    } else if loads(types, method) {
+    } else if takes(types, method, LOAD_CONTEXTS) {
         "super::Call::Load"
     } else {
         "super::Call::Hook"
     }
 }
 
-/// Whether `method` is a load-phase call: one of its arguments is a load-phase context.
-fn loads(types: &ty::Types<'_>, method: &Method) -> bool {
+/// Whether one of `method`'s arguments is one of `contexts`.
+fn takes(types: &ty::Types<'_>, method: &Method, contexts: &[&str]) -> bool {
     method.params.iter().any(|(_, ty)| {
         let ty = match ty {
             ty::Ty::Ref(inner, _) => &**inner,
             ty => ty,
         };
         match ty {
-            ty::Ty::Dyn(name, _) => LOAD_CONTEXTS.contains(&name.as_str()),
-            ty::Ty::Named(def) => LOAD_CONTEXTS
+            ty::Ty::Dyn(name, _) => contexts.contains(&name.as_str()),
+            ty::Ty::Named(def) => contexts
                 .iter()
                 .any(|name| types.defs[*def].rust.rsplit("::").next() == Some(*name)),
             _ => false,
@@ -206,8 +234,6 @@ fn loads(types: &ty::Types<'_>, method: &Method) -> bool {
 /// A trait object that crosses without methods: a provider of a mod's own handler type,
 /// erased (`Arc<dyn Any + Send + Sync>`), which only mods of its group take back.
 pub(super) const ERASED: &str = "Any";
-
-static EXPORTED: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
 
 /// An owner as written (`ResourceHandler<ItemResource>`): the trait's path, and its type arguments.
 fn owner_parts(owner: &str) -> Result<(Vec<String>, Vec<syn::Type>), String> {
@@ -257,6 +283,7 @@ pub(super) struct Method {
     /// The area trait that declares it, when it is a part of `owner` (`host::items::ItemsHost`).
     pub(super) via: Option<String>,
     pub(super) name: String,
+    pub(super) access: Option<String>,
     /// `Some(mutable)` for a `self` receiver.
     pub(super) receiver: Option<bool>,
     pub(super) params: Vec<(String, Ty)>,
@@ -313,26 +340,44 @@ pub(super) fn surface<'a>(
     root: &'a Path,
     included: &'a [(&'a str, &'a str)],
 ) -> Result<Surface<'a>, String> {
+    surface_reading(root, included, None)
+}
+
+/// [`surface`]; with `missing`, a listed boundary trait the tree does not have is pushed there
+/// instead of refusing the tree (the surface export reads older trees whose API predates a
+/// listed trait; the build never does).
+pub(super) fn surface_reading<'a>(
+    root: &'a Path,
+    included: &'a [(&'a str, &'a str)],
+    mut missing: Option<&mut Vec<String>>,
+) -> Result<Surface<'a>, String> {
     let mut types = Types::new(Index::new(root, included))?;
     let api = types.index.module("mod_api", &[])?;
-    let mut exported: Vec<&'static str> = EXPORTS.to_vec();
+    let (imported, mut exported, paths) = trait_roles::declared(root)?;
+    types.index.read.borrow_mut().extend(paths);
     for shape in key_shapes(&mut types.index)? {
         for owner in [shape.handler.clone(), shape.provider()] {
-            if !exported.iter().any(|e| *e == owner) {
-                exported.push(Box::leak(owner.into_boxed_str()));
+            if !exported.contains(&owner) {
+                exported.push(owner);
             }
         }
     }
-    let _ = EXPORTED.set(exported);
+    trait_roles::select(imported, exported);
     let mut methods = Vec::new();
     let mut unbound = Vec::new();
     let mut excused = Vec::new();
     let mut parts = Vec::new();
     let hooks = hook_ids(&mut types)?;
-    for owner in IMPORTS.iter().chain(exports()) {
+    for owner in imports().iter().chain(exports()) {
         let (path, args) = owner_parts(owner)?;
-        let Found::Item(id) = types.index.resolve_path(api, &path)? else {
-            return Err(format!("{owner} is not a mod_api trait"));
+        let id = match (types.index.resolve_path(api, &path), missing.as_deref_mut()) {
+            (Ok(Found::Item(id)), _) => id,
+            (_, Some(missing)) => {
+                missing.push((*owner).to_owned());
+                continue;
+            }
+            (Err(error), None) => return Err(error),
+            (Ok(_), None) => return Err(format!("{owner} is not a mod_api trait")),
         };
         let Item::Trait(item) = types.index.item(id).clone() else {
             return Err(format!("{owner} is not a trait"));
@@ -411,7 +456,8 @@ pub(super) fn surface<'a>(
         .module("mod_api", &["wire".into(), "wire_types".into()])?;
     for owner in exports() {
         let (path, _) = owner_parts(owner)?;
-        let Found::Item(id) = types.index.resolve_path(api, &path)? else {
+        // Missing only where `missing` let the first pass skip it.
+        let Ok(Found::Item(id)) = types.index.resolve_path(api, &path) else {
             continue;
         };
         let Item::Trait(item) = types.index.item(id) else {
@@ -443,8 +489,26 @@ pub(super) fn surface<'a>(
 /// guest needs no wire call. Its trait methods are the actual imports.
 pub(super) fn frame_accessor(method: &Method) -> bool {
     method.params.is_empty()
-        && IMPORTS.contains(&method.owner)
-        && matches!(&method.ret, Ty::Dyn(name, _) if IMPORTS.iter().any(|owner| owner.rsplit("::").next() == Some(name.as_str())))
+        && imports().contains(&method.owner)
+        && matches!(&method.ret, Ty::Dyn(name, _) if imports().iter().any(|owner| owner.rsplit("::").next() == Some(name.as_str())))
+}
+
+/// A fallible borrowed frame getter sends only its availability result across
+/// Wire. The actual borrowed host remains in the synchronous native call frame.
+pub(super) fn fallible_frame_accessor(method: &Method) -> Option<(&str, bool, &Ty)> {
+    if !method.params.is_empty() || !imports().contains(&method.owner) {
+        return None;
+    }
+    let Ty::Result(ok, error) = &method.ret else {
+        return None;
+    };
+    let Ty::Dyn(name, mutable) = &**ok else {
+        return None;
+    };
+    imports()
+        .iter()
+        .any(|owner| owner.rsplit("::").next() == Some(name.as_str()))
+        .then_some((name.as_str(), *mutable, &**error))
 }
 
 /// The coverage check: every method of the bound traits crosses to wasm, or its doc says why
@@ -541,6 +605,13 @@ fn method(
         owner,
         via: None,
         name: sig.ident.to_string(),
+        access: function
+            .attrs
+            .iter()
+            .find(|a| a.path().is_ident("access"))
+            .map(|a| a.parse_args::<syn::Ident>().map(|i| i.to_string()))
+            .transpose()
+            .map_err(|e| e.to_string())?,
         receiver,
         params,
         ret,
@@ -578,13 +649,31 @@ pub fn generate(root: &Path, included: &[(&str, &str)]) -> Result<Generated, Str
         &surface.parts,
     );
     guest.push_str(&calls::hook_names(&surface.hooks));
-    guest.push_str(&calls::dispatch(&surface.types, &surface.methods).0);
+    let prepared = crate::Catalog::load(root)?
+        .hooks
+        .into_iter()
+        .filter_map(|hook| hook.prepared.map(|field| (hook.name, field)))
+        .collect::<Vec<_>>();
+    guest.push_str(&calls::dispatch(&surface.types, &surface.methods, &prepared).0);
+    let abis = prepared::describe(&surface.methods, &prepared)?;
     let _ = writeln!(
         wire,
-        "#[doc(hidden)]\npub static WIRE_LAYOUT: ::std::sync::LazyLock<u64> = ::std::sync::LazyLock::new(|| {{ let mut hash = {:#x}; {layouts} hash }});",
+        "#[doc(hidden)]\npub fn wire_core_layout() -> u64 {{ let mut hash = {:#x}; {layouts} hash }}",
         layout(&surface),
         layouts = surface.types.defs.iter().filter(|def| def.lifetimes == 0).map(|def| format!("hash = crate::wire::layout_mix(hash, <{} as crate::wire::Wire>::layout(&mut vec![]));", def.rust.replace("mod_api::", "crate::"))).collect::<String>()
     );
+    writeln!(
+        wire,
+        "#[doc(hidden)] pub fn prepared_abi_layout() -> u64 {{ {} }}",
+        prepared::layout_code(&abis)
+    )
+    .unwrap();
+    let complete = if abis.is_empty() {
+        "wire_core_layout()"
+    } else {
+        "crate::wire::layout_mix(wire_core_layout(),prepared_abi_layout())"
+    };
+    writeln!(wire, "#[doc(hidden)] pub static WIRE_LAYOUT: ::std::sync::LazyLock<u64> = ::std::sync::LazyLock::new(|| {{ {complete} }});").unwrap();
     let sources = surface.types.index.read.take();
     Ok(Generated {
         wire,
@@ -759,7 +848,10 @@ fn public_path(index: &Index<'_>, path: &str) -> bool {
 }
 
 /// A hash of everything the two sides must agree on: every method's id and signature, and
-/// every type's shape (FNV-1a over their descriptions).
+/// every type's shape (FNV-1a over their descriptions). This is the core seed;
+/// `generate` appends owned Wire layouts and the prepared marker/entry ABI layouts
+/// to the final WIRE_LAYOUT. wire_core_layout also supports refusal diagnostics:
+/// a guest presenting it without the prepared component is refused, never accepted.
 fn layout(surface: &Surface<'_>) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     let mut feed = |text: &str| {
@@ -777,6 +869,7 @@ fn layout(surface: &Surface<'_>) -> u64 {
         "group state: 32 words in the std member's horizon_group_state; 0 handler table, 1 cache budget, 2 eviction guard, 3.. eviction callbacks; members allocate through an evicting global allocator",
     );
     feed("static replies: bounded acknowledged ids or uncached text");
+    feed("ConfigFiles imports: u8 root selector, 0 config, 1 data, 2 world; other values refused");
     feed("Hooks::subscribed: Vec<(hook name, i32 priority, bool receive_cancelled)>");
     for method in &surface.methods {
         feed(&format!("{method:?}"));
@@ -795,6 +888,7 @@ mod tests {
     /// The generated impls depend on the hand-written `Wire` impls the generator skips, so an
     /// edit to that file must rerun the build script.
     #[test]
+    #[ignore = "daily"]
     fn enchantment_damage_registrar_and_callback_cross_to_wire() {
         std::thread::Builder::new()
             .stack_size(64 << 20)
@@ -832,6 +926,42 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
+    fn a_worldgen_part_method_crosses_and_waits_for_its_group_as_a_worker_call() {
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+                let generated = crate::sources(&root, crate::FillMode::Require).unwrap();
+                let included = [
+                    ("mod_api_generated.rs", generated.hooks.as_str()),
+                    ("mod_api_generated_host.rs", generated.host.as_str()),
+                    ("mod_api_host_areas.rs", generated.areas.as_str()),
+                ];
+                let providers = crate::capability_providers::generate(&root, &included)
+                    .unwrap()
+                    .0;
+                let mut surface_included = included.to_vec();
+                surface_included.push(("capability_providers_generated.rs", providers.as_str()));
+                let surface = super::surface(&root, &surface_included).unwrap();
+                let class = |name: &str| {
+                    let method = surface
+                        .methods
+                        .iter()
+                        .find(|method| method.owner == "BlockPart" && method.name == name)
+                        .unwrap_or_else(|| panic!("BlockPart::{name} does not cross"));
+                    super::call_class(&surface.types, method)
+                };
+                assert_eq!(class("on_tree_grow"), "super::Call::Worker");
+                assert_eq!(class("is_ladder"), "super::Call::Hook");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn the_hand_written_wire_impls_are_tracked_sources() {
         std::thread::Builder::new()
             .stack_size(64 << 20)
@@ -855,6 +985,7 @@ mod tests {
             .unwrap();
     }
     #[test]
+    #[ignore = "daily"]
     fn layout_includes_private_borrowed_shapes() {
         let run = || {
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -930,6 +1061,7 @@ mod tests {
     /// The book renders the coverage page from the generator at build time; what the page
     /// promises is checked here, against the generator itself.
     #[test]
+    #[ignore = "daily"]
     fn coverage_page_is_well_formed() {
         std::thread::Builder::new()
             .stack_size(64 << 20)

@@ -24,9 +24,7 @@ pub use crate::wire::wire_slots::{Id, Slots, Stale};
 mod resources;
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
-pub use resources::{
-    ResourceCodec, ResourceScope, ScopeError, ScopeLease, ScopeToken, Unsupported, borrow_token,
-};
+pub use resources::{ResourceAccess, Unsupported, install_resource_access};
 
 /// The guest's start-up call: its input is the package list.
 // hidden: transport plumbing used by generated boundary code.
@@ -60,28 +58,12 @@ pub const MAX_STATIC_STRINGS: usize = 4096;
 #[doc(hidden)]
 pub const MAX_STATIC_STRING_BYTES: usize = 256;
 
-/// Intern a static API string with bounded process-lifetime storage.
+/// Intern a static API string using the platform's bounded process-lifetime storage.
+/// Refuses clearly when the platform resource socket has not been installed.
 // hidden: transport plumbing used by generated boundary code.
 #[doc(hidden)]
 pub fn intern(value: &str) -> Result<&'static str, WireError> {
-    use std::sync::{Mutex, OnceLock};
-    static STRINGS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    if value.len() > MAX_STATIC_STRING_BYTES {
-        return Err(WireError::Invalid("static string too long"));
-    }
-    let mut strings = STRINGS
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(&existing) = strings.get(value) {
-        return Ok(existing);
-    }
-    if strings.len() >= MAX_STATIC_STRINGS {
-        return Err(WireError::Invalid("too many static strings"));
-    }
-    let value = Box::leak(value.to_owned().into_boxed_str());
-    strings.insert(value);
-    Ok(value)
+    resources::intern(value)
 }
 
 /// The deepest nesting of one value (a component of a component of…) a reader accepts.
@@ -611,6 +593,30 @@ pub const fn layout_mix(mut hash: u64, child: u64) -> u64 {
         i += 1;
     }
     hash
+}
+
+thread_local! {
+    /// Set while a layout walk (`resource_layout`) reaches a resource handle's encoding.
+    static RESOURCE_REACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the running layout walk as reaching a resource handle: what a handler's codec says
+/// from its `layout`.
+// hidden: the shared handler codec's side of `resource_layout`.
+#[doc(hidden)]
+pub fn reached_resource() {
+    RESOURCE_REACHED.set(true);
+}
+
+/// `T`'s Wire layout, and whether any part of it is a resource handle (an erased handler such
+/// as `Arc<dyn BlockPart>`): such a value crosses only as a handle into the resource scope of
+/// one link group, never as data both targets read.
+// hidden: the Part state declaration's capability check.
+#[doc(hidden)]
+pub fn resource_layout<T: Wire>() -> (u64, bool) {
+    let outer = RESOURCE_REACHED.replace(false);
+    let layout = T::layout(&mut Vec::new());
+    (layout, RESOURCE_REACHED.replace(outer))
 }
 
 /// A type with a wire form.
@@ -1150,6 +1156,20 @@ macro_rules! layout_fields {
 pub(crate) use layout_fields;
 
 #[cfg(test)]
+fn hook_id_runtime_reference() -> u64 {
+    let names: &[&str] = &include!(concat!(env!("OUT_DIR"), "/hook_id_variant_names.rs"));
+    let mut hash = layout_name("HookId");
+    // Keep the independent reference as a runtime loop even in optimized tests.
+    for name in std::hint::black_box(names) {
+        hash = layout_mix(hash, layout_name(name));
+    }
+    layout_mix(layout_name("enum"), hash)
+}
+
+#[cfg(test)]
+mod fieldless_enum_goldens;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn derive_shapes_roundtrip_with_golden_bytes() {
@@ -1199,6 +1219,13 @@ mod tests {
         );
         check(Tuple(7), &[7, 0, 0, 0]);
         check(Unit, &[]);
+        // Independent FNV-1a fixture: enum shape, Plain seed, First then Second.
+        // Explicit discriminants do not replace declaration-order wire tags.
+        assert_eq!(Plain::layout(&mut vec![]), 0xc2ea_ba70_1b5e_e4a0);
+        let mut visiting = vec![std::any::type_name::<Plain>()];
+        assert_eq!(Plain::layout(&mut visiting), 0x1923_c164_45af_9a57);
+        assert_eq!(visiting, [std::any::type_name::<Plain>()]);
+        check(Plain::First, &[0, 0, 0, 0]);
         check(Plain::Second, &[1, 0, 0, 0]);
         check(Payload::Tuple(5), &[1, 0, 0, 0, 5]);
         check(Payload::Named { value: 7 }, &[2, 0, 0, 0, 7, 0, 0, 0]);
@@ -1460,104 +1487,7 @@ mod tests {
         bytes(vec!["ab".to_owned()], &[1, 0, 0, 0, 2, 0, 0, 0, 97, 98]);
         bytes(serde_json::json!(1), &[1, 0, 0, 0, 49]);
     }
-    #[test]
-    fn resource_context_is_scoped_and_encoding_keeps_first_error() {
-        use std::{
-            any::{Any, TypeId},
-            cell::RefCell,
-            rc::Rc,
-        };
-        struct Codec(RefCell<Option<Box<dyn Any>>>);
-        impl super::ResourceCodec for Codec {
-            fn store(&self, value: Box<dyn Any>) -> Result<super::Id, super::WireError> {
-                *self.0.borrow_mut() = Some(value);
-                Ok(super::Id(7))
-            }
-            fn load(&self, id: super::Id, _: TypeId) -> Result<Box<dyn Any>, super::WireError> {
-                if id != super::Id(7) {
-                    return Err(super::WireError::Invalid("stale resource"));
-                }
-                self.0
-                    .borrow_mut()
-                    .take()
-                    .ok_or(super::WireError::Invalid("stale resource"))
-            }
-        }
-        let mut out = super::Writer::new();
-        {
-            let _scope = super::ResourceScope::new(Rc::new(Codec(RefCell::new(None))));
-            out.put_resource(Box::new(42u32));
-            assert_eq!(out.error(), None);
-            assert_eq!(
-                super::Reader::new(out.bytes()).take_resource::<u32>(),
-                Ok(42)
-            );
-        }
-        assert_eq!(
-            super::Reader::new(out.bytes()).take_resource::<u32>(),
-            Err(super::WireError::Invalid("no resource context"))
-        );
-        out.fail(super::WireError::Trailing);
-        out.put_resource(Box::new(43u32));
-        assert_eq!(out.error(), Some(super::WireError::Trailing));
-        out.clear();
-        assert_eq!(out.error(), None);
-    }
-    #[test]
-    fn static_string_rows_roundtrip_through_intern() {
-        let rows: Vec<(&'static str, &'static str)> =
-            vec![("test:block", "test:glow"), ("test:block", "test:shade")];
-        let mut out = super::Writer::new();
-        out.put(&rows);
-        let decoded =
-            super::Reader::decode::<Vec<(&'static str, &'static str)>>(out.bytes()).unwrap();
-        assert_eq!(decoded, rows);
-        assert!(std::ptr::eq(decoded[0].0.as_ptr(), decoded[1].0.as_ptr()));
-        let mut oversized = super::Writer::new();
-        oversized.put(&"x".repeat(257));
-        assert_eq!(
-            super::Reader::decode::<&'static str>(oversized.bytes()),
-            Err(super::WireError::Invalid("static string too long"))
-        );
-    }
-    #[test]
-    fn attachment_refusals_use_bounded_interned_static_text() {
-        round(crate::AttachmentError::HolderBusy);
-        round(crate::AttachmentError::UnsupportedHolder("dragonpart"));
-        round(crate::AttachmentRowError::HolderBusy);
-        round(crate::AttachmentRowError::UnsupportedHolder("dragonpart"));
-        let bound: &'static str = Box::leak("é".repeat(128).into_boxed_str());
-        round(crate::AttachmentError::UnsupportedHolder(bound));
-        round(crate::AttachmentRowError::UnsupportedHolder(bound));
-        let mut out = super::Writer::new();
-        out.put(&crate::AttachmentError::UnsupportedHolder("dragon"));
-        let first = super::Reader::decode::<crate::AttachmentError>(out.bytes()).unwrap();
-        for _ in 0..32 {
-            let next = super::Reader::decode::<crate::AttachmentError>(out.bytes()).unwrap();
-            let (
-                crate::AttachmentError::UnsupportedHolder(a),
-                crate::AttachmentError::UnsupportedHolder(b),
-            ) = (first, next)
-            else {
-                unreachable!()
-            };
-            assert!(std::ptr::eq(a.as_ptr(), b.as_ptr()));
-        }
-        out.clear();
-        out.put(&8u32);
-        out.put(&"x".repeat(257));
-        assert_eq!(
-            super::Reader::decode::<crate::AttachmentError>(out.bytes()),
-            Err(super::WireError::Invalid("static string too long"))
-        );
-        out.clear();
-        out.put(&3u32);
-        out.put(&"é".repeat(129));
-        assert_eq!(
-            super::Reader::decode::<crate::AttachmentRowError>(out.bytes()),
-            Err(super::WireError::Invalid("static string too long"))
-        );
-    }
+
     use super::*;
 
     fn round<T: Wire + PartialEq + std::fmt::Debug>(value: T) {

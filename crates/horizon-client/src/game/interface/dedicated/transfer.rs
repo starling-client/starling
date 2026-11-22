@@ -201,7 +201,12 @@ impl Game<'_> {
                 "retried": true,
             });
         }
-        let result = horizon_client::lan::import::import_player(&mut host.hub, uuid, &request);
+        let result = horizon_client::lan::import::import_player(
+            &mut host.hub,
+            &self.motion.attributes,
+            uuid,
+            &request,
+        );
         match result {
             Ok(done) => {
                 self.take_arrival_records(uuid, &done);
@@ -329,7 +334,7 @@ impl Game<'_> {
         if announced {
             super::log("INFO", &format!("System chat: {name} joined the game"));
         }
-        self.native_player_logged_in(uuid, name);
+        self.announce_login(uuid, name);
     }
 
     fn export_from(&mut self, uuid: u128, freeze: bool) -> Value {

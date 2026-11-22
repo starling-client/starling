@@ -3,6 +3,21 @@
 //! vibrations a use makes.
 use super::*;
 
+/// Captured item and whether Start or Tick has overridden the remaining duration.
+#[derive(Default)]
+pub(super) struct UseStart {
+    pub(super) ticks_set: bool,
+    pub(super) item: Option<ItemStack>,
+}
+impl UseStart {
+    pub(super) fn of(item: ItemStack) -> Self {
+        Self {
+            ticks_set: false,
+            item: Some(item),
+        }
+    }
+}
+
 impl Game<'_> {
     /// `Consumable.startConsuming` for a held consumable: food needs
     /// `Player.canEat` (`Consumable.canConsume`), anything else is always
@@ -11,11 +26,15 @@ impl Game<'_> {
         let Some(stack) = self.held().cloned() else {
             return false;
         };
-        let Some(consumable) = stack.consumable(Some(info)) else {
+        let Some(consumable) = self.consumable(&stack) else {
             return false;
         };
-        if info.food.is_some()
-            && (self.player.is_none() || !self.can_eat(Some(&stack), info.can_always_eat))
+        if horizon_client::item_sync::food(&stack, info.food).is_some()
+            && (self.player.is_none()
+                || !self.can_eat(
+                    Some(&stack),
+                    horizon_client::item_sync::can_always_eat(&stack, info.can_always_eat),
+                ))
         {
             return false;
         }
@@ -25,7 +44,7 @@ impl Game<'_> {
             if self.remote.is_none() {
                 // the cooldown of ItemStack.use's applyAfterUseComponentSideEffects.
                 self.apply_use_cooldown(&stack);
-                self.finish_consuming(info, consumable, &stack);
+                self.finish_consuming(info, &consumable, &stack);
             }
             return true;
         }
@@ -57,13 +76,14 @@ impl Game<'_> {
         if self.creative {
             return;
         }
-        let cell = self.held_mut();
-        if let Some(s) = cell.as_mut() {
-            s.count -= 1;
-            if s.count == 0 {
-                *cell = None;
+        self.edit_block_use_stack(|cell| {
+            if let Some(s) = cell.as_mut() {
+                s.count = s.count.saturating_sub(1);
+                if s.count == 0 {
+                    *cell = None;
+                }
             }
-        }
+        });
     }
     pub(super) fn tick_using(&mut self) {
         let Some(hand) = self.used_hand() else {
@@ -76,10 +96,20 @@ impl Game<'_> {
         let Some((slot, ticks)) = self.using else {
             return;
         };
+        // An emptied hand is a used-up stack (`/clear`, a broken shield): its
+        // `useItem` is empty too, so the use ends without a vibration.
         let Some(stack) = self.stack_in(slot).cloned() else {
             self.using = None;
+            self.use_start = Default::default();
             return;
         };
+        // `isSameItem(getItemInHand(hand), useItem)`: another item stops the use
+        // of the stack it began with, without a release. The same item goes on;
+        // only the item is compared, so the start's stack is kept as it was.
+        if let Some(item) = self.use_start.item.take_if(|item| item.item != stack.item) {
+            self.stop_using_item(&item);
+            return;
+        }
         let hand_changed = self.use_hand_changed(slot);
         if !self.right || hand_changed || self.screen != Screen::Playing {
             self.using = None;
@@ -165,14 +195,14 @@ impl Game<'_> {
             return;
         }
         if info.bundle {
-            self.tick_bundle(slot, ticks);
+            self.tick_bundle(slot, ticks, &stack, &info);
             return;
         }
         if self.mod_use(&stack) {
             self.tick_mod_use(slot, ticks, &stack);
             return;
         }
-        let Some(consumable) = stack.consumable(Some(&info)) else {
+        let Some(consumable) = self.consumable(&stack) else {
             self.using = None;
             return;
         };
@@ -182,7 +212,7 @@ impl Game<'_> {
         // Start and Tick left it.
         let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
-            self.emit_consume(consumable, &stack, 5);
+            self.emit_consume(&consumable, &stack, 5);
         }
         if !self.item_on_use_tick(&stack, ticks) {
             return;
@@ -195,13 +225,22 @@ impl Game<'_> {
     /// `BundleItem.onUseTick` and `getUseDuration` (200): the first tick and
     /// then every second tick from the 11th on drop one stack out of the
     /// bundle in `slot`; the use ends after 200 ticks.
-    pub(super) fn tick_bundle(&mut self, slot: usize, ticks: u32) {
+    pub(super) fn tick_bundle(
+        &mut self,
+        slot: usize,
+        ticks: u32,
+        stack: &ItemStack,
+        info: &horizon_client::items::ItemInfo,
+    ) {
         const USE_DURATION: u32 = 200;
         let remaining = USE_DURATION - ticks.min(USE_DURATION);
         if ticks == 0 || (remaining < USE_DURATION - 10 && remaining.is_multiple_of(2)) {
             self.drop_bundle_content(slot);
         }
-        self.using = (ticks + 1 < USE_DURATION).then_some((slot, ticks + 1));
+        match item_use::count_down(ticks, USE_DURATION as i32) {
+            Some(ticks) => self.using = Some((slot, ticks)),
+            None => self.complete_using_item(slot, stack, info),
+        }
     }
     /// `LivingEntity.releaseUsingItem` (`Item.releaseUsing`) for `stack`,
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
@@ -222,12 +261,48 @@ impl Game<'_> {
         }
         self.stop_using_item(stack);
     }
+    /// Ends the current use through [`Self::stop_using_item`]. With no stack left in
+    /// the use's slot there is nothing to vibrate, but the use still ends.
+    pub(super) fn stop_active_item_use(&mut self) {
+        match self.use_start.item.clone().or_else(|| {
+            self.using
+                .and_then(|(slot, _)| self.stack_in(slot))
+                .cloned()
+        }) {
+            Some(stack) => self.stop_using_item(&stack),
+            None => {
+                self.using = None;
+                self.use_start = Default::default();
+            }
+        }
+    }
+
+    /// A command or a mod puts `stack` in inventory `slot` (`/item replace`, a
+    /// mod's slot write). When that slot's item is in use and `stack` isn't the
+    /// same item, `useItem` keeps the old stack, so the use stops with its
+    /// vibration, even for air: an emptied hand alone reads as used up.
+    /// The stop is for the stack the use began with, whatever the slot holds now.
+    pub(in crate::game) fn stop_use_replaced(&mut self, slot: usize, stack: Option<&ItemStack>) {
+        if !self.using.is_some_and(|(used, _)| used == slot) {
+            return;
+        }
+        let new = stack.map(|s| &s.item);
+        if let Some(item) = self.use_start.item.take_if(|item| Some(&item.item) != new) {
+            self.stop_using_item(&item);
+        } else if self.use_start.item.is_none()
+            && self.stack_in(slot).is_some_and(|s| Some(&s.item) != new)
+        {
+            self.stop_active_item_use();
+        }
+    }
+
     /// `LivingEntity.stopUsingItem`: the use of `stack` is over (`useItem` and
     /// its remaining ticks are cleared), and when the use effects of the stack
     /// ask for it, `ItemStack.causeUseVibration` sends an `ITEM_INTERACT_FINISH`
     /// game event from the player, at its feet.
     pub(super) fn stop_using_item(&mut self, stack: &ItemStack) {
         self.using = None;
+        self.use_start = Default::default();
         self.use_vibration(stack, "minecraft:item_interact_finish");
     }
     /// `ItemStack.causeUseVibration` for `stack` used by the player: the

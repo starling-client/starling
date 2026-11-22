@@ -18,6 +18,7 @@ use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::translatable,
 };
+use horizon_world::entity_move::MoverType;
 
 /// `PlayerInput` flags, as the server player's client last sent them.
 pub(super) fn input_keys(flags: u8) -> Keys {
@@ -227,6 +228,12 @@ impl Game<'_> {
         let Some(vehicle) = g.vehicle else {
             return;
         };
+        if self.persist.removed_vehicles.contains_key(&vehicle) {
+            // A canceled destruction dismount still owns the removed object.
+            // Retry in the player's tick, not by silently dropping the edge.
+            self.as_guest(conn, |game| game.stop_riding());
+            return;
+        }
         let (keys, dead) = (input_keys(g.input), g.dead || g.health <= 0.0);
         let boat = self.boats.iter().position(|b| b.id == vehicle);
         let cart = self.carts.iter().any(|c| c.id == vehicle);
@@ -447,7 +454,7 @@ impl Game<'_> {
                 .iter()
                 .position(|m| m.id == v && equine::moved_by_client(m))
         });
-        // The vehicle's id, position, rotation, motion, box, step height
+        // The vehicle's id, kind, position, rotation, motion, box, step height
         // and ground.
         let (id, old, yaw, velocity, bounds, step, on_ground) = if let Some(i) = boat {
             let b = &self.boats[i];
@@ -502,18 +509,41 @@ impl Game<'_> {
         }
         // vehicle.move(PLAYER, target - lastGood) with the vehicle's
         // collisions: where it can't follow the client (a quarter block off,
-        // the height aside), it moved wrongly.
+        // the height aside), it moved wrongly. A Player-cause move through
+        // the move gate (#2414); PR 1a records the movement unchanged.
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
             subject: None,
         };
         let wanted = target.subtract(good);
-        let resolved = scene
-            .resolve(bounds, wanted, step, on_ground)
-            .unwrap_or(wanted);
+        // The vehicle's type name only if a listener asks for it (#2414: no
+        // string on a move nobody listens to).
+        let kind = || match (boat, mount) {
+            (Some(i), _) => std::borrow::Cow::Owned(self.boats[i].entity_type()),
+            (None, Some(i)) => std::borrow::Cow::Borrowed(&*self.mobs[i].kind.id),
+            // Unreachable: the vehicle was a boat or a mount, or it returned.
+            (None, None) => std::borrow::Cow::Borrowed(""),
+        };
+        let mut gate = horizon_client::move_gate::armed_with(
+            &self.loop_context,
+            id,
+            kind,
+            MoverType::Player,
+            wanted,
+        );
+        let wanted = gate.delta();
+        // A listener's decision that is not the request (#2414, ruling 5):
+        // the driver is put back whatever the distance - the flag comes from
+        // the gate, not from the numbers.
+        let overridden = gate.overridden();
+        let resolved = horizon_client::move_gate::scene_resolve(
+            &mut gate, &mut scene, bounds, wanted, step, on_ground,
+        )
+        .unwrap_or(wanted);
         let reached = old.add_vector(resolved);
-        let wrongly = (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
+        let wrongly =
+            overridden || (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
         let free_before = scene.unobstructed(bounds).unwrap_or(true);
         // isEntityCollidingWithAnythingNew: a box that was free is not there.
         let moved_box = bounds.move_by(target.subtract(old));
@@ -530,7 +560,10 @@ impl Game<'_> {
             let reset = self.vehicle_fall_reset(self.boats[i].fall_distance, old, resolved);
             self.boats.update(i, |boat| boat.fall_distance = reset);
         }
-        if free_before && (wrongly || !free_after) {
+        // An overridden decision is put back from wherever the vehicle starts:
+        // the free-old-box exemption is the distance test's (review round 1),
+        // like the hub's unobstructed-start check.
+        if overridden || (free_before && (wrongly || !free_after)) {
             log::warn!("vehicle {id} moved wrongly");
             back(self.lan.as_mut().unwrap(), old, yaw);
             return;
@@ -549,7 +582,12 @@ impl Game<'_> {
         let corner = |max: bool| {
             [Axis::X, Axis::Y, Axis::Z].map(|a| if max { around.max(a) } else { around.min(a) })
         };
-        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true));
+        let no_blocks = no_blocks_in(
+            &self.world,
+            corner(false),
+            corner(true),
+            &self.lan.as_ref().unwrap().hub.encoder,
+        );
         self.lan.as_mut().unwrap().hub.guests.update(gi, |g| {
             g.vehicle_good = Some([target.x, target.y, target.z]);
             let rested = std::mem::replace(

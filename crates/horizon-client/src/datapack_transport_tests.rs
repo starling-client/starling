@@ -32,18 +32,23 @@ fn snapshot(generation: u64, text: String) -> DatapackSnapshot {
 }
 
 #[test]
+#[ignore = "daily"]
 fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_when_complete() {
     // The real receiver is process-wide, as is a real client's connection. Keep this
     // fixture away from parallel Session tests that legitimately clear that receiver.
     if std::env::var_os("HORIZON_REGISTRY_TRANSPORT_CHILD").is_none() {
         let full_name = std::any::type_name_of_val(&incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_when_complete);
         let name = full_name.split_once("::").unwrap().1;
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", name, "--nocapture"])
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--include-ignored", "--exact", name, "--nocapture"])
             .env("HORIZON_REGISTRY_TRANSPORT_CHILD", "1")
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success(), "isolated receiver fixture failed");
+        assert!(
+            output.status.success(),
+            "test={name} exit_code={:?} category=fixture-child-failed",
+            output.status.code()
+        );
         return;
     }
     struct Large;
@@ -56,8 +61,8 @@ fn incompressible_large_registry_snapshot_fits_each_frame_and_activates_only_whe
         }
     }
     let mods = vec![ModEntry::new("large", Box::new(Large))];
-    mod_api::__private::part_tests::install_parts_fixture(&mods).unwrap();
-    mod_api::testing::with_mods(mods.into(), || {
+    mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
+    mod_platform::testing::with_mods(mods.into(), || {
         clear_received();
         accept(&snapshot(1, "old".into()).encode().unwrap()).unwrap();
         let mut seed = 0x1a2b3c4d5e6f_u64;

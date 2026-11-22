@@ -1,7 +1,8 @@
 //! `PistonMovingBlockEntity.moveCollidedEntities` and `moveStuckEntities` for
-//! the entities the game moves itself: the players and the mobs. The shulker
-//! box lid's push (`ShulkerBoxBlockEntity.moveCollidedEntities`) rides along,
-//! with `Entity.move(MoverType.SHULKER_BOX, …)` taking the same path.
+//! the entities the game moves itself: the players and the mobs. A lid's push
+//! rides along: the shulker box's (`ShulkerBoxBlockEntity.moveCollidedEntities`,
+//! `Entity.move(MoverType.SHULKER_BOX, …)`) and the shulker's
+//! (`Shulker.onPeekAmountChange`, `MoverType.SHULKER`) take the one `lid_push`.
 //!
 //! The geometry is in [`horizon_world::piston_push`]; this file supplies the
 //! bodies and applies the movement the way `Entity.move(MoverType.PISTON, …)`
@@ -12,17 +13,21 @@
 use super::{
     Game,
     entity::{Entity, EntityHandle, with_entity, with_entity_mut},
+    minecarts::CartHit,
+    move_gate::MoveWho,
 };
 use horizon_client::collisions::{
     EntityCollisions, SceneCollisions, no_collision_empty, with_piston_noclip,
 };
+use horizon_client::mobs::Species;
 use horizon_client::motion::MotionWorld;
 use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
 use horizon_world::{
     block_collision_scan::BlockCollisionWorld, collision_context::CollisionContext,
-    level::data::PushReaction::IgnoreEntity, level::pistons::MovingPiston,
-    piston_movement::PistonMovement, piston_push, world_movement::EntityMovementWorld,
+    entity_move::MoverType, level::data::PushReaction::IgnoreEntity, level::pistons::MovingPiston,
+    move_gate::MoveGate, piston_movement::PistonMovement, piston_push,
+    world_movement::EntityMovementWorld,
 };
 
 /// What one piston asks for this tick: where it is, its state, and the progress
@@ -34,13 +39,31 @@ pub(super) type Push = (BlockPos, MovingPiston, f32);
 /// (`Shulker.getProgressDeltaAabb`).
 pub(super) type ShulkerPush = ([i32; 3], u8, [f64; 6]);
 
-/// Which entity was pushed, so its storage can be reached after the world
-/// borrow ends.
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
-enum Target {
-    Player,
-    Guest(u32),
-    Entity(EntityHandle),
+/// What an opening lid pushes with: `Entity.move`'s mover, and for a
+/// shulker's, whom it leaves out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Lid {
+    /// `ShulkerBoxBlockEntity.moveCollidedEntities` (`MoverType.SHULKER_BOX`).
+    Box,
+    /// `Shulker.onPeekAmountChange` of the shulker with this id
+    /// (`MoverType.SHULKER`): it leaves out the shulkers, the bodies with
+    /// `noPhysics` and those sharing its root vehicle (`isPassengerOfSameVehicle`).
+    Shulker(u32),
+}
+
+impl Lid {
+    fn mover(self) -> MoverType {
+        match self {
+            Lid::Box => MoverType::ShulkerBox,
+            Lid::Shulker(_) => MoverType::Shulker,
+        }
+    }
+    fn shulker(self) -> Option<u32> {
+        match self {
+            Lid::Box => None,
+            Lid::Shulker(id) => Some(id),
+        }
+    }
 }
 
 /// The first position of each moving piston in `block_ticks.moving_pistons`
@@ -79,6 +102,7 @@ impl Game<'_> {
     /// TNT duper's TNT stops at the block that has not moved yet (#11399).
     pub(super) fn push_piston_entities(&mut self, pushes: Vec<Push>) {
         let mut accumulators = std::collections::HashMap::new();
+        let mut pricked = Vec::new();
         // Where each moving piston first sits in both lists, so a clock of a
         // thousand pistons doesn't scan them a thousand times a tick.
         let mut index = PistonIndex::default();
@@ -92,8 +116,57 @@ impl Game<'_> {
         let targets = self.piston_push_targets(&pushes, &steps);
         for push in pushes {
             let pos = push.0;
-            self.push_for_piston(push, &targets, &steps, &mut accumulators);
+            self.push_for_piston(push, &targets, &steps, &mut accumulators, &mut pricked);
             self.advance_piston_collision(pos, &index);
+        }
+        self.hurt_cactus_pricked_vehicles(pricked);
+    }
+
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for a boat or a
+    /// minecart: every cactus its box touches on the way from `start` to
+    /// `end` pricks it (`CactusBlock.entityInside`, `Entity.checkInsideBlocks`
+    /// over the box less 1e-5), even when the push moved it nowhere. The hurt
+    /// waits for the end of the tick's pushes, whose targets are found first.
+    fn piston_cactus_contact(
+        &self,
+        target: MoveWho,
+        start: Aabb,
+        end: Aabb,
+        pricked: &mut Vec<u32>,
+    ) {
+        let id = match target {
+            MoveWho::Entity(EntityHandle::Boat(i)) => self.boats[i].id,
+            MoveWho::Entity(EntityHandle::Cart(i)) => self.carts[i].id,
+            _ => return,
+        };
+        let eps = f64::from(1.0e-5_f32);
+        let (a, b) = (start.min_position(), end.min_position());
+        let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+        let (a, b) = (start.max_position(), end.max_position());
+        let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+        let facts = self.res.facts();
+        for x in (lo.x + eps).floor() as i32..=(hi.x - eps).floor() as i32 {
+            for y in (lo.y + eps).floor() as i32..=(hi.y - eps).floor() as i32 {
+                for z in (lo.z + eps).floor() as i32..=(hi.z - eps).floor() as i32 {
+                    if &*facts.get(self.world.block(x, y, z)).name == "minecraft:cactus" {
+                        pricked.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `Entity.hurt(cactus, 1)` for the vehicles `piston_cactus_contact`
+    /// found, in the order of their pushes (`VehicleEntity.hurtServer`: one
+    /// more point of damage; a vehicle a piston pushes in a chunk that does
+    /// not tick entities never wears it off, so the fifth breaks it).
+    fn hurt_cactus_pricked_vehicles(&mut self, pricked: Vec<u32>) {
+        for id in pricked {
+            if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                self.hurt_boat(i, 1.0, false);
+            } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                self.hurt_cart(i, 1.0, false, false, CartHit::default());
+            }
         }
     }
 
@@ -104,7 +177,7 @@ impl Game<'_> {
     /// by 2. Only the pushed body moves during the pushes, so a body outside
     /// all of those at the start is never reached: its box is read once a
     /// tick instead of once per moving block.
-    fn piston_push_targets(&self, pushes: &[Push], steps: &StepHeights) -> Vec<Target> {
+    fn piston_push_targets(&self, pushes: &[Push], steps: &StepHeights) -> Vec<MoveWho> {
         let Some(reach) = pushes
             .iter()
             .map(|(p, ..)| {
@@ -121,7 +194,7 @@ impl Game<'_> {
         let at = pushes[0].0;
         self.push_targets()
             .filter(|&target| {
-                self.push_body(target, at, steps)
+                self.push_body(target, Some(at), steps)
                     .is_some_and(|body| body.bounds.intersects(reach))
             })
             .collect()
@@ -166,9 +239,15 @@ impl Game<'_> {
                 .update(i, |p| p.stuck_speed = stuck);
         }
         // The bubble columns it went through push it too
-        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
-        // projectiles whose own tick applies them.
-        if self.creatures.projectiles[i].applies_block_effects() {
+        // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`): every
+        // projectile, arrows and llama spit included, whatever its own tick
+        // applies. A stuck arrow isn't pushed (`AbstractArrow`'s overrides
+        // return when `isInGround`), as in its own tick.
+        let stuck_arrow = self.creatures.projectiles[i]
+            .arrow
+            .as_ref()
+            .is_some_and(|a| a.in_ground);
+        if !stuck_arrow {
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
@@ -189,8 +268,10 @@ impl Game<'_> {
                 });
                 std::mem::take(&mut p.bubble_surfaces)
             });
-            for [x, y, z] in tops {
-                self.bubble_column_particles(BlockPos::new(x, y, z));
+            if self.remote.is_none() {
+                for [x, y, z] in tops {
+                    self.bubble_column_particles(BlockPos::new(x, y, z));
+                }
             }
         }
     }
@@ -235,10 +316,10 @@ impl Game<'_> {
     /// `canBeCollidedWith`): a boat, a living shulker, a happy ghast held
     /// still. A pushed boat or minecart collides by `canVehicleCollide`
     /// instead, which this doesn't cover, and the player moves itself.
-    fn pushed_entity_colliders(&self, target: Target) -> Vec<Aabb> {
+    fn pushed_entity_colliders(&self, target: MoveWho) -> Vec<Aabb> {
         match target {
-            Target::Entity(EntityHandle::Boat(_) | EntityHandle::Cart(_)) => Vec::new(),
-            Target::Entity(handle) => {
+            MoveWho::Entity(EntityHandle::Boat(_) | EntityHandle::Cart(_)) => Vec::new(),
+            MoveWho::Entity(handle) => {
                 let own = with_entity!(self, handle, entity => Entity::bounds(entity));
                 let mut boxes = self.item_entity_collisions();
                 boxes.retain(|b| *b != own);
@@ -279,82 +360,225 @@ impl Game<'_> {
 
     /// `ShulkerBoxBlockEntity.moveCollidedEntities` for the bodies this game
     /// moves itself: every entity the sweeping lid box meets moves out along
-    /// the box's facing by the box's own size plus 0.01
-    /// (`Entity.move(MoverType.SHULKER_BOX, …)`).
+    /// the box's facing by the box's own size plus 0.01, through [`Self::lid_push`].
     pub(super) fn push_shulker_entities(&mut self, pushes: Vec<ShulkerPush>) {
-        let steps = self.push_step_heights();
-        for (pos, facing, lid) in pushes {
-            self.push_for_shulker(pos, facing, lid, &steps);
+        for (_, facing, lid) in pushes {
+            let (movement, area) = shulker_lid(facing, lid);
+            self.lid_push(Lid::Box, area, movement);
         }
     }
 
-    /// One box's push, a body at a time. The move resolves as a piston's does
-    /// (`Entity.move` stops at the blocks and the world border), without a
-    /// piston's per-tick travel limit or its noclip. The local player takes the
-    /// client's own move instead (`shulker_push_player`).
-    fn push_for_shulker(&mut self, pos: [i32; 3], facing: u8, lid: [f64; 6], steps: &StepHeights) {
-        let (movement, area) = shulker_lid(facing, lid);
-        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+    /// An opening lid's push, the one path the shulker box and the shulker
+    /// share for every kind of entity: `Entity.move(mover, movement)` on each
+    /// body the swept `area` meets (`getEntities`, which leaves out the
+    /// spectators). The move is collided as a piston's is (`Entity.move` stops
+    /// at the blocks, the world border and the entities a body collides
+    /// with), without a piston's per-tick travel limit or its noclip; a
+    /// `noPhysics` body moves the whole way. The local player takes the
+    /// client's own move (`shulker_push_player`), an armor stand its own
+    /// (`lid_shoves_armor_stand`), and a painting, an item frame or a cushion
+    /// breaks (`lid_breaks_attached`).
+    ///
+    /// Not reached: the ender dragon is not in the walk (it is `noPhysics`
+    /// anyway), nor is a leash knot, which here has no body of its own to
+    /// remove; an item's `noPhysics` (set inside its own tick while it is
+    /// stuck in a block) is not kept, so a stuck item is collided.
+    pub(super) fn lid_push(&mut self, lid: Lid, area: Aabb, movement: Vec3) {
+        let steps = self.push_step_heights();
+        let root = self.lid_root(lid);
+        // The armor stands' obstacles, built at the first stand the lid meets.
+        let mut stand_grid = None;
         self.push_targets().for_each(|target| {
-            let Some(body) = self.push_body(target, at, steps) else {
+            let Some(body) = self.push_body(target, None, &steps) else {
                 return;
             };
             if !body.bounds.intersects(area) {
                 return;
             }
-            if target == Target::Player {
-                self.shulker_push_player(movement);
-                return;
-            }
-            let entities = self.pushed_entity_colliders(target);
-            let Ok(moved) = pushed_movement(
-                SceneCollisions {
-                    world: &self.world,
-                    binding: self.collision,
-                    subject: None,
-                },
-                self.border.geometry(),
-                [body.position.x, body.position.z],
-                body.bounds,
-                movement,
-                // `Entity.move(MoverType.SHULKER_BOX, ...)`: steps and reads the ground flag,
-                body.step_height,
-                body.on_ground,
-                None,
-                &entities,
-            ) else {
-                return;
+            let no_physics = match target {
+                MoveWho::Entity(handle) => with_entity!(self, handle, entity => {
+                    // The four kinds whose struct keeps no `noPhysics` field (a
+                    // shulker bullet among them) hold a mod's write here.
+                    let stored = self.persist.no_physics.get(&entity.id()).copied();
+                    entity.no_physics(stored)
+                }),
+                _ => false,
             };
-            self.set_pushed_on_ground(target, movement, moved);
-            if moved.length_squared() > 0.0 {
-                self.apply_push(target, moved);
+            if self.lid_spares(lid, root, target, no_physics) {
+                return;
             }
+            self.move_by_lid(lid, target, body, movement, no_physics, &mut stand_grid);
         });
+        self.lid_breaks_attached(area, root);
     }
 
-    /// `ShulkerBoxBlockEntity.moveCollidedEntities` for the player this game
-    /// moves itself: the lid's pushes, applied to its own body. A client owns
-    /// its player's position (the server thread's guest included), so the push
-    /// is the client's own `Entity.move(MoverType.SHULKER_BOX, …)`.
+    /// An opening lid's push for the player this game moves itself, applied
+    /// to its own body. A client owns its player's position (the server
+    /// thread's guest included), so the push is the client's own
+    /// `Entity.move`; the other bodies are the server's to push. A shulker's
+    /// lid leaves the player out as `lid_push` does (`lid_spares`).
+    pub(super) fn lid_push_local(&mut self, lid: Lid, area: Aabb, movement: Vec3) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        if player.spectator || !player.bounds().intersects(area) {
+            return;
+        }
+        // A player's `noPhysics` is its spectating, checked above.
+        if self.lid_spares(lid, self.lid_root(lid), MoveWho::Player, false) {
+            return;
+        }
+        self.shulker_push_player(lid.mover(), movement);
+    }
+
+    /// [`Self::lid_push_local`] for this tick's shulker box lids.
     pub(super) fn push_shulker_local(&mut self, pushes: Vec<ShulkerPush>) {
         for (_, facing, lid) in pushes {
             let (movement, area) = shulker_lid(facing, lid);
-            let Some(player) = self.player.as_ref() else {
-                return;
-            };
-            if player.spectator || !player.bounds().intersects(area) {
-                continue;
-            }
-            self.shulker_push_player(movement);
+            self.lid_push_local(Lid::Box, area, movement);
         }
     }
 
-    /// `Entity.move(MoverType.SHULKER_BOX, …)` for the local player: an
-    /// ordinary move, so the collision scan steps it and its end writes the
-    /// ground state (`Entity.setOnGroundWithMovement`). A lid lifting the body
-    /// off the ground leaves it airborne, and the next tick's gravity lands it
-    /// on the lid instead of a stale ground flag holding it in place.
-    fn shulker_push_player(&mut self, movement: Vec3) {
+    /// The root vehicle of a shulker whose lid pushes, which the bodies
+    /// sharing it are spared (`isPassengerOfSameVehicle`); none for a box.
+    fn lid_root(&self, lid: Lid) -> Option<u32> {
+        let id = lid.shulker()?;
+        self.native_root_vehicle_id(id, super::commands::Target::Mob(id))
+    }
+
+    /// Whether a shulker's lid leaves a body it meets where it is: one with
+    /// `noPhysics`, another shulker, or one riding the shulker's root
+    /// vehicle `root`. A box's lid spares none of them.
+    fn lid_spares(&self, lid: Lid, root: Option<u32>, target: MoveWho, no_physics: bool) -> bool {
+        lid.shulker().is_some()
+            && (no_physics
+                || self.pushed_shulker(target)
+                || root.is_some() && self.push_root(target) == root)
+    }
+
+    /// `BlockAttachedEntity.move`: a lid that moves a painting, an item frame
+    /// (`ItemFrame.move`: not a fixed one) or a cushion breaks it on the
+    /// server, `kill` then `dropItem(level, null)`, whichever lid it is. Only
+    /// a cushion can be a shulker's root vehicle (`root`), which its lid spares.
+    fn lid_breaks_attached(&mut self, area: Aabb, root: Option<u32>) {
+        let meets = |(lo, hi): ([f64; 3], [f64; 3])| {
+            Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            )
+            .intersects(area)
+        };
+        let mut i = 0;
+        while i < self.paintings.len() {
+            // A painting a mod keeps stays at `i`.
+            if !(meets(self.paintings[i].bounds()) && self.break_painting_by(i, false, None)) {
+                i += 1;
+            }
+        }
+        let mut i = 0;
+        while i < self.item_frames.len() {
+            let f = &self.item_frames[i];
+            if f.fixed || !meets(f.bounds()) || !self.break_frame_by(i, None) {
+                i += 1;
+            }
+        }
+        let mut i = 0;
+        while i < self.cushions.len() {
+            let c = &self.cushions[i];
+            if root == Some(c.id) || !meets(c.bounds()) {
+                i += 1;
+            } else {
+                self.break_cushion_by(i, false, None);
+            }
+        }
+    }
+
+    /// Whether a pushed body is a shulker, which a shulker's lid leaves out.
+    fn pushed_shulker(&self, target: MoveWho) -> bool {
+        matches!(target, MoveWho::Entity(EntityHandle::Mob(i)) if self.mobs[i].species() == Species::Shulker)
+    }
+
+    /// The id of the lowest vehicle under a pushed body: its own when it
+    /// rides nothing (only the players and the mobs ride here). Nothing rides
+    /// a player, so a player riding nothing is no shulker's root: `None`.
+    fn push_root(&self, target: MoveWho) -> Option<u32> {
+        use super::commands::Target as Named;
+        let vehicle_root = |v: u32| self.native_root_vehicle_id(v, Named::Mob(v));
+        match target {
+            MoveWho::Player => self.riding.and_then(vehicle_root),
+            MoveWho::Guest(conn) => self.command_guest(conn)?.vehicle.and_then(vehicle_root),
+            MoveWho::Entity(handle) => {
+                let (id, named) =
+                    with_entity!(self, handle, entity => (entity.id(), entity.selector_target()));
+                match named {
+                    Some(named) => self.native_root_vehicle_id(id, named),
+                    None => Some(id),
+                }
+            }
+        }
+    }
+
+    /// `Entity.move(lid.mover(), movement)` for one body a lid pushes.
+    fn move_by_lid(
+        &mut self,
+        lid: Lid,
+        target: MoveWho,
+        body: Body,
+        movement: Vec3,
+        no_physics: bool,
+        stand_grid: &mut Option<horizon_client::entities::ObstacleGrid>,
+    ) {
+        if target == MoveWho::Player {
+            self.shulker_push_player(lid.mover(), movement);
+            return;
+        }
+        // Armor stands arm their gate in their own collided shove.
+        if let MoveWho::Entity(EntityHandle::ArmorStand(i)) = target {
+            self.lid_shoves_armor_stand(i, lid.shulker(), movement, stand_grid);
+            return;
+        }
+        let mut gate = self.entity_move(target, lid.mover(), movement);
+        if gate.skipped() {
+            return;
+        }
+        let movement = gate.delta();
+        // `Entity.move` with `noPhysics`: `setPos` the whole way.
+        if no_physics {
+            self.apply_push(&mut gate, target, movement);
+            return;
+        }
+        let entities = self.pushed_entity_colliders(target);
+        let Ok(moved) = pushed_movement(
+            &mut gate,
+            SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            },
+            self.border.geometry(),
+            [body.position.x, body.position.z],
+            body.bounds,
+            movement,
+            // A lid's `Entity.move` steps and reads the ground flag.
+            body.step_height,
+            body.on_ground,
+            None,
+            &entities,
+        ) else {
+            return;
+        };
+        self.set_pushed_on_ground(target, movement, moved);
+        if moved.length_squared() > 0.0 {
+            self.apply_push(&mut gate, target, moved);
+        }
+    }
+
+    /// `Entity.move(mover, …)` for the local player, pushed by a lid: an
+    /// ordinary move, so the collision scan stops and steps it and its end
+    /// writes the ground state (`Entity.setOnGroundWithMovement`). A lid
+    /// lifting the body off the ground leaves it airborne, and the next tick's
+    /// gravity lands it on the lid instead of a stale ground flag holding it.
+    fn shulker_push_player(&mut self, mover: MoverType, movement: Vec3) {
         let entities = self.player_entity_collisions();
         if let Some(player) = self.player.as_mut() {
             let _ = MotionWorld {
@@ -370,16 +594,17 @@ impl Game<'_> {
                 tag_items: Some(world_items!(self)),
                 block_registries: Some(&self.pack.block_registries),
             }
-            .shulker_box_push(movement);
+            .lid_push(mover, movement);
         }
     }
 
     fn push_for_piston(
         &mut self,
         (pos, piston, new_progress): Push,
-        targets: &[Target],
+        targets: &[MoveWho],
         steps: &StepHeights,
-        accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
+        accumulators: &mut std::collections::HashMap<MoveWho, PistonMovement>,
+        pricked: &mut Vec<u32>,
     ) {
         let delta_progress = f64::from(new_progress - piston.progress);
         if delta_progress <= 0.0 {
@@ -434,7 +659,7 @@ impl Game<'_> {
             )
         });
         targets.iter().copied().for_each(|target| {
-            let Some(body) = self.push_body(target, pos, steps) else {
+            let Some(body) = self.push_body(target, Some(pos), steps) else {
                 return;
             };
             // `level.getEntities(null, area)`: a body outside the search area
@@ -466,12 +691,13 @@ impl Game<'_> {
                     step.scale(amount),
                     movement,
                     accumulators,
+                    pricked,
                 );
                 // `fixEntityWithinPistonBase`: a retracting source piston drags
                 // an entity that is still inside its own block.
                 if !piston.extending
                     && piston.source
-                    && let Some(after) = self.push_body(target, pos, steps)
+                    && let Some(after) = self.push_body(target, Some(pos), steps)
                     && let Some(fix) = piston_push::fix_within_piston_base(
                         pos,
                         after.bounds,
@@ -489,6 +715,7 @@ impl Game<'_> {
                         back.scale(fix),
                         movement,
                         accumulators,
+                        pricked,
                     );
                 }
             }
@@ -497,7 +724,7 @@ impl Game<'_> {
         if honey && movement.normal()[1] == 0 {
             let area = piston_push::sticky_area(pos, piston.shape_state(), sticky_top);
             for &target in targets {
-                let Some(body) = self.push_body(target, pos, steps) else {
+                let Some(body) = self.push_body(target, Some(pos), steps) else {
                     continue;
                 };
                 if piston_push::sticky_entity_selected(
@@ -517,6 +744,7 @@ impl Game<'_> {
                         piston_push::step_vector(movement).scale(delta_progress),
                         movement,
                         accumulators,
+                        pricked,
                     );
                 }
             }
@@ -561,14 +789,16 @@ impl Game<'_> {
         };
         let steps = self.push_step_heights();
         for target in self.push_targets() {
-            let Some(body) = self.push_body(target, pos, &steps) else {
+            let Some(body) = self.push_body(target, Some(pos), &steps) else {
                 continue;
             };
             if !body.bounds.intersects(bounds) {
                 continue;
             }
             let dy = added.collide(Axis::Y, body.bounds.move_by(Vec3::new(0.0, 1.0, 0.0)), -1.0);
-            self.apply_push(target, Vec3::new(0.0, 1.0 + dy, 0.0));
+            // `teleportRelative`, a position assignment the design excludes
+            // from `entity_move` (#2414): a pending gate, never armed.
+            self.apply_push(&mut MoveGate::new(), target, Vec3::new(0.0, 1.0 + dy, 0.0));
         }
     }
 
@@ -596,28 +826,34 @@ impl Game<'_> {
 
     /// The entities a moving block can run into: the window's player, the LAN
     /// guests in the level, then the mobs.
-    fn push_targets(&self) -> impl Iterator<Item = Target> + use<> {
-        let player = self.player.is_some().then_some(Target::Player);
+    fn push_targets(&self) -> impl Iterator<Item = MoveWho> + use<> {
+        let player = self.player.is_some().then_some(MoveWho::Player);
         // Empty, and so unallocated, unless guests are here.
-        let guests: Vec<Target> = self.lan.as_ref().map_or_else(Vec::new, |host| {
+        let guests: Vec<MoveWho> = self.lan.as_ref().map_or_else(Vec::new, |host| {
             host.hub
                 .guests
                 .iter()
                 .filter(|g| host.hub.here(g) && g.loaded && !g.dead)
-                .map(|g| Target::Guest(g.conn))
+                .map(|g| MoveWho::Guest(g.conn))
                 .collect()
         });
         player
             .into_iter()
             .chain(guests)
-            .chain(self.entity_handles().map(Target::Entity))
+            .chain(self.entity_handles().map(MoveWho::Entity))
     }
 
     /// What the push needs from one entity, or `None` when it is not pushed:
-    /// removed, dead, a spectator, or an armor-stand marker.
-    fn push_body(&self, target: Target, pos: BlockPos, steps: &StepHeights) -> Option<Body> {
+    /// removed, dead, a spectator, or an armor-stand marker. `pos` is the
+    /// pushing block a body can stand on (none for a lid).
+    fn push_body(
+        &self,
+        target: MoveWho,
+        pos: Option<BlockPos>,
+        steps: &StepHeights,
+    ) -> Option<Body> {
         match target {
-            Target::Player => {
+            MoveWho::Player => {
                 let p = self.player.as_ref()?;
                 if p.spectator {
                     return None;
@@ -627,10 +863,10 @@ impl Game<'_> {
                     position: p.position,
                     on_ground: p.ground.on_ground,
                     step_height: steps.player,
-                    supported: p.ground.supporting_block == Some(pos),
+                    supported: pos.is_some() && p.ground.supporting_block == pos,
                 })
             }
-            Target::Guest(conn) => {
+            MoveWho::Guest(conn) => {
                 let host = self.lan.as_ref()?;
                 let g = host.hub.guests.iter().find(|g| g.conn == conn)?;
                 if g.dead || g.game_mode == 3 {
@@ -646,10 +882,10 @@ impl Game<'_> {
                     supported: g
                         .motion
                         .as_ref()
-                        .is_some_and(|m| m.ground.supporting_block == Some(pos)),
+                        .is_some_and(|m| pos.is_some() && m.ground.supporting_block == pos),
                 })
             }
-            Target::Entity(handle) => with_entity!(self, handle, entity => {
+            MoveWho::Entity(handle) => with_entity!(self, handle, entity => {
                 if !entity.is_alive() || entity.get_piston_push_reaction() == IgnoreEntity {
                     return None;
                 }
@@ -658,7 +894,7 @@ impl Game<'_> {
                     position: entity.position(),
                     on_ground: entity.on_ground(),
                     step_height: entity.get_step_height(),
-                    supported: entity.is_supported_by(pos),
+                    supported: pos.is_some_and(|pos| entity.is_supported_by(pos)),
                 })
             }),
         }
@@ -666,17 +902,26 @@ impl Game<'_> {
 
     /// `Entity.move(MoverType.PISTON, movement)` for one pushed entity: the
     /// per-tick piston limit, then the block and world border collision scan.
+    /// The move gate (#2414) is armed first, so a cancelled move spends none
+    /// of the piston budget for this tick.
     fn move_pushed(
         &mut self,
-        target: Target,
+        target: MoveWho,
         before: Aabb,
         at: [f64; 2],
         step_height: f32,
         on_ground: bool,
         movement: Vec3,
         piston_direction: Direction,
-        accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
+        accumulators: &mut std::collections::HashMap<MoveWho, PistonMovement>,
+        pricked: &mut Vec<u32>,
     ) {
+        let cause = MoverType::Piston;
+        let mut gate = self.entity_move(target, cause, movement);
+        if gate.skipped() {
+            return;
+        }
+        let movement = gate.delta();
         let Some(limited) = self.limit_piston(target, movement, accumulators) else {
             return;
         };
@@ -684,22 +929,23 @@ impl Game<'_> {
         if limited == Vec3::ZERO {
             // `Entity.move` stops there; `moveEntityByPiston` still applies
             // the block effects.
-            if let Target::Entity(EntityHandle::Tnt(i)) = target {
+            if let MoveWho::Entity(EntityHandle::Tnt(i)) = target {
                 let from = self.tnts[i].position;
                 self.tnt_piston_block_effects(i, from);
             }
-            if let Target::Entity(EntityHandle::Projectile(i)) = target {
+            if let MoveWho::Entity(EntityHandle::Projectile(i)) = target {
                 let at = self.creatures.projectiles[i].position;
                 self.projectile_piston_block_effects(i, at);
             }
             self.piston_block_triggers(before, before);
+            self.piston_cactus_contact(target, before, before, pricked);
             self.release_after_block_move(target);
             return;
         }
         // `Entity.move`: a projectile a cobweb or powder snow holds stops dead
         // (`setDeltaMovement(Vec3.ZERO)`); a piston's push is not scaled.
         let projectile_from = match target {
-            Target::Entity(EntityHandle::Projectile(i)) => {
+            MoveWho::Entity(EntityHandle::Projectile(i)) => {
                 self.creatures.projectiles.update(i, |p| {
                     if p.stuck_speed.length_squared() > 1.0e-7 {
                         p.stuck_speed = Vec3::ZERO;
@@ -713,7 +959,7 @@ impl Game<'_> {
         // Primed TNT: a `PISTON` move uses up a pending stuck multiplier
         // without scaling the push, and powder snow reads its fall.
         let tnt = match target {
-            Target::Entity(EntityHandle::Tnt(i)) => {
+            MoveWho::Entity(EntityHandle::Tnt(i)) => {
                 let t = &mut self.tnts[i];
                 t.take_stuck();
                 Some((
@@ -728,6 +974,7 @@ impl Game<'_> {
         let entities = self.pushed_entity_colliders(target);
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
+                &mut gate,
                 SceneCollisions {
                     world: &self.world,
                     binding: self.collision,
@@ -747,7 +994,7 @@ impl Game<'_> {
         self.set_pushed_on_ground(target, limited, resolved);
 
         // shortcut: unoccupied server mobs only, expand when controller/passenger authority is bound.
-        let mob = if let Target::Entity(EntityHandle::Mob(i)) = target {
+        let mob = if let MoveWho::Entity(EntityHandle::Mob(i)) = target {
             let m = &self.mobs[i];
             (!self.options.execution_role.is_client()
                 && self.remote.is_none()
@@ -781,7 +1028,7 @@ impl Game<'_> {
         let moved = resolved.length_squared() > 1.0e-7
             || limited.length_squared() - resolved.length_squared() < 1.0e-7;
         if moved {
-            self.apply_push(target, resolved);
+            self.apply_push(&mut gate, target, resolved);
         } else {
             // A move the collisions cut to nothing still ends in the check.
             self.release_after_block_move(target);
@@ -813,11 +1060,11 @@ impl Game<'_> {
         } else if tnt_after_move {
             self.restitute_piston(target, limited, resolved);
         }
-        // Restitution reads the block below the final position, as Entity.move
-        // does. Run it even when the collision prevented any position update.
-        self.restitute_piston(target, limited, resolved);
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
+        }
+        if let MoveWho::Entity(EntityHandle::Falling(i)) = target {
+            self.finish_falling_piston_move(i, resolved);
         }
         if let Some((i, from)) = projectile_from {
             self.projectile_piston_block_effects(i, from);
@@ -828,6 +1075,7 @@ impl Game<'_> {
             before
         };
         self.piston_block_triggers(before, after);
+        self.piston_cactus_contact(target, before, after, pricked);
     }
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
@@ -837,8 +1085,8 @@ impl Game<'_> {
     /// slime fast enough to bounce. The bounce is of the entity's own
     /// velocity, scaled by the part of the push that was made. The ground
     /// flag is set by `set_pushed_on_ground`.
-    fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
-        let Target::Entity(handle) = target else {
+    fn restitute_piston(&mut self, target: MoveWho, limited: Vec3, resolved: Vec3) {
+        let MoveWho::Entity(handle) = target else {
             return;
         };
         // `Mth.equal` horizontally, exact vertically, as `Entity.move` compares.
@@ -877,8 +1125,8 @@ impl Game<'_> {
     /// The end of a block's `Entity.move` push: a server entity's ground flag
     /// is set after every push, a sideways one and one the collision turns
     /// away included, on ground only when the push's downward part was blocked.
-    fn set_pushed_on_ground(&mut self, target: Target, wanted: Vec3, moved: Vec3) {
-        if let Target::Entity(handle) = target {
+    fn set_pushed_on_ground(&mut self, target: MoveWho, wanted: Vec3, moved: Vec3) {
+        if let MoveWho::Entity(handle) = target {
             let on_ground = wanted.y < 0.0 && wanted.y != moved.y;
             with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
         }
@@ -888,51 +1136,63 @@ impl Game<'_> {
     /// per game tick, and a move touches only its first non-zero axis.
     fn limit_piston(
         &mut self,
-        target: Target,
+        target: MoveWho,
         movement: Vec3,
-        accumulators: &mut std::collections::HashMap<Target, PistonMovement>,
+        accumulators: &mut std::collections::HashMap<MoveWho, PistonMovement>,
     ) -> Option<Vec3> {
         let time = self.world.game_time;
         let limit = |state: &mut PistonMovement| state.limit(movement, || Ok::<i64, ()>(time)).ok();
         match target {
-            Target::Player => {
+            MoveWho::Player => {
                 let p = self.player.as_mut()?;
                 limit(&mut p.piston)
             }
-            Target::Guest(conn) => {
+            MoveWho::Guest(conn) => {
                 let host = self.lan.as_mut()?;
                 limit(&mut host.hub.guests.motion_mut(conn)?.piston)
             }
-            Target::Entity(EntityHandle::Mob(i)) => limit(&mut self.mobs[i].piston),
+            MoveWho::Entity(EntityHandle::Mob(i)) => limit(&mut self.mobs[i].piston),
             _ => limit(accumulators.entry(target).or_default()),
         }
     }
 
-    fn apply_push(&mut self, target: Target, movement: Vec3) {
-        match target {
-            Target::Player => {
+    fn apply_push(&mut self, gate: &mut MoveGate, target: MoveWho, movement: Vec3) {
+        if gate.skipped() {
+            return;
+        }
+        let id = match target {
+            MoveWho::Player => {
                 if let Some(p) = self.player.as_mut() {
                     p.position = p.position.add_vector(movement);
                 }
+                u32::try_from(self.own_entity_id()).ok()
             }
-            Target::Guest(conn) => {
-                if let Some(host) = self.lan.as_mut() {
-                    let _ = host.hub.update_guest(conn, |g| {
-                        // The body and the hub's copy of its position move together:
-                        // `leave_guest` writes the body back over the hub's.
-                        for (slot, delta) in g.position.iter_mut().zip(movement.components()) {
-                            *slot += delta;
-                        }
-                        if let Some(m) = g.motion.as_deref_mut() {
-                            m.position = m.position.add_vector(movement);
-                        }
-                    });
-                }
-            }
-            Target::Entity(handle) => {
-                with_entity_mut!(self, handle, entity => entity.move_by_piston(movement));
+            MoveWho::Guest(conn) => self.lan.as_mut().and_then(|host| {
+                host.hub.update_guest(conn, |g| {
+                    // The body and the hub's copy of its position move together:
+                    // `leave_guest` writes the body back over the hub's.
+                    for (slot, delta) in g.position.iter_mut().zip(movement.components()) {
+                        *slot += delta;
+                    }
+                    if let Some(m) = g.motion.as_deref_mut() {
+                        m.position = m.position.add_vector(movement);
+                    }
+                    g.entity_id as u32
+                })
+            }),
+            MoveWho::Entity(handle) => {
+                let id = with_entity_mut!(self, handle, entity => {
+                    entity.move_entity(gate, movement);
+                    entity.id()
+                });
                 self.release_after_block_move(target);
+                Some(id)
             }
+        };
+        // `Entity.move` by the piston is one `setPos`.
+        if let Some(id) = id {
+            self.entity_section_moved_id(id);
+            self.tell_entity_sections();
         }
     }
 
@@ -941,8 +1201,8 @@ impl Game<'_> {
     /// anywhere, a stuck arrow or trident with nothing to collide with within
     /// 0.06 starts falling (`shouldFall`, `startFalling`). Its own tick only
     /// checks once the block at its position changes, a tick later.
-    fn release_after_block_move(&mut self, target: Target) {
-        let Target::Entity(handle) = target else {
+    fn release_after_block_move(&mut self, target: MoveWho) {
+        let MoveWho::Entity(handle) = target else {
             return;
         };
         let Some(bounds) = with_entity!(self, handle, entity => entity.piston_release_bounds())
@@ -963,21 +1223,21 @@ impl Game<'_> {
     }
 
     /// `causeBounce`: a slime block sets the velocity along the movement axis.
-    fn bounce(&mut self, target: Target, movement: Direction) {
+    fn bounce(&mut self, target: MoveWho, movement: Direction) {
         match target {
-            Target::Player => {
+            MoveWho::Player => {
                 if let Some(p) = self.player.as_mut() {
                     p.velocity = piston_push::bounce_velocity(movement, p.velocity);
                 }
             }
-            Target::Guest(conn) => {
+            MoveWho::Guest(conn) => {
                 if let Some(host) = self.lan.as_mut()
                     && let Some(motion) = host.hub.guests.motion_mut(conn)
                 {
                     motion.velocity = piston_push::bounce_velocity(movement, motion.velocity);
                 }
             }
-            Target::Entity(handle) => {
+            MoveWho::Entity(handle) => {
                 with_entity_mut!(self, handle, entity => Entity::piston_slime_bounce(entity, movement))
             }
         }
@@ -1006,8 +1266,10 @@ fn shulker_lid(facing: u8, lid: [f64; 6]) -> (Vec3, Aabb) {
 /// `Entity.move(MoverType.PISTON, movement)` for a pushed body: the movement
 /// it makes. The world's blocks stop it, and so does the world border:
 /// `Entity.collectCollidersIgnoringWorldBorder` adds the border's walls when
-/// the body is inside close to the border, as ordinary movement does.
+/// the body is inside close to the border, as ordinary movement does. The
+/// `gate` is the push's armed move gate (#2414); the resolve goes through it.
 fn pushed_movement<W>(
+    gate: &mut MoveGate,
     blocks: W,
     border: &BorderGeometry,
     at: [f64; 2],
@@ -1025,7 +1287,15 @@ where
     let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
     let mut collisions = EntityCollisions::with_border(blocks, border, at);
     collisions.entities = entities;
-    collisions.resolve_with_context(before, movement, step_height, on_ground, context)
+    horizon_client::move_gate::entities_resolve_with_context(
+        gate,
+        &mut collisions,
+        before,
+        movement,
+        step_height,
+        on_ground,
+        context,
+    )
 }
 
 #[cfg(test)]
@@ -1046,6 +1316,7 @@ mod tests {
         let before = Aabb::new(Vec3::new(4.0, 0.0, 0.0), Vec3::new(4.6, 1.8, 0.6));
         let border = border();
         let moved = pushed_movement(
+            &mut MoveGate::new(),
             EmptyCollisions,
             &border,
             [4.3, 0.3],
@@ -1070,6 +1341,7 @@ mod tests {
         let before = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.6, 1.8, 0.6));
         let border = border();
         let moved = pushed_movement(
+            &mut MoveGate::new(),
             EmptyCollisions,
             &border,
             [0.3, 0.3],
@@ -1202,6 +1474,127 @@ mod order_tests {
             moved[0]
         );
         assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
+    }
+
+    /// A cancelled push spends none of the piston budget (#2414, design
+    /// #2308: the hook fires before `limit_piston`). A listener cancels the
+    /// first push of a tick - the TNT does not move - and then lets the
+    /// second push of the same tick through: it still travels the whole
+    /// per-tick budget, which a spent one would have clamped to almost
+    /// nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn a_cancelled_push_spends_none_of_the_piston_budget() {
+        use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext};
+        struct Gate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Gate {
+            fn entity_move(&self, _: &dyn LoopContext, _: &mut EntityMoveEvent<'_>) -> Flow {
+                if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+                    Flow::Cancel
+                } else {
+                    Flow::Continue
+                }
+            }
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "cancel_gate",
+            Box::new(Gate(cancel.clone())),
+        )]
+        .into();
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-piston-budget-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let moving = registry.default_state("minecraft:moving_piston").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        chunk.set(5, 200, 5, moving.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        let piston = |id, direction, progress| MovingPiston {
+            moved_state: stone,
+            direction,
+            extending: true,
+            source: false,
+            progress,
+            progress_o: progress,
+            last_ticked: 0,
+            death_ticks: 0,
+            id,
+        };
+        mod_platform::testing::with_mods(mods, || {
+            let mut travelled = Vec::new();
+            for cancelled in [true, false] {
+                cancel.store(cancelled, std::sync::atomic::Ordering::Relaxed);
+                game.block_ticks.moving_pistons =
+                    vec![(BlockPos::new(5, 200, 5), piston(1, Direction::East, 0.0))];
+                game.sync_moving_pistons();
+                game.tnts.clear();
+                assert!(
+                    game.run_command("summon tnt 5.5 200 5.5 {fuse:80,Motion:[0.0d,0.0d,0.0d]}")
+                );
+                let before = game.tnts[0].position.x;
+                let pushes: Vec<_> = game
+                    .block_ticks
+                    .moving_pistons
+                    .iter()
+                    .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+                    .collect();
+                for (_, piston) in &mut game.block_ticks.moving_pistons {
+                    piston.progress += 0.5;
+                }
+                game.push_piston_entities(pushes);
+                travelled.push(game.tnts[0].position.x - before);
+            }
+            assert!(
+                travelled[0].abs() < 1e-9,
+                "the cancelled push moved the TNT: {}",
+                travelled[0]
+            );
+            assert!(
+                travelled[1] > 0.4,
+                "the second push of the same tick lost the budget: {}",
+                travelled[1]
+            );
+        });
     }
 
     /// A primed TNT pushed east by a piston into a stone wall loses its
@@ -1401,9 +1794,9 @@ mod h255_mob_piston_ground_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     use std::sync::Arc;
-    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+    pub(super) fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         with_role_game(
             crate::game::execution_role::ExecutionRole::IntegratedServer,
             test,
@@ -1413,72 +1806,78 @@ mod h255_mob_piston_ground_tests {
         role: crate::game::execution_role::ExecutionRole,
         test: impl FnOnce(&mut Game<'_>),
     ) {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
-        let settings = Settings::default();
-        let loaded = load_resources(
-            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
-            Vec::new(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.game_dir = Some(
-            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
-                .join(format!("h255-{:?}", std::thread::current().id())),
-        );
-        options.execution_role = role;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
-                root.clone(),
-            )),
-            None,
-        )
-        .unwrap();
-        game.build_registries();
-        game.set_allow_commands(true);
-
-        let mut center = Chunk::empty(0, 0);
-        center.lit = true;
-        game.world.chunks.insert((0, 0), Arc::new(center));
-        game.block_ticks
-            .add_empty_chunk(ChunkPos::new(0, 0))
+        mod_platform::testing::with_mods(Default::default(), || {
+            let root =
+                std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+            let settings = Settings::default();
+            let loaded = load_resources(
+                horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+                Vec::new(),
+                None,
+                &root,
+                &settings,
+                std::time::Instant::now(),
+                false,
+                crate::game::execution_role::ExecutionRole::IntegratedServer,
+                &Progress::new(),
+                &mut |_, _| unreachable!(),
+            )
             .unwrap();
-        assert!(game.run_command("difficulty normal"));
-        assert!(game.run_command("forceload add 0 0"));
-        for x in -1..=1 {
-            for z in -1..=1 {
-                if x == 0 && z == 0 {
-                    continue;
+            let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+            options.resources = root.clone();
+            options.game_dir = Some(
+                std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                    .join(format!("h255-{:?}", std::thread::current().id())),
+            );
+            options.execution_role = role;
+            let mut game = Game::new(
+                &loaded.resources,
+                loaded.pack,
+                loaded.gui.unwrap(),
+                options,
+                settings,
+                Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                    root.clone(),
+                )),
+                None,
+            )
+            .unwrap();
+            game.native_lifecycle
+                .begin_open(mod_api::Authority::IntegratedServer);
+            game.build_registries();
+            game.set_allow_commands(true);
+
+            let mut center = Chunk::empty(0, 0);
+            center.lit = true;
+            game.world.chunks.insert((0, 0), Arc::new(center));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(0, 0))
+                .unwrap();
+            assert!(game.run_command("difficulty normal"));
+            assert!(game.run_command("forceload add 0 0"));
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    if x == 0 && z == 0 {
+                        continue;
+                    }
+                    let mut chunk = Chunk::empty(x, z);
+                    chunk.lit = true;
+                    game.world.chunks.insert((x, z), Arc::new(chunk));
+                    game.block_ticks
+                        .add_empty_chunk(ChunkPos::new(x, z))
+                        .unwrap();
                 }
-                let mut chunk = Chunk::empty(x, z);
-                chunk.lit = true;
-                game.world.chunks.insert((x, z), Arc::new(chunk));
-                game.block_ticks
-                    .add_empty_chunk(ChunkPos::new(x, z))
-                    .unwrap();
             }
-        }
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
-        game.creative = true;
-        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
-        game.world.random = LegacyRandom::new(255);
-        game.update_chunk_tickets();
-        assert!(crate::game::ticking_chunk(&game.world, 0, 0));
-        assert!(game.tickets.levels().block_ticking(0, 0));
-        test(&mut game);
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
+            game.creative = true;
+            assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+            game.world.random.set_seed(255);
+            game.update_chunk_tickets();
+            assert!(crate::game::ticking_chunk(&game.world, 0, 0));
+            assert!(game.tickets.levels().block_ticking(0, 0));
+            test(&mut game);
+        });
     }
     fn mob_index(game: &Game<'_>, n: i32) -> usize {
         let id = game
@@ -1605,7 +2004,7 @@ mod h255_mob_piston_ground_tests {
         );
         // Mob owns its actual piston budget; the map is for other entity kinds.
         game.move_pushed(
-            Target::Entity(EntityHandle::Mob(i)),
+            MoveWho::Entity(EntityHandle::Mob(i)),
             bounds,
             at,
             step,
@@ -1613,6 +2012,7 @@ mod h255_mob_piston_ground_tests {
             movement,
             Direction::East,
             &mut std::collections::HashMap::new(),
+            &mut Vec::new(),
         );
     }
     /// `AbstractArrow.move` after a push the collisions cut to nothing: a stuck
@@ -1639,7 +2039,7 @@ mod h255_mob_piston_ground_tests {
             let (bounds, at) = (p.bounds(), [p.position.x, p.position.z]);
             let before = p.position;
             game.move_pushed(
-                Target::Entity(EntityHandle::Projectile(i)),
+                MoveWho::Entity(EntityHandle::Projectile(i)),
                 bounds,
                 at,
                 0.0,
@@ -1647,6 +2047,7 @@ mod h255_mob_piston_ground_tests {
                 Vec3::new(0.3, 0.0, 0.0),
                 Direction::East,
                 &mut std::collections::HashMap::new(),
+                &mut Vec::new(),
             );
             let p = &game.creatures.projectiles[i];
             assert_eq!(p.position, before, "the stone stops the push");
@@ -1676,7 +2077,7 @@ mod h255_mob_piston_ground_tests {
                             movement| {
                     let tnt = &game.tnts[0];
                     game.move_pushed(
-                        Target::Entity(EntityHandle::Tnt(0)),
+                        MoveWho::Entity(EntityHandle::Tnt(0)),
                         tnt.bounds(),
                         [tnt.position.x, tnt.position.z],
                         0.0,
@@ -1684,6 +2085,7 @@ mod h255_mob_piston_ground_tests {
                         movement,
                         Direction::Down,
                         budget,
+                        &mut Vec::new(),
                     );
                 };
                 push(game, &mut budget, Vec3::ZERO);
@@ -1809,6 +2211,227 @@ mod h255_mob_piston_ground_tests {
             assert_eq!(game.mobs[i].position, Vec3::new(8.5, 202.0, 4.5));
             assert!(game.mobs[i].velocity.y > 0.9);
             assert!(game.mobs[i].sync_position);
+        });
+    }
+}
+
+#[cfg(test)]
+mod lid_push_tests {
+    use super::Lid;
+    use super::h255_mob_piston_ground_tests::with_game;
+    use crate::game::Game;
+    use horizon_client::mobs::{MobEvent, Species};
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    /// A shulker standing out of the way, whose lid pushes in the tests.
+    fn shulker(game: &mut Game<'_>) -> u32 {
+        assert!(game.run_command("summon minecraft:shulker 24 200 24 {NoAI:1b}"));
+        game.mobs
+            .iter()
+            .find(|m| m.species() == Species::Shulker)
+            .expect("the shulker")
+            .id
+    }
+
+    /// The box a lid swept, from (x0, 200, z0) to (x1, 201, z1).
+    fn area(x0: f64, z0: f64, x1: f64, z1: f64) -> Aabb {
+        Aabb::new(Vec3::new(x0, 200.0, z0), Vec3::new(x1, 201.0, z1))
+    }
+
+    fn item_y(game: &Game<'_>) -> f64 {
+        game.dropped.iter().next().expect("the item").position.y
+    }
+
+    fn arrow_y(game: &Game<'_>) -> f64 {
+        let arrow = game
+            .creatures
+            .projectiles
+            .iter()
+            .find(|p| p.arrow.is_some());
+        arrow.expect("the arrow").position.y
+    }
+
+    /// `Shulker.onPeekAmountChange` moves every entity it meets with
+    /// `Entity.move(MoverType.SHULKER, …)`, so a dropped item, a boat and an
+    /// arrow rise with the lid as a mob does: each by the whole 0.25 up, as
+    /// nothing is above them.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_shulker_lid_pushes_an_item_a_boat_and_a_projectile() {
+        with_game(|game| {
+            let shulker = shulker(game);
+            assert!(game.run_command(
+                "summon minecraft:item 10.5 200 10.5 {Item:{id:\"minecraft:stone\",count:1}}"
+            ));
+            assert!(game.run_command("summon minecraft:oak_boat 13.5 200 10.5"));
+            assert!(game.run_command("summon minecraft:arrow 16.5 200 10.5 {NoGravity:1b}"));
+            game.handle_mob_events(vec![MobEvent::LidPush {
+                shulker,
+                area: area(9.0, 9.0, 18.0, 12.0),
+                delta: [0.0, 0.25, 0.0],
+            }])
+            .unwrap();
+            assert_eq!(item_y(game), 200.25, "the item rises with the lid");
+            assert_eq!(
+                game.boats[0].position.y, 200.25,
+                "the boat rises with the lid"
+            );
+            assert_eq!(arrow_y(game), 200.25, "the arrow rises with the lid");
+        });
+    }
+
+    /// `Entity.move` collides the push with the blocks: a stone a block above
+    /// the floor stops a rising item at its 0.25 high box (201 - 0.25), a pig
+    /// at its 0.9 high one and the player at its 1.8 high one, two blocks up,
+    /// short of the whole 1.0 or 0.5 the lid asked for.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_wall_stops_what_a_shulker_lid_pushes() {
+        with_game(|game| {
+            let shulker = shulker(game);
+            assert!(game.run_command("setblock 10 201 10 minecraft:stone"));
+            assert!(game.run_command("setblock 13 201 13 minecraft:stone"));
+            assert!(game.run_command("setblock 2 202 2 minecraft:stone"));
+            assert!(game.run_command(
+                "summon minecraft:item 10.5 200 10.5 {Item:{id:\"minecraft:stone\",count:1}}"
+            ));
+            assert!(game.run_command("summon minecraft:pig 13.5 200 13.5 {NoAI:1b}"));
+            let lid = Lid::Shulker(shulker);
+            game.lid_push(lid, area(10.0, 10.0, 11.0, 11.0), Vec3::new(0.0, 1.0, 0.0));
+            game.lid_push(lid, area(13.0, 13.0, 14.0, 14.0), Vec3::new(0.0, 0.5, 0.0));
+            game.lid_push(lid, area(2.0, 2.0, 3.0, 3.0), Vec3::new(0.0, 0.5, 0.0));
+            assert_eq!(item_y(game), 200.75, "the stone stops the item");
+            let pig = game.mobs.iter().find(|m| m.species() == Species::Pig);
+            let pig = pig.expect("the pig").position.y;
+            let pig_height = f64::from(0.9_f32);
+            assert!(
+                (pig - (201.0 - pig_height)).abs() < 1.0e-9,
+                "the stone stops the pig: {pig}"
+            );
+            let player = game.player.as_ref().unwrap().position.y;
+            let player_height = f64::from(1.8_f32);
+            assert!(
+                (player - (202.0 - player_height)).abs() < 1.0e-9,
+                "the stone stops the player: {player}"
+            );
+        });
+    }
+
+    fn dropped(game: &Game<'_>, item: &str) -> usize {
+        game.dropped
+            .iter()
+            .filter(|d| &*d.stack.item == item)
+            .count()
+    }
+
+    /// `BlockAttachedEntity.move`: a lid that moves a painting, an item frame
+    /// or a cushion breaks it on the server (`kill`, then `dropItem(level,
+    /// null)`): the painting drops a painting, the frame an item frame and
+    /// the stick it held (drop chance 1), the white cushion a white cushion.
+    /// `ItemFrame.move` leaves a fixed frame where it is, its stick in it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_shulker_lid_breaks_the_hanging_entities_it_meets() {
+        with_game(|game| {
+            let shulker = shulker(game);
+            assert!(game.run_command(
+                "summon minecraft:painting 10.5 200.5 10.5 {block_pos:[I;10,200,10],facing:2b,variant:\"minecraft:kebab\"}"
+            ));
+            assert!(game.run_command(
+                "summon minecraft:item_frame 13.5 200.5 10.5 {Facing:2b,Item:{id:\"minecraft:stick\",count:1}}"
+            ));
+            assert!(game.run_command(
+                "summon minecraft:item_frame 16.5 200.5 10.5 {Facing:2b,Fixed:1b,Item:{id:\"minecraft:stick\",count:1}}"
+            ));
+            assert!(game.run_command("summon minecraft:cushion 19.5 200 10.5"));
+            assert_eq!(game.paintings.len(), 1);
+            assert_eq!(game.item_frames.len(), 2);
+            assert_eq!(game.cushions.len(), 1);
+            game.handle_mob_events(vec![MobEvent::LidPush {
+                shulker,
+                area: area(9.0, 9.0, 21.0, 12.0),
+                delta: [0.0, 0.25, 0.0],
+            }])
+            .unwrap();
+            assert!(game.paintings.is_empty(), "the painting broke");
+            assert_eq!(dropped(game, "minecraft:painting"), 1);
+            assert_eq!(game.item_frames.len(), 1, "the loose frame broke");
+            assert!(game.item_frames[0].fixed, "the fixed frame stays");
+            assert!(game.item_frames[0].item.is_some(), "with its stick");
+            assert_eq!(dropped(game, "minecraft:item_frame"), 1);
+            assert_eq!(dropped(game, "minecraft:stick"), 1);
+            assert!(game.cushions.is_empty(), "the cushion broke");
+            assert_eq!(dropped(game, "minecraft:white_cushion"), 1);
+        });
+    }
+
+    /// `isPassengerOfSameVehicle`: a shulker riding a boat leaves the boat
+    /// and the player riding it where they are, on the server's walk and on a
+    /// client's own player. Once the shulker rides nothing, the same lid
+    /// lifts the client's player the whole 0.25.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_shulker_lid_spares_what_shares_its_vehicle() {
+        with_game(|game| {
+            let shulker = shulker(game);
+            assert!(game.run_command("summon minecraft:oak_boat 2.5 200 6.5"));
+            let boat = game.boats[0].id;
+            let i = game.mobs.iter().position(|m| m.id == shulker).unwrap();
+            game.mobs[i].extra.mount = Some(boat);
+            game.riding = Some(boat);
+            let (around, lift) = (area(1.0, 1.0, 4.0, 8.0), Vec3::new(0.0, 0.25, 0.0));
+            game.lid_push(Lid::Shulker(shulker), around, lift);
+            assert_eq!(
+                game.boats[0].position.y, 200.0,
+                "the shulker's vehicle stays"
+            );
+            let player_y = |game: &Game<'_>| game.player.as_ref().unwrap().position.y;
+            assert_eq!(player_y(game), 200.0, "its fellow passenger stays");
+            game.lid_push_local(Lid::Shulker(shulker), around, lift);
+            assert_eq!(player_y(game), 200.0, "a client's own player stays too");
+            game.mobs[i].extra.mount = None;
+            game.lid_push_local(Lid::Shulker(shulker), around, lift);
+            assert_eq!(player_y(game), 200.25, "nothing shared: the lid lifts it");
+        });
+    }
+
+    /// `Shulker.onPeekAmountChange` leaves out the entities with `noPhysics`
+    /// (a NoGravity armor stand, a shulker bullet) and the other shulkers;
+    /// a shulker box's lid has no such rule, and its `Entity.move` moves the
+    /// stand the whole way (`noPhysics`: `setPos`).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_shulker_lid_leaves_no_physics_bodies_and_shulkers_be() {
+        with_game(|game| {
+            let shulker = shulker(game);
+            assert!(game.run_command("summon minecraft:armor_stand 10.5 200 10.5 {NoGravity:1b}"));
+            assert!(game.run_command("summon minecraft:shulker_bullet 13.5 200 10.5"));
+            assert!(game.run_command("summon minecraft:shulker 16 200 10 {NoAI:1b}"));
+            let lid = area(9.0, 9.0, 18.0, 12.0);
+            let lift = Vec3::new(0.0, 0.25, 0.0);
+            game.lid_push(Lid::Shulker(shulker), lid, lift);
+            assert_eq!(
+                game.armor_stands[0].position.y, 200.0,
+                "the stand has no physics"
+            );
+            let bullet = game
+                .creatures
+                .projectiles
+                .iter()
+                .next()
+                .expect("the bullet");
+            assert_eq!(bullet.position.y, 200.0, "the bullet has no physics");
+            let other = game
+                .mobs
+                .iter()
+                .find(|m| m.id != shulker)
+                .expect("the other shulker");
+            assert_eq!(other.position.y, 200.0, "a shulker is not pushed");
+            game.lid_push(Lid::Box, lid, lift);
+            assert_eq!(
+                game.armor_stands[0].position.y, 200.25,
+                "a box's lid moves the stand"
+            );
         });
     }
 }

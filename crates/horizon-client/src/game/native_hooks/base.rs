@@ -497,26 +497,6 @@ impl GameLevel<'_> {
         self.fire_perform_bonemeal(ticks, dimension, pos, state);
     }
 
-    /// On an authoritative server, how fire treats the block `state`
-    /// (`FireBlock.setFlammable(block, igniteOdds, burnOdds)`): put
-    /// `(ignite, burn)` in `odds` for your own blocks, and vanilla's table
-    /// isn't read. Ignite odds above zero let fire stand beside the block and
-    /// spread into the air around it (planks 5, wool 30, leaves 30); burn odds
-    /// are how fast fire destroys it (planks 20, wool 60, leaves 60). `(0, 0)`
-    /// never burns; keep both within vanilla's 0 to 100. A waterlogged state
-    /// never burns and isn't asked. Answer only for your own blocks and leave
-    /// `odds` empty otherwise; the level is read-only. Asked hundreds of times
-    /// per fire tick: keep it short.
-    #[inline(always)]
-    pub(in crate::game) fn native_fire_odds(
-        &self,
-        dimension: LevelDimension,
-        state: BlockStateId,
-        odds: &mut Option<(i32, i32)>,
-    ) {
-        self.fire_fire_odds(dimension, state, odds);
-    }
-
     /// On an authoritative server, `CampfireBlock.isSmokeSource` for the
     /// block `state` under a campfire, as the campfire is placed or the block
     /// under it changes: `Some(true)` for your own blocks makes the campfire a
@@ -615,20 +595,13 @@ impl Game<'_> {
     ) {
         self.fire_world_lifecycle(context, phase, error_text);
     }
-    /// The server is about to send its data to the players (NeoForge's
-    /// `OnDatapackSyncEvent`, its `sendRecipes`): push the recipe types
-    /// (`minecraft:smelting`, `mymod:crusher`) whose recipes your client half
-    /// needs. Horizon sends their final recipes — the world's data packs
-    /// merged, load conditions held — to every Horizon client when it joins
-    /// and again after each `/reload`; a vanilla client is sent nothing new.
-    /// Asked once per load, when the server's data tables are built, and the
-    /// same types go to every player: unlike NeoForge, which asks again for
-    /// each joining player, it can't differ between players. Push nothing and
-    /// nothing is sent; push nothing after a load that pushed some and the
-    /// clients go back to their own recipes. Server-side (the single
-    /// player's integrated server included).
-    pub(in crate::game) fn native_datapack_sync(&mut self, recipe_types: &mut Vec<String>) {
-        self.fire_datapack_sync(recipe_types);
+    /// After admission, collect once before building and sending this player's recipes.
+    /// Reload asks once per online player before their recipes are re-sent; none when empty.
+    pub(in crate::game) fn native_datapack_sync(
+        &mut self,
+        call: mod_api::__private::DatapackSyncCall<'_>,
+    ) {
+        self.fire_datapack_sync(call);
     }
     /// The server's recipes of `recipe_types` arrived (NeoForge's
     /// `RecipesReceivedEvent`): from now on the recipe helpers
@@ -765,21 +738,17 @@ impl Game<'_> {
     pub(in crate::game) fn native_gui_layer_post(&self, layer: &str, draw: &mut HudBatch) {
         self.fire_gui_layer_post(layer, draw);
     }
-    /// A player right-clicks the entity `entity` (`Entity.getId`) of type
-    /// `kind` (`minecraft:cow`) with `hand`, holding `stack` (none in an
-    /// empty hand): where `Player.interactOn` starts, before the entity's own
-    /// `interact` and the item's `interactLivingEntity`. Set `claimed` to take
-    /// the click: the hand swings and neither runs. Asked once per hand, as
-    /// vanilla tries main then off hand. Server-side, for every acting player.
+    /// `Player.interactOn`: both logical sides answer before entity interaction.
+    /// Only the client's own consuming answer stops its hand loop.
     pub(in crate::game) fn native_entity_interact(
         &mut self,
         hand: Hand,
         entity: i32,
         kind: &str,
         stack: Option<&ItemStack>,
-        claimed: &mut bool,
+        result: &mut Option<mod_api::InteractionResult>,
     ) {
-        self.fire_entity_interact(hand, entity, kind, stack, claimed);
+        self.fire_entity_interact(hand, entity, kind, stack, result);
     }
     /// A player left-clicks the block `state` at `pos`, `face` the face hit
     /// (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction`
@@ -821,18 +790,6 @@ impl Game<'_> {
     ) {
         self.fire_health_hud(inputs, wi, hi, draws);
     }
-    /// A real window key event after handling, including repeats and consumed shortcuts
-    /// (`InputEvent.Key`). `key` is vanilla's name for the physical key (`key.keyboard.a`,
-    /// `key.keyboard.unknown` for one it doesn't name), `action` what it did, and the
-    /// modifier bits the screen hooks' GLFW encoding. Not cancellable.
-    pub(in crate::game) fn native_input_key(
-        &mut self,
-        key: &str,
-        action: mod_api::KeyAction,
-        modifiers: u32,
-    ) {
-        self.fire_input_key(key, action, modifiers);
-    }
     /// Raw mouse button input on any screen, before dispatch; cancel skips dispatch and Post.
     /// Button/modifiers use the same GLFW encoding as screen hooks. Synthetic clicks skip it.
     pub(in crate::game) fn native_mouse_button_pre(
@@ -866,25 +823,6 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_mouse_scrolling(scroll, accumulated, buttons, cursor, modifiers, canceled);
-    }
-    /// An interaction key acts on what the crosshair points at
-    /// (`InputEvent.InteractionKeyMappingTriggered`), while playing: `key` says which.
-    /// The attack fires when an attack is allowed and again each tick a held attack
-    /// key keeps digging a block; the use key fires once for each hand it tries, the
-    /// main hand first; pick block fires only with something aimed at. Set `canceled`
-    /// to skip the action: a cancelled use also skips the other hand. A cancelled
-    /// attack or use still swings `hand` unless the mod clears `swing_hand` (it
-    /// starts true). A server's player and a single player's window only; a mod
-    /// that claims an item's use (`mod_use_start`) sees the event first.
-    pub(in crate::game) fn native_interaction_key_mapping_triggered(
-        &mut self,
-        key: InteractionKey,
-        hand: Hand,
-        attempt: InteractionAttempt,
-        swing_hand: &mut bool,
-        canceled: &mut bool,
-    ) {
-        self.fire_interaction_key_mapping_triggered(key, hand, attempt, swing_hand, canceled);
     }
     /// A command typed or clicked in chat, without its slash, before the
     /// server and Horizon's commands see it: set `ran` when the mod ran it.
@@ -1021,9 +959,8 @@ impl Game<'_> {
     /// push a `mod_api::Block` per block, the same declaration
     /// a content mod's `data/<id>/horizon/block/<path>.json` holds (a
     /// vanilla `template`, `properties`, `state_properties`, `shapes`...),
-    /// with its id in your mod's namespace. `item: true` gives it a block
-    /// item, as a file does unless told not to (`..Default::default()`
-    /// leaves it false). They join the content mods' blocks: the one whose
+    /// with its id in your mod's namespace. It has a block item, as a file's
+    /// does, unless `item` is false (`Block::with_item(false)`). They join the content mods' blocks: the one whose
     /// id is that namespace when it is on (your models, textures, loot and
     /// recipes are its files), else one of their own, with the template's
     /// look. Ids, saves and the check that a joining client has the same
@@ -1050,21 +987,14 @@ impl Game<'_> {
     ) {
         Self::fire_items(context, items);
     }
-    /// Models no blockstate names that this client bakes beside the block
-    /// models (NeoForge's `ModelEvent.RegisterStandalone`): push their ids
-    /// (`mymod:block/shaft_half`, the model at
-    /// `assets/mymod/models/block/shaft_half.json`). Parts a block entity or
-    /// a mob draws, with `native_draw_model`, so that no block is registered
-    /// only to bake its model. Asked once at start, before the resources
-    /// load; every resource load, a pack reload included, bakes them again
-    /// from that pack's files. A model that doesn't read is logged and left
-    /// out; an id without a namespace is dropped. Only the client asks it,
-    /// as NeoForge's ModelEvent.RegisterStandalone is a client mod-bus event.
+    /// File-backed standalone models and bake-time forms, registered before resource loading.
+    /// Every resource load rebakes them; dispatch attributes each form to its owning mod.
     pub(in crate::game) fn native_standalone_models(
         context: &mod_api::RegistrationContext,
         models: &mut Vec<String>,
+        forms: &mut Vec<mod_api::Answered<mod_api::StandaloneModelForm>>,
     ) {
-        Self::fire_standalone_models(context, models);
+        Self::fire_standalone_models(context, models, forms);
     }
     /// The player changed setting `key` of mod `mod_id` on its page in Options > Mods; the new
     /// value is kept already.
@@ -1102,10 +1032,10 @@ impl Game<'_> {
     ) {
         self.fire_enchant_effect(enchantment, kind, data, level, victim);
     }
-    /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
-    /// set `container` when the block is yours. Asked once for each mod
-    /// block when the ticking table is built; at most 256 slots, and slot
-    /// numbers past the count are left out. Its `menu`, one of
+    /// Block `block`'s registered item slots (`WorldlyContainer`), read from
+    /// its per-block declaration when the ticking table is built.
+    /// At most 256 slots, with slot numbers past the count left out.
+    /// Its menu must be one of the supported menus:
     /// `containers::MOD_MENUS` or a content mod's menu type
     /// (`data/<id>/horizon/menu/`) with as many
     /// slots, opens when the block is used (its template must open a menu, as
@@ -1116,12 +1046,11 @@ impl Game<'_> {
         block: &str,
         container: &mut Option<ModContainer>,
     ) {
-        self.fire_block_entity_container(block, container);
+        *container = mod_api::__private::parts_installation::block_container(block);
     }
-    /// Block `block`'s block entity has fluid tanks: set `fluids` when the
-    /// block is yours, in the container's shape — each tank's capacity in
+    /// Block `block`'s registered fluid tanks: each tank's capacity in
     /// millibuckets, the tanks each face reaches, and the tanks a fill may
-    /// reach and a drain may take. Asked once for each mod block when the
+    /// reach and a drain may take. Read from its per-block declaration when the
     /// ticking table is built; at most 16 tanks, capacities clamped to
     /// 1..=1 000 000, and tank numbers past the count are left out. The tanks'
     /// contents are kept in the entity's saved compound, under `fluids`, and
@@ -1131,13 +1060,12 @@ impl Game<'_> {
         block: &str,
         fluids: &mut Option<ModFluidTanks>,
     ) {
-        self.fire_block_entity_fluids(block, fluids);
+        *fluids = mod_api::__private::parts_installation::block_fluids(block);
     }
-    /// Block `block`'s block entity has an energy buffer
-    /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
-    /// as `SimpleEnergyHandler` is built: its capacity, the most one insert
-    /// and one extract moves, and the faces a fill may come through and a
-    /// drain may leave by. Asked once for each mod block when the ticking
+    /// Block `block`'s registered energy buffer (`Capabilities.Energy.BLOCK`):
+    /// its capacity, the most one insert and one extract moves, and the faces
+    /// a fill may come through and a drain may leave by.
+    /// Read from its per-block declaration when the ticking
     /// table is built; a capacity under 1 leaves the buffer out, and the
     /// limits are clamped to 0..=capacity. The amount is kept in the entity's
     /// saved compound, as the int `energy`, and the energy helpers below read
@@ -1147,24 +1075,7 @@ impl Game<'_> {
         block: &str,
         energy: &mut Option<ModEnergyBuffer>,
     ) {
-        self.fire_block_entity_energy(block, energy);
-    }
-    /// A server tick of the block entity at `pos`, in vanilla's order among
-    /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
-    /// and change its saved compound `nbt`, its item slots `items` (keep
-    /// their count: as many as its container has, none without one) and the
-    /// data slots its menu shows (`data`). It is out of the world during the
-    /// call (the block entity at `pos` reads as a `Mod` with an empty id, and
-    /// a save leaves it out); if the call removes or replaces it, `entity` is
-    /// dropped. Clients, the window's own in single player included, get
-    /// what `native_block_entity_update_tag` gives when its chunk is sent or
-    /// its block changes.
-    pub(in crate::game) fn native_block_entity_tick(
-        &mut self,
-        pos: [i32; 3],
-        entity: &mut ModBlockEntity,
-    ) {
-        self.fire_block_entity_tick(pos, entity);
+        *energy = mod_api::__private::parts_installation::block_energy(block);
     }
     /// A consumable's effect of a mod's own kind: the item's `on_consume_effects`
     /// entry is of a type in a namespace of its own, and the loader kept it
@@ -1233,74 +1144,6 @@ impl Game<'_> {
         bounds: &mut [f32; 6],
     ) {
         self.fire_block_entity_render_bounding_box(pos, block, state, entity, bounds);
-    }
-    /// Draw the mob `mob` (its id, kind, custom name and the frame's body
-    /// and head turns and walk cycle, `LivingEntityRenderState`) on this
-    /// client with a model of your own, once a frame while it is in view
-    /// (vanilla's `EntityRenderer.submit`), and set `drawn` to leave out its
-    /// vanilla model, armour and held items (NeoForge's `RenderLivingEvent.Pre`,
-    /// cancelled). Add geometry with `native_draw_cube`, `native_draw_quad`,
-    /// `native_draw_block` and `native_draw_item` under `draw`'s pose stack,
-    /// which starts at the mob's feet turned with its body: +z is the way it
-    /// faces, +x its left, +y up, in blocks. `draw` also has the partial tick,
-    /// the game time and the mob's light. Its name tag, shadow, flames and
-    /// glowing outline draw as for any mob. Asked for every mob in view but
-    /// players; a mob your server half spawned (`native_spawn_mob`) is told
-    /// apart by its id, sent with mod messages, or by its custom name.
-    /// A mob is drawn afresh each frame: `draw.keep()` does nothing here.
-    pub(in crate::game) fn native_mob_submit(
-        &self,
-        mob: &MobRender<'_>,
-        draw: &mut BlockEntityDraw,
-        drawn: &mut bool,
-    ) {
-        self.fire_mob_submit(mob, draw, drawn);
-    }
-    /// Whether a mod listens to `native_player_submit` or `native_mob_layer`: a
-    /// mod that hooks either hooks this one too and sets `listened` (HEAD,
-    /// `*listened = true`). Without it the game poses no player or mob for
-    /// them, each frame. Client-side.
-    pub(in crate::game) fn native_player_render_listened(&self, listened: &mut bool) {
-        self.fire_player_render_listened(listened);
-    }
-    /// Draw the player `player` (`who`: its profile name, and whether it is
-    /// this window's own player) with a model of your own, once a frame while
-    /// it is in view (`RenderPlayerEvent.Pre`), and set `drawn` to leave out its
-    /// vanilla model, armour, held items, cape and the other layers. This
-    /// window's player is drawn only in third person (and F5 front view); an
-    /// invisible player is not asked. `draw` is the frame of `native_mob_submit`:
-    /// at the player's feet, turned with the body. The name tag, shadow,
-    /// flames and glowing outline draw as before. `hidden.hide(part)` leaves only that part out of
-    /// the vanilla model this frame (after Skin Customization; its children go with it, its
-    /// armour, held items and other layers, the cape among them, keep theirs).
-    pub(in crate::game) fn native_player_submit(
-        &self,
-        player: &MobRender<'_>,
-        who: &PlayerRender<'_>,
-        draw: &mut BlockEntityDraw,
-        hidden: &mut HiddenParts,
-        drawn: &mut bool,
-    ) {
-        self.fire_player_submit(player, who, draw, hidden, drawn);
-    }
-    /// A layer on every mob and player in view, once a frame after its
-    /// vanilla model and layers (`EntityRenderersEvent.AddLayers`, with
-    /// `RenderLivingEvent.Post` and `RenderPlayerEvent.Post`): add geometry
-    /// in the entity's frame, which starts at its feet turned with the body
-    /// (`mob.head_yaw`, `mob.pitch` and the walk cycle place a part, the eyes
-    /// being at the entity type's eye height). `who` is set for a player.
-    /// `parts` is a humanoid model's parts as its draw posed them this frame (a part
-    /// `native_player_submit` hid is not visible), None for a model that isn't humanoid.
-    /// Not asked for what a mod drew itself (`native_mob_submit`,
-    /// `native_player_submit`) nor for a mob that isn't drawn at all.
-    pub(in crate::game) fn native_mob_layer(
-        &self,
-        mob: &MobRender<'_>,
-        who: Option<&PlayerRender<'_>>,
-        parts: Option<&PosedParts>,
-        draw: &mut BlockEntityDraw,
-    ) {
-        self.fire_mob_layer(mob, who, parts, draw);
     }
     /// Icons a mod puts on map `map` each time it is drawn: held, in an
     /// item frame or on the cartography table's screen (a map's pixels are
@@ -1736,27 +1579,6 @@ impl Game<'_> {
     ) {
         self.fire_creative_slot(player, name, slot, item, count, cancel);
     }
-    /// A server player's game mode is about to change (NeoForge's
-    /// `PlayerChangeGameModeEvent`): from `from` to `to`, both the shared
-    /// `GameMode` used by commands and `PlayerRef`. `player` is the UUID and
-    /// `name` the name. Heard for
-    /// the `/gamemode` command, the F3+F4 switcher's packet and a hardcore
-    /// world's respawn into spectator, once for each change to a different
-    /// mode; not for the world's default mode a player joins with. Return
-    /// `Flow::Cancel` and the player keeps their mode (nothing is sent, the
-    /// command counts it as no change). For a change the game makes inside
-    /// a player's turn their state is swapped in; for the hardcore respawn
-    /// it is not.
-    pub(in crate::game) fn native_player_game_mode_changed(
-        &mut self,
-        player: u128,
-        name: &str,
-        from: GameMode,
-        to: GameMode,
-        cancel: &mut bool,
-    ) {
-        self.fire_player_game_mode_changed(player, name, from, to, cancel);
-    }
     /// `player` (`name`) changed dimension (NeoForge's
     /// `PlayerChangedDimensionEvent`): `from` and `to` are dimension ids
     /// (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`).
@@ -1770,11 +1592,11 @@ impl Game<'_> {
     /// `native_tell`, the item helpers and the rest reach them. Heard for:
     /// Nether and End portals (also riding a vehicle, and leaving the End as
     /// its winner), `/execute in ... run tp` and any other command that
-    /// teleports a player into another level, and the death respawn. Not
-    /// heard: a move within a level (`/tp`, an End gateway), a player who
-    /// leaves before the move ends, a move that ends where it started (a
-    /// respawn in the dimension of the death), and anything outside a
-    /// dedicated server.
+    /// teleports a player into another level, and death respawns, on dedicated
+    /// and integrated servers (single player and LAN), where the world is simulated.
+    /// Not heard by a remote client window, for a move within a level (`/tp`,
+    /// an End gateway), for a player who leaves before the move ends, or for a
+    /// move ending where it started (a respawn in the dimension of the death).
     pub(in crate::game) fn native_player_changed_dimension(
         &mut self,
         player: u128,
@@ -2129,16 +1951,6 @@ impl Game<'_> {
     ) {
         self.fire_player_bed_enter(player, name, pos, cancel);
     }
-    /// A server player woke or stood up from the bed at `pos`, after their
-    /// sleeping state changed.
-    pub(in crate::game) fn native_player_bed_leave(
-        &mut self,
-        player: u128,
-        name: &str,
-        pos: [i32; 3],
-    ) {
-        self.fire_player_bed_leave(player, name, pos);
-    }
     /// A server player's book edit or signing packet is about to be applied. `pages` is its page
     /// count; `signing` means the packet has a title. Set `cancel` to drop the edit.
     pub(in crate::game) fn native_player_edit_book(
@@ -2184,14 +1996,14 @@ impl Game<'_> {
     }
     /// A statistic is about to be awarded to a server player, before its count and scoreboard criteria
     /// change. `stat_type` and `stat` are ids such as `minecraft:mined` and `minecraft:stone`, and
-    /// `value` the amount. Set `cancel` to award nothing. Server-side.
+    /// `value` the amount; all three are writable. Invalid rewrites retain the original. Set `cancel` to award nothing.
     pub(in crate::game) fn native_player_stat_award(
         &mut self,
         player: u128,
         name: &str,
-        stat_type: &str,
-        stat: &str,
-        value: i32,
+        stat_type: &mut String,
+        stat: &mut String,
+        value: &mut i32,
         cancel: &mut bool,
     ) {
         self.fire_player_stat_award(player, name, stat_type, stat, value, cancel);
@@ -2958,28 +2770,23 @@ impl Game<'_> {
         self.fire_lightning_strike(player, pos, cause, cancel);
     }
 
-    /// Enough players have slept through the night in level `dimension`
-    /// and the clock is about to move to the morning (NeoForge's
-    /// `SleepFinishedTimeEvent`, vanilla's `ServerLevel.tick` when it moves
-    /// the clock to `wake_up_from_sleep`): `new_time` comes in as the next
-    /// morning's day time and may be changed to wake everyone at another
-    /// time. A time before `current` (the day time now) is refused, as
-    /// `setTimeAddition` refuses one, and the morning stays. Unlike
-    /// NeoForge, which refuses a bad value as it is set, the check runs once
-    /// after every mod, so a later mod sees the value an earlier one left.
-    /// On the server, only when the `advance_time` rule is on;
-    /// `native_time_skip` then hears the jump to the time chosen here and
-    /// may still cancel it. The players wake and the weather resets as
-    /// usual either way. Set `canceled` and the clock is left where it is, as
-    /// NeoForge's cancel leaves it: `native_time_skip` is not asked either.
+    /// Enough players slept through the night in level `dimension` and the clock is about to
+    /// move to the morning (NeoForge's `SleepFinishedTimeEvent`). `adjustment` comes in as
+    /// `Marker(minecraft:wake_up_from_sleep)` and a mod may set `Absolute`, `Relative` (from
+    /// `current`) or another marker; `new_time` is the vanilla morning, read only (contract 2: in
+    /// version 1 a mod wrote it). Times are the level's own clock's; resolved once after every mod
+    /// (`game/world/wake_time.rs`): a time before `current` or past `i64::MAX`, or a marker the
+    /// clock lacks, moves to the morning. `native_time_skip` then hears the jump and may cancel
+    /// it. Set `canceled` and the clock stays, and `native_time_skip` is not asked.
     pub(in crate::game) fn native_sleep_finished_time(
         &mut self,
         dimension: &str,
         current: i64,
-        new_time: &mut i64,
+        new_time: i64,
+        adjustment: &mut ClockAdjustment,
         canceled: &mut bool,
     ) {
-        self.fire_sleep_finished_time(dimension, current, new_time, canceled);
+        self.fire_sleep_finished_time(dimension, current, new_time, adjustment, canceled);
     }
 
     /// The overworld clock is about to jump, from sleep or `/time`. Set
@@ -3435,16 +3242,8 @@ impl Game<'_> {
     ) {
         self.fire_item_decorations(stack, x, y, draw);
     }
-    /// A player uses `stack` (right click) with `self.hand` on the block at
-    /// `pos`, `face` the face clicked (`[0, 1, 0]` is the top), once the
-    /// block itself let the click through (a chest still opens): where
-    /// `ItemStack.useOn` starts. Set `claimed` to take the use: the hand
-    /// swings and neither the item's `useOn` nor its `use` runs.
-    /// Server-side, for every player of the world (the helpers read the
-    /// acting one); an item on cooldown is never used. `hand`, `hit`
-    /// (`UseOnContext.getClickLocation`, `getClickedFace`, `isInside`) and
-    /// `player` (the acting player's UUID) and `player_entity_id` (the server's
-    /// entity id),.
+    /// `ItemStack.useOn`: both logical sides answer after the block passed.
+    /// Client reads and local effects cannot perform authoritative writes.
     pub(in crate::game) fn native_use_on(&mut self, call: mod_api::__private::UseOnCall<'_>) {
         self.fire_use_on(call);
     }
@@ -3471,9 +3270,8 @@ impl Game<'_> {
     }
     /// A player uses `call.stack` with this click's `call.hand`: in the air, or
     /// on a block once `native_use_on` let it through, where `Item.use`
-    /// starts. Each click reaches it once. Set `claimed` to take the use: the
-    /// hand swings and the item's own use doesn't run. Server-side, for every
-    /// player of the world; an item on cooldown is never used.
+    /// starts. Both sides return the full interaction result; Pass continues.
+    /// Consume handles without swinging. Cooldown items are skipped.
     pub(in crate::game) fn native_use_item(&mut self, call: mod_api::__private::UseItemCall<'_>) {
         self.fire_use_item(call);
     }
@@ -3545,8 +3343,8 @@ impl Game<'_> {
     /// `native_living_entity_use_item_start`. `result` arrives with what
     /// `finishUsingItem` left in the hand (the bowl of a stew, none for the
     /// last apple; a mod's own item is kept) and may be replaced. Fired for
-    /// consumables, potions, spyglasses and mods' items. Server-side, for every player
-    /// of the world (the helpers read the acting one).
+    /// consumables, potions, spyglasses and mods' items. Both sides (a server's client sees its prediction);
+    /// on the server for every player of the world (the helpers read the acting one).
     pub(in crate::game) fn native_living_entity_use_item_finish(
         &mut self,
         stack: &ItemStack,
@@ -3700,9 +3498,9 @@ impl Game<'_> {
     /// player). Before the block's own use (a chest, a door, a lever) and the
     /// item's (`Item.useOn`, `native_use_on`).
     ///
-    /// `use_block` forces the block's use off (`False`) or on even while
-    /// sneaking with something in hand (`True`); `use_item` forces the
-    /// item's `useOn` off, or on even while the item cools down. Cancelling
+    /// `use_block`: False skips; True overrides sneak; Default skips when sneaking with either hand full (the both-stacks sneak-bypass exception remains open in #2934). `use_item`: False skips; True forces
+    /// even an empty hand or cooldown; Default requires a held stack off cooldown. Empty hands reach
+    /// ItemAfterBlock with no stack, but no item Part. Adventure restrictions still apply; block consumption ends the click. Cancelling
     /// skips both and answers `cancellation_result` in their place:
     /// `Pass` (the default) goes on to the item's own use (`Item.use`) and
     /// then the other hand, `Fail` ends the click, and `Success`,
@@ -3717,18 +3515,6 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_right_click_block(click, use_block, use_item, cancellation_result, canceled);
-    }
-    /// An explosion at `center` in `dimension` (`minecraft:overworld`) is
-    /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
-    /// before any block is hit. Take out the positions to spare; they keep
-    /// their block and get no fire. Entities are hurt as before. Server-side.
-    pub(in crate::game) fn native_explosion_detonate(
-        &mut self,
-        dimension: &str,
-        center: [f64; 3],
-        blocks: &mut Vec<[i32; 3]>,
-    ) {
-        self.fire_explosion_detonate(dimension, center, blocks);
     }
     /// A player fills (`stack` an empty bucket) or empties a bucket at `pos`:
     /// `BucketItem.use`, where it asks `Level.mayInteract`. Set `canceled`
@@ -3759,23 +3545,6 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_attack_entity(entity, kind, pos, canceled);
-    }
-    /// A message from `player`'s client on `channel` (`mod_id:name`), within
-    /// the caps (`native_net.rs`): check `channel`, and treat `data` as the
-    /// player's own bytes, checked by nothing. Runs in the tick after it
-    /// arrives, with no player's state swapped in. Server-side.
-    pub(in crate::game) fn native_net_from_client(
-        &mut self,
-        player: u128,
-        channel: &str,
-        data: &[u8],
-    ) {
-        self.fire_net_from_client(player, channel, data);
-    }
-    /// A message from the server on `channel` (`mod_id:name`), whose `data`
-    /// is the sender's own bytes. The window's game only.
-    pub(in crate::game) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
-        self.fire_net_from_server(channel, data);
     }
     /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,
     /// posted in `MinecraftServer.createLevels`): before any of its chunks
@@ -3826,18 +3595,9 @@ impl Game<'_> {
     ) {
         self.fire_chunk_load(dimension, chunk, new);
     }
-    /// Chunk `chunk` of `dimension` left the world (NeoForge's
-    /// `ChunkEvent.Unload`), with a level that closes for being empty too. Don't
-    /// read its blocks. Its block entities are still there, but changes made in
-    /// this hook aren't saved: as in vanilla, the chunk is saved before it unloads.
-    /// Not told when the world closes, which `native_world_lifecycle` tells.
-    /// Server-side.
-    pub(in crate::game) fn native_chunk_unload(&mut self, dimension: &str, chunk: [i32; 2]) {
-        self.fire_chunk_unload(dimension, chunk);
-    }
     /// `player` (`name`) joined the game (NeoForge's
     /// `PlayerLoggedInEvent`): placed in the world and listed in
-    /// `native_server_players`, so `net_send_to_player` reaches them.
+    /// `host.players().server_players()`, so `PlayerRef::send_payload` can reach them.
     /// Once a join, with no player's state swapped in. Server-side.
     pub(in crate::game) fn native_player_logged_in(&mut self, player: u128, name: &str) {
         self.fire_player_logged_in(player, name);
@@ -3906,17 +3666,17 @@ impl Game<'_> {
     /// A player's data was copied to their new player (NeoForge's
     /// `PlayerEvent.Clone`, from `ServerPlayer.restoreFrom`): `was_death` is
     /// true after a death, false when they left the End after the credits
-    /// (`respawn` with `keepAllPlayerData`). The uuid stays the same, so the
-    /// old and the new player share `player`. Heard before the new player is
-    /// placed, on a server, with no player's state swapped in. Not
-    /// cancellable.
+    /// (`respawn` with `keepAllPlayerData`). `original` reads the old player's
+    /// complete data until this hook returns; `player` names the replacement.
+    /// Heard before the new player is placed, on a server. Not cancellable.
     pub(in crate::game) fn native_player_clone(
         &mut self,
         player: u128,
         name: &str,
         was_death: bool,
+        original: mod_api::OriginalPlayerRef,
     ) {
-        self.fire_player_clone(player, name, was_death);
+        self.fire_player_clone(player, name, was_death, original);
     }
     /// The number of players with the mod container at `pos` of `dimension`
     /// open went from `previous` to `viewers` (vanilla's
@@ -3936,24 +3696,6 @@ impl Game<'_> {
     ) {
         self.fire_mod_container_viewers(dimension, pos, viewers, previous);
     }
-    /// `player` (`name`) pressed the swap-hands key: heard before the main and
-    /// off hand items swap (the `SWAP_ITEM_WITH_OFFHAND` player action that
-    /// `ServerGamePacketListenerImpl.handlePlayerAction` answers; Bukkit's
-    /// `PlayerSwapHandItemsEvent`), not for a spectator. Set `cancel` to keep
-    /// the items where they are: the player's client, which swapped them at
-    /// once, gets its slots back. The player's state is swapped in, so
-    /// `native_acting_player`, `native_tell` and the item helpers reach them.
-    /// Once for each press, on a server. Not heard: the same swap made in an
-    /// open inventory (hovering a slot and pressing the key, a menu click) and
-    /// the host of a LAN world.
-    pub(in crate::game) fn native_player_swap_hands(
-        &mut self,
-        player: u128,
-        name: &str,
-        cancel: &mut bool,
-    ) {
-        self.fire_player_swap_hands(player, name, cancel);
-    }
     /// `player` (`name`) opened a menu (NeoForge's `PlayerContainerEvent.Open`,
     /// posted when `ServerPlayer.openMenu` sets the new `containerMenu`): any
     /// menu, vanilla or a mod's. `menu` is the menu type's name
@@ -3962,10 +3704,10 @@ impl Game<'_> {
     /// block it is of in `dimension` (none for a trade, a vehicle's, a mod's
     /// native menu or a mount's inventory, which has no menu type in vanilla
     /// and is told as `horizon:mount_inventory`). The player's own inventory
-    /// is not one. Heard once a tick, so a menu opened and closed again
-    /// inside one tick is not; one that replaces another comes after that
-    /// one's close. The player's state is swapped in. `native_player_container_close`
-    /// follows. Server-side.
+    /// is not one, nor is failed construction. Heard synchronously after construction, the open packet
+    /// is queued and full contents sent, with the new menu already current.
+    /// Replacing a menu follows its close; even inside one tick, open precedes
+    /// `native_player_container_close`. The player's state is swapped in. Server-side.
     pub(in crate::game) fn native_player_container_open(
         &mut self,
         player: u128,
@@ -4003,7 +3745,7 @@ impl Game<'_> {
     /// changes. It comes into range, its client's chunks reach it, or it is
     /// put in the level; another player is an entity too, and a player never
     /// tracks their own. A mod sends the player what they need to show it
-    /// (`net_send_to_player`). The entity is as it was last tick: it
+    /// (`PlayerRef::send_payload`). The entity is as it was last tick: it
     /// may be gone by now. Heard after the tick's players and entities have
     /// moved, in order, with no player's state swapped in. Server-side.
     pub(in crate::game) fn native_player_start_tracking(
@@ -4035,25 +3777,23 @@ impl Game<'_> {
     ) {
         self.fire_player_stop_tracking(player, name, entity, uuid, kind);
     }
-    /// Whether a mod listens to the mobs' `native_living_equipment_change`: a
-    /// mod that hooks it hooks this one too and sets `listened` (HEAD,
-    /// `*listened = true`). Without it the game does not read every mob's
-    /// equipment each tick, and mobs are not told (armor stands still are). A
-    /// mob that ticks once it is set counts from empty. Asked once a tick, after
-    /// the mobs' tick. Server-side.
+    /// Whether a mod listens to `native_living_equipment_change` for mobs and
+    /// connected players: a mod that hooks it hooks this one too and sets
+    /// `listened` (HEAD, `*listened = true`). Without it the game does not read
+    /// their equipment each tick and only armor stands are told. A mob or player
+    /// counts from empty once it is set. Asked once a tick. Server-side.
     pub(in crate::game) fn native_living_equipment_listened(&mut self, listened: &mut bool) {
         self.fire_living_equipment_listened(listened);
     }
-    /// A mob's or an armor stand's equipment slot took a different stack
-    /// (NeoForge's `LivingEquipmentChangeEvent`, posted in
-    /// `LivingEntity.collectEquipmentChanges`): `entity` is its ID and `kind`
-    /// its type (`minecraft:zombie`), `slot` the `EquipmentSlot` (`mainhand`,
-    /// `offhand`, `feet`, `legs`, `chest`, `head`, `body`, `saddle`), `from`
-    /// what the slot held when this was last heard (none for empty) and `to`
-    /// what it holds now. Once for each slot that changed, in that order,
-    /// after the mobs' tick, so a mob that joins the level wearing something
-    /// counts from empty on its first tick. It only hears: change the mob with
-    /// its own helpers. Players are heard by `native_on_equip`. Server-side.
+    /// A mob's, an armor stand's or a connected player's equipment slot took a
+    /// different stack (NeoForge's `LivingEquipmentChangeEvent`,
+    /// `LivingEntity.collectEquipmentChanges`): `entity` its ID, `kind` its type
+    /// (`minecraft:player` for a player), `slot` the `EquipmentSlot`, `from` what
+    /// the slot held when last heard and `to` what it holds now. Once per changed
+    /// slot, after the mobs' tick; one new to the level counts from empty. A
+    /// player's `mainhand` is the selected hotbar slot; their `body` and `saddle`
+    /// are never told. The world host's own player is heard by `native_on_equip`.
+    /// It only hears. Server-side.
     pub(in crate::game) fn native_living_equipment_change(
         &mut self,
         entity: u32,
@@ -4141,13 +3881,10 @@ impl Game<'_> {
     /// `vehicle` of type `vehicle_kind` (`minecraft:oak_boat`, `minecraft:minecart`,
     /// `minecraft:horse`, `minecraft:cushion`). Set `canceled` and it does not: a player stays
     /// where they were, a mob does not board, a `/ride` fails, and a rider whose dismount is
-    /// canceled keeps riding. Told for a player boarding a boat, minecart, cushion or a mount (pig,
-    /// strider, horse and its kin, llama, nautilus, happy ghast) and getting off one by their
-    /// own input, `/ride`, a stab, a buck, a teleport or spectator mode; and for the mobs
-    /// Horizon seats on a vehicle (jockeys, raiders on a ravager, `/ride`) and lets off one
-    /// (`/ride`, a stab). It is not told for a rider whose vehicle was removed from the
-    /// level (a boat or minecart destroyed, a broken cushion), nor for riders loaded with a
-    /// save. The acting player is the one whose action runs, a guest on a server. Server-side.
+    /// canceled keeps riding, including during vehicle destruction. A removed
+    /// boat or cart is no longer a valid handle. Explicit later dismounts notify
+    /// again; resident riders also retry in entity-ticking chunks, while rejected
+    /// passengers do not tick. Loading a save does not notify. Server-side.
     pub(in crate::game) fn native_entity_mount(
         &mut self,
         call: mod_api::__private::EntityMountCall<'_>,
@@ -4214,19 +3951,12 @@ impl Game<'_> {
             dimension, into, from, into_value, from_value, can_merge,
         );
     }
-    /// The experience orb `into` is about to take `from` in, after
-    /// `native_experience_orb_can_merge` said yes (`from` is 0 and `from_value` the
-    /// points of a new orb that is spawning). Set `canceled` to stop it: both orbs stay, and
-    /// a spawning orb tries the next orb in reach, then spawns on its own. Server-side.
+    /// The experience orb merge hook's entry point: its arguments are declared on the hook.
     pub(in crate::game) fn native_experience_orb_merge(
         &mut self,
-        dimension: &str,
-        into: u32,
-        from: u32,
-        from_value: i32,
-        canceled: &mut bool,
+        call: mod_api::__private::ExperienceOrbMergeCall<'_>,
     ) {
-        self.fire_experience_orb_merge(dimension, into, from, from_value, canceled);
+        self.fire_experience_orb_merge(call);
     }
     /// A totem of undying saved the server player `player` (`name`): their
     /// hurt would have killed them and the totem held in either hand fired
@@ -4266,7 +3996,9 @@ impl Game<'_> {
     /// `native_loot_table_load`'s changes), and for a mob what it wore, held or
     /// carried (a fox's mouth item, an allay's, piglin's or horse's inventory),
     /// but not an enderman's carried block or a copper golem's preserved
-    /// equipment, which drop after. A charged creeper's head and a fox's mouth
+    /// equipment, or custom drops carrying item-entity state such as an initial
+    /// age, which join the later living-drops collection instead.
+    /// A charged creeper's head and a fox's mouth
     /// item come before the mob's own table. A block's stacks get its block
     /// entity's data (a shulker box's items) after this. Add, change or take out
     /// stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
@@ -4285,18 +4017,6 @@ impl Game<'_> {
     ) {
         self.fire_loot_drops(context, drops);
     }
-    /// `player` is about to take `count` of `item` from the ground
-    /// (`ItemEntity.playerTouch`). Set `canceled` to leave it there: the
-    /// stack isn't offered again for 10 ticks. Server-side.
-    pub(in crate::game) fn native_item_picked_up(
-        &mut self,
-        player: u128,
-        item: &str,
-        count: u32,
-        canceled: &mut bool,
-    ) {
-        self.fire_item_picked_up(player, item, count, canceled);
-    }
     /// A dropped item reaches its lifetime on the server (`ItemEntity.tick`,
     /// NeoForge's `ItemExpireEvent`). Every mod may set or add to `extra_life`,
     /// in ticks, which starts at zero; a positive total keeps the item that much
@@ -4309,22 +4029,6 @@ impl Game<'_> {
         extra_life: &mut i32,
     ) {
         self.fire_item_expire(entity, stack, extra_life);
-    }
-    /// A player took a crafting grid's result (`ResultSlot.onTake`, NeoForge's
-    /// `PlayerEvent.ItemCraftedEvent`): `player` is the player's uuid, `recipe`
-    /// the recipe the grid matched (`minecraft:oak_planks`) and `stack` the
-    /// result it took, with its components. It only hears: the take has
-    /// already happened. It fires for the crafting grid of an inventory or a
-    /// crafting table, on the integrated server and a dedicated server, guests
-    /// included, and not for a stonecutter's, a smithing table's or a
-    /// furnace's result. Server-side.
-    pub(in crate::game) fn native_item_crafted(
-        &mut self,
-        player: u128,
-        recipe: &str,
-        stack: &ItemStack,
-    ) {
-        self.fire_item_crafted(player, recipe, stack);
     }
     /// The food level of the server player `player` (`name`) is about to change
     /// from `from` to `to` (Bukkit's `FoodLevelChangeEvent`):
@@ -4360,20 +4064,6 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_pickup_xp(player, dimension, orb, value, count, canceled);
-    }
-    /// The selected damaged Mending `stack` and the proposed durability repair
-    /// for `experience` points. The amount is clamped to the stack's current damage. Zero leaves the
-    /// experience unspent when it overrides a positive proposal. If the selected
-    /// stack changes, the repair is skipped.
-    /// Server-side, including `PlayerRef::give_experience_points`.
-    pub(in crate::game) fn native_mending_repair(
-        &mut self,
-        player: u128,
-        stack: &ItemStack,
-        experience: u32,
-        repair: &mut u32,
-    ) {
-        self.fire_mending_repair(player, stack, experience, repair);
     }
     /// A player's hit landed on the mob `entity` of type `kind`
     /// (`minecraft:zombie`), holding `stack`: where `Item.hurtEnemy` is called,
@@ -5093,8 +4783,8 @@ impl Game<'_> {
     /// An ingredient as a recipe's JSON names it: an item, a `#tag`, or a list
     /// of them, a bare id as `minecraft:` (as vanilla reads it); `test` says
     /// whether a stack fits. Items the game doesn't know are left out; None
-    /// when nothing is left (an unknown or empty tag, for one) and outside a
-    /// world.
+    /// for missing tags, invalid inputs or when no named item is known, and
+    /// outside a world. Existing-empty tags retain an empty ingredient.
     pub(in crate::game) fn recipe_ingredient(
         &self,
         json: &str,
@@ -5127,7 +4817,7 @@ impl Game<'_> {
             .into_iter()
             .filter(|item| items.get(item).is_some())
             .collect();
-        Ok((!known.is_empty()).then(|| Ingredient::of(known)))
+        Ok((ingredient.items.is_empty() || !known.is_empty()).then(|| Ingredient::of(known)))
     }
     /// A stack as a recipe's `result` names it: `id` (a bare one as
     /// `minecraft:`), `count` (1 by default, up to 99) and `components`. None
@@ -5184,649 +4874,8 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod screen_open_tests {
-    use super::*;
-    use mod_api::{
-        ClientHost, Flow, Hooks, InteractionKeyMappingTriggeredEvent, KeyMappingPreEvent, ModEntry,
-        ScreenClosingEvent, ScreenOpeningEvent, testing::with_mods,
-    };
-    use std::sync::{Arc, Mutex};
-
-    /// A mod that hears `screen_opening` and passes.
-    struct Passer;
-    #[mod_api::__subscriptions]
-    impl Hooks for Passer {
-        fn screen_opening(
-            &self,
-            _host: &dyn ClientHost,
-            _event: &mut ScreenOpeningEvent<'_>,
-        ) -> Option<ScreenOpening> {
-            None
-        }
-    }
-    /// A mod with no screen hook.
-    struct Idle;
-    #[mod_api::__subscriptions]
-    impl Hooks for Idle {}
-
-    /// The creative screen keeps its two tab rows clear: one strip above the window
-    /// and one below it, each as wide as the window and a tab row deep (vanilla's
-    /// `CreativeModeInventoryScreen` tab buttons, 28 px outside the 195x136 window).
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn the_creative_screen_excludes_its_two_tab_rows() {
-        with_mods(Vec::new().into(), || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.screen = Screen::Creative;
-                let batch = HudBatch::scratch([854, 480]);
-                let image = game.container_image(&batch);
-                let (x, y) = (image.left as f32, image.top as f32);
-                let areas = game.screen_own_exclusion(&batch);
-                assert_eq!(areas[0], [x, y - 28.0, 195.0, 28.0]);
-                assert_eq!(areas[1], [x, y + 136.0, 195.0, 28.0]);
-            });
-        });
-    }
-
-    struct KeyProbe(Arc<Mutex<Vec<String>>>);
-    #[mod_api::__subscriptions]
-    impl Hooks for KeyProbe {
-        fn interaction_key_mapping_triggered(
-            &self,
-            _host: &mut dyn ClientHost,
-            event: &mut InteractionKeyMappingTriggeredEvent,
-        ) -> Flow {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("{:?}:{:?}", event.key, event.attempt));
-            match event.key {
-                InteractionKey::Attack => {
-                    event.swing_hand = false;
-                    Flow::Cancel
-                }
-                InteractionKey::Use => Flow::Cancel,
-                _ => Flow::Continue,
-            }
-        }
-    }
-
-    /// Each key reaches a listener as its own kind; a cancelled attack that clears
-    /// `swing_hand` reports no swing, a cancelled use keeps its swing, and an
-    /// uncancelled pick goes on.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn an_interaction_key_reaches_a_mod_as_its_kind_and_can_be_cancelled() {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let mods = vec![ModEntry::new("keys", Box::new(KeyProbe(log.clone())))].into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                let hand = Hand::Main;
-                assert_eq!(
-                    game.native_interaction(InteractionKey::Attack, hand, InteractionAttempt::Held),
-                    Some(false)
-                );
-                assert_eq!(
-                    game.native_interaction(InteractionKey::Use, hand, InteractionAttempt::Press),
-                    Some(true)
-                );
-                assert_eq!(
-                    game.native_interaction(
-                        InteractionKey::PickBlock,
-                        hand,
-                        InteractionAttempt::Press
-                    ),
-                    None
-                );
-            });
-        });
-        assert_eq!(take(&log), ["Attack:Held", "Use:Press", "PickBlock:Press"]);
-    }
-
-    struct MappingProbe(Arc<Mutex<Vec<String>>>);
-    #[mod_api::__subscriptions]
-    impl Hooks for MappingProbe {
-        fn key_mapping_pre(
-            &self,
-            _host: &mut dyn ClientHost,
-            event: &mut KeyMappingPreEvent,
-        ) -> Flow {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("{}:{}", event.mapping, event.pressed));
-            Flow::Cancel
-        }
-    }
-
-    /// Cancels the second press it hears and no other: an allowed down, then a cancelled repeat.
-    struct CancelSecondPress(Arc<Mutex<usize>>);
-    #[mod_api::__subscriptions]
-    impl Hooks for CancelSecondPress {
-        fn key_mapping_pre(
-            &self,
-            _host: &mut dyn ClientHost,
-            event: &mut KeyMappingPreEvent,
-        ) -> Flow {
-            let mut heard = self.0.lock().unwrap();
-            if event.pressed {
-                *heard += 1;
-                if *heard == 2 {
-                    return Flow::Cancel;
-                }
-            }
-            Flow::Continue
-        }
-    }
-
-    /// A cancelled repeat keeps the hold an accepted press made, while a cancelled first press
-    /// is never held, nor are its repeats.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_cancelled_repeat_keeps_the_hold_and_a_cancelled_first_press_is_never_held() {
-        use winit::keyboard::KeyCode;
-        let heard = Arc::new(Mutex::new(0));
-        let mods = vec![ModEntry::new(
-            "second",
-            Box::new(CancelSecondPress(heard.clone())),
-        )]
-        .into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.title = None;
-                game.screen = Screen::Playing;
-                let space = KeyCode::Space;
-                // The first down is allowed and held; its repeat is cancelled but the hold stays.
-                game.physical_keys.insert(space);
-                assert!(!game.key_press_canceled(space, true, false));
-                game.physical_keys.insert(space);
-                assert!(game.key_press_canceled(space, true, true));
-                assert!(game.physical_keys.contains(&space));
-                assert!(!game.rejected_keys.contains(&space));
-            });
-        });
-        let mods = vec![ModEntry::new(
-            "mapping",
-            Box::new(MappingProbe(Arc::new(Mutex::new(Vec::new())))),
-        )]
-        .into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.title = None;
-                game.screen = Screen::Playing;
-                let space = KeyCode::Space;
-                // A cancelled first press is not held, and neither is its repeat.
-                game.physical_keys.insert(space);
-                assert!(game.key_press_canceled(space, true, false));
-                assert!(!game.physical_keys.contains(&space));
-                game.physical_keys.insert(space);
-                assert!(game.key_press_canceled(space, true, true));
-                assert!(!game.physical_keys.contains(&space));
-                // Its release clears the rejection.
-                assert!(!game.key_press_canceled(space, false, false));
-                assert!(!game.rejected_keys.contains(&space));
-            });
-        });
-    }
-
-    /// A cancelled press of a mapping is dropped while playing, and only then asked; the
-    /// release of the same key is asked too but never canceled, so nothing stays held.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_cancelled_mapping_press_is_dropped_and_its_release_is_not() {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let mods = vec![ModEntry::new(
-            "mapping",
-            Box::new(MappingProbe(log.clone())),
-        )]
-        .into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.title = None;
-                game.screen = Screen::Playing;
-                assert!(game.key_mapping_canceled(Some("key.keyboard.space"), true));
-                assert!(!game.key_mapping_canceled(Some("key.keyboard.space"), false));
-                game.screen = Screen::Inventory;
-                assert!(!game.key_mapping_canceled(Some("key.keyboard.space"), true));
-            });
-        });
-        assert_eq!(take(&log), ["key.jump:true", "key.jump:false"]);
-    }
-
-    struct Probe {
-        log: Arc<Mutex<Vec<String>>>,
-        answer: Arc<Mutex<Option<ScreenOpening>>>,
-    }
-    #[mod_api::__subscriptions]
-    impl Hooks for Probe {
-        fn screen_opening(
-            &self,
-            _host: &dyn ClientHost,
-            event: &mut ScreenOpeningEvent<'_>,
-        ) -> Option<ScreenOpening> {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("opening {}->{}", event.current.id, event.new.id));
-            self.answer.lock().unwrap().clone()
-        }
-        fn screen_closing(&self, _host: &dyn ClientHost, event: &mut ScreenClosingEvent<'_>) {
-            self.log
-                .lock()
-                .unwrap()
-                .push(format!("closing {}", event.screen.id));
-        }
-    }
-
-    /// Runs `test` on a client game with one probe mod; the probe's log and answer.
-    fn run(
-        test: impl FnOnce(&mut Game<'_>, &Arc<Mutex<Vec<String>>>, &Arc<Mutex<Option<ScreenOpening>>>),
-    ) {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let answer = Arc::new(Mutex::new(None));
-        let mods = vec![
-            ModEntry::new("passer", Box::new(Passer)),
-            ModEntry::new(
-                "screens",
-                Box::new(Probe {
-                    log: log.clone(),
-                    answer: answer.clone(),
-                }),
-            ),
-        ]
-        .into();
-        with_game_of(mods, |game| test(game, &log, &answer));
-    }
-    /// A client game with a player, under `mods`.
-    fn with_game_of(mods: Arc<[ModEntry]>, test: impl FnOnce(&mut Game<'_>)) {
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.options.execution_role = ExecutionRole::Client;
-                game.player = Some(
-                    horizon_client::motion::PlayerMotion::new(
-                        game.motion,
-                        horizon_core::geometry::Vec3::ZERO,
-                    )
-                    .unwrap(),
-                );
-                test(game);
-            });
-        });
-    }
-
-    /// Only a mod that listens to `screen_opening` or `screen_closing` makes a screen
-    /// change a hook call; a mod with neither leaves it a plain assignment, and a mod
-    /// screen's entry still releases the keys.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn a_mod_with_no_screen_hook_leaves_set_screen_plain() {
-        with_game_of(vec![ModEntry::new("idle", Box::new(Idle))].into(), |game| {
-            game.keys.insert(KeyCode::KeyW);
-            game.set_screen(Screen::Mod);
-            assert_eq!(game.screen, Screen::Mod);
-            assert!(game.keys.is_empty());
-        });
-    }
-    fn take(log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-        std::mem::take(&mut *log.lock().unwrap())
-    }
-
-    /// Opening fires once, before the change, and the old screen's closing
-    /// follows it (`ScreenEvent.Opening`, then `.Closing`): none for the null
-    /// screen the game plays on, one for each screen it leaves.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn a_new_screen_fires_opening_then_closing_of_the_old_one() {
-        run(|game, log, _| {
-            game.set_screen(Screen::Inventory);
-            assert_eq!(game.screen, Screen::Inventory);
-            assert_eq!(take(log), ["opening playing->inventory"]);
-            game.set_screen(Screen::Playing);
-            assert_eq!(game.screen, Screen::Playing);
-            assert_eq!(
-                take(log),
-                ["opening inventory->playing", "closing inventory"]
-            );
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn cancelling_opening_keeps_the_current_screen() {
-        run(|game, log, answer| {
-            game.set_screen(Screen::Paused);
-            take(log);
-            *answer.lock().unwrap() = Some(ScreenOpening::Cancel);
-            game.set_screen(Screen::Options);
-            assert_eq!(game.screen, Screen::Paused);
-            assert_eq!(take(log), ["opening paused->options"]);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn replacing_opening_opens_the_mods_screen_instead() {
-        run(|game, log, answer| {
-            game.set_screen(Screen::Paused);
-            take(log);
-            *answer.lock().unwrap() = Some(ScreenOpening::ModScreen);
-            game.set_screen(Screen::Options);
-            assert_eq!(game.screen, Screen::Mod);
-            // The second mod answered: the screen is its own, not the passer's.
-            assert_eq!(game.mod_screen(), Some("screens"));
-            // One Opening, for the screen asked for: the replacement does not fire it again.
-            assert_eq!(take(log), ["opening paused->options", "closing paused"]);
-            *answer.lock().unwrap() = None;
-            game.close_mod_screen();
-            assert_eq!(game.screen, Screen::Playing);
-            assert_eq!(game.mod_screen(), None);
-            assert_eq!(take(log), ["opening mod->playing", "closing mod"]);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn the_same_screen_again_fires_nothing() {
-        run(|game, log, _| {
-            game.set_screen(Screen::Playing);
-            assert!(take(log).is_empty());
-            game.set_screen(Screen::Inventory);
-            take(log);
-            game.set_screen(Screen::Inventory);
-            assert!(take(log).is_empty());
-        });
-    }
-
-    fn observed(id: &'static str, overlay: bool) -> Option<ObservedScreen> {
-        Some(ObservedScreen {
-            id,
-            overlay,
-            menu: None,
-            title: None,
-            rect: [0.0; 4],
-            slots: 0,
-            mouse: [0.0; 2],
-            partial_tick: 0.0,
-        })
-    }
-
-    /// An overlay (here a sign editor) is announced as a screen is: Opening
-    /// when it shows, Opening back to `playing` and Closing when it goes. A
-    /// `Screen` the observer sees change was announced by `set_screen`, so it
-    /// is not announced twice.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn an_overlay_fires_opening_then_closing_through_the_observer() {
-        run(|game, log, _| {
-            game.observe_change(observed("sign_editor", true));
-            assert_eq!(take(log), ["opening playing->sign_editor"]);
-            game.observe_change(observed("sign_editor", true));
-            assert!(take(log).is_empty());
-            game.observe_change(None);
-            assert_eq!(
-                take(log),
-                ["opening sign_editor->playing", "closing sign_editor"]
-            );
-            game.observe_change(observed("inventory", false));
-            game.observe_change(None);
-            assert!(take(log).is_empty());
-            game.observe_change(observed("inventory", false));
-            game.observe_change(observed("sign_editor", true));
-            assert_eq!(take(log), ["opening playing->sign_editor"]);
-        });
-    }
-
-    /// An overlay opens through `open_screen_overlay`: Opening fires before it is
-    /// set, once, and the frame's observer does not announce it again.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn an_overlay_fires_opening_before_it_opens() {
-        run(|game, log, _| {
-            game.open_sign_editor((0, 64, 0), true);
-            assert!(game.sign_edit.is_some());
-            assert_eq!(take(log), ["opening playing->sign_editor"]);
-            game.observe_screen();
-            assert!(take(log).is_empty());
-        });
-    }
-
-    /// A title screen asked for through `Title::set_mode` opens once the game
-    /// fired `screen_opening` (then `screen_closing` for the one it leaves),
-    /// and `Cancel` keeps the title screen shown.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn a_title_screen_opens_through_screen_opening() {
-        use horizon_client::title::{Mode, Title};
-        run(|game, log, answer| {
-            // No saves: Singleplayer opens Create New World.
-            let saves = std::env::temp_dir().join("horizon-title-gate-test-no-saves");
-            game.title = Some(Title::new(saves, &game.options.resources));
-            game.settle_title_mode();
-            assert!(game.title.as_ref().unwrap().gated);
-            *answer.lock().unwrap() = Some(ScreenOpening::Cancel);
-            game.title.as_mut().unwrap().enter_singleplayer();
-            assert!(matches!(game.title.as_ref().unwrap().mode, Mode::Main));
-            game.settle_title_mode();
-            assert!(matches!(game.title.as_ref().unwrap().mode, Mode::Main));
-            assert_eq!(take(log), ["opening title->world_create"]);
-            *answer.lock().unwrap() = None;
-            game.title.as_mut().unwrap().enter_singleplayer();
-            game.settle_title_mode();
-            assert!(matches!(
-                game.title.as_ref().unwrap().mode,
-                Mode::Create { .. }
-            ));
-            assert_eq!(take(log), ["opening title->world_create", "closing title"]);
-            game.settle_title_mode();
-            assert!(take(log).is_empty());
-        });
-    }
-
-    /// The title appearing (a world closed) and going (a world opened) fires
-    /// `screen_opening`, then `screen_closing` for what it leaves, before the
-    /// change, so the frame's observer has nothing left to announce. With no
-    /// world, `Cancel` doesn't keep the title shut.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn the_title_appears_and_goes_through_screen_opening() {
-        use horizon_client::title::Title;
-        run(|game, log, answer| {
-            let saves = std::env::temp_dir().join("horizon-title-gate-test-no-saves");
-            game.title = None;
-            *answer.lock().unwrap() = Some(ScreenOpening::Cancel);
-            game.show_title(Title::new(saves, &game.options.resources));
-            assert!(game.title.is_some());
-            assert_eq!(take(log), ["opening playing->title"]);
-            game.observe_screen();
-            assert!(take(log).is_empty());
-            *answer.lock().unwrap() = None;
-            game.hide_title();
-            assert!(game.title.is_none());
-            assert_eq!(take(log), ["opening title->playing", "closing title"]);
-            game.observe_screen();
-            assert!(take(log).is_empty());
-        });
-    }
-
-    /// `screen_init_post` follows an overlay that opened, after its Opening.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn an_overlay_fires_init_post_after_it_opens() {
-        use mod_api::ScreenInitPostEvent;
-        /// Hears Opening and Init.Post, in one log.
-        struct Ordered(Arc<Mutex<Vec<String>>>);
-        #[mod_api::__subscriptions]
-        impl Hooks for Ordered {
-            fn screen_opening(
-                &self,
-                _host: &dyn ClientHost,
-                event: &mut ScreenOpeningEvent<'_>,
-            ) -> Option<ScreenOpening> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(format!("opening {}", event.new.id));
-                None
-            }
-            fn screen_init_post(
-                &self,
-                _host: &dyn ClientHost,
-                event: &mut ScreenInitPostEvent<'_>,
-            ) {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push(format!("init {}", event.screen.id));
-            }
-        }
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let mods = vec![ModEntry::new("ordered", Box::new(Ordered(log.clone())))].into();
-        with_game_of(mods, |game| {
-            game.open_sign_editor((0, 64, 0), true);
-            assert_eq!(take(&log), ["opening sign_editor", "init sign_editor"]);
-        });
-    }
-
-    /// The read and the hook see the same live screen, including overlays.
-    #[test]
-    #[ignore = "needs prepared resources and an X11 display"]
-    fn client_gui_state_matches_screen_init_hook() {
-        // Winit permits only one event loop per process, even after it is dropped.
-        if crate::game::native_entity_refs::tests::run_fresh_cases(
-            "game::native_hooks::base::screen_open_tests::client_gui_state_matches_screen_init_hook",
-            "HORIZON_SCREEN_STATE_CHILD",
-            &["window"],
-        ) {
-            return;
-        }
-        use mod_api::ScreenInitPostEvent;
-        struct Observe(Arc<Mutex<Vec<(String, Option<String>)>>>);
-        #[mod_api::__subscriptions]
-        impl Hooks for Observe {
-            fn screen_opening(
-                &self,
-                _host: &dyn ClientHost,
-                _event: &mut ScreenOpeningEvent<'_>,
-            ) -> Option<ScreenOpening> {
-                None
-            }
-            fn screen_init_post(&self, host: &dyn ClientHost, event: &mut ScreenInitPostEvent<'_>) {
-                self.0.lock().unwrap().push((
-                    event.screen.id.to_owned(),
-                    host.observed_screen_id().map(|id| id.id),
-                ));
-            }
-        }
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let mods = vec![ModEntry::new("observe", Box::new(Observe(seen.clone())))].into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_client_game(|game| {
-                game.focused = false;
-                assert!(!mod_api::prelude::ScreensClientHost::window_focused(game));
-                game.focused = true;
-                assert!(mod_api::prelude::ScreensClientHost::window_focused(game));
-                game.title = None;
-                game.screen = Screen::Playing;
-                assert!(mod_api::prelude::ScreensClientHost::observed_screen_id(game).is_none());
-                game.screen = Screen::Inventory;
-                assert!(mod_api::prelude::ScreensClientHost::observed_screen_id(game).is_none());
-                let mut builder = winit::event_loop::EventLoop::builder();
-                #[cfg(target_os = "linux")]
-                {
-                    use winit::platform::x11::EventLoopBuilderExtX11;
-                    builder.with_x11().with_any_thread(true);
-                }
-                let event_loop = builder.build().unwrap();
-                #[allow(deprecated)]
-                let window = Arc::new(
-                    event_loop
-                        .create_window(
-                            winit::window::Window::default_attributes()
-                                .with_visible(false)
-                                .with_inner_size(winit::dpi::PhysicalSize::new(320, 240)),
-                        )
-                        .unwrap(),
-                );
-                game.options.offscreen = true;
-                game.renderer = Some(game.new_renderer(window).unwrap());
-                game.screen = Screen::Playing;
-                assert!(mod_api::prelude::ScreensClientHost::observed_screen_id(game).is_none());
-                game.set_screen(Screen::Inventory);
-                game.observe_screen();
-                assert_eq!(
-                    mod_api::prelude::ScreensClientHost::observed_screen_id(game)
-                        .unwrap()
-                        .id,
-                    "inventory"
-                );
-                game.open_screen_overlay("link_prompt", |game| {
-                    game.link_prompt = Some("https://example.com".into());
-                });
-                assert_eq!(
-                    mod_api::prelude::ScreensClientHost::observed_screen_id(game)
-                        .unwrap()
-                        .id,
-                    "link_prompt"
-                );
-                let seen = seen.lock().unwrap();
-                assert!(
-                    seen.iter().any(|(event, read)| event == "inventory"
-                        && read.as_deref() == Some("inventory"))
-                );
-                assert!(seen.iter().any(|(event, read)| event == "link_prompt"
-                    && read.as_deref() == Some("link_prompt")));
-            });
-        });
-    }
-
-    /// `Cancel` keeps an overlay shut, as it keeps a `Screen` shut.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn cancelling_opening_keeps_an_overlay_shut() {
-        run(|game, log, answer| {
-            *answer.lock().unwrap() = Some(ScreenOpening::Cancel);
-            game.open_sign_editor((0, 64, 0), true);
-            assert!(game.sign_edit.is_none());
-            assert_eq!(take(log), ["opening playing->sign_editor"]);
-            let opened = game.open_screen_overlay("link_prompt", |game| {
-                game.link_prompt = Some("https://example.com".into())
-            });
-            assert!(!opened);
-            assert!(game.link_prompt.is_none());
-            assert_eq!(take(log), ["opening playing->link_prompt"]);
-        });
-    }
-
-    /// `ModScreen` opens the answering mod's screen in place of the overlay.
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn replacing_opening_of_an_overlay_opens_the_mods_screen() {
-        run(|game, log, answer| {
-            *answer.lock().unwrap() = Some(ScreenOpening::ModScreen);
-            game.open_book(crate::game::books::BookScreen::View {
-                pages: Vec::new(),
-                page: 0,
-                lectern: None,
-            });
-            assert!(game.book.is_none());
-            assert_eq!(game.screen, Screen::Mod);
-            assert_eq!(game.mod_screen(), Some("screens"));
-            assert_eq!(take(log), ["opening playing->book_view"]);
-        });
-    }
-
-    #[test]
-    #[ignore = "needs prepared resources"]
-    fn no_mods_is_a_plain_assignment() {
-        with_mods(Vec::new().into(), || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.options.execution_role = ExecutionRole::Client;
-                game.set_screen(Screen::Inventory);
-                assert_eq!(game.screen, Screen::Inventory);
-            });
-        });
-    }
-}
+#[path = "base_tests/screen_open_tests.rs"]
+mod screen_open_tests;
 
 #[cfg(test)]
 mod text_tests {

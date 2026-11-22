@@ -3,13 +3,23 @@
 #![forbid(unsafe_code)]
 extern crate self as horizon_client;
 pub mod accounts;
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: horizon_threads::allocation_probe::Allocator =
+    horizon_threads::allocation_probe::Allocator;
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
+pub mod api_text;
 pub mod arrows;
 pub mod bed_geometry;
 pub mod block_contact;
+pub mod block_sounds;
+pub mod item_damage;
+pub mod parallel;
 pub mod powder_snow;
+#[cfg(test)]
+mod test_log;
 #[cfg(test)]
 mod test_resources;
 pub use horizon_client_render::{
@@ -17,28 +27,29 @@ pub use horizon_client_render::{
     block_entities, block_entity_anim, block_entity_render, block_sprites, block_states, bluemap,
     bluemap_detect, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
     cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
-    containers, controller_ui, crash, custom_sky, datapack, dynamic_light, effects, elyby,
-    environment, extras, fast_hash, fluid_models, fluid_render, fog, font, gfx, graphics,
-    graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout, hud_overlays,
-    inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light, lod, logging,
-    menu_blur, menu_style, mesher, minimap, mipmap, mod_browser, mod_chunk_tickets, mod_list,
-    model_library, models, mods_screen, monitor, multiline_edit, native_emissive, offline_name,
-    options_file, options_fixes, options_ui, overlay, own_buttons, own_skin, pack_browser,
-    pack_formats, pack_hooks, pack_palette, pack_screen, packs, pad_cursor, pad_glyph, par,
-    particles, poi_sections, polytone_creative_tabs, polytone_post, post_chain, potent_sulfur,
-    preedit, providers, pvp, pvp_hud, random_source, resource_source, screen_draw, screen_effects,
-    sculk, section_mask, server_terrain, settings, shader_options, shader_pack_list, signs, skins,
-    social, sound_engine, sound_events, sound_preview, spans, split_layout, split_map,
-    split_profiles, sprites, streaming, structure_block, system_stats, tab_list, terrain_model,
-    test_block, test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets,
-    world, worldborder, zip,
+    containers, controller_ui, crash, custom_sky, datapack, dynamic_light, dynamic_resolution,
+    effects, elyby, environment, extras, fast_hash, fluid_models, fluid_render, fog, font, gfx,
+    gpu_drivers, graphics, graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout,
+    hud_overlays, inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light,
+    lod, logging, mark_sprite, menu_blur, menu_style, mesher, minimap, mipmap, mod_browser,
+    mod_chunk_tickets, mod_list, mod_pipelines, model_library, models, mods_screen, monitor,
+    multiline_edit, native_emissive, offline_name, options_file, options_fixes, options_ui,
+    overlay, own_buttons, own_skin, pack_browser, pack_formats, pack_hooks, pack_palette,
+    pack_screen, packs, pad_cursor, pad_glyph, par, particles, poi_sections,
+    polytone_creative_tabs, polytone_post, post_chain, potent_sulfur, preedit, providers, pvp,
+    pvp_hud, random_source, resource_source, screen_draw, screen_effects, sculk, section_mask,
+    server_terrain, settings, shader_options, shader_pack_list, signs, skins, social, sound_engine,
+    sound_events, sound_preview, spans, split_layout, split_map, split_profiles, sprites,
+    streaming, structure_block, system_stats, tab_list, terrain_model, test_block,
+    test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets, world,
+    worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;
 pub mod auto_jump;
 pub mod banner;
 pub mod bedrock_touch;
-pub use horizon_client_render::{android_controls, keypad};
+pub use horizon_client_render::{android_controls, android_display, keypad};
 pub mod android_control_assets;
 pub mod android_control_keyboard;
 pub mod android_control_text;
@@ -53,6 +64,7 @@ pub mod boss_overlay;
 pub mod breathing;
 pub mod cauldron;
 pub mod chunk_io;
+pub mod client_perf;
 pub mod clock;
 pub mod command_storage;
 pub mod confirm_screen;
@@ -70,6 +82,7 @@ pub mod debug_entries;
 pub mod debug_keys;
 pub mod debug_overlay;
 pub mod debugworld;
+pub mod desktop;
 pub mod dialog;
 pub mod dialog_screen;
 pub mod enchantment_levels;
@@ -103,6 +116,7 @@ pub mod item_sync;
 pub mod item_tooltip;
 pub mod join_seq;
 pub mod kinetics;
+pub mod move_gate;
 /// Game-owned JSON metadata conversion, shared by recipe and API adapters.
 pub use horizon_core::json_nbt;
 pub mod lan;
@@ -113,6 +127,7 @@ pub mod locator_bar;
 pub mod lod_net;
 pub mod map_decoration_types;
 pub mod menu;
+pub mod menu_extra_net;
 pub mod merchant;
 pub mod mobs;
 pub mod mod_content;
@@ -124,12 +139,14 @@ pub mod music;
 pub mod native_client_hooks;
 pub mod native_data;
 pub mod native_stack_hooks;
+pub mod neoforge_mob_maps;
 pub mod net;
 pub mod nether_portal;
 pub mod no_resources;
 pub mod old_world;
 pub mod osk;
 pub mod patrol;
+pub mod perf_net;
 pub mod perf_overlay;
 pub mod pick_item;
 pub mod platform;
@@ -141,24 +158,37 @@ pub mod preparer;
 pub mod projectiles;
 pub mod raid;
 pub mod random_tick_sections;
+pub mod raw_payloads;
 pub mod realms;
 pub mod recipe_book;
 pub mod recipe_book_screen;
 pub mod reconnect;
 pub mod save;
+// The carrier ownership store: an internal storage layer of this
+// library, used by the game crate's transfers (game/world/), like
+// save.rs below it. Not part of the mods' API surface.
+#[cfg(test)]
+mod carrier_recover_tests;
+pub mod carrier_store;
+#[cfg(test)]
+mod carrier_store_tests;
 pub mod scoreboard_cmd;
 pub mod screen_layout;
 pub mod screen_narrator;
+pub mod skull_models;
 pub mod social_screen;
 pub mod starling_mod_api;
 pub mod starling_releases;
+pub mod starling_store;
 pub mod world_geometry;
 pub use horizon_server_files as server;
 pub mod controller_notice;
 pub mod server_packs;
+pub mod server_perf;
 pub mod shadows;
 pub mod spear;
 pub mod spectator_menu;
+pub mod splashes;
 pub mod sprint;
 pub mod stand_up;
 pub mod stations;
@@ -168,6 +198,8 @@ pub mod stopwatches;
 pub mod structure_blocks;
 pub mod studio;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod text_display;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
@@ -176,6 +208,7 @@ pub mod toasts;
 pub mod touch;
 pub mod ui_theme;
 pub mod vanillagen;
+pub mod viewed_levels_net;
 pub mod voxel_occlusion;
 // Keep the old path for native callers while giving the implementation a name
 // that does not collide with the gameplay adapter in `game/interface/entity_culling/mod.rs`.
@@ -202,6 +235,7 @@ pub use horizon_client_input::gameplay_guide;
 pub use horizon_client_input::held;
 pub use horizon_client_input::input;
 pub use horizon_client_input::input_mode;
+pub use horizon_client_input::input_queue;
 pub use horizon_client_input::input_source;
 pub use horizon_client_input::interaction_input;
 pub use horizon_client_input::key_names;

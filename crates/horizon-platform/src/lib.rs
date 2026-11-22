@@ -11,6 +11,12 @@
 /// memory.
 pub use horizon_system as system;
 
+/// The benchmark report format and its hardware probes (`horizon-bench`).
+pub use horizon_bench as bench;
+
+/// The `.hzperf` capture contract and its files (`horizon-perf-format`).
+pub use horizon_perf_format as perf_format;
+
 /// The pinned Minecraft version: its id, protocol and data version.
 pub use horizon_core::version;
 
@@ -43,6 +49,10 @@ pub use horizon_prepare as prepare;
 #[cfg(feature = "server-files")]
 pub use horizon_server_files as server_files;
 
+/// `java.util.Properties` and the JDK's date text, for the files a server keeps in that format.
+#[cfg(feature = "server-files")]
+pub use horizon_java_properties as java_properties;
+
 /// Plugging into the game (`horizon-hooks`): implement [`hooks::Hooks`] and
 /// [`hooks::register`] it before the game starts (docs/layers.md, "How a Horizon crate plugs
 /// in"). The engine's dispatch side is not part of the API.
@@ -56,8 +66,8 @@ pub mod hooks {
         PlayerModel, PlayerModels, Quad, SpriteStore, Sprites, View,
     };
     pub use horizon_hooks::{
-        Activity, Client, Dimension, GameMode, Hooks, Play, Started, TooLate, register, seat,
-        tunnel,
+        Activity, Client, Dimension, GameMode, GetTheGame, Hooks, Play, Started, TooLate, perf,
+        register, seat, tunnel,
     };
 }
 
@@ -69,7 +79,13 @@ pub mod settings {
 
 /// Settings pages a crate adds to the options screens (docs/layers.md, "Platform registries").
 pub mod pages {
-    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, register};
+    pub use horizon_hooks::pages::{Act, Label, Page, Place, Row, connect, register};
+}
+
+/// The lang files with a crate's text, loaded with the game's own (docs/layers.md, "Platform
+/// registries").
+pub mod lang {
+    pub use horizon_hooks::lang::{Files, register};
 }
 
 /// Drawing on the HUD (docs/layers.md, "Platform registries").
@@ -94,3 +110,6 @@ pub mod mod_build {
     /// Parsing and validation of injection point signatures.
     pub use point_shape;
 }
+
+/// Establish the executable stack policy before starting the game or supervisor.
+pub use horizon_guest_stack::prepare_main as prepare_main_stack;

@@ -162,6 +162,19 @@ sprites = ["block/*_leaves"]
 solid_materials = [10]   # these cast whole shadows: their cutouts are ignored in the shadow map
 ```
 
+## Hardware ray tracing
+
+A pack with an (empty) `[ray_tracing]` table casts real rays: the material and post stages read
+`var rt_tlas: acceleration_structure` (group 3, binding 14) through `rt_trace` (nearest hit) and
+`rt_occluded` (1 before `t_max`, else 0). The world is a BLAS per live solid section plus one TLAS,
+built as sections mesh on a ray-query device; without one the pack is refused with its name in the
+log, so ship a non-RT edition beside it. Translucent terrain is not in the structures: rays pass
+through water and glass.
+
+```toml
+[ray_tracing]   # needs [material] or [[post]]; needs a ray-tracing GPU at run time
+```
+
 ## Textures
 
 Each `[[textures]]` entry is a PNG in the pack that every stage reads under the name of its `id`, with a sampler named

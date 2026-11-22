@@ -24,6 +24,11 @@ pub trait ServicesServerHost {
     #[access(WorldOnly)]
     #[service]
     fn players(&self) -> &dyn Players;
+    /// The runtime_levels service.
+    /// Not on wasm: a frame resource; its methods are the imports.
+    #[access(WorldOnly)]
+    #[service]
+    fn runtime_levels(&mut self) -> &mut dyn RuntimeLevels;
 }
 /// The client host's methods of the `services` area, implemented by the game and reached through [`crate::ClientHost`].
 #[horizon_mod_api_macros::host_area]
@@ -68,6 +73,18 @@ pub trait ClientSession {
         )
     }
     /// Side: client.
+    /// The local player's latency in milliseconds as the tab list draws it
+    /// (`PlayerInfo.getLatency`): the server's smoothed keep-alive average, refreshed by its own
+    /// broadcast. 0 before the server's first measurement, as vanilla; None outside a logged-in
+    /// client world or before the server lists this player. Sends nothing.
+    fn client_latency(&self) -> Option<u32> {
+        crate::world::phase::unprovided(
+            "ClientSession::client_latency",
+            "client_latency",
+            crate::world::phase::LoadAccess::ClientSetup,
+        )
+    }
+    /// Side: client.
     /// Existing local frame counters; None outside a logged-in client world.
     /// This read collects no history and sends nothing anywhere.
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
@@ -77,14 +94,26 @@ pub trait ClientSession {
             crate::world::phase::LoadAccess::ClientSetup,
         )
     }
+    /// Side: client.
+    /// The player list as the Tab overlay draws it, whether or not it is shown: each listed
+    /// player's drawn name, profile name, UUID, game mode and latency in the order drawn, at
+    /// most the 80 it draws, with the header and footer. What this client has been sent; None
+    /// outside a logged-in client world. Sends nothing.
+    fn client_tab_list(&self) -> Option<ClientTabList> {
+        crate::world::phase::unprovided(
+            "ClientSession::client_tab_list",
+            "client_tab_list",
+            crate::world::phase::LoadAccess::ClientSetup,
+        )
+    }
 }
 /// The commands service, reached through its host.
 pub trait Commands {
     /// Side: server.
-    /// A mod changed the commands it registers (`native_register_commands`):
+    /// A mod changed the commands it registers (`register_commands`):
     /// at the start of the next server tick every mod is asked again, the
     /// commands players may run are rebuilt, and every player on the server is
-    /// sent their tree again, after `native_player_commands_sent`. Nothing
+    /// sent their tree again, after `player_commands_sent`. Nothing
     /// happens where no world is open to players, and nothing for a server
     /// whose mods never call it. API @API:refresh_commands@.
     fn refresh_commands(&mut self) {
@@ -117,6 +146,31 @@ pub trait Commands {
         crate::world::phase::unprovided(
             "Commands::run_command",
             "run_command",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+    /// Side: server.
+    /// `run_command` with its feedback kept: the same line, source and run
+    /// path (one leading slash is dropped here), answering with whether it
+    /// ran without failing (`success`, what `run_command` returns) and what the
+    /// console would have printed for it as plain text (`feedback`, as a mod
+    /// that answers a remote console wants; Paper's `Server.dispatchCommand`
+    /// with a capturing `CommandSender`). The feedback of the command alone is
+    /// kept, never the lines other code logs meanwhile; a call made while
+    /// another one runs captures its own lines and the outer capture goes on
+    /// unchanged. At most 256 lines of 4096 bytes each
+    /// come back (a longer line is cut at a character boundary). A command that ran and failed
+    /// is `success: false` with its message in `feedback`. A line run where no server
+    /// is open to players, or empty once its whitespace and slash are
+    /// dropped, runs nothing and is `success: false` with no feedback, exactly as
+    /// `run_command` answers `false` for it; no refusal type tells those
+    /// apart from a failed command, as `run_command` has none either. The
+    /// dedicated console's own commands (`stop`, `op`, `whitelist`, `ban`...)
+    /// are not reached: they answer as an unknown command.
+    fn run_command_with_output(&mut self, line: &str) -> CommandResult {
+        crate::world::phase::unprovided(
+            "Commands::run_command_with_output",
+            "run_command_with_output",
             crate::world::phase::LoadAccess::WorldOnly,
         )
     }
@@ -180,13 +234,83 @@ pub trait Players {
     }
     /// Side: server.
     /// The player whose action or command a hook hears, as their state is
-    /// swapped in (`native_run_mod_command`, `native_right_click_block`,
-    /// `native_use_on`, `native_break_block`...): None outside such a
+    /// swapped in (`run_mod_command`, `right_click_block`,
+    /// `native_use_on`, `break_block`...): None outside such a
     /// hook.
     fn acting_player(&self) -> Option<PlayerRef> {
         crate::world::phase::unprovided(
             "Players::acting_player",
             "acting_player",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+}
+/// The runtime_levels service, reached through its host.
+/// Success from `open` or `unload` admits a queued request, not its completion.
+/// Apply failures are logged with the requesting mod and level id. A failed open
+/// leaves the id unpublished and free to retry; a failed unload keeps it open for retry.
+pub trait RuntimeLevels {
+    /// Side: server.
+    /// Open the level `id` (`mymod:instance/ab`), in the calling mod's namespace, as `level`
+    /// describes. The request is checked now and applied after this server tick's levels have
+    /// ticked, never inside a level's tick: the level is not open, and `is_open` says false, until
+    /// then. The handle names this open of the level and never a later one. A folder that
+    /// exists under the id is reopened as it was saved. `level_load` fires when it opens.
+    /// Refused with [`RuntimeLevelError`] for an id outside the mod's namespace, one already
+    /// open or waiting, an unknown dimension type or generator, a noise generator, and when
+    /// the server's cap of open runtime levels (`horizon-max-runtime-levels`, 64) is reached.
+    fn open(&mut self, id: &str, level: RuntimeLevel) -> Result<LevelRef, RuntimeLevelError> {
+        crate::world::phase::unprovided(
+            "RuntimeLevels::open",
+            "open",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+    /// Side: server.
+    /// Save and close the level `id` the calling mod opened, keeping its folder, once this server
+    /// tick's levels have ticked: `level_unload` fires then. Refused with
+    /// [`RuntimeLevelError::PlayersInside`] while a player or an arrival not yet landed is in the
+    /// level, now and again when it is applied: the mod moves its players out first
+    /// (`entity_teleport_to_level`).
+    fn unload(&mut self, id: &str) -> Result<(), RuntimeLevelError> {
+        crate::world::phase::unprovided(
+            "RuntimeLevels::unload",
+            "unload",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+    /// Side: server.
+    /// Remove the level `id` the calling mod owns, folder and all, once this server tick's levels
+    /// have ticked. A level that is open is saved and closed first (`level_unload` fires), as by
+    /// `unload`; a level that is not open, such as the leftovers of a crash, only has its files
+    /// removed, and a level with no files is nothing to delete. The structure references the
+    /// game keeps beside the world for the level go with its folder, unless another id would
+    /// share the file (`a_b:c` and `a:b_c` do) and that level exists. Links under `dimensions` or
+    /// `data` are never followed: the removal fails and is logged. Refused, now and again when
+    /// it is applied, with [`RuntimeLevelError::PlayersInside`] while a player or an arrival not
+    /// yet landed is in the level, with [`RuntimeLevelError::LevelsBelow`] while a level below
+    /// the id exists (`mymod:instance/ab` below `mymod:instance`: the folders nest), and with
+    /// [`RuntimeLevelError::AlreadyOpen`] for a level still waiting to open. An `open` of a level
+    /// that is open and being deleted is `AlreadyOpen` until the delete is applied; one of a
+    /// level that was not open, made after the `delete`, is applied after it and starts empty.
+    /// If the level closed but its files could not all be removed, it stays closed and
+    /// `is_open` is false, `open` of the id is [`RuntimeLevelError::Removing`] and an `open`
+    /// already queued is dropped with a log line, until a second `delete` has removed them.
+    fn delete(&mut self, id: &str) -> Result<(), RuntimeLevelError> {
+        crate::world::phase::unprovided(
+            "RuntimeLevels::delete",
+            "delete",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+    /// Side: server.
+    /// Whether the level `id` is open: false until a queued `open` is applied, true until a
+    /// queued `unload` or `delete` is. Takes `&mut self` as the service's other methods do: a frame
+    /// resource is reached one way.
+    fn is_open(&mut self, id: &str) -> bool {
+        crate::world::phase::unprovided(
+            "RuntimeLevels::is_open",
+            "is_open",
             crate::world::phase::LoadAccess::WorldOnly,
         )
     }
@@ -207,11 +331,24 @@ pub trait RenderAssets {
     }
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
+    /// Resolve a pipeline registered in `register_render_pipelines` once in `client_setup` and
+    /// again in `client_resources_reloaded`, not each frame. `Unknown` for an id no mod
+    /// registered, `Invalid` for one whose shader the current resources don't give or that
+    /// didn't compile. Nothing is read or compiled here.
+    fn render_pipeline(&self, id: &Identifier) -> Result<RenderPipelineRef, RenderPipelineError> {
+        crate::world::phase::unprovided(
+            "RenderAssets::render_pipeline",
+            "render_pipeline",
+            crate::world::phase::LoadAccess::PublishedResources,
+        )
+    }
+    /// Side: client.
+    /// Published asset/data read: available in Setup, Reloading and World.
     /// The keyframe animation `id`, from `assets/<namespace>/neoforge/animations/entity/<path>.json`
     /// in the mod's or a pack's resources (NeoForge's `Model.getAnimation`), as the latest resource
     /// load read it; `None` when no file gives it or the file failed to load. Get and
-    /// [`AnimationHolder::bake`] it once in `client_setup` and again in `client_resources_reloaded`,
-    /// not each frame.
+    /// [`AnimationHolder::bake`] it (or [`AnimationHolder::bake_with`] when it names registered
+    /// types) once in `client_setup` and again in `client_resources_reloaded`, not each frame.
     fn animation(&self, id: &Identifier) -> Option<AnimationHolder> {
         crate::world::phase::unprovided(
             "RenderAssets::animation",

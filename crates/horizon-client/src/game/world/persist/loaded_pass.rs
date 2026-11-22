@@ -8,20 +8,37 @@ impl Game<'_> {
         let loaded = std::mem::take(&mut self.world.loaded_entities);
         for (key, tags) in loaded {
             let count = tags.len();
-            for tag in tags {
-                self.spawn_loaded_entity(key, tag, None);
+            for pending in tags {
+                let (tag, reason) = pending.into_parts();
+                self.spawn_loaded_entity_reason(key, tag, None, reason);
             }
             self.native_entities_load(self.dim.id(), [key.0, key.1], count);
         }
     }
 
-    /// Install one disk record or explicitly owned live transfer through the same
+    /// Install one fixture record or explicitly owned live transfer through the same
     /// metadata and join boundary. The transfer token belongs only to this call.
+    #[cfg(test)]
     pub(in crate::game) fn spawn_loaded_entity(
+        &mut self,
+        key: ChunkKey,
+        tag: Tag,
+        transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
+    ) {
+        self.spawn_loaded_entity_reason(
+            key,
+            tag,
+            transferred,
+            horizon_client::world::EntityLoadReason::Ordinary,
+        );
+    }
+
+    pub(in crate::game) fn spawn_loaded_entity_reason(
         &mut self,
         key: ChunkKey,
         mut tag: Tag,
         transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
+        reason: horizon_client::world::EntityLoadReason,
     ) {
         let player_uuid = self.level.player_uuid;
         // A world older builds named by the offline profile names the player that
@@ -61,7 +78,9 @@ impl Game<'_> {
             }
             return;
         }
-        drop_unleashable_leash(&mut tag, &kind, is_mob);
+        if !super::super::general::quarantined_kind(&kind) {
+            drop_unleashable_leash(&mut tag, &kind, is_mob);
+        }
         let uuid = entity_nbt::uuid(&tag);
         // This shortcut deduplicates disk copies, never explicit runtime ownership.
         if transferred.is_none() && uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
@@ -94,14 +113,20 @@ impl Game<'_> {
         ) || horizon_client::projectiles::thrown_type(&kind).is_some())
             && let Some(at) = entity_nbt::position(&tag)
         {
-            self.persist
-                .anon
-                .insert(anon_key(&kind, at), (at, tag.clone()));
+            let key = anon_key(&kind, at);
+            let was = self.persist.anon.insert(key.clone(), (at, tag.clone()));
+            self.journal_anon((key, was));
         }
         // Kinds outside `entity_lists!` first, then the listed kinds
         // (`Entity::load_nbt`), then whatever else is a compound.
         let transferring = transferred.is_some();
-        let unloaded = if let Some(state) = transferred {
+        let unloaded = if kind == "minecraft:tnt"
+            && !is_mob
+            && reason == horizon_client::world::EntityLoadReason::TeleportedTnt
+        {
+            self.load_tnt_with_portal(tag, uuid, transferred, true);
+            Ok(())
+        } else if let Some(state) = transferred {
             self.load_listed_transferred(&kind, uuid, player_uuid, tag, state)
         } else {
             self.load_unlisted(key, &kind, uuid, tag)
@@ -113,7 +138,12 @@ impl Game<'_> {
                 return;
             }
             if !kind.is_empty() && entity_nbt::position(&tag).is_some() {
-                self.load_other(tag, &kind);
+                // A record no listed family claimed: the missing-mod gate
+                // decides whether the unknown-kind path may keep it.
+                let at = entity_nbt::position(&tag).unwrap();
+                if self.general_quarantine_admits(&tag, &kind, at) {
+                    self.load_other(tag, &kind);
+                }
             } else {
                 self.persist.unknown.entry(key).or_default().push(tag);
             }
@@ -125,5 +155,19 @@ impl Game<'_> {
         } else {
             self.native_joins_flush(from_disk, 0);
         }
+    }
+}
+
+impl EntityMemory {
+    /// Puts back the raw record `kept` holds, or takes out the one a spawn added where none was:
+    /// the abort of a transaction whose spawn wrote over it (`journal_anon`).
+    pub(in crate::game) fn put_back_anon(
+        &mut self,
+        (key, was): ((String, [u64; 3]), Option<(Vec3, Tag)>),
+    ) {
+        match was {
+            Some(record) => self.anon.insert(key, record),
+            None => self.anon.remove(&key),
+        };
     }
 }

@@ -3,6 +3,141 @@ use super::*;
 use crate::game::commands::Target;
 use horizon_client::motion::PlayerMotion;
 
+#[test]
+#[ignore = "needs prepared resources and a scratch HORIZON_HOME"]
+fn constructed_and_saved_mob_uuids_survive_repeated_reconstruction() {
+    // Opt in only in a fresh child; never mutate the parallel parent's environment.
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::persist::summon_uuid_conflict_tests::constructed_and_saved_mob_uuids_survive_repeated_reconstruction",
+        "HORIZON_TEST_SEEDS",
+        &["1"],
+    ) {
+        return;
+    }
+    use horizon_core::random::RandomSource;
+
+    // Independent Java 48-bit LCG calculation: uniquifier 12345 multiplied
+    // (wrapping i64) by 1181783497276652981 seeds Entity.random with
+    // -2257288423974277811. Two nextLongs with UUID version/variant masks
+    // yield these words; nextFloat consumes the yaw, then nextInt is below.
+    // A pig reconstructed without finalization consumes no further own draws.
+    const CONSTRUCTOR_UUID: [i32; 4] = [1462068314, 225001827, -1901508738, 42864579];
+    const NEXT_DRAW: i32 = -742666194;
+    with_game(|game, _| {
+        for saved_uuid in [None, Some([160, 0, 0, 987])] {
+            let mut tag = Tag::compound([("id", Tag::String("minecraft:pig".into()))]);
+            if let Some(uuid) = saved_uuid
+                && let Tag::Compound(fields) = &mut tag
+            {
+                fields.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+            }
+            // Reset only this test thread, after resource/game setup has drawn.
+            horizon_client::random_source::set_thread_uniquifier(12345).unwrap();
+            let mut id = game.load_mob(tag, None).unwrap();
+            let uuid = saved_uuid.unwrap_or(CONSTRUCTOR_UUID);
+            assert_eq!(game.persist.uuid_of(id), Some(uuid));
+            assert_eq!(
+                game.mobs
+                    .iter()
+                    .find(|mob| mob.id == id)
+                    .unwrap()
+                    .random
+                    .clone()
+                    .next_int(),
+                NEXT_DRAW
+            );
+            for _ in 0..3 {
+                let tag = game.command_target_nbt(Target::Mob(id)).unwrap();
+                assert_eq!(entity_nbt::uuid(&tag), Some(uuid));
+                game.forget_entity(id);
+                game.mobs.retain(|mob| mob.id != id);
+                horizon_client::random_source::set_thread_uniquifier(12345).unwrap();
+                id = game.load_mob(tag, None).unwrap();
+                assert_eq!(game.persist.uuid_of(id), Some(uuid));
+                assert_eq!(
+                    game.mobs
+                        .iter()
+                        .find(|mob| mob.id == id)
+                        .unwrap()
+                        .random
+                        .clone()
+                        .next_int(),
+                    NEXT_DRAW
+                );
+            }
+        }
+    });
+}
+
+fn positioned(kind: &str, uuid: Option<[i32; 4]>) -> Tag {
+    let pos = |v: f64| Tag::Double(v.to_bits());
+    let mut tag = Tag::compound([
+        ("id", Tag::String(kind.into())),
+        ("Pos", Tag::List(vec![pos(4.5), pos(64.0), pos(4.5)])),
+    ]);
+    if let (Some(uuid), Tag::Compound(fields)) = (uuid, &mut tag) {
+        fields.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+    }
+    tag
+}
+
+#[test]
+#[ignore = "needs prepared resources and a scratch HORIZON_HOME"]
+fn cloud_fangs_and_kept_entities_keep_their_constructor_uuid() {
+    // Opt in only in a fresh child; never mutate the parallel parent's environment.
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::persist::summon_uuid_conflict_tests::cloud_fangs_and_kept_entities_keep_their_constructor_uuid",
+        "HORIZON_TEST_SEEDS",
+        &["1"],
+    ) {
+        return;
+    }
+    use horizon_core::random::RandomSource;
+
+    // Independent Java LCG calculation, as in the mob test above: uniquifier 12345
+    // gives this Entity.random's first two nextLongs, the UUID. The constructor takes
+    // exactly one uniquifier step, so the next Entity.random is the one the uniquifier
+    // squared seeds, whose first nextInt is below.
+    const CONSTRUCTOR_UUID: [i32; 4] = [1462068314, 225001827, -1901508738, 42864579];
+    const NEXT_ENTITY_FIRST_INT: i32 = -705649180;
+    const SAVED: [i32; 4] = [160, 0, 0, 987];
+    const KINDS: [&str; 3] = [
+        "minecraft:area_effect_cloud",
+        "minecraft:evoker_fangs",
+        "minecraft:marker",
+    ];
+    with_game(|game, _| {
+        for kind in KINDS {
+            for saved in [None, Some(SAVED)] {
+                horizon_client::random_source::set_thread_uniquifier(12345).unwrap();
+                let tag = positioned(kind, saved);
+                let id = if kind == "minecraft:marker" {
+                    game.load_other(tag, kind).unwrap()
+                } else {
+                    game.load_unlisted((0, 0), kind, saved, tag).unwrap();
+                    if kind == "minecraft:evoker_fangs" {
+                        game.fangs.list.last().unwrap().id
+                    } else {
+                        game.breath_clouds.last().unwrap().id
+                    }
+                };
+                let expected = saved.unwrap_or(CONSTRUCTOR_UUID);
+                assert_eq!(game.persist.uuid_of(id), Some(expected), "{kind} {saved:?}");
+                assert_eq!(
+                    game.uuid_for(id),
+                    expected,
+                    "{kind} {saved:?}: saving draws no second UUID"
+                );
+                assert_eq!(
+                    horizon_client::random_source::entity().next_int(),
+                    NEXT_ENTITY_FIRST_INT,
+                    "{kind} {saved:?}: one constructor draw"
+                );
+            }
+        }
+    });
+}
+
 const PIG: &str = "NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b";
 
 fn pig(tag: &str, n: i32, riders: &str) -> String {
@@ -442,7 +577,9 @@ fn a_resident_below_an_offlevel_passenger_round_trips_and_resumes_after_dismount
         // without accidentally admitting their rejected parent.
         let chunks = game.entity_chunks(&HashSet::from([(0, 0)]), true);
         assert!(game.mobs.is_empty());
-        game.world.loaded_entities.extend(chunks);
+        for (key, tags) in chunks {
+            game.world.queue_entity_nbt(key, tags);
+        }
         game.spawn_loaded_entities();
         assert!(mob_tagged(game, "h160_rejected").is_empty());
         assert_eq!(live(game, 200).len(), 1);
@@ -509,7 +646,9 @@ fn removed_root_retains_its_geometry_until_offlevel_passengers_dismount() {
             game.tick_world(true).unwrap();
         }
         let chunks = game.entity_chunks(&HashSet::from([(0, 0)]), true);
-        game.world.loaded_entities.extend(chunks);
+        for (key, tags) in chunks {
+            game.world.queue_entity_nbt(key, tags);
+        }
         game.spawn_loaded_entities();
         assert!(
             game.run_command(
@@ -531,7 +670,9 @@ fn removed_root_retains_its_geometry_until_offlevel_passengers_dismount() {
             Some(&Tag::Int(-1000))
         );
         let chunks = game.entity_chunks(&HashSet::from([(0, 0)]), true);
-        game.world.loaded_entities.extend(chunks);
+        for (key, tags) in chunks {
+            game.world.queue_entity_nbt(key, tags);
+        }
         game.spawn_loaded_entities();
         assert!(mob_tagged(game, "raised_grandchild").is_empty());
         assert!(game.persist.off_level.is_empty());
@@ -576,6 +717,7 @@ fn dimension_travel_admits_the_duplicate_child_before_the_copied_root() {
                 [4.5, 200.0, 4.5],
                 None,
                 false,
+                crate::game::vehicle_teleport::TeleportMotion::Stop,
             )
             .unwrap()
         );
@@ -604,7 +746,9 @@ fn dimension_travel_admits_the_duplicate_child_before_the_copied_root() {
         // A ghost root is not independently saved by the level. Its resident
         // descendants must not be promoted to chunk roots on unload/reload.
         let chunks = game.entity_chunks(&HashSet::from([(0, 0)]), true);
-        game.world.loaded_entities.extend(chunks);
+        for (key, tags) in chunks {
+            game.world.queue_entity_nbt(key, tags);
+        }
         game.spawn_loaded_entities();
         assert!(mob_tagged(game, "h160_travel_rejected").is_empty());
         assert!(mob_tagged(game, "h160_travel_grandchild").is_empty());
@@ -740,7 +884,9 @@ fn age(game: &mut Game<'_>, id: u32) -> Option<Tag> {
 /// Write and read back the entities of chunk 0 0, as an unload or a restart does.
 fn reload_chunk(game: &mut Game<'_>) {
     let chunks = game.entity_chunks(&HashSet::from([(0, 0)]), true);
-    game.world.loaded_entities.extend(chunks);
+    for (key, tags) in chunks {
+        game.world.queue_entity_nbt(key, tags);
+    }
     game.spawn_loaded_entities();
 }
 
@@ -787,6 +933,7 @@ fn vehicle_root_travel(expected: &RootTravel, dismount: Option<&str>) {
                 [1.5, 200.0, 1.5],
                 None,
                 false,
+                crate::game::vehicle_teleport::TeleportMotion::Stop,
             )
             .unwrap()
         );

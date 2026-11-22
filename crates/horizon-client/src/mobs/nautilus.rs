@@ -14,6 +14,7 @@ use super::{
 use crate::blocks::Fluid;
 use crate::health::DamageLevel;
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_world::move_gate::MoveGate;
 use std::collections::HashMap;
 
 // Nautilus state: `tame`/`owner`, the saddle, `head` the body armour,
@@ -180,7 +181,7 @@ pub fn travel(
     }
     let speed = m.ai.speed;
     m.move_relative(speed, input);
-    m.do_move(w, level, events);
+    m.do_move(w, level, events, &mut MoveGate::new());
     m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
     true
 }
@@ -596,6 +597,7 @@ impl Goal for Charge {
                 x: f64::from(horizon_core::geometry::trig::sin(yaw)),
                 z: -f64::from(horizon_core::geometry::trig::cos(yaw)),
                 source: super::Damage::mob(m.id, from),
+                apply_blocking: None,
             };
             cx.events.push(if who == Who::Player {
                 cx.w.route_player_event(event)
@@ -689,7 +691,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_core::nbt::Tag) {
     use horizon_core::nbt::Tag;
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
-    m.extra.sitting = crate::entity_nbt::flag(tag, "Sitting");
+    crate::mobs::tame::restore_sitting(m, crate::entity_nbt::flag(tag, "Sitting"));
     if let Some(Tag::String(v)) = tag.get("variant") {
         let v = v.to_string().unwrap_or_default();
         m.extra.variant = u8::from(v.trim_start_matches("minecraft:") == "warm");
@@ -896,7 +898,8 @@ mod hostile_target_tests {
             |_, _| {},
             |_, types| {
                 let kind = Arc::new(types.types["minecraft:pufferfish"].clone());
-                fish = Some(Mob::new(2, kind, fish_at, 0.0).seen(None));
+                fish =
+                    Some(Mob::new(2, kind, fish_at, 0.0).seen(None, &crate::items::Items::empty()));
             },
         );
         let fish = fish?;

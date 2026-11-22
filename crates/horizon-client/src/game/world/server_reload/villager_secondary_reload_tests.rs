@@ -48,7 +48,7 @@ fn memory(game: &crate::game::Game<'_>, mob: &mut Mob) -> Option<Vec<[i32; 3]>> 
 
 fn fixture(run: impl FnOnce(&mut crate::game::Game<'_>, &Arc<AtomicBool>, &mut Mob)) {
     let enabled = Arc::new(AtomicBool::new(true));
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![ModEntry::new(
             "secondary_test",
             Box::new(Tags(enabled.clone())),
@@ -94,7 +94,11 @@ fn fixture(run: impl FnOnce(&mut crate::game::Game<'_>, &Arc<AtomicBool>, &mut M
                     .unwrap()
                     .clone();
                 let mut mob = Mob::new(901, kind, Vec3::new(0.0, 64.0, 0.0), 0.0);
-                mobs::villager::set_profession(&mut mob, 5);
+                mobs::villager::set_profession(
+                    &mut mob,
+                    horizon_client::mobs::villager::profession_table(),
+                    5,
+                );
                 // Keep the full brain from resetting an untraded farmer with no primary POI.
                 mob.extra.villager_level = 2;
                 assert_eq!(memory(game, &mut mob), Some(vec![[0, 63, 1], [1, 63, 0]]));

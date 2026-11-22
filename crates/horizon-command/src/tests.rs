@@ -621,6 +621,27 @@ fn whitespace_is_what_java_character_is_whitespace_says() {
     assert!(!parse("@e[\u{A0}type=minecraft:pig]"));
 }
 #[test]
+fn a_registered_token_reads_as_a_whole_word_before_the_vanilla_letter() {
+    let mut reg = reg();
+    reg.selector_tokens
+        .push(horizon_client_core::registries::SelectorToken {
+            name: "allies".into(),
+            tooltip: "test.selector.allies".into(),
+            players_only: true,
+            limit: usize::MAX,
+            sort: "nearest",
+        });
+    let mut r = Reader::new("@allies[limit=1]");
+    let s = selector::parse(&mut r, &reg, true).unwrap();
+    assert_eq!(s.token.as_deref(), Some("allies"));
+    assert_eq!((s.limit, s.sort), (1, Sort::Nearest));
+    assert!(!s.include_entities);
+    let s = selector::parse(&mut Reader::new("@a"), &reg, true).unwrap();
+    assert_eq!((s.kind, s.token), ('a', None));
+    let error = selector::parse(&mut Reader::new("@zz"), &reg, true).unwrap_err();
+    assert_eq!(error.key, "argument.entity.selector.unknown");
+}
+#[test]
 fn a_uuid_selects_by_entity_uuid() {
     // EntitySelectorParser.parseNameOrUUID: a UUID sets entityUUID and
     // includesEntities, never playerName (which findEntities checks first).
@@ -1539,4 +1560,71 @@ fn a_greedy_custom_argument_takes_the_rest_of_the_line() {
             value: "hello there".into(),
         })
     );
+}
+
+#[test]
+fn profiler_commands_parse_and_complete_for_a_player_without_operator_permission() {
+    let reg = Registries {
+        permission: 0,
+        ..reg()
+    };
+    let tree = vanilla::game_dispatcher().with_profiler();
+    for line in [
+        "profiler start",
+        "profiler start client",
+        "profiler start gpu",
+        "profiler start client gpu_detail",
+        "profiler stop server",
+        "profiler status",
+        "profiler share",
+        "profiler share profile-20251107-143844Z",
+        "profiler open",
+        "profiler open profile-20251107-143844Z",
+        "profiler mark slow frame",
+    ] {
+        assert_eq!(
+            tree.parse(line, &reg).executable().unwrap().1,
+            PROFILER_COMMAND,
+            "{line}"
+        );
+    }
+    let input = "profiler start ";
+    let parse = tree.parse(input, &reg);
+    let sides: Vec<_> = tree
+        .client_suggestions(&parse, input.len(), &reg)
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
+    assert_eq!(sides, ["client", "gpu", "gpu_detail", "server"]);
+    for line in [
+        "profiler start --gpu",
+        "profiler stop gpu",
+        "profiler start gpu client",
+    ] {
+        assert!(tree.parse(line, &reg).executable().is_err(), "{line}");
+    }
+    assert!(vanilla::game_dispatcher().find("profiler").is_none());
+    assert!(tree.has_horizon_profiler());
+}
+
+#[test]
+fn a_servers_own_profiler_keeps_its_node_and_is_not_horizons() {
+    let mut server = vanilla::game_dispatcher().clone();
+    let node = server.literal(0, "profiler");
+    server.executes(node, "server:profiler");
+    let open = server.literal(node, "open");
+    server.executes(open, "server:profiler");
+    let tree = server.with_profiler();
+    assert!(!tree.has_horizon_profiler());
+    let input = "profiler ";
+    let parse = tree.parse(input, &reg());
+    let offered: Vec<_> = tree
+        .client_suggestions(&parse, input.len(), &reg())
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
+    assert_eq!(offered, ["open"]);
+    assert!(!vanilla::game_dispatcher().has_horizon_profiler());
 }

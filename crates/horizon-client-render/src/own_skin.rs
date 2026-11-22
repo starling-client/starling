@@ -48,8 +48,29 @@ impl SkinChoice {
     /// profile that made none yet, or with no profiles, the one kept beside the name
     /// ([`Self::load`]), which every profile wore before they had their own.
     pub fn for_profile(dir: &Path, key: Option<&str>) -> Self {
-        key.and_then(|key| profile_choice(&read_profiles(dir), key))
-            .unwrap_or_else(|| Self::load(dir))
+        Self::saved_for_profile(dir, key).unwrap_or_else(|| Self::load(dir))
+    }
+
+    pub fn saved_for_profile(dir: &Path, key: Option<&str>) -> Option<Self> {
+        profile_choice(&read_profiles(dir), key?)
+    }
+
+    pub fn for_game(dir: &Path, key: Option<&str>) -> Self {
+        read_profiles(dir)
+            .get(key.unwrap_or(""))
+            .and_then(|entry| entry.get("wardrobe"))
+            .and_then(read_choice)
+            .unwrap_or_else(|| Self::for_profile(dir, key))
+    }
+
+    pub fn save_for_game(&self, dir: &Path, key: Option<&str>) -> std::io::Result<()> {
+        let mut all = read_profiles(dir);
+        let model = if self.slim { "slim" } else { "classic" };
+        profile_entry(&mut all, key.unwrap_or("")).insert(
+            "wardrobe".into(),
+            serde_json::json!({ "skin": self.file, "model": model }),
+        );
+        write_profiles(dir, &all)
     }
 
     /// Keep the choice for the profile `key`; with none, beside the name ([`Self::save`]).
@@ -59,15 +80,59 @@ impl SkinChoice {
         };
         let mut all = read_profiles(dir);
         let model = if self.slim { "slim" } else { "classic" };
-        all.insert(
-            key.to_owned(),
-            serde_json::json!({ "skin": self.file, "model": model }),
-        );
-        let text = serde_json::to_string_pretty(&all).map_err(std::io::Error::other)?;
-        let part = dir.join(format!("{PROFILES}.part"));
-        std::fs::write(&part, text + "\n")?;
-        std::fs::rename(part, dir.join(PROFILES))
+        let entry = profile_entry(&mut all, key);
+        entry.insert(SKIN.into(), serde_json::json!(self.file));
+        entry.insert(MODEL.into(), serde_json::json!(model));
+        write_profiles(dir, &all)
     }
+}
+
+/// The local override of the account's cape.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapeChoice {
+    #[default]
+    Account,
+    Hidden,
+    Local(String),
+}
+
+impl CapeChoice {
+    pub fn load(dir: &Path, key: Option<&str>) -> Option<Self> {
+        let all = read_profiles(dir);
+        serde_json::from_value(all.get(key.unwrap_or(""))?.get("cape")?.clone()).ok()
+    }
+
+    pub fn save(&self, dir: &Path, key: Option<&str>) -> std::io::Result<()> {
+        let mut all = read_profiles(dir);
+        profile_entry(&mut all, key.unwrap_or("")).insert(
+            "cape".into(),
+            serde_json::to_value(self).map_err(std::io::Error::other)?,
+        );
+        write_profiles(dir, &all)
+    }
+}
+
+fn profile_entry<'a>(
+    all: &'a mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let entry = all.entry(key).or_insert_with(|| serde_json::json!({}));
+    if !entry.is_object() {
+        *entry = serde_json::json!({});
+    }
+    entry.as_object_mut().unwrap()
+}
+
+fn write_profiles(
+    dir: &Path,
+    all: &serde_json::Map<String, serde_json::Value>,
+) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(all).map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{PROFILES}.part"));
+    std::fs::write(&part, text + "\n")?;
+    std::fs::rename(part, dir.join(PROFILES))
 }
 
 /// Where the playing profile's skin can go besides this game (Skin Customization's account rows).
@@ -109,7 +174,14 @@ fn profile_choice(
     all: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Option<SkinChoice> {
-    let entry = all.get(key)?.as_object()?;
+    read_choice(all.get(key)?)
+}
+
+fn read_choice(entry: &serde_json::Value) -> Option<SkinChoice> {
+    let entry = entry.as_object()?;
+    if !entry.contains_key(SKIN) {
+        return None;
+    }
     Some(SkinChoice {
         file: entry
             .get(SKIN)
@@ -180,12 +252,30 @@ pub fn list(skins: &Path) -> Vec<String> {
     files
 }
 
-/// The skin after `current` in the page's cycle: the default (None), then each of `files`.
-pub fn next(files: &[String], current: Option<&str>) -> Option<String> {
-    let after = current
-        .and_then(|c| files.iter().position(|f| f == c))
-        .map_or(0, |i| i + 1);
-    files.get(after).cloned()
+/// The face and hat pixels of a skin, packed in the HUD's color format.
+pub(super) type Thumbnail = [[u32; 64]; 2];
+
+pub(super) fn thumbnail(skins: &Path, file: &str) -> Option<Thumbnail> {
+    if !is_file_name(file) {
+        return None;
+    }
+    let mut png = Vec::new();
+    std::fs::File::open(skins.join(file))
+        .ok()?
+        .take(MAX_UPLOAD + 1)
+        .read_to_end(&mut png)
+        .ok()?;
+    if png.len() as u64 > MAX_UPLOAD {
+        return None;
+    }
+    let skin = decode(&png).ok()?;
+    Some([8, 40].map(|left| {
+        std::array::from_fn(|i| {
+            let at = ((8 + i / 8) * 64 + left + i % 8) * 4;
+            let [r, g, b, a] = skin[at..at + 4].try_into().unwrap();
+            crate::hud::rgba(r, g, b, a)
+        })
+    }))
 }
 
 /// A skin PNG as the game draws it, 64x64 RGBA; why not, for a file that is no skin.
@@ -268,6 +358,38 @@ mod tests {
         out
     }
 
+    #[test]
+    fn choosing_a_cape_keeps_the_profiles_skin_and_legacy_fallback() {
+        let dir = scratch("cape");
+        let legacy = SkinChoice {
+            file: Some("legacy.png".into()),
+            slim: false,
+        };
+        legacy.save(&dir).unwrap();
+        CapeChoice::Hidden.save(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), legacy);
+        assert_eq!(CapeChoice::load(&dir, Some("profile-b")), None);
+
+        let chosen = SkinChoice {
+            file: Some("my-skin.png".into()),
+            slim: true,
+        };
+        chosen.save_for_profile(&dir, Some("profile-a")).unwrap();
+        assert_eq!(
+            CapeChoice::load(&dir, Some("profile-a")),
+            Some(CapeChoice::Hidden)
+        );
+        let cape = CapeChoice::Local("my-cape".into());
+        cape.save(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), chosen);
+        assert_eq!(CapeChoice::load(&dir, Some("profile-a")), Some(cape));
+        legacy.save_for_game(&dir, Some("profile-a")).unwrap();
+        chosen.save_for_profile(&dir, Some("profile-a")).unwrap();
+        assert_eq!(SkinChoice::for_game(&dir, Some("profile-a")), legacy);
+        assert_eq!(SkinChoice::for_profile(&dir, Some("profile-a")), chosen);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn pixel(rgba: &[u8], x: usize, y: usize) -> [u8; 4] {
         let at = (y * 64 + x) * 4;
         rgba[at..at + 4].try_into().unwrap()
@@ -327,11 +449,6 @@ mod tests {
         assert_eq!(shown_name("Old.PNG"), "Old");
         assert_eq!(shown_name("é"), "é");
         // The cycle: the default, each skin, the default again.
-        assert_eq!(next(&files, None).as_deref(), Some("Old.PNG"));
-        assert_eq!(next(&files, Some("Old.PNG")).as_deref(), Some("steve.png"));
-        assert_eq!(next(&files, Some("steve.png")), None);
-        assert_eq!(next(&files, Some("gone.png")).as_deref(), Some("Old.PNG"));
-        assert_eq!(next(&[], None), None);
         let _ = fs::remove_dir_all(&d);
     }
 

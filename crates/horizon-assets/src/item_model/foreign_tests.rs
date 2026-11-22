@@ -109,29 +109,62 @@ fn range_property_reads_zero() {
     assert!(matches!(n, ItemModelNode::Empty));
 }
 
+/// A special model type no mod registered is an error naming it, so the item definition holding
+/// it isn't loaded and the item draws the missing model; its `base` no longer stands in. A type a
+/// mod registered, vanilla's included, decodes with its model object for the mod's renderer, and
+/// vanilla's types no mod registered keep theirs.
 #[test]
-fn special_type_keeps_its_base_model() {
-    let n = node(
+fn a_special_type_draws_by_its_renderer_or_fails_by_name() {
+    let error = node(
         r#"{"type":"minecraft:special","base":"mod:item/cube","model":{"type":"mod:energy_cube"}}"#,
     )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("unknown special model type mod:energy_cube"),
+        "{error}"
+    );
+    // A mod may replace a vanilla type: its models then go to the mod's renderer.
+    register_special_model_types(vec!["foreigntest:skillet".into(), "minecraft:bell".into()]);
+    let n = node(
+        r#"{"type":"minecraft:special","base":"foreigntest:item/pan","model":{"type":"foreigntest:skillet","handle":2}}"#,
+    )
     .unwrap();
-    assert_eq!(model_id(&n), "mod:item/cube");
+    let ItemModelNode::RegisteredSpecial {
+        base, slot, config, ..
+    } = &n
+    else {
+        panic!("not a registered special model: {n:?}");
+    };
+    assert_eq!(
+        (base.as_str(), *slot),
+        ("foreigntest:item/pan", SpecialModelSlot(0))
+    );
+    assert_eq!(config.get("handle"), Some(&horizon_core::nbt::Tag::Byte(2)));
     let n =
         node(r#"{"type":"minecraft:special","base":"a:b","model":{"type":"minecraft:shield"}}"#)
             .unwrap();
     assert!(matches!(n, ItemModelNode::Special { .. }));
+    let n = node(r#"{"type":"minecraft:special","base":"a:b","model":{"type":"minecraft:bell"}}"#)
+        .unwrap();
+    assert!(matches!(
+        &n,
+        ItemModelNode::RegisteredSpecial {
+            slot: SpecialModelSlot(1),
+            ..
+        }
+    ));
 }
 
 /// A node type no mod registered is an error naming it, so the item definition holding it isn't
-/// loaded and the item draws the missing model, whatever keys the node has (a NeoForge type
-/// such as `neoforge:fluid_container` included: #2606 makes it a built-in node).
+/// loaded and the item draws the missing model, whatever keys the node has. NeoForge's own
+/// types are no exception, except `neoforge:fluid_container`, which the engine decodes (#2606).
 #[test]
 fn an_unregistered_node_type_fails_by_name() {
     for json in [
         r#"{"type":"mod:thing","model":"mod:item/thing"}"#,
         r#"{"type":"neoforge:trimmed_armor","base_model":{"type":"minecraft:model","model":"mod:item/boots"}}"#,
         r#"{"type":"mod:facade"}"#,
-        r#"{"type":"neoforge:fluid_container","textures":{"base":"minecraft:item/bucket"}}"#,
     ] {
         let kind = serde_json::from_str::<Value>(json).unwrap()["type"]
             .as_str()
@@ -144,4 +177,15 @@ fn an_unregistered_node_type_fails_by_name() {
         );
     }
     assert!(ClientItem::from_json(r#"{"model":{"type":"ae2:facade"}}"#).is_err());
+}
+
+/// Ownership comes from the decoder, not from the minecraft namespace or registrations.
+#[test]
+fn special_model_builtin_ownership_uses_the_decoder_identity() {
+    assert!(SpecialModel::is_builtin_type("minecraft:bell"));
+    assert!(SpecialModel::is_builtin_type("minecraft:chest"));
+    assert!(!SpecialModel::is_builtin_type("minecraft:foo"));
+    assert!(!SpecialModel::is_builtin_type("example:bell"));
+    assert!(SpecialModel::decode(&serde_json::json!({"type": "minecraft:bell"})).is_ok());
+    assert!(SpecialModel::decode(&serde_json::json!({"type": "minecraft:foo"})).is_err());
 }

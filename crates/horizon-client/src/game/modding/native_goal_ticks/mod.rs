@@ -20,6 +20,8 @@ use mod_api::{
     content::crash::{ModCall, enter_native_mod},
 };
 
+#[cfg(test)]
+mod interception_tests;
 mod live_backend;
 mod live_entity;
 mod live_living;
@@ -276,11 +278,11 @@ impl GoalCx<'_, '_> {
         }
     }
 
-    fn r_entity_kind(&self, entity: EntityRef) -> Option<String> {
+    fn r_entity_kind(&self, entity: EntityRef) -> Option<mod_api::EntityTypeKey> {
         match self.resolve(entity)? {
             // The snapshot carries the species, not its type id.
-            Resolved::Own => Some(self.m.kind.id.clone()),
-            Resolved::Live(mob) => Some(mob.kind.id.clone()),
+            Resolved::Own => mod_api::__private::resolved_entity_type_key(&self.m.kind.id),
+            Resolved::Live(mob) => mod_api::__private::resolved_entity_type_key(&mob.kind.id),
             _ => None,
         }
     }
@@ -578,8 +580,7 @@ impl mobs::part_goals::GoalHost for Game<'_> {
     }
 
     fn mob_invulnerable_to_damage(&self, mob: &Mob, damage_type: &str) -> bool {
-        let source = mobs::Damage::of(Self::damage_kind(&self.motion.health.damage, damage_type));
-        mob.refuses_damage(&source)
+        self.mob_query_invulnerable(mob, damage_type)
     }
 
     fn mob_can_use_portal(&self, mob: &Mob) -> bool {

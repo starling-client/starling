@@ -13,7 +13,8 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 5 read every vanilla file to stamp it on Windows.
 // Version 6 stamps vanilla's files by their metadata on Windows too.
 // Version 7 stacks blockstate files (every pack's definition, bottom first).
-const VERSION: u32 = 8;
+// Version 8 left an atlas `single` source's renamed sprite without its texture file (#14485).
+const VERSION: u32 = 9;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
@@ -331,7 +332,12 @@ pub(super) fn hold(out: &Path) -> io::Result<()> {
                 .create(true)
                 .truncate(false)
                 .open(use_path(out))?;
-            file.lock_shared()?;
+            // Unlocked where the filesystem keeps no locks (Android's shared storage), as `build`.
+            if let Err(e) = file.lock_shared()
+                && e.kind() != io::ErrorKind::Unsupported
+            {
+                return Err(e);
+            }
             held.push((out.into(), file));
             held.len() - 1
         }
@@ -393,6 +399,10 @@ fn remove_unused(out: &Path) -> io::Result<()> {
         match lock.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => return Ok(()),
+            // Without file locks nothing tells whether another game uses it: it stays.
+            Err(fs::TryLockError::Error(e)) if e.kind() == io::ErrorKind::Unsupported => {
+                return Ok(());
+            }
             Err(fs::TryLockError::Error(e)) => return Err(e),
         }
     }

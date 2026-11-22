@@ -11,11 +11,22 @@
 //! up its own frames, so going back to a setup adds to it. `performance/perf-sessions.json`
 //! keeps them across starts, the diagnostic ZIP takes it, and a test build sends them to the
 //! build gateway (`/v1/perf`): the GPU, the settings and the frame times, nothing about the player.
+//!
+//! Calibrate... (the graphics screen's Performance page, any build) finds the same thing in a
+//! minute or two, on its own: from the title screen it opens the benchmark's world
+//! (`horizon_client::benchmark`, seed 1234), holds the camera over it, and times each way of
+//! drawing that shows the very same picture (terrain draws, the sky's side of terrain, occlusion
+//! culling, hidden faces) a few seconds at a time, interleaved. It keeps the fastest where it
+//! beats the device's own by [`WORTH_IT`], deletes the world and opens its page again with what
+//! it found. Nothing is sent: what it measured stays in `perf-lab.json`.
 use super::{Game, Screen};
-use horizon_client::{lang, text::Text};
+use horizon_client::benchmark::{self, Control};
+use horizon_client::{lang, options_ui::Page, text::Text};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SESSIONS: &str = "perf-sessions.json";
@@ -98,13 +109,26 @@ struct Choices {
     transparency: Switch,
 }
 
-/// `performance/perf-lab.json`: the choices, and the test build whose guided test ran.
+/// `performance/perf-lab.json`: the choices, the test build whose guided test ran, and what the
+/// last calibration found.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
     #[serde(flatten)]
     choices: Choices,
     guided_done: Option<String>,
+    calibrated: Option<Calibrated>,
+}
+
+/// What a calibration found: the fastest way of drawing, which it put in use, its frame rate
+/// and the device's own (Auto) in the same run, and how long the run took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Calibrated {
+    choices: Choices,
+    fps: f64,
+    auto_fps: f64,
+    seconds: f64,
 }
 
 /// The renderer's own choices before the test touched them, and what this device takes.
@@ -274,6 +298,12 @@ pub(super) struct PerfLab {
     /// Seconds of counted play, and when the setups were last sent.
     played: f64,
     sent_at: f64,
+    /// Calibrate... under way.
+    calibration: Option<Calibration>,
+    /// What the last calibration found (kept in `perf-lab.json`).
+    calibrated: Option<Calibrated>,
+    /// Why the last calibration stopped, until the next one.
+    calibrate_stopped: Option<String>,
 }
 
 fn unix_now() -> u64 {
@@ -290,10 +320,17 @@ fn folder() -> PathBuf {
     horizon_client::logging::private_home().join("performance")
 }
 
-/// This APK's version where it is a test build: a Starling Preview, never a release.
+/// This APK's version where it is a test build: a Starling Preview, never a release, started with
+/// `STARLING_PERF_TEST=1` (a line of `horizon-args.txt`). Only then does the guided test start on
+/// its own and reports go out. Every Preview started it, once per version, so again with each new
+/// development APK, and `REPORTS` is the Azure gateway, gone since 2026-11-14. A Calibrate button
+/// that sends nothing is to take its place.
 fn test_build() -> Option<String> {
     #[cfg(target_os = "android")]
     {
+        if std::env::var_os("STARLING_PERF_TEST").is_none_or(|on| on != "1") {
+            return None;
+        }
         crate::android::app_version()
             .filter(|(name, release)| !release && name.contains("preview"))
             .map(|(name, _)| name)
@@ -335,6 +372,7 @@ impl PerfLab {
             let saved: Saved = serde_json::from_str(&text).unwrap_or_default();
             self.choices = saved.choices;
             self.guided_done = saved.guided_done;
+            self.calibrated = saved.calibrated;
         }
         if let Ok(text) = std::fs::read_to_string(dir.join(SESSIONS))
             && let Ok(file) = serde_json::from_str::<Value>(&text)
@@ -348,6 +386,7 @@ impl PerfLab {
         let saved = Saved {
             choices: self.choices,
             guided_done: self.guided_done.clone(),
+            calibrated: self.calibrated,
         };
         let text = serde_json::to_vec_pretty(&saved).unwrap_or_default();
         let dir = folder();
@@ -458,6 +497,16 @@ impl PerfLab {
             Switch::On => parts.push(word("sky_late_short")),
             Switch::Off => parts.push(word("sky_early_short")),
         }
+        match c.occlusion {
+            Switch::Auto => {}
+            Switch::On => parts.push(word("occlusion_on_short")),
+            Switch::Off => parts.push(word("occlusion_off_short")),
+        }
+        match c.hidden_faces {
+            Switch::Auto => {}
+            Switch::On => parts.push(word("faces_on_short")),
+            Switch::Off => parts.push(word("faces_off_short")),
+        }
         if c.transparency == Switch::Off {
             parts.push(word("transparency_off_short"));
         }
@@ -529,6 +578,8 @@ impl Game<'_> {
             && self.focused
             && !self.pause
             && self.last_input.elapsed() < IDLE
+            // A calibration's frames are its own: the test world, the camera held.
+            && self.perf_lab.calibration.is_none()
     }
 
     /// What decides the frame rate, as the player set it and the renderer took it.
@@ -618,6 +669,7 @@ impl Game<'_> {
         if !self.perf_lab.loaded {
             self.perf_lab.load();
         }
+        self.perf_calibrate_frame();
         if let Some(r) = self.renderer.as_mut() {
             self.perf_lab.apply(r);
         }
@@ -1095,5 +1147,862 @@ impl PerfLab {
             }
         };
         self.current = Some(index);
+    }
+}
+
+/// How fast a calibration goes: the wait after a switch before its frames count, and each
+/// block's seconds (`bench` takes whole seconds).
+#[derive(Clone, Copy)]
+struct Pace {
+    warmup: Duration,
+    block: u32,
+}
+/// About a minute of blocks for the six ways of drawing a phone can have.
+const PACE: Pace = Pace {
+    warmup: Duration::from_secs(1),
+    block: 3,
+};
+/// How high over the spawn the camera holds, and where it looks: out over the land.
+const CALIBRATE_LIFT: f64 = 24.0;
+const CALIBRATE_YAW: f64 = 0.0;
+const CALIBRATE_PITCH: f64 = 15.0;
+/// How long the game waits, back on the title screen, for the test world's last save before it
+/// gives up deleting the world (it stays out of the world list all the same).
+const CALIBRATE_CLEANUP: Duration = Duration::from_secs(30);
+/// The run's error when the game asked it to stop (`CalibrationState::stop`).
+const STOPPED: &str = "stopped";
+
+/// What the calibration thread and the game tell each other.
+#[derive(Default)]
+struct CalibrationState {
+    /// The way of drawing the run times next: the game takes it on its next frame.
+    wanted: Option<Choices>,
+    /// The way of drawing the game took last: it draws with it from its next frame.
+    drawn: Option<Choices>,
+    /// The test world is loaded and the run times it: a menu, a pause or leaving the game
+    /// stops it from here on.
+    measuring: bool,
+    /// Blocks done, blocks in all and when the last should end, for the line over the hotbar.
+    progress: Option<(usize, usize, Instant)>,
+    /// The game asks the run to stop.
+    stop: bool,
+    /// What the run found, or why it stopped: the game leaves the test world, deletes it, and
+    /// then puts it in use.
+    finished: Option<Result<Calibrated, String>>,
+}
+
+type Shared = Arc<Mutex<CalibrationState>>;
+
+fn lock(shared: &Shared) -> MutexGuard<'_, CalibrationState> {
+    shared.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Calibrate... under way, on the game's side.
+struct Calibration {
+    shared: Shared,
+    /// The player's choices before it started, given back when it stops.
+    before: Choices,
+    told: Option<Instant>,
+    /// The game has left the test world for the title screen.
+    left: bool,
+    /// What the run found, held until the test world is deleted, and since when the game has
+    /// been back on the title screen to delete it.
+    result: Option<Result<Calibrated, String>>,
+    on_title: Option<Instant>,
+}
+
+/// What a calibration times on this device: its own way of drawing first, then each single
+/// change from it that shows the same picture. Improved Transparency stays as the player has it
+/// throughout: turning it off changes the picture.
+fn calibration_candidates(d: Device, keep: Choices) -> Vec<Choices> {
+    let base = Choices {
+        transparency: keep.transparency,
+        ..Choices::default()
+    };
+    let flip = |on: bool| if on { Switch::Off } else { Switch::On };
+    let mut candidates = vec![base];
+    let mut terrain = |draws: Draws| candidates.push(Choices { draws, ..base });
+    if d.flat || d.indirect {
+        terrain(Draws::Direct);
+    }
+    if d.offers[1] && !d.indirect {
+        terrain(Draws::Indirect);
+    }
+    if d.offers[0] && !d.flat {
+        terrain(Draws::Flat);
+    }
+    if d.offers[2] {
+        candidates.push(Choices {
+            late_sky: flip(d.late_sky),
+            ..base
+        });
+    }
+    if d.offers[3] {
+        candidates.push(Choices {
+            occlusion: flip(d.occlusion),
+            ..base
+        });
+    }
+    candidates.push(Choices {
+        hidden_faces: flip(d.hidden_faces),
+        ..base
+    });
+    candidates
+}
+
+fn mean(rates: &[f64]) -> f64 {
+    if rates.is_empty() {
+        0.0
+    } else {
+        rates.iter().sum::<f64>() / rates.len() as f64
+    }
+}
+
+/// What the first round of blocks found (`fps[i]`: candidate `i`'s frame rates, the first
+/// being the device's own way): every change that beat the device's own by [`WORTH_IT`] at
+/// once, the fastest terrain draws among them, and the fastest of those changes alone (none
+/// beat it: `None`).
+fn combine(candidates: &[Choices], fps: &[Vec<f64>]) -> (Choices, Option<usize>) {
+    let base = candidates[0];
+    let own = mean(&fps[0]);
+    let (mut both, mut single, mut draws_fps) = (base, None::<usize>, 0.0);
+    for (i, c) in candidates.iter().enumerate().skip(1) {
+        let rate = mean(&fps[i]);
+        let beats = rate > own * WORTH_IT;
+        if !beats {
+            continue;
+        }
+        if single.is_none_or(|s| rate > mean(&fps[s])) {
+            single = Some(i);
+        }
+        if c.draws != base.draws && rate > draws_fps {
+            (both.draws, draws_fps) = (c.draws, rate);
+        }
+        if c.late_sky != base.late_sky {
+            both.late_sky = c.late_sky;
+        }
+        if c.occlusion != base.occlusion {
+            both.occlusion = c.occlusion;
+        }
+        if c.hidden_faces != base.hidden_faces {
+            both.hidden_faces = c.hidden_faces;
+        }
+    }
+    (both, single)
+}
+
+/// Times one block of `choices`: asks the game to draw with it, waits for it to settle where it
+/// `switched`, and returns the block's frame rate.
+fn calibration_block(
+    control: &Control,
+    shared: &Shared,
+    choices: Choices,
+    switched: bool,
+    pace: Pace,
+) -> Result<f64, String> {
+    lock(shared).wanted = Some(choices);
+    let asked = Instant::now();
+    loop {
+        {
+            let s = lock(shared);
+            if s.stop {
+                return Err(STOPPED.into());
+            }
+            if s.wanted.is_none() && s.drawn == Some(choices) {
+                break;
+            }
+        }
+        if asked.elapsed() > Duration::from_secs(10) {
+            return Err("the game did not switch how it draws".into());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    if switched {
+        thread::sleep(pace.warmup);
+    }
+    let reply = control.call(&format!("bench {} raw", pace.block))?;
+    if lock(shared).stop {
+        return Err(STOPPED.into());
+    }
+    Ok(benchmark::frames_of(&reply, "calibrate", 0)?.avg_fps)
+}
+
+/// Times every candidate twice, forth then back so a phone warming up slows both ends alike,
+/// and, where more than one change beat the device's own, those changes together against the
+/// fastest alone, B A A B. Returns the fastest way of drawing, its frame rate and the device's
+/// own.
+fn calibration_rounds(
+    control: &Control,
+    shared: &Shared,
+    candidates: &[Choices],
+    pace: Pace,
+) -> Result<(Choices, f64, f64), String> {
+    let n = candidates.len();
+    let order: Vec<usize> = (0..n).chain((0..n).rev()).collect();
+    let steps = order.len() + if n > 2 { 4 } else { 0 };
+    let per_block = pace.warmup.as_secs_f64() + f64::from(pace.block);
+    let tell = |done: usize| {
+        let left = Duration::from_secs_f64((steps - done) as f64 * per_block);
+        lock(shared).progress = Some((done, steps, Instant::now() + left));
+    };
+    let mut fps = vec![Vec::new(); n];
+    let mut last = None;
+    for (done, &i) in order.iter().enumerate() {
+        tell(done);
+        let c = candidates[i];
+        fps[i].push(calibration_block(
+            control,
+            shared,
+            c,
+            last != Some(c),
+            pace,
+        )?);
+        last = Some(c);
+    }
+    let own = mean(&fps[0]);
+    let (both, single) = combine(candidates, &fps);
+    let Some(single) = single else {
+        return Ok((candidates[0], own, own));
+    };
+    let alone = candidates[single];
+    if both == alone {
+        return Ok((alone, mean(&fps[single]), own));
+    }
+    let mut rates = [Vec::new(), Vec::new()];
+    for (k, which) in [0, 1, 1, 0].into_iter().enumerate() {
+        tell(order.len() + k);
+        let c = if which == 0 { both } else { alone };
+        rates[which].push(calibration_block(
+            control,
+            shared,
+            c,
+            last != Some(c),
+            pace,
+        )?);
+        last = Some(c);
+    }
+    let (b, a) = (mean(&rates[0]), mean(&rates[1]));
+    Ok(if b > a {
+        (both, b, own)
+    } else {
+        (alone, a, own)
+    })
+}
+
+/// The run, from the title screen: the test world afresh, the camera held over its spawn, then
+/// the rounds.
+fn calibrate(
+    control: &Control,
+    shared: &Shared,
+    game_dir: &Path,
+    candidates: &[Choices],
+    pace: Pace,
+) -> Result<(Choices, f64, f64), String> {
+    benchmark::open_world(control, game_dir)?;
+    benchmark::hold_weather(control)?;
+    let at: Vec<f64> = control.status()["player"]["position"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_f64)
+        .collect();
+    let &[x, y, z] = at.as_slice() else {
+        return Err("no player in the test world".into());
+    };
+    benchmark::hold(
+        control,
+        [x, y + CALIBRATE_LIFT, z],
+        CALIBRATE_YAW,
+        CALIBRATE_PITCH,
+    )?;
+    lock(shared).measuring = true;
+    thread::sleep(pace.warmup);
+    calibration_rounds(control, shared, candidates, pace)
+}
+
+/// The calibration thread: the run; the game then leaves the test world and deletes it,
+/// whatever happened in it.
+fn calibration_thread(
+    control: Control,
+    shared: Shared,
+    game_dir: PathBuf,
+    candidates: Vec<Choices>,
+) {
+    let started = Instant::now();
+    let found = calibrate(&control, &shared, &game_dir, &candidates, PACE);
+    let result = found.map(|(choices, fps, auto_fps)| Calibrated {
+        choices,
+        fps: round(fps),
+        auto_fps: round(auto_fps),
+        seconds: started.elapsed().as_secs_f64().round(),
+    });
+    let mut s = lock(&shared);
+    s.measuring = false;
+    s.wanted = None;
+    s.finished = Some(result);
+}
+
+/// Deletes the test world once nothing has it open: as Select World's Delete does, where the
+/// session lock lets it, else the folder itself (`benchmark::replace_world`). Only ever the
+/// world the benchmark marked as its own; true once it is gone.
+fn delete_test_world(saves: &Path) -> bool {
+    let world = saves.join(benchmark::WORLD);
+    if !world.exists() {
+        return true;
+    }
+    if !world.join(benchmark::MARKER).exists() {
+        log::warn!(
+            "Starling: calibration: {} is not the test world: it stays",
+            world.display()
+        );
+        return true;
+    }
+    if let Err(e) = horizon_client::title::world_management::delete(saves, benchmark::WORLD) {
+        log::warn!("Starling: calibration: deleting the test world: {e}");
+        let game_dir = saves.parent().unwrap_or(saves);
+        if let Err(e) = benchmark::replace_world(game_dir) {
+            log::warn!("Starling: calibration: deleting the test world: {e}");
+        }
+    }
+    !world.exists()
+}
+
+/// Minutes and seconds, as the calibration's lines say them.
+fn clock(seconds: u32) -> String {
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+impl Game<'_> {
+    /// Why Calibrate... can't start now: the language key of the reason.
+    fn perf_calibrate_blocked(&self) -> Option<&'static str> {
+        if self.perf_lab.calibration.is_some() {
+            Some("starling.calibrate.busy")
+        } else if !self.res.rest_ready() || self.perf_lab.device.is_none() {
+            // A world can't open before the items have loaded.
+            Some("starling.calibrate.wait_loading")
+        } else if self.title.is_none() {
+            Some("starling.calibrate.leave_world")
+        } else {
+            None
+        }
+    }
+
+    /// What each of the calibration page's buttons does, in order: run it (0), where it can,
+    /// and back to Auto (1), where a way of drawing is chosen.
+    fn perf_calibrate_buttons(&self) -> Vec<u8> {
+        let mut ids = Vec::new();
+        if self.perf_calibrate_blocked().is_none() {
+            ids.push(0);
+        }
+        let c = self.perf_lab.choices;
+        let auto = Choices {
+            transparency: c.transparency,
+            ..Choices::default()
+        };
+        if c != auto && self.perf_lab.calibration.is_none() {
+            ids.push(1);
+        }
+        ids
+    }
+
+    /// The calibration page's button `index` was tapped.
+    pub(super) fn perf_calibrate_button(&mut self, index: u8) {
+        if !self.perf_lab.loaded {
+            self.perf_lab.load();
+        }
+        match self.perf_calibrate_buttons().get(usize::from(index)) {
+            Some(0) => self.perf_calibrate_start(),
+            Some(1) => {
+                let c = self.perf_lab.choices;
+                self.perf_lab.choose(Choices {
+                    transparency: c.transparency,
+                    ..Choices::default()
+                });
+                self.perf_lab.calibrated = None;
+                self.perf_lab.calibrate_stopped = None;
+                self.perf_lab.save_choices();
+                log::info!("Starling: calibration: back to Auto");
+            }
+            _ => {}
+        }
+    }
+
+    /// Starts Calibrate...: the options close, and its thread opens the test world over the
+    /// title screen through the game's own command queue.
+    fn perf_calibrate_start(&mut self) {
+        if self.perf_calibrate_blocked().is_some() {
+            return;
+        }
+        let Some(device) = self.perf_lab.device else {
+            return;
+        };
+        let game_dir = match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                log::warn!("Starling: calibration: {e}");
+                return;
+            }
+        };
+        // A guided test under way ends: the calibration answers the same question.
+        let before = match self.perf_lab.guided.take() {
+            Some(g) => g.before,
+            None => self.perf_lab.choices,
+        };
+        let candidates = calibration_candidates(device, before);
+        log::info!("Starling: calibration started: {candidates:?}");
+        let shared = Shared::default();
+        let control = Control(
+            self.control
+                .get_or_insert_with(horizon_client::control::Server::local)
+                .sender(),
+        );
+        let theirs = shared.clone();
+        let spawned = thread::Builder::new()
+            .name("Calibration".into())
+            .spawn(move || calibration_thread(control, theirs, game_dir, candidates));
+        if let Err(e) = spawned {
+            log::warn!("Starling: calibration: {e}");
+            return;
+        }
+        self.perf_lab.calibrate_stopped = None;
+        self.perf_lab.calibration = Some(Calibration {
+            shared,
+            before,
+            told: None,
+            left: false,
+            result: None,
+            on_title: None,
+        });
+        if self.screen == Screen::Options
+            && let Err(e) =
+                self.handle_option_events(vec![horizon_client::options_ui::Event::Close])
+        {
+            log::warn!("Starling: calibration: {e}");
+        }
+    }
+
+    /// Whether Calibrate... runs: the touch controls hide and take no finger meanwhile.
+    pub(super) fn perf_calibrating(&self) -> bool {
+        self.perf_lab.calibration.is_some()
+    }
+
+    /// Each frame while Calibrate... runs: the player counts as present (no idle frame cap), the
+    /// way of drawing it asks for, its stop when the player opens a menu, pauses or leaves the
+    /// game, its line over the hotbar once a second, and once it is done, out of the test world,
+    /// the world deleted, and its end.
+    fn perf_calibrate_frame(&mut self) {
+        let Some(shared) = self.perf_lab.calibration.as_ref().map(|c| c.shared.clone()) else {
+            return;
+        };
+        let now = Instant::now();
+        // The camera is held and the fingers ignored: Inactivity FPS Limit's AFK would cap the
+        // frames it times, as a held key keeps it off (touch.rs).
+        self.last_input = now;
+        let in_world = self.player.is_some() && self.title.is_none();
+        let away = self.pause || self.screen != Screen::Playing || !self.focused;
+        let (progress, finished) = {
+            let mut s = lock(&shared);
+            if let Some(choices) = s.wanted.take() {
+                self.perf_lab.choose(choices);
+                s.drawn = Some(choices);
+            }
+            if s.measuring && in_world && away {
+                s.stop = true;
+            }
+            (s.progress, s.finished.take())
+        };
+        let on_title = self.title.is_some();
+        // The world is closed and saved: nothing holds it open any more.
+        let closed = on_title && self.pending_save.is_none() && self.integrated.is_none();
+        let Some(run) = self.perf_lab.calibration.as_mut() else {
+            return;
+        };
+        if finished.is_some() {
+            run.result = finished;
+        }
+        let done = run.result.is_some();
+        let out = done && in_world && !run.left;
+        if out {
+            run.left = true;
+        }
+        let tell = in_world
+            && !done
+            && run
+                .told
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+        if tell {
+            run.told = Some(now);
+        }
+        // Back on the title screen: the test world goes once its last save is done, tried once
+        // a second.
+        let since = if done && on_title {
+            *run.on_title.get_or_insert(now)
+        } else {
+            now
+        };
+        let clean = done
+            && on_title
+            && (closed || now.duration_since(since) >= CALIBRATE_CLEANUP)
+            && run
+                .told
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+        if clean {
+            run.told = Some(now);
+        }
+        if out {
+            self.perf_calibrate_leave_world();
+        }
+        if tell {
+            let line = match progress {
+                Some((done, steps, end)) => lang::tr(
+                    "starling.calibrate.running",
+                    &[
+                        &(done + 1),
+                        &steps,
+                        &clock(end.saturating_duration_since(now).as_secs_f64().ceil() as u32),
+                    ],
+                ),
+                None => lang::get("starling.calibrate.loading"),
+            };
+            self.titles.set_overlay(Text::literal(line), false);
+        }
+        if clean {
+            let saves = Self::game_dir().join("saves");
+            let gone = delete_test_world(&saves);
+            let late = now.duration_since(since) >= CALIBRATE_CLEANUP;
+            if gone || late {
+                if !gone {
+                    log::warn!("Starling: calibration: the test world stays (hidden)");
+                }
+                if let Some(title) = self.title.as_mut() {
+                    title.worlds_changed();
+                }
+                let result = self
+                    .perf_lab
+                    .calibration
+                    .as_mut()
+                    .and_then(|run| run.result.take());
+                if let Some(result) = result {
+                    self.perf_calibrate_done(result);
+                }
+            }
+        }
+    }
+
+    /// The run is over and the test world gone: what it found is put in use and saved (or the
+    /// player's choices come back), and its page opens again over the title screen.
+    fn perf_calibrate_done(&mut self, result: Result<Calibrated, String>) {
+        let Some(run) = self.perf_lab.calibration.take() else {
+            return;
+        };
+        match result {
+            Ok(found) => {
+                log::info!("Starling: calibration done: {found:?}");
+                self.perf_lab.choose(found.choices);
+                self.perf_lab.calibrated = Some(found);
+                self.perf_lab.calibrate_stopped = None;
+            }
+            Err(e) => {
+                log::warn!("Starling: calibration stopped: {e}");
+                self.perf_lab.choose(run.before);
+                self.perf_lab.calibrate_stopped = Some(e);
+            }
+        }
+        self.perf_lab.save_choices();
+        if self.title.is_some() {
+            self.open_options_at(true, Page::PerfCalibration);
+        }
+    }
+
+    /// The calibration page's lines and buttons, while it shows: before the options lay out
+    /// and draw (`draw_options`), as the Diagnostics page's, so a tap lands on what shows.
+    pub(super) fn perf_calibrate_page(&mut self) {
+        if self.screen != Screen::Options || self.ui.options.page() != Page::PerfCalibration {
+            return;
+        }
+        let lab = &self.perf_lab;
+        let mut notes = Vec::new();
+        let calibrated = |c: Choices| Choices {
+            transparency: Switch::Auto,
+            ..c
+        };
+        match (&lab.calibrate_stopped, lab.calibrated) {
+            (Some(why), _) if why == STOPPED => {
+                notes.push(lang::get("starling.calibrate.stopped_by_you"));
+            }
+            (Some(why), _) => notes.push(lang::tr("starling.calibrate.stopped", &[&why])),
+            (None, Some(found)) if calibrated(found.choices) == Choices::default() => {
+                notes.push(lang::tr(
+                    "starling.calibrate.done_auto",
+                    &[
+                        &clock(found.seconds as u32),
+                        &format!("{:.0}", found.auto_fps),
+                    ],
+                ));
+            }
+            (None, Some(found)) => notes.push(lang::tr(
+                "starling.calibrate.done",
+                &[
+                    &clock(found.seconds as u32),
+                    &lab.describe(calibrated(found.choices)),
+                    &format!("{:.0}", found.fps),
+                    &format!("{:.0}", found.auto_fps),
+                ],
+            )),
+            (None, None) => notes.push(lang::get("starling.calibrate.never")),
+        }
+        if let Some(why) = self.perf_calibrate_blocked() {
+            notes.push(lang::get(why));
+        }
+        let buttons = self
+            .perf_calibrate_buttons()
+            .into_iter()
+            .map(|id| match id {
+                0 if lab.calibrated.is_some() => lang::get("starling.calibrate.again"),
+                0 => lang::get("starling.calibrate.start"),
+                _ => lang::get("starling.calibrate.auto"),
+            })
+            .collect();
+        self.ui.options.set_calibrate(notes, buttons);
+    }
+
+    /// Out of the test world for the title screen, as the pause menu's Save and Quit to Title
+    /// (`execute_pause_action`): the run waits for the title, then deletes the world.
+    fn perf_calibrate_leave_world(&mut self) {
+        if let Err(e) = self.close_world() {
+            log::warn!("Starling: calibration: leaving the test world: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod calibration_tests {
+    use super::*;
+    use horizon_client::control::Request;
+    use std::sync::mpsc;
+
+    /// A phone that draws flat by default and takes every other way, the sky early, occlusion
+    /// culling and hidden faces skipped.
+    const PHONE: Device = Device {
+        flat: true,
+        indirect: false,
+        late_sky: false,
+        occlusion: true,
+        hidden_faces: true,
+        transparency: true,
+        offers: [true, true, true, true],
+    };
+
+    fn quick() -> Pace {
+        Pace {
+            warmup: Duration::ZERO,
+            block: 1,
+        }
+    }
+
+    #[test]
+    fn calibration_tries_each_change_that_keeps_the_picture_once() {
+        let keep = Choices {
+            draws: Draws::Indirect,
+            transparency: Switch::Off,
+            ..Choices::default()
+        };
+        let c = calibration_candidates(PHONE, keep);
+        let base = Choices {
+            transparency: Switch::Off,
+            ..Choices::default()
+        };
+        assert_eq!(
+            c,
+            vec![
+                base,
+                Choices {
+                    draws: Draws::Direct,
+                    ..base
+                },
+                Choices {
+                    draws: Draws::Indirect,
+                    ..base
+                },
+                Choices {
+                    late_sky: Switch::On,
+                    ..base
+                },
+                Choices {
+                    occlusion: Switch::Off,
+                    ..base
+                },
+                Choices {
+                    hidden_faces: Switch::Off,
+                    ..base
+                },
+            ],
+            "from the device's own; the player's Improved Transparency throughout"
+        );
+        let bare = Device {
+            offers: [false; 4],
+            flat: false,
+            ..PHONE
+        };
+        assert_eq!(
+            calibration_candidates(bare, Choices::default()),
+            vec![
+                Choices::default(),
+                Choices {
+                    hidden_faces: Switch::Off,
+                    ..Choices::default()
+                }
+            ],
+            "what the device doesn't take isn't tried"
+        );
+    }
+
+    #[test]
+    fn calibration_keeps_each_change_that_beat_the_default_by_the_margin() {
+        let c = calibration_candidates(PHONE, Choices::default());
+        // Auto, direct, indirect, late sky, no occlusion, hidden faces drawn.
+        let fps: Vec<Vec<f64>> = [50.0, 49.0, 56.0, 53.0, 40.0, 50.5]
+            .iter()
+            .map(|&f| vec![f, f])
+            .collect();
+        let (both, single) = combine(&c, &fps);
+        assert_eq!(
+            both,
+            Choices {
+                draws: Draws::Indirect,
+                late_sky: Switch::On,
+                ..Choices::default()
+            },
+            "1% faster is within the margin"
+        );
+        assert_eq!(single, Some(2), "indirect is the fastest change alone");
+        // Two terrain draws that both beat it: the faster.
+        let fps: Vec<Vec<f64>> = [50.0, 55.0, 60.0, 50.0, 50.0, 50.0]
+            .iter()
+            .map(|&f| vec![f])
+            .collect();
+        assert_eq!(combine(&c, &fps).0.draws, Draws::Indirect);
+        // Nothing beats the default by 3%: it stays.
+        let fps = vec![vec![60.0, 58.0]; c.len()];
+        assert_eq!(combine(&c, &fps), (Choices::default(), None));
+    }
+
+    #[test]
+    fn a_saved_calibration_comes_back_and_older_files_still_read() {
+        let found = Calibrated {
+            choices: Choices {
+                draws: Draws::Flat,
+                late_sky: Switch::On,
+                ..Choices::default()
+            },
+            fps: 58.0,
+            auto_fps: 51.0,
+            seconds: 84.0,
+        };
+        let saved = Saved {
+            choices: found.choices,
+            guided_done: None,
+            calibrated: Some(found),
+        };
+        let text = serde_json::to_string(&saved).unwrap();
+        let back: Saved = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            (back.choices, back.calibrated),
+            (found.choices, Some(found))
+        );
+        let old: Saved = serde_json::from_str(r#"{"draws":"direct","late_sky":"on"}"#).unwrap();
+        assert_eq!(old.choices.draws, Draws::Direct);
+        assert_eq!(old.calibrated, None);
+    }
+
+    /// The game for the rounds: takes the way of drawing asked for, as its frames do, and draws
+    /// each one at `rate`'s frame rate.
+    fn rounds_game(
+        rx: mpsc::Receiver<Request>,
+        shared: Shared,
+        rate: fn(Choices) -> f64,
+    ) -> thread::JoinHandle<Vec<Choices>> {
+        thread::spawn(move || {
+            let mut timed = Vec::new();
+            loop {
+                {
+                    let mut s = lock(&shared);
+                    if let Some(c) = s.wanted.take() {
+                        s.drawn = Some(c);
+                    }
+                }
+                match rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(request) => {
+                        let drawn = lock(&shared).drawn.unwrap_or_default();
+                        assert_eq!(request.line, "bench 1 raw");
+                        timed.push(drawn);
+                        let frames = (rate(drawn) as usize).max(1);
+                        let reply = json!({
+                            "frames": frames,
+                            "frame_ms": vec![1000.0 / rate(drawn); frames],
+                            "cpu_ms": vec![1.0; frames],
+                            "gpu_ms": vec![1.0; frames],
+                        });
+                        let _ = request.reply.send(reply.to_string());
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return timed,
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn the_rounds_time_each_way_forth_and_back_and_keep_the_fastest_together() {
+        let c = calibration_candidates(PHONE, Choices::default());
+        let shared = Shared::default();
+        let (tx, rx) = mpsc::channel();
+        // Indirect and the late sky each help; together they help most.
+        let game = rounds_game(rx, shared.clone(), |c| {
+            let mut fps = 50.0;
+            if c.draws == Draws::Indirect {
+                fps += 6.0;
+            }
+            if c.late_sky == Switch::On {
+                fps += 3.0;
+            }
+            fps
+        });
+        let control = Control(tx);
+        let found = calibration_rounds(&control, &shared, &c, quick()).unwrap();
+        drop(control);
+        let timed = game.join().unwrap();
+        let both = Choices {
+            draws: Draws::Indirect,
+            late_sky: Switch::On,
+            ..Choices::default()
+        };
+        let alone = Choices {
+            draws: Draws::Indirect,
+            ..Choices::default()
+        };
+        let mut expected: Vec<Choices> = c.iter().chain(c.iter().rev()).copied().collect();
+        expected.extend([both, alone, alone, both]);
+        assert_eq!(timed, expected);
+        assert_eq!(found.0, both);
+        assert!((found.1 - 59.0).abs() < 0.5 && (found.2 - 50.0).abs() < 0.5);
+        let (done, steps, _) = lock(&shared).progress.unwrap();
+        assert_eq!((done, steps), (15, 16));
+    }
+
+    #[test]
+    fn a_stop_ends_the_rounds_and_nothing_is_kept() {
+        let c = calibration_candidates(PHONE, Choices::default());
+        let shared = Shared::default();
+        lock(&shared).stop = true;
+        let (tx, rx) = mpsc::channel();
+        let game = rounds_game(rx, shared.clone(), |_| 60.0);
+        let control = Control(tx);
+        assert_eq!(
+            calibration_rounds(&control, &shared, &c, quick()),
+            Err(STOPPED.to_owned())
+        );
+        drop(control);
+        assert!(game.join().unwrap().is_empty(), "nothing was timed");
     }
 }

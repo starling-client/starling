@@ -1,7 +1,9 @@
 # Horizon: a map for agents
 
 Minecraft: Java Edition 26.3 rewritten in Rust (wgpu). Vanilla is the specification wherever it has the
-feature. Read [CONTRIBUTING.md](CONTRIBUTING.md) once; this page tells you where things are.
+feature; performance work may differ inside as long as it stays compatible with vanilla
+([CONTRIBUTING.md](CONTRIBUTING.md#when-it-doesnt-have-to-be-11)). Read [CONTRIBUTING.md](CONTRIBUTING.md) once;
+this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
 ## Rules that bite
@@ -29,9 +31,16 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
 - Horizon-only features follow [docs/design-system.md](docs/design-system.md) and are off by default where
   they would change the vanilla look.
 - One concern per PR, at whatever size it needs; no line limit on the fork. Labels: `feature` (players get something new), `skip-release` (they see no
-  change), none for a fix. Agents never add `release-now`: the maintainer decides it. Merges ship in batches of 5, or after
-  6 hours ([docs/release-flow.md](docs/release-flow.md)).
-- Contributors first: `gh pr list --state open --search <area>` before you start; never duplicate theirs.
+  change), none for a fix. Agents never add `release-now`: the maintainer decides it. Merges reach players through the
+  nightly, published by the daily run when every leg is green ([docs/release-flow.md](docs/release-flow.md#daily-run)).
+- **CI tiers** ([CONTRIBUTING.md](CONTRIBUTING.md#ci-tiers)): every PR push runs `format` and `verify-static`; rollups,
+  syncs and main pushes add `lint`, `verify` (unit tests only) and `launcher`; the ignored-test shards, the wasm
+  fixture, `fn-replace-check`, the SDK build and its linkage probe and the machine-sample build run once a day (`daily.yml`). A new test that needs prepared
+  resources, boots the game, starts a child process, uses the network or a compiled wasm fixture, or takes 2 s or
+  more is `#[ignore]`d with a row in `tools/ci/ignored-tests/`; say in the PR when you could not run it. A daily red
+  becomes an issue listing the suspect PRs, fixed by an ordinary PR. Existing tests still in `verify` that need
+  resources, a child process or the network are being moved by the next change of #4022. Builds: snapshot (a commit of main, gate green; published as
+  `snapshot-<date>-<short>`, which no launcher offers), nightly (published by a fully green daily run), release (cut from a nightly).
 - **No hardcoded user-facing strings.** Keep UI translation-ready from the start. In the launcher (`launcher/`), wrap visible text with `tr("...")` or `trf("... {arg} ...", &[("arg", &val)])` from `crate::i18n` instead of raw string literals or `format!`. In the game, use translation keys (`Text::tr`, `lang::get`), never hardcoded English strings.
 - **Claim before you start**: comment `/claim` on the issue (no issue yet: open one, then claim it). An assigned
   issue is taken, and so is one labelled `in progress` (claimed on Discord): pick another. `/unclaim` when you stop;
@@ -89,6 +98,29 @@ break**, and every change to it follows these rules. Reviews block a PR that bre
   also has says "Diverges from upstream" in its PR body. Write upstream refs in full
   (`horizon-rust/horizon#N`; a bare `#N` is this fork) and never put Fixes, Closes or Resolves before one.
 
+## Don't lose time
+
+Where agent time went, measured on sessions and CI in November 2026: reading code, compiling `horizon-client`,
+waiting in loops, and work someone else had already done. Tests were a small part.
+
+- **Check nobody else is on it.** One in three pull requests closed unmerged was a duplicate. Before you write
+  code, look at the issue's linked pull requests and run
+  `gh pr list --state open --search "<issue number, function or file name>"`; then `/claim`.
+- **Find code with the map, not by reading.** Start from the tables below and
+  `python3 tools/port_ledger.py where Class.method`. Read the function you change and its callers, not whole
+  files.
+- **Compile cheaply while you work.** `cargo check -p <crate>` after an edit. Clippy, fmt and tests run once, at
+  the end, through `pr_ready.py`. `cargo clippy -p horizon-client` and `cargo build -p horizon-client` are the
+  slowest commands here: never after every edit, and build the game only when you need to run it.
+- **Don't wait in loops.** Start a long command in the background and carry on, or wait for it once. No
+  `sleep` or `until grep` polling of builds, harnesses or CI.
+- **One test per changed behaviour.** None for a refactor or a file move, none that reads source text, and no
+  harness where vanilla has nothing to compare (Horizon's own features, performance work).
+- **A red check isn't always yours.** When `verify` fails in a test your change can't reach, say so in the pull
+  request and move on; don't hunt it.
+- **Unsure about a rule? Finish the work.** Take the reading that lets you finish, and say in the pull request
+  which one you took. Don't stop, and don't change direction halfway.
+
 ## Crates
 
 Game workspace (root `Cargo.toml`); `launcher/` is a separate workspace.
@@ -110,6 +142,7 @@ Game workspace (root `Cargo.toml`); `launcher/` is a separate workspace.
 | `horizon-prepare` | Builds `.local/horizon-client/26.3` from the player's own Minecraft install (runs the Java exporters) |
 | `horizon-server` | `horizon-server`: `server.toml`, CLI, supervisor of the headless game ([docs/hosting.md](docs/hosting.md)) |
 | `horizon-server-files` | `server.properties`, eula, ops/whitelist/bans, usercache |
+| `horizon-java-properties` | `java.util.Properties` load/store and the JDK date text, standard library only: shared by `horizon-server-files` and the wasm runtime |
 | `horizon-anticheat` | The dedicated server's anticheat, off by default: `[anticheat]` settings, violation levels, the checks' rules; the hub runs them (`lan/anticheat.rs`) ([docs/anticheat.md](docs/anticheat.md)) |
 | `horizon-friends`, `horizon-relay` | Play with Friends: invite codes, encrypted tunnel, the relay ([docs/play-with-friends.md](docs/play-with-friends.md)) |
 | `horizon-mod-package`, `cargo-horizon-mod` | Content mods (`.hmod`: manifest, content fence, no code), the registry index and `.hpack`, and `cargo horizon-mod` (`new`, `build`, `run`, `check`, `registry`) ([docs/modding/](docs/modding/src/introduction.md)). Code mods are native, built by the launcher ([docs/modding/src/how-to/native-mods.md](docs/modding/src/how-to/native-mods.md)) |
@@ -119,6 +152,7 @@ Game workspace (root `Cargo.toml`); `launcher/` is a separate workspace.
 | `horizon-shader-api` | Horizon's own WGSL shader packs ([docs/api/shaders.md](docs/api/shaders.md)): `horizon-shaders.toml`, the `.hshader` package; shared by the game, the launcher and the registry |
 | `horizon-shaders` | Shader packs (the `shaders/` folder format), rebuilt clean-room from a written spec of the format; no wgpu |
 | `horizon-theme` | Design tokens and fonts for the launcher, the game's own menus and the website |
+| `horizon-perf-format` | The `.hzperf` capture contract ([docs/perf-platform.md](docs/perf-platform.md) §3): `proto/horizon/perf/v1/capture.proto`, its generated types, the gzip writer and its thread. No Horizon dependencies; nothing in the game reads a capture |
 | `horizon-telemetry`, `horizon-telemetry-server`, `horizon-bench` | Opt-in data collection, its ingest server, the benchmark report format |
 | `horizon-system` | The machine the game runs on (OS, CPU, memory, drive, power, GPU maker and memory), for the crash report, the renderer's GPU info and telemetry |
 | `horizon-platform` | The platform's public API: what the Horizon layer may use of the engine ([docs/layers.md](docs/layers.md)); re-exports `horizon-system` today |
@@ -137,6 +171,7 @@ reads `README.md`, `launcher/links.json`, `docs/api/`, `roadmap/roadmap.json` an
 - Use independent expected values or a vanilla oracle; do not derive the answer from the code under test.
 - Test outcomes, not only calls to stubs. Use mocks to isolate behavior, not as the behavior itself.
 - Skip tests of trivial constants, derives and getters, or behavior already covered by another test.
+- One test per changed behaviour is enough. A refactor or a move that changes no behaviour gets no new test.
 - Avoid pinning implementation details; a harmless refactor should not break a behavior test.
 - Make slow tests faster without removing cases or weakening their coverage.
 - Never delete parity harnesses or tests that pin vanilla behaviour: they are the spec.
@@ -154,9 +189,18 @@ python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cov
 python3 tools/parity.py mob_ai sculk       # named harnesses
 python3 tools/lan_e2e.py --check chest     # two real games over LAN (server-thread host)
 python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
-python3 tools/lang_coverage.py --summary   # the keys each language still misses, and its English leftovers
+python3 tools/lang_coverage.py --summary   # one line per language: how many keys it carries and what it misses
+python3 tools/lang_coverage.py --summary --show-keys   # the same, then the keys behind the counts
 ```
 
+- GPU tests share `gfx::test_gpu::lock()`: bind the guard before creating GPU objects so it outlives
+  every resource, queue, device and instance, including GPU-owning workers (join them before unlocking).
+  Helpers returning GPU objects leave the guard with their caller; helpers returning only CPU data may
+  own it themselves, without another outer guard. CPU-only tests need no guard. Run renderer coverage
+  with `cargo test -p horizon-client-render --lib -- gfx:: --test-threads=12`; no global serial-test flag.
+
+- For a player-facing change, drive the game once with `horizon-ctl` (launch, the action, a `state` or `screenshot`)
+  and report the result in the PR's "Tried in game" line; never claim it when it was not run.
 - Harnesses and the game need the vanilla data in `.local/` (`minecraft/`, `horizon-client/26.3`, `datagen/`,
   `tools/`): see [docs/parity-workflow.md](docs/parity-workflow.md). Without it, pr_ready lists the
   harnesses for CI.
@@ -164,10 +208,8 @@ python3 tools/lang_coverage.py --summary   # the keys each language still misses
   + a Rust probe: `crates/<crate>/examples/<name>_{probe,fixture}.rs` (horizon-world 175, horizon-client 104),
   or the game binary with a fixture env var (`game/interface/dispense_fixture.rs`, `game/blocks/sculk_fixture.rs`,
   `game/administration/command_harness.rs`, `game/network/net_harness.rs`). Copy a nearby harness for a new one.
-- Developing a native mod? Use `native-build --profile developer`. Choices are
-  remembered per instance; an unsaved picker starts at Balanced. Automatic prebuilt builds use Optimized.
-  Developer builds the game crate unoptimized for quicker edits, not for playing
-  ([docs/modding/src/how-to/native-mods.md](docs/modding/src/how-to/native-mods.md)).
+- Native mods compile against a pinned prebuilt SDK; `[[native.mixin]]` rows compile into a function-replacement patch library.
+  Use `native-build --trust-native-code`; the launcher never rebuilds the game for a mod.
 - Probes build into `.local/parity-target/`; harnesses find binaries via `lab.cargo_target()`, never `target/`.
 - Harness selection uses Cargo dep-info and reachable-code narrowing (`tools/parity_reach.py`).
   `horizon-client-lib` builds the control tool and client probes without gameplay; their dep-info
@@ -193,7 +235,8 @@ python3 tools/lang_coverage.py --summary   # the keys each language still misses
 - A harness runs the oracle against the real 26.3 jars and the Rust probe on the same inputs, then compares
   their JSON. Oracle runs are cached by `tools/parity_shim.py`; `--fresh` reruns them.
 - Mirror vanilla's `Math` calls with `horizon_core::jmath`, and vanilla's RNG with `horizon_core::random`:
-  random draws must happen in vanilla's order.
+  random draws must happen in vanilla's order. Performance work may break that order where no player can rely
+  on it; the pull request says so ([CONTRIBUTING.md](CONTRIBUTING.md#when-it-doesnt-have-to-be-11)).
 
 ## horizon-client: where things live
 
@@ -226,8 +269,8 @@ state stays separate from the library tests. This compiles gameplay twice for ex
 | Audio | L: `audio.rs` (mixer), `sound_engine.rs`, `sound_events.rs`, `music.rs`, `ambience.rs`; G: `music.rs`, `subtitle_hud.rs` |
 | Resource packs | L: `packs.rs` + `packs/`, `pack_screen.rs`, `atlas_sources.rs`, `sprites.rs`, `mipmap.rs`, `model_library.rs`, `font.rs`, `mobs/cem.rs` + `mobs/cem_anim.rs` (OptiFine/EMF entity models and their animations); `horizon-client-core/src/lang.rs`; crates `horizon-assets`, `horizon-optifine`; G: `packs.rs` |
 | Agent control | L: `control.rs` (socket), `bin/horizon-ctl/`; G: `control.rs`, `agent.rs`, `events.rs`, `ui_control.rs` ([docs/agent-control.md](docs/agent-control.md)) |
-| Mods | crate `horizon-mod-package`; G: `mods.rs`; L: `mod_content.rs`, `mod_list.rs` |
-| Horizon extras, settings | L: `extras.rs`, `graphics.rs`, `settings.rs`, `minimap.rs`; G: `extras.rs`, `tweaks.rs`, `options.rs` |
+| Mods | crate `horizon-mod-package`; G: `modding/mods/mod.rs` (content and mod load), `modding/mods/standalone.rs` (standalone model registration); L: `mod_content.rs`, `mod_list.rs` |
+| Horizon extras, settings | L: `extras.rs`, `graphics.rs`, `settings.rs`, `minimap.rs`; G: `interface/extras.rs` + `interface/extras/` (each extra's glue: `mouse_tweaks.rs`, `sorting.rs`, `pvp.rs`, `reconnect.rs`), `options.rs` |
 
 ## How `Game` is organised
 
@@ -256,7 +299,8 @@ player does (#1514). A window's `Game` never ticks a world itself: the old in-fr
 Open `[server-thread]` issues list the gaps left.
 
 Single player, LAN guests and dedicated servers all run the server code, so a fix there serves all three.
-Test the server thread when you touch player-facing gameplay:
+When you change how the server and its clients talk (packets, tracking, guests, the server thread itself), check
+it there. Other gameplay fixes are covered by their own harness and CI's parity job:
 
 ```sh
 cargo run --profile fast -p horizon-game -- --resources .local/horizon-client/26.3 --world T               # server thread

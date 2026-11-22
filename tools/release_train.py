@@ -2,12 +2,18 @@
 """Decides when Horizon releases, names the release and writes its notes (.github/workflows/release.yml).
 
     python3 tools/release_train.py decide --kind game [--head SHA] [--force]
+    python3 tools/release_train.py decide --kind game --channel nightly|snapshot [--head SHA] [--force] [--daily]
     python3 tools/release_train.py decide --kind launcher
     python3 tools/release_train.py notes --kind game --tag v2026.10.15 --out dist/notes
     python3 tools/release_train.py gate --kind game --smoke dist/smoke-test.json [--blockers]   # before publishing
 
 The game ships only the Nightly since 2026-10-28 (Ludovic): when `decide --kind game` says so, release.yml starts
 `nightly build` on the commit it decided (tools/ci/nightly.py), and "the last release" is the published Nightly.
+On the fork (CI tiers, owner 2026-11-13) `--channel` names the kind of build: `nightly` takes `daily-green` and
+refuses any other --head (an older commit had no daily run of its own, and no SDK); `snapshot` takes main's head (or
+a --head on main) and refuses a commit whose gate jobs (dyna-checks' main-push lint, verify, verify-static, launcher)
+did not all pass (pending is not passed); otherwise it always builds, as snapshot-<date>-<short> (no batch rules,
+cap, pause or release-blocker: a snapshot is for testing main, never for players).
 
 A kind releases when a pull request merged into main since its last published release changed one of its
 player-facing paths (GAME_PATHS, LAUNCHER_PATHS), once BATCH of them are waiting and the newest merged at least
@@ -235,18 +241,42 @@ def changed_paths(commit):
     return run("git", "diff", "--name-only", f"{commit}^1", commit).split()
 
 
-def pull_request(number):
-    data = gh_json("pr", "view", str(number), "--repo", REPO, "--json",
-                   "number,title,url,labels,closingIssuesReferences,author,mergedAt")
-    return {
-        "number": data["number"],
-        "title": data["title"].strip(),
-        "url": data["url"],
-        "labels": sorted(label["name"] for label in data["labels"]),
-        "issues": sorted(issue["number"] for issue in data.get("closingIssuesReferences") or []),
-        "author": (data.get("author") or {}).get("login", ""),
-        "merged_at": dt.datetime.fromisoformat(data["mergedAt"].replace("Z", "+00:00")) if data.get("mergedAt") else None,
+def merged_pull_request_metadata():
+    """Repository-owned merge identities and note fields, without one network call per PR."""
+    owner, name = REPO.split("/")
+    query = """
+    query($owner: String!, $name: String!, $endCursor: String) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(first: 100, states: MERGED, after: $endCursor) {
+          nodes {
+            number title url mergedAt mergeCommit { oid } author { login }
+            labels(first: 100) { nodes { name } }
+            closingIssuesReferences(first: 100) { nodes { number } }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
     }
+    """
+    pages = gh_json("api", "graphql", "--paginate", "--slurp",
+                    "-F", f"owner={owner}", "-F", f"name={name}", "-f", f"query={query}")
+    owned = {}
+    for page in pages:
+        for data in page["data"]["repository"]["pullRequests"]["nodes"]:
+            # A historical merge commit can have been removed by a force-push. It cannot
+            # match a reachable candidate; GraphQL explicitly permits a null commit.
+            if data["mergeCommit"] is None:
+                continue
+            owned[(data["number"], data["mergeCommit"]["oid"])] = {
+                "number": data["number"],
+                "title": data["title"].strip(),
+                "url": data["url"],
+                "labels": sorted(label["name"] for label in data["labels"]["nodes"]),
+                "issues": sorted(issue["number"] for issue in data["closingIssuesReferences"]["nodes"]),
+                "author": (data["author"] or {}).get("login", ""),
+                "merged_at": dt.datetime.fromisoformat(data["mergedAt"].replace("Z", "+00:00")),
+            }
+    return owned
 
 
 def published_releases():
@@ -288,11 +318,12 @@ def last_release(releases, kind):
     return max(ours, key=lambda release: tag_key(release["tag_name"]), default=None)
 
 
-def decision(kind, prs, now, paused=False, force=False, new_line=None, blockers=()):
+def decision(kind, prs, now, paused=False, force=False, new_line=None, blockers=(), daily=False):
     """Whether to release now, and why. prs: the merged pull requests since the last release, each with the
     files it changed under "paths" (player-facing ones only) and when it merged ("merged_at"). new_line: the
     release line ("0.2") when it has no release of this kind yet; its first goes out at once. blockers: the open
-    release-blocker issues; they hold every release, forced ones too."""
+    release-blocker issues; they hold every release, forced ones too. daily: the daily run's call for its
+    daily-green commit, published without the batch-size and age rules (it comes once a day, with no retry)."""
     counted = [pr for pr in prs if pr["paths"] and "skip-release" not in pr["labels"]]
     urgent = [pr for pr in counted if "release-now" in pr["labels"]]
     merged = [pr["merged_at"] for pr in counted if pr.get("merged_at")]
@@ -308,6 +339,8 @@ def decision(kind, prs, now, paused=False, force=False, new_line=None, blockers=
         return False, "no merged pull request changed what players run"
     if urgent:
         return True, "release-now: " + ", ".join(f"#{pr['number']}" for pr in urgent)
+    if daily:
+        return True, f"{len(counted)} pull requests changed what players run; the daily run passed this commit whole"
     if merged and now - min(merged) >= MAX_WAIT:
         return True, f"{len(counted)} pull requests changed what players run; the oldest has waited {MAX_WAIT.seconds // 3600} hours"
     if len(counted) < BATCH:
@@ -320,9 +353,20 @@ def decision(kind, prs, now, paused=False, force=False, new_line=None, blockers=
     return True, f"{len(counted)} pull requests changed what players run"
 
 
+# A title's `kind(area): ` prefix (CONTRIBUTING.md "Pull requests") labels the pull request; release names and notes
+# read the words after it.
+KIND_PREFIX = re.compile(r"^\s*(?:parity|bug|fix|perf|feature|feat|extra|tooling|docs)(?:\([^)]*\))?\s*:\s*", re.I)
+
+
+def plain(title):
+    """A title without its `kind(area): ` prefix, capitalised: "parity(mobs): ghasts fly" -> "Ghasts fly"."""
+    rest = KIND_PREFIX.sub("", title.strip(), count=1)
+    return rest if rest == title.strip() else rest[:1].upper() + rest[1:]
+
+
 def clause(title):
     """The start of a pull request title, for a release's name: "Nether portals: vanilla timing" -> "Nether portals"."""
-    title = re.sub(r"^(?:fix|fixes|fixed)\s+(?:the\s+)?", "", title.strip(), flags=re.I)
+    title = re.sub(r"^(?:fix|fixes|fixed)\s+(?:the\s+)?", "", plain(title), flags=re.I)
     return re.split(r"[:;(]| — | - ", title, maxsplit=1)[0].strip().rstrip(".")
 
 
@@ -352,7 +396,7 @@ def summary(new, fixed, limit=72):
 
 def bullet(pr):
     """A pull request as a line of notes: its title (written for people), its number and the issues it closes."""
-    title = re.sub(r"\s*\((?:fixes|closes) #\d+\)|,? stacked on #\d+", "", pr["title"]).strip().rstrip(".")
+    title = re.sub(r"\s*\((?:fixes|closes) #\d+\)|,? stacked on #\d+", "", plain(pr["title"])).strip().rstrip(".")
     issues = "".join(f", fixes #{issue}" for issue in pr["issues"])
     return f"- {title} (#{pr['number']}{issues})"
 
@@ -392,7 +436,7 @@ def line_intro(kind, version, previous):
             f"`horizon-server update --version {version}`.")
 
 
-def notes(kind, version, prs, issues, previous=None):
+def notes(kind, version, prs, issues, previous=None, repository="horizon-rust/horizon"):
     """(title, body) of a release. previous: the release before it, for a line's first release."""
     shown = [pr for pr in prs if pr["paths"] and "skip-release" not in pr["labels"]]
     new = [pr for pr in shown if "feature" in pr["labels"]]
@@ -401,8 +445,12 @@ def notes(kind, version, prs, issues, previous=None):
         title = f"Horizon {version.removeprefix(GAME_PREFIX)}" + (f": {summary(new, fixed)}" if shown else "")
     else:
         title = f"Horizon launcher {version.removeprefix(OLD_LAUNCHER_PREFIX).removeprefix(LAUNCHER_PREFIX)}"
-    intro = line_intro(kind, version, previous)
+    fork_launcher = kind == "launcher" and repository == "arismoko/horizon"
+    intro = None if fork_launcher else line_intro(kind, version, previous)
     parts = [PLAYERS] if kind == "game" else []
+    if fork_launcher:
+        title = f"Horizon Fork Launcher (arismoko) {version}"
+        parts.append((ROOT / "packaging/fork-launcher-release-notes.md").read_text().replace("{tag}", version).strip())
     if intro:
         parts.append(intro)
     if not shown:
@@ -416,7 +464,7 @@ def notes(kind, version, prs, issues, previous=None):
     contributors = sorted({pr["author"] for pr in shown if pr["author"] and pr["author"] != MAINTAINER})
     if contributors:
         parts.append("### Contributors\nThanks to " + ", ".join(f"@{name}" for name in contributors) + ".")
-    if kind == "launcher":
+    if kind == "launcher" and not fork_launcher:
         parts.append(LAUNCHER_FOOTER)
     if kind == "game":
         parts.append(PLAYERS_FOOTER)
@@ -436,12 +484,18 @@ def published_nightly():
     return json.loads(out) if out.strip() else None
 
 
+SNAPSHOT_RUN = "snapshot build"
+
+
 def nightly_building():
-    """The run of `nightly build` under way or waiting, if any: the train starts no second one."""
-    runs = gh_json("run", "list", "--repo", REPO, "--workflow", NIGHTLY_WORKFLOW, "--limit", "10",
-                   "--json", "databaseId,status")
-    return next((entry["databaseId"] for entry in runs if entry["status"] in ("queued", "in_progress", "waiting",
-                                                                              "pending", "requested")), None)
+    """The Nightly's run of `nightly build` under way or waiting, if any: the train starts no second one. A
+    snapshot's run (named `snapshot build <commit>` by nightly-build.yml's run-name) has its own concurrency group
+    and never holds a Nightly back; every other run of the workflow is a Nightly's."""
+    runs = gh_json("run", "list", "--repo", REPO, "--workflow", NIGHTLY_WORKFLOW, "--limit", "20",
+                   "--json", "databaseId,status,displayTitle")
+    return next((entry["databaseId"] for entry in runs
+                 if entry["status"] in ("queued", "in_progress", "waiting", "pending", "requested")
+                 and entry["displayTitle"].split(" ", 2)[:2] != SNAPSHOT_RUN.split()), None)
 
 
 def nightly_builds_today(today):
@@ -478,17 +532,14 @@ def merged_between(kind, base, head):
     candidates = merged_pull_requests(base, head)
     if not candidates:
         return []
-    # Merge subjects survive imports and PR numbers are repository-local. Enumerate this
-    # repository's closed PRs without a history cap, then require the actual merge SHA.
-    # A missing PR here is imported history, not a failed metadata request to suppress.
-    pages = gh_json("api", f"repos/{REPO}/pulls?state=closed&per_page=100", "--paginate", "--slurp")
-    owned = {(entry["number"], entry["merge_commit_sha"]) for page in pages for entry in page
-             if entry["merged_at"]}
+    # Merge subjects survive imports and PR numbers are repository-local. Fetch this
+    # repository's merge identities AND note fields in one fully paginated query.
+    owned = merged_pull_request_metadata()
     prs = []
     for number, commit in candidates:
         if (number, commit) not in owned:
             continue
-        pr = pull_request(number)
+        pr = owned[(number, commit)].copy()
         pr["paths"] = [path for path in changed_paths(commit) if player_facing(path, kind, exporter_paths)]
         prs.append(pr)
     return prs
@@ -502,18 +553,88 @@ def passed_on(workflow, sha):
     return bool(done) and done[0]["conclusion"] == "success"
 
 
-def green_main_head(parity=False):
+def gate_jobs_passed(run_id, required):
+    """Require every named gate on the latest attempt, regardless of non-gate failures."""
+    pages = gh_json("api", "--paginate", "--slurp",
+                    f"repos/{REPO}/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
+    jobs = [job for page in pages for job in page["jobs"] if job["name"] in required]
+    return (required == {job["name"] for job in jobs}
+            and all(job["status"] == "completed" and job["conclusion"] == "success" for job in jobs))
+
+
+DAILY_GREEN = "daily-green"
+FORK_GATE = {"lint", "verify", "verify-static", "launcher", "pool-watch"}
+SNAPSHOT_GATE = {"lint", "verify", "verify-static", "launcher"}
+
+
+def daily_green_commit():
+    """The commit the tag `daily-green` points to (the newest fully green daily run), freshly fetched, or ""."""
+    run("git", "fetch", "--quiet", "--force", "origin", f"+refs/tags/{DAILY_GREEN}:refs/tags/{DAILY_GREEN}", check=False)
+    return run("git", "rev-parse", "--verify", "--quiet", f"refs/tags/{DAILY_GREEN}^{{commit}}", check=False).strip()
+
+
+def fork_gate_passed(sha):
+    """Whether the newest dyna-checks main-push run on sha passed every gate job (the snapshot's check)."""
+    pages = gh_json("api", "--paginate", "--slurp",
+                    f"repos/{REPO}/actions/workflows/dyna-ci.yml/runs?branch=main&event=push&head_sha={sha}&per_page=100")
+    runs = [entry for page in pages for entry in page["workflow_runs"]
+            if entry["head_sha"] == sha and entry["head_branch"] == "main" and entry["event"] == "push"]
+    return bool(runs) and gate_jobs_passed(runs[0]["id"], SNAPSHOT_GATE)
+
+
+def channel_head(channel, head):
+    """The commit a fork channel builds, or exits naming the check it failed."""
+    if channel == "nightly":
+        green = daily_green_commit()
+        if not green:
+            raise SystemExit(f"::error::refused: no `{DAILY_GREEN}` tag yet; a nightly ships only a commit whose "
+                             "daily run was fully green")
+        sha = run("git", "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}", check=False).strip() if head else green
+        if sha != green:
+            raise SystemExit(f"::error::refused: {head} is not the commit `{DAILY_GREEN}` points to ({green}); "
+                             "a nightly ships only the commit of the newest fully green daily run, with its SDK")
+        return sha
+    sha = run("git", "rev-parse", "--verify", "--quiet", f"{head or 'refs/remotes/origin/main'}^{{commit}}",
+              check=False).strip()
+    if not sha:
+        raise SystemExit(f"::error::refused: {head} is not a commit of this repository")
+    if subprocess.run(["git", "merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"], cwd=ROOT).returncode:
+        raise SystemExit(f"::error::refused: {sha} is not on main; a snapshot builds only a commit of main")
+    if not fork_gate_passed(sha):
+        raise SystemExit(f"::error::refused: dyna-checks' gate jobs ({', '.join(sorted(SNAPSHOT_GATE))}) "
+                         f"did not all pass on a main push of {sha}; a snapshot needs the gate green on its commit")
+    return sha
+
+
+def build_tag(channel, date, sha):
+    """A build's tag and the version it installs as: `nightly-<date>-<short>` or `snapshot-<date>-<short>`
+    (horizon_release_sign::Channel parses it; the launcher installs under it)."""
+    return f"{channel}-{date}-{sha[:7]}"
+
+
+def green_main_head(parity=False, eligible=None):
     """The newest commit on main whose checks passed: what an automatic release builds. With parity (game
     releases), the newest commit parity-main passed on whose checks passed too: parity-main runs on batches of
     merges, so the commits a run skipped are covered by the next one, and a superseded run counts for nothing. A
     later batch that failed holds only the merges after that commit, which the green one doesn't contain."""
     if REPO == "arismoko/horizon":
-        # The fork replaces checks/parity-main with dyna-checks. Never query disabled
-        # upstream workflows, and never turn an untested main head into a release base.
-        runs = gh_json("run", "list", "--repo", REPO, "--workflow", "dyna-checks", "--branch", "main",
-                       "--event", "push", "--status", "success", "--limit", "50", "--json", "headSha,status,conclusion")
-        return next((entry["headSha"] for entry in runs
-                     if entry["status"] == "completed" and entry["conclusion"] == "success"), None)
+        # Runs are ordered by creation, not completion: a late old run must not
+        # displace a newer push. Paginate beyond bursts of cancelled main runs.
+        pages = gh_json("api", "--paginate", "--slurp",
+                        f"repos/{REPO}/actions/workflows/dyna-ci.yml/runs?branch=main&event=push&per_page=100")
+        seen = set()
+        for page in pages:
+            for entry in page["workflow_runs"]:
+                sha = entry["head_sha"]
+                if entry["head_branch"] != "main" or entry["event"] != "push" or sha in seen:
+                    continue
+                seen.add(sha)
+                if eligible is not None and not eligible(sha):
+                    continue
+                # The wasm fixture left main pushes for the daily run (daily-green), so the gate alone counts here.
+                if gate_jobs_passed(entry["id"], FORK_GATE):
+                    return sha
+        return None
     if parity:
         # Only the successful runs: while merges land, one run at a time finishes (the pending one is replaced at
         # every push), and a later failed or timed-out batch must not starve the Nightly of the commit an earlier
@@ -545,6 +666,10 @@ def main():
     parser.add_argument("command", choices=["decide", "notes", "gate"])
     parser.add_argument("--kind", choices=["game", "launcher"], required=True)
     parser.add_argument("--head", help="the commit to release (default: the newest commit on main whose checks passed)")
+    parser.add_argument("--daily", action="store_true",
+                        help="decide: the daily run's nightly, without the batch-size and age rules")
+    parser.add_argument("--channel", choices=["nightly", "snapshot"],
+                        help="decide: the fork's kind of build, which picks and checks the commit (see above)")
     parser.add_argument("--tag", help="notes: the release's tag")
     parser.add_argument("--force", action="store_true", help="release even without player-facing changes, before merges settle, while paused or before parity-main passed")
     parser.add_argument("--out", type=Path, help="notes: write title.txt and body.md here")
@@ -567,7 +692,7 @@ def main():
 
     # Game releases ship only a commit the vanilla harnesses passed on (parity-main, docs/release-flow.md).
     parity = args.kind == "game" and args.command == "decide" and not args.force
-    head = args.head or green_main_head(parity)
+    head = channel_head(args.channel, args.head) if args.channel else args.head or green_main_head(parity)
     if not head:
         result = {"release": False, "reason": "main's latest checks did not pass" + (
             " or parity-main did not pass on them" if parity else "")}
@@ -575,6 +700,15 @@ def main():
         write_outputs({"release": "false", "reason": result["reason"]})
         return 0
     head = run("git", "rev-parse", head).strip()
+    if args.channel == "snapshot" and args.command == "decide":
+        # A snapshot is for testing a commit of main, never for players: the gate on its commit is its only rule (no
+        # batch, cap, pause or release-blocker), and its tag is its own (never `nightly`).
+        tag = build_tag("snapshot", now.date().isoformat(), head)
+        result = {"release": True, "reason": f"the gate passed on {head[:9]}: snapshot {tag}", "tag": tag,
+                  "head": head, "urgent": False}
+        print(json.dumps(result, indent=1))
+        write_outputs({"release": "true", "reason": result["reason"], "tag": tag, "head": head, "urgent": "false"})
+        return 0
     nightly = published_nightly() if args.kind == "game" else None
     if nightly:
         run("git", "fetch", "--quiet", "--force", "origin", "refs/tags/nightly:refs/tags/nightly")
@@ -584,7 +718,7 @@ def main():
     if args.command == "notes":
         version = args.tag or "unreleased"
         previous = last["tag_name"] if last and last["tag_name"] != version else None
-        title, body = notes(args.kind, version, prs, known_issues(), previous=previous)
+        title, body = notes(args.kind, version, prs, known_issues(), previous=previous, repository=REPO)
         if args.out:
             args.out.mkdir(parents=True, exist_ok=True)
             (args.out / "title.txt").write_text(title + "\n")
@@ -598,8 +732,8 @@ def main():
     new_line = f"{line[0]}.{line[1]}" if line and first_on_line(tags, prefix, line) and not nightly else None
     blockers = open_blockers() if args.kind == "game" else []
     release, reason = decision(args.kind, prs, now, os.environ.get("RELEASES_PAUSED") == "1", args.force, new_line,
-                               blockers)
-    if release and args.head and parity and not (passed_on("parity-main", head) and passed_on("checks", head)):
+                               blockers, daily=args.daily)
+    if release and args.head and parity and not args.channel and not (passed_on("parity-main", head) and passed_on("checks", head)):
         release, reason = False, f"waiting for checks and parity-main to pass on {head[:9]}"
     urgent = False
     if args.kind == "game":

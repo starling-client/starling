@@ -14,6 +14,8 @@ WORKFLOWS = ROOT / ".github/workflows"
 LIGHT = ("horizon-light", "playhorizon-light", "playhorizon-ci")
 CHECKS = ("horizon-checks",)
 FORK_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
+# dyna-ci.yml decides trust once, in its changes job (a fork's pull request, dispatched with `pr` or not).
+TRUSTED = "needs.changes.outputs.trusted == 'true'"
 TRUSTED_WRITES = re.compile(r"^\s*(contents|actions|packages|id-token|deployments|attestations): write", re.M)
 # actions: write can start workflows too; cancel-on-close needs it to cancel runs and runs no checkout at all.
 CANCELS_RUNS = {"cancel-on-close.yml cancel"}
@@ -81,13 +83,14 @@ class OwnRunnerTests(unittest.TestCase):
             if "dyna-ci.yml" in where:
                 self.assertIn("needs.changes.outputs.self_hosted == 'true'", value, where)
                 self.assertIn("vars.SELF_HOSTED_CI == 'all'", value, where)
-                self.assertIn(FORK_GUARD, value, where)
+                self.assertIn(TRUSTED, value, where)
             else:
                 # Starling's ci.yml routes to the self-hosted labels with SELF_HOSTED_CI == 'all' (fork guard
                 # included); the carried upstream files use SELF_HOSTED_CI != 'off'. Both fall back to GitHub's.
                 self.assertTrue("vars.SELF_HOSTED_CI != 'off'" in value or "vars.SELF_HOSTED_CI == 'all'" in value,
                                 where)
-            self.assertTrue(value.endswith("|| 'ubuntu-latest' }}"), where)
+            # Both labels select a GitHub-hosted Ubuntu runner when our pools are disabled.
+            self.assertRegex(value, r"\|\| 'ubuntu-(?:latest|24\.04)' \}\}$", where)
             if "checks" in pools:
                 # The desktop paused: every checks job back to GitHub, the bots stay.
                 self.assertIn("vars.SELF_HOSTED_CI != 'light'", value, where)
@@ -100,9 +103,8 @@ class OwnRunnerTests(unittest.TestCase):
             if "pull_request" in on:
                 # The guard lives in the job's `if` upstream; dyna-ci.yml (ours)
                 # puts it in `runs-on`, before the self-hosted labels.
-                guarded = FORK_GUARD in next(
-                    (l for l in block.splitlines() if l.strip().startswith("if:")), ""
-                ) or FORK_GUARD in value
+                condition = next((l for l in block.splitlines() if l.strip().startswith("if:")), "")
+                guarded = any(guard in condition or guard in value for guard in (FORK_GUARD, TRUSTED))
                 self.assertTrue(guarded, f"{where}: a fork's pull request")
             if "pull_request_target" in on:
                 # main's code only: every checkout is main's.
@@ -111,7 +113,6 @@ class OwnRunnerTests(unittest.TestCase):
     def test_no_secret_or_writing_token_on_our_runners(self):
         for where, _, text, block, _, pools in routed():
             self.assertNotIn("secrets.", block, where)
-            self.assertNotIn("environment:", block, where)
             head = text.split("\njobs:\n", 1)[0]
             for part in (block, head):
                 writes = {m.group(1) for m in TRUSTED_WRITES.finditer(part)}
@@ -123,6 +124,53 @@ class OwnRunnerTests(unittest.TestCase):
                 # A checks runner keeps what a fork's job left: its jobs' tokens write nothing at all.
                 self.assertNotRegex(block, r":\s*write", where)
                 self.assertNotRegex(head, r":\s*write", where)
+
+    def test_no_deployment_environment_on_our_runners(self):
+        import hashlib
+        import sys
+        from unittest.mock import patch
+
+        # Reuse the repository's pinned offline parser, including YAML merge semantics.
+        archive = ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"
+        self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),
+                         "94ac21b4343e15647b3b5b5bd594aab5b7d3cd8d2ce17db15acb7260d489b6fc")
+        with patch.object(sys, "path", [str(archive), *sys.path]):
+            import yaml
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            document = yaml.safe_load(path.read_text())
+            for name, job in document["jobs"].items():
+                value = job.get("runs-on", "")
+                if isinstance(value, dict):
+                    value = value.get("labels", [])
+                routes = value if isinstance(value, list) else [value]
+                if any(route == label or f'"{label}"' in route or f"'{label}'" in route
+                       for route in routes for label in LIGHT + CHECKS):
+                    self.assertNotIn("environment", job, f"{path.name} {name}")
+
+    def test_deployment_environment_guard_distinguishes_script_variables(self):
+        import tempfile
+        from unittest.mock import patch
+
+        safe = ("jobs:\n  verify:\n    runs-on: horizon-checks\n    steps:\n"
+                "      - run: |\n          with open('output') as environment:\n              pass\n")
+        forbidden = [
+            safe.replace("    steps:", f"    {key} deployment\n    steps:")
+            for key in ("environment:", "\"environment\":", "'environment' :")
+        ] + [
+            "jobs:\n    verify:\n        runs-on: horizon-checks\n        environment: deployment\n",
+            "jobs:\n  verify: {runs-on: horizon-checks, environment: deployment}\n",
+            "env: &defaults {environment: deployment}\njobs:\n  verify:\n"
+            "    <<: *defaults\n    runs-on: horizon-checks\n",
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch(f"{__name__}.WORKFLOWS", Path(directory)):
+            workflow = Path(directory) / "fixture.yml"
+            workflow.write_text(safe)
+            self.test_no_deployment_environment_on_our_runners()
+            for text in forbidden:
+                with self.subTest(workflow=text):
+                    workflow.write_text(text)
+                    with self.assertRaises(AssertionError):
+                        self.test_no_deployment_environment_on_our_runners()
 
     def test_the_light_runners_refuse_forks_themselves(self):
         script = (ROOT / "tools/ci/checks-runners.sh").read_text()

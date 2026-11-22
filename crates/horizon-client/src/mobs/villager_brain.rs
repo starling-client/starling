@@ -9,6 +9,10 @@
 //! the mob's own random drives positions, sounds and jumps. `RunOne` and the
 //! other `GateBehavior`s shuffle with a random of their own, seeded with
 //! `Brain::shuffle_seed` when the brain is built.
+mod reputation;
+pub use reputation::murder_witnesses;
+use reputation::targetable;
+
 use super::{
     Mob, MobEvent, MobWorld, Species, Who,
     brain::{Timed, living_near},
@@ -625,17 +629,6 @@ fn sense_living(m: &mut Mob, w: &MobWorld) {
         cache: Vec::new(),
     });
 }
-/// `Sensor.isEntityTargetable`: `TargetingConditions.forNonCombat()` within
-/// the follow range, in sight.
-fn targetable(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
-    match who {
-        Who::Player => m.can_see_player(w, FOLLOW_RANGE),
-        Who::Mob(id) => {
-            let Some(s) = w.seen(id) else { return false };
-            s.alive && m.distance_sqr(s.position) <= FOLLOW_RANGE * FOLLOW_RANGE && m.sees(w, who)
-        }
-    }
-}
 /// The visible-entities memory's line-of-sight test, cached per memory.
 fn visible_test(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
     if let Some(v) = mem_ref(m).and_then(|mm| mm.visible_mobs.get()) {
@@ -754,28 +747,7 @@ fn sense_hurt(m: &mut Mob, w: &MobWorld) {
         mm.hurt_by_entity.clear();
     }
 }
-/// `VillagerHostilesSensor.ACCEPTABLE_DISTANCE_FROM_HOSTILES`.
-fn hostile_distance(s: Species) -> Option<f32> {
-    Some(match s {
-        Species::Drowned
-        | Species::Husk
-        | Species::Vex
-        | Species::Zombie
-        | Species::ZombieVillager => 8.0,
-        Species::Evoker | Species::Illusioner | Species::Ravager => 12.0,
-        Species::Pillager => 15.0,
-        Species::Vindicator | Species::Zoglin => 10.0,
-        _ => return None,
-    })
-}
-fn sense_hostiles(m: &mut Mob, w: &MobWorld) {
-    let hostile = find_closest(m, w, |m, who| {
-        let Who::Mob(id) = who else { return false };
-        let Some(s) = w.seen(id) else { return false };
-        hostile_distance(s.species).is_some_and(|d| m.distance_sqr(s.position) <= f64::from(d * d))
-    });
-    mem(m).nearest_hostile.set_opt(hostile);
-}
+include!("villager_brain/hostile_sensor.rs");
 fn sense_babies(m: &mut Mob, w: &MobWorld) {
     let list = mem_ref(m)
         .and_then(|mm| mm.visible_mobs.get())
@@ -834,81 +806,14 @@ pub fn golem_detected(m: &mut Mob, now: i64) {
 }
 
 // ---- Behaviours ---------------------------------------------------------
+use horizon_world::poi::{PoiIdentity as Poi, PoiType};
 
-use horizon_world::poi::PoiType as Poi;
-/// The POI a block state is (`PoiTypes`): job site blocks, bed heads, bells.
-pub fn poi_at(w: &MobWorld, x: i32, y: i32, z: i32) -> Option<Poi> {
-    poi_of_state(w, w.world.block(x, y, z))
-}
-/// Cache only vanilla classification. Mod additions are process-wide and replaced
-/// on reload, so every live resource set consults the current extension table.
-fn poi_of_state(w: &MobWorld, state: horizon_world::registry::BlockStateId) -> Option<Poi> {
-    let table = w.data.pois.get_or_init(|| {
-        (0..w.registry.len())
-            .map(|i| vanilla_state_poi(w, horizon_world::registry::BlockStateId(i as u32)))
-            .collect()
-    });
-    let vanilla = table
-        .get(state.0 as usize)
-        .copied()
-        .unwrap_or_else(|| vanilla_state_poi(w, state));
-    vanilla.or_else(|| horizon_world::poi::extension(w.registry.state(state)?))
-}
-/// Vanilla's job sites, bed heads and bells, without reloadable mod additions.
-fn vanilla_state_poi(w: &MobWorld, state: horizon_world::registry::BlockStateId) -> Option<Poi> {
-    let name = &*w.facts.get(state).name;
-    if name == "minecraft:bell" {
-        return Some(Poi::Meeting);
-    }
-    let state = w.registry.state(state)?;
-    let part = state.properties.get("part").map(String::as_str);
-    if let Some(home) = runtime_bed_poi(name, part) {
-        return Some(home);
-    }
-    horizon_world::poi::vanilla_poi(state).filter(|p| p.is_job())
-}
-fn runtime_bed_poi(name: &str, part: Option<&str>) -> Option<Poi> {
-    // PoiTypes.BEDS contains the colored Blocks.BED collection, not STRAW_BED.
-    (name.ends_with("_bed") && name != "minecraft:straw_bed" && part == Some("head"))
-        .then_some(Poi::Home)
-}
+#[path = "villager_jobs.rs"]
+mod profession_jobs;
 
-/// Which POI types a predicate accepts.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PoiFilter {
-    /// `VillagerProfession.heldJobSite` of the current profession.
-    Held,
-    /// `acquirableJobSite` of the current profession.
-    Acquirable,
-    Home,
-    Meeting,
-}
-fn poi_matches(m: &Mob, f: PoiFilter, p: Poi) -> bool {
-    if matches!(f, PoiFilter::Held | PoiFilter::Acquirable) && m.extra.profession.index().is_none()
-    {
-        return false;
-    }
-    let profession = m.extra.profession.index().unwrap_or(0);
-    let employed = profession != super::villager::NONE && profession != super::villager::NITWIT;
-    match (f, p) {
-        (PoiFilter::Held, p) if p.is_job() => {
-            employed && super::villager::profession_table().held(profession, p)
-        }
-        (PoiFilter::Acquirable, p) if p.is_job() => {
-            super::villager::profession_table().acquirable(profession, p)
-        }
-        (PoiFilter::Home, Poi::Home) | (PoiFilter::Meeting, Poi::Meeting) => true,
-        _ => false,
-    }
-}
-fn can_reset_profession(m: &Mob) -> bool {
-    m.extra.profession.index().is_some_and(|prof| {
-        prof != super::villager::NONE
-            && prof != super::villager::NITWIT
-            && super::villager::xp(m) == 0
-            && m.extra.villager_level <= 1
-    })
-}
+pub use profession_jobs::poi_at;
+use profession_jobs::*;
+
 /// Tickets taken on a POI: by this villager's memories and by others'
 /// (counted once per search by [`others_tickets`]).
 fn tickets(m: &Mob, others: &crate::fast_hash::FxHashMap<[i32; 3], usize>, p: [i32; 3]) -> usize {
@@ -996,7 +901,7 @@ fn pois_in_range(
                 if (p[0] - c[0]).abs() > radius
                     || (p[2] - c[2]).abs() > radius
                     || dist_sqr(p, c) > r2
-                    || !poi_matches(m, f, poi)
+                    || !poi_matches(m, f, poi, w.professions)
                     || tickets(m, taken.get_or_insert_with(|| others_tickets(m, w)), p)
                         >= poi.max_tickets()
                 {
@@ -1043,7 +948,7 @@ pub(super) fn occupied_pois_in_range(
 }
 /// `PoiManager.exists(pos, predicate)`.
 fn poi_exists(m: &Mob, w: &MobWorld, p: [i32; 3], f: PoiFilter) -> bool {
-    poi_at(w, p[0], p[1], p[2]).is_some_and(|poi| poi_matches(m, f, poi))
+    poi_at(w, p[0], p[1], p[2]).is_some_and(|poi| poi_matches(m, f, poi, w.professions))
 }
 /// `BlockPos.closerToCenterThan(position, d)`.
 pub(super) fn closer_to_center(p: [i32; 3], at: Vec3, d: f64) -> bool {
@@ -1918,62 +1823,8 @@ impl B {
                 running,
                 filter,
                 which,
-            } => {
-                let Some(p) = which.get(m) else { return false };
-                if !closer_to_center(p, m.position, 16.0) {
-                    return false;
-                }
-                if !poi_exists(m, cx.w, p, *filter) {
-                    which.clear(m);
-                } else if cx.w.block_name(p[0], p[1], p[2]).ends_with("_bed")
-                    && cx.w.prop(p[0], p[1], p[2], "occupied") == Some("true")
-                    && !super::villager::sleeping(m)
-                {
-                    // ValidateNearbyPoi.bedIsOccupied: someone else sleeps there.
-                    which.clear(m);
-                }
-                *running = true;
-                true
-            }
-            B::PoiCompetitorScan(r) => one(
-                || {
-                    if m.extra.profession.index().is_none() {
-                        return false;
-                    }
-                    let mm = mem(m);
-                    let (Some(site), true) = (mm.job_site.value(), mm.mobs.present()) else {
-                        return false;
-                    };
-                    if poi_at(cx.w, site[0], site[1], site[2]).is_some() {
-                        let list = mem(m).mobs.value().unwrap_or_default();
-                        let my_xp = super::villager::xp(m);
-                        let mut winner_xp = my_xp;
-                        let mut me_winner = true;
-                        for who in list {
-                            let Who::Mob(id) = who else { continue };
-                            let Some(s) = cx.w.seen(id) else { continue };
-                            if s.species != Species::Villager || !s.alive || s.job != Some(site) {
-                                continue;
-                            }
-                            if m.extra.profession.index() != s.profession {
-                                continue;
-                            }
-                            // selectWinner(first, second): the second wins ties.
-                            if winner_xp > s.xp {
-                                // The other villager loses its site (it finds out itself).
-                            } else {
-                                if me_winner {
-                                    mem(m).job_site.clear();
-                                }
-                                me_winner = false;
-                                winner_xp = s.xp;
-                            }
-                        }
-                    }
-                    true
-                },
-                r,
-            ),
+            } => validate_poi(m, cx, *filter, which, running),
+            B::PoiCompetitorScan(r) => one(|| scan_job_competitors(m, cx), r),
             B::GoToWantedItem(r) => one(
                 || {
                     let mm = mem(m);
@@ -2106,95 +1957,16 @@ impl B {
                 *running = true;
                 true
             }
-            B::YieldJobSite(r) => one(
-                || {
-                    let mm = mem(m);
-                    let Some(site) = mm.potential_job_site.value() else {
-                        return false;
-                    };
-                    if mm.job_site.present() || !mm.mobs.present() {
-                        return false;
-                    }
-                    if m.is_baby() || m.extra.profession.index() != Some(super::villager::NONE) {
-                        return false;
-                    }
-                    let Some(poi) = poi_at(cx.w, site[0], site[1], site[2]) else {
-                        return true;
-                    };
-                    let list = mem(m).mobs.value().unwrap_or_default();
-                    for who in list {
-                        let Who::Mob(id) = who else { continue };
-                        let Some(s) = cx.w.seen(id) else { continue };
-                        if s.species != Species::Villager || !s.alive || s.potential_job.is_some() {
-                            continue;
-                        }
-                        let Some(j) = super::villager::profession_table().by_poi(poi) else {
-                            continue;
-                        };
-                        if s.profession != Some(j) {
-                            continue;
-                        }
-                        // A nearby villager of that profession takes it over.
-                        if s.job.is_none_or(|p| p == site) {
-                            let mm = mem(m);
-                            mm.walk_target.clear();
-                            mm.look_target.clear();
-                            mm.potential_job_site.clear();
-                            break;
-                        }
-                    }
-                    true
-                },
-                r,
-            ),
-            B::AssignProfession(r) => {
-                if m.extra.profession.index().is_none() {
-                    return false;
-                }
-                let Some(p) = mem(m).potential_job_site.value() else {
-                    return false;
-                };
-                if !closer_to_center(p, m.position, 2.0) {
-                    return false;
-                }
-                let mm = mem(m);
-                mm.potential_job_site.clear();
-                mm.job_site.set(p);
-                happy_particles(m, cx);
-                *r = true;
-                if m.extra.profession.index() != Some(super::villager::NONE) {
-                    return true;
-                }
-                if let Some(j) = poi_at(cx.w, p[0], p[1], p[2])
-                    .and_then(|p| super::villager::profession_table().by_poi(p))
-                {
-                    super::villager::set_profession(m, j);
-                    cx.refresh = true;
-                }
-                true
-            }
-            B::ResetProfession(r) => one(
-                || {
-                    if mem(m).job_site.present() {
-                        return false;
-                    }
-                    if can_reset_profession(m) {
-                        super::villager::set_profession(m, super::villager::NONE);
-                        cx.refresh = true;
-                        true
-                    } else {
-                        false
-                    }
-                },
-                r,
-            ),
+            B::YieldJobSite(r) => one(|| yield_job_site(m, cx), r),
+            B::AssignProfession(r) => assign_profession(m, cx, r),
+            B::ResetProfession(r) => one(|| reset_profession(m, cx), r),
             B::InteractWith { running, kind } => {
                 let mm = mem(m);
                 if mm.walk_target.present() || !mm.visible_mobs.present() {
                     return false;
                 }
                 let kind = *kind;
-                if kind == Interact::BreedVillager && !super::villager::can_breed(m) {
+                if kind == Interact::BreedVillager && !super::villager::can_breed_in(m, cx.w) {
                     return false;
                 }
                 let w = cx.w;
@@ -3035,7 +2807,7 @@ impl B {
                 if close {
                     if now - *started > 20 {
                         cx.events.push(MobEvent::ThrowGift {
-                            table: super::villager::gift_table(m),
+                            table: super::villager::gift_table(m, cx.w.mob_maps),
                             from: [m.position.x, m.eye_y() - 0.3, m.position.z],
                             to: [p.position.x, p.position.y, p.position.z],
                         });
@@ -3166,7 +2938,7 @@ impl B {
                     if now >= *birth {
                         // The parent's half happens in its own tick: it eats,
                         // takes a bed for the child, picks its type and rests.
-                        super::villager::ext_mut(m).eat_and_digest();
+                        super::villager::eat_and_digest_in(m, cx.w);
                         let child = take_bed_for_child(m, cx.w).map(|bed| {
                             // Villager.getBreedOffspring: half the biome's type,
                             // a quarter each parent's.
@@ -3550,13 +3322,28 @@ fn villager_target_valid(m: &mut Mob, w: &MobWorld, which: Mem) -> bool {
 }
 /// `Villager.playWorkSound`.
 fn play_work_sound(m: &mut Mob, cx: &mut Bx) {
-    if let Some(sound) = super::villager::work_sound(m.extra.profession.index().unwrap_or(0)) {
-        m.voice(sound, cx.events);
+    let Some(index) = cx.w.professions.state_index(&m.extra.profession) else {
+        return;
+    };
+    if index < 15 {
+        if let Some(sound) = super::villager::work_sound(index as u8) {
+            m.voice(sound, cx.events);
+        }
+    } else if let Some(sound) = cx.w.professions.entry(index).and_then(|p| p.sound.clone()) {
+        let pitch = m.voice_pitch();
+        if !m.silent {
+            cx.events.push(MobEvent::ProfessionWorkSound(
+                sound,
+                [m.position.x, m.position.y, m.position.z],
+                super::ai::sound_volume(m),
+                pitch,
+            ));
+        }
     }
 }
 /// `WorkAtPoi.start`'s restock.
-fn restock_if_due(m: &mut Mob, w: &MobWorld) {
-    if m.extra.profession.index().is_none() {
+pub(super) fn restock_if_due(m: &mut Mob, w: &MobWorld) {
+    if w.professions.state_index(&m.extra.profession).is_none() {
         return;
     }
     let day = w.day_time.div_euclid(24000);
@@ -3763,7 +3550,7 @@ fn homes_in_range(m: &Mob, w: &MobWorld, radius: i32) -> Vec<[i32; 3]> {
     for qz in (c[2] - radius) >> 4..=(c[2] + radius) >> 4 {
         for qx in (c[0] - radius) >> 4..=(c[0] + radius) >> 4 {
             chunk_pois(w, (qx, qz), y0, y1, |poi, p| {
-                if poi == Poi::Home && dist_sqr(p, c) <= r2 {
+                if poi == Poi::Vanilla(PoiType::Home) && dist_sqr(p, c) <= r2 {
                     out.push(p);
                 }
             });
@@ -3783,7 +3570,7 @@ fn breeding_possible(m: &mut Mob, w: &MobWorld) -> bool {
         return false;
     };
     villager_target_valid(m, w, Mem::BreedTarget)
-        && super::villager::can_breed(m)
+        && super::villager::can_breed_in(m, w)
         && w.seen(id).is_some_and(|s| s.in_love)
 }
 /// `VillagerMakeLove.takeVacantBed`: `PoiManager.take(HOME, ..., 48)` over a
@@ -3809,7 +3596,7 @@ fn take_bed_for_child(m: &mut Mob, w: &MobWorld) -> Option<[i32; 3]> {
     // Nearest first; equally near beds stay in scan order.
     beds.sort_by_key(|p| dist_sqr(*p, from));
     beds.into_iter().find(|&p| {
-        m.create_path_to(w, p, Poi::Home.valid_range())
+        m.create_path_to(w, p, (Poi::Vanilla(PoiType::Home)).valid_range())
             .is_some_and(|path| path.reached)
     })
 }
@@ -4740,30 +4527,88 @@ mod poi_classification_tests {
     fn unresolved_profession_does_not_claim_or_reset_a_job() {
         let mut mob = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
         mob.extra.profession = super::super::villager::ProfessionState::from_id("example:engineer");
-        assert!(!poi_matches(&mob, PoiFilter::Held, Poi::Farmer));
-        assert!(!poi_matches(&mob, PoiFilter::Acquirable, Poi::Farmer));
-        assert!(!can_reset_profession(&mob));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Acquirable,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(!can_reset_profession(
+            &mob,
+            crate::mobs::villager::profession_table()
+        ));
         assert_eq!(mob.extra.profession.id(), "example:engineer");
     }
 
     #[test]
     fn vanilla_job_filters_and_capacity_remain_distinct() {
         let mut mob = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
-        assert!(!poi_matches(&mob, PoiFilter::Held, Poi::Farmer));
-        assert!(poi_matches(&mob, PoiFilter::Acquirable, Poi::Farmer));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(poi_matches(
+            &mob,
+            PoiFilter::Acquirable,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
         mob.extra.profession = super::super::villager::ProfessionState::from_index(5);
-        assert!(poi_matches(&mob, PoiFilter::Held, Poi::Farmer));
-        assert!(poi_matches(&mob, PoiFilter::Acquirable, Poi::Farmer));
-        assert!(!poi_matches(&mob, PoiFilter::Held, Poi::Butcher));
+        assert!(poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(poi_matches(
+            &mob,
+            PoiFilter::Acquirable,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Butcher),
+            crate::mobs::villager::profession_table()
+        ));
         mob.extra.profession = super::super::villager::ProfessionState::from_index(11);
-        assert!(!poi_matches(&mob, PoiFilter::Held, Poi::Farmer));
-        assert!(!poi_matches(&mob, PoiFilter::Acquirable, Poi::Farmer));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Acquirable,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
         mob.extra.profession = super::super::villager::ProfessionState::from_index(20);
-        assert!(!poi_matches(&mob, PoiFilter::Held, Poi::Farmer));
-        assert!(!poi_matches(&mob, PoiFilter::Acquirable, Poi::Farmer));
-        assert_eq!(Poi::Farmer.max_tickets(), 1);
-        assert_eq!(Poi::Meeting.max_tickets(), 32);
-        assert_eq!(Poi::Meeting.valid_range(), 6);
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Held,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert!(!poi_matches(
+            &mob,
+            PoiFilter::Acquirable,
+            Poi::Vanilla(PoiType::Farmer),
+            crate::mobs::villager::profession_table()
+        ));
+        assert_eq!(Poi::Vanilla(PoiType::Farmer).max_tickets(), 1);
+        assert_eq!(Poi::Vanilla(PoiType::Meeting).max_tickets(), 32);
+        assert_eq!(Poi::Vanilla(PoiType::Meeting).valid_range(), 6);
     }
 
     #[test]
@@ -4788,7 +4633,7 @@ mod poi_classification_tests {
                 "{row}"
             );
             assert_eq!(
-                horizon_world::poi::saved_poi(&state) == Some(Poi::Home),
+                horizon_world::poi::saved_poi(&state) == Some(PoiType::Home),
                 expected,
                 "{row}"
             );
@@ -4843,7 +4688,7 @@ mod poi_classification_tests {
                     .collect();
                 horizon_world::poi::with_extensions(hay_states, |refusals| {
                     assert_eq!(refusals, Vec::<String>::new());
-                    assert_eq!(poi_at(w, 0, 64, 0), Some(Poi::Home));
+                    assert_eq!(poi_at(w, 0, 64, 0), Some(Poi::Vanilla(PoiType::Home)));
                     assert_eq!(poi_at(w, 1, 64, 0), None);
                     let mob = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
                     assert!(poi_exists(&mob, w, [0, 64, 0], PoiFilter::Home));
@@ -4852,7 +4697,7 @@ mod poi_classification_tests {
                 });
                 horizon_world::poi::with_extensions(meeting_states, |refusals| {
                     assert!(refusals.is_empty());
-                    assert_eq!(poi_at(w, 0, 64, 0), Some(Poi::Meeting));
+                    assert_eq!(poi_at(w, 0, 64, 0), Some(Poi::Vanilla(PoiType::Meeting)));
                 });
                 horizon_world::poi::with_extensions(Vec::new(), |_| {
                     assert_eq!(poi_at(w, 0, 64, 0), None);
@@ -4882,3 +4727,6 @@ mod poi_classification_tests {
 #[cfg(test)]
 #[path = "villager_trades_tests.rs"]
 mod trades_tests;
+
+#[cfg(test)]
+mod reputation_witness_tests;

@@ -45,6 +45,92 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A borrowed counting view: no resident-table scans and no allocation for gauges.
+pub(super) struct EntityCountView<'a> {
+    pub(super) fixed: [(&'static str, usize); 19],
+    pub(super) mobs: &'a [Mob],
+    pub(super) projectiles: &'a [horizon_client::projectiles::Projectile],
+    pub(super) general: &'a super::general::GeneralRows,
+    pub(super) others: &'a [commands::OtherEntity],
+}
+impl EntityCountView<'_> {
+    pub(super) fn total(&self) -> usize {
+        self.fixed.iter().map(|(_, n)| n).sum::<usize>()
+            + self.projectiles.len()
+            + self.mobs.len()
+            + self.general.len()
+            + self.others.len()
+    }
+    pub(super) fn registry_counts(&self) -> Vec<(String, u32)> {
+        let mut counts = std::collections::BTreeMap::<String, u32>::new();
+        for &(id, n) in &self.fixed {
+            if n > 0 {
+                *counts.entry(id.to_owned()).or_default() += n as u32;
+            }
+        }
+        for projectile in self.projectiles {
+            *counts.entry(projectile.kind.id().to_owned()).or_default() += 1;
+        }
+        for mob in self.mobs.iter().filter(|mob| !mob.removed) {
+            *counts.entry(mob.kind.id.clone()).or_default() += 1;
+        }
+        for row in self.general.iter() {
+            *counts
+                .entry(
+                    super::general::general_type_catalog()
+                        .key(row.type_slot)
+                        .to_owned(),
+                )
+                .or_default() += 1;
+        }
+        for row in self.others {
+            *counts.entry(row.kind.clone()).or_default() += 1;
+        }
+        counts.into_iter().collect()
+    }
+}
+
+// Both Game and Parked own these typed families. Keep their instrumentation in one list.
+macro_rules! entity_count_view {
+    ($level:expr, $projectiles:expr, $general:expr, $knots:expr) => {
+        crate::game::levels::EntityCountView {
+            fixed: [
+                ("minecraft:item", $level.dropped.len()),
+                ("minecraft:experience_orb", $level.orbs.len()),
+                ("minecraft:minecart", $level.carts.len()),
+                ("minecraft:boat", $level.boats.len()),
+                ("minecraft:falling_block", $level.falling.len()),
+                ("minecraft:painting", $level.paintings.len()),
+                ("minecraft:item_frame", $level.item_frames.len()),
+                ("minecraft:armor_stand", $level.armor_stands.len()),
+                ("minecraft:trident", $level.tridents.len()),
+                ("minecraft:firework_rocket", $level.rockets.len()),
+                ("minecraft:tnt", $level.tnts.len()),
+                ("minecraft:end_crystal", $level.crystals.len()),
+                ("minecraft:leash_knot", $knots.len()),
+                (
+                    "minecraft:ominous_item_spawner",
+                    $level.ominous_spawners.len(),
+                ),
+                ("minecraft:cushion", $level.cushions.len()),
+                ("minecraft:area_effect_cloud", $level.breath_clouds.len()),
+                ("minecraft:lightning_bolt", $level.bolts.len()),
+                ("minecraft:evoker_fangs", $level.fangs.perf_count()),
+                // Multipart hitboxes are not independently admitted world entities.
+                (
+                    "minecraft:ender_dragon",
+                    usize::from($level.dragon.as_ref().is_some()),
+                ),
+            ],
+            mobs: &$level.mobs,
+            projectiles: $projectiles,
+            general: $general,
+            others: &$level.others,
+        }
+    };
+}
+pub(super) use entity_count_view;
+
 /// Server ticks a level other than the Overworld stays loaded with no player
 /// in it, before it is saved and closed (vanilla unloads a level's chunks
 /// once no ticket holds them; the Overworld stays loaded).
@@ -52,7 +138,7 @@ const IDLE_TICKS: u32 = 300;
 
 /// A level that is not in place: every per-level field of `Game`.
 pub(super) struct Parked {
-    world: World,
+    pub(super) world: World,
     streaming: Streaming,
     locator: Option<Arc<VanillaTerrain>>,
     save: Arc<SaveDir>,
@@ -82,6 +168,7 @@ pub(super) struct Parked {
     ominous_spawners:
         horizon_client::join_seq::ResidentList<ominous_item_spawner::OminousItemSpawner>,
     tnts: horizon_client::join_seq::JoinList<tnt::PrimedTnt>,
+    general: super::general::GeneralStore,
     hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
     pub(super) mobs: horizon_client::join_seq::JoinList<Mob>,
     /// The entity ids of the level's fence knots (`knot_ids`).
@@ -116,7 +203,13 @@ pub(super) struct Parked {
 }
 
 impl Parked {
-    resident_owners!(define_resident_access, self, projectiles, knots);
+    resident_owners!(
+        define_resident_access,
+        self,
+        projectiles,
+        knots,
+        general.rows
+    );
 }
 
 impl Game<'_> {
@@ -133,7 +226,11 @@ impl Game<'_> {
             return self.locate_specialized_resident_owner(at);
         }
         if at.owner.dimension == self.dim.key() {
-            return self.locate_resident_owner(at);
+            // An open transaction's removal reads as gone already.
+            return self.locate_resident_owner(at).map(|mut source| {
+                source.value.1 &= !self.removal_pending(&source.value.0);
+                source
+            });
         }
         let dim = match at.owner.dimension {
             DimensionKey::OVERWORLD => Dim::Overworld,
@@ -141,16 +238,43 @@ impl Game<'_> {
             DimensionKey::END => Dim::End,
             key => Dim::Extra(key),
         };
-        self.levels.parked.get(&dim)?.locate_resident_owner(at)
+        // The transactions stay with the game when a level is parked: its pending removals too.
+        self.levels
+            .parked
+            .get(&dim)?
+            .locate_resident_owner(at)
+            .map(|mut source| {
+                source.value.1 &= !self.removal_pending_in(dim, &source.value.0);
+                source
+            })
     }
 
-    pub(super) fn resident_source_target_visible(
+    /// Whether `target` counts as removed in the level in place: a mod removed it, or an open
+    /// transaction did and its root commit has not run the removal yet.
+    pub(in crate::game) fn target_removed(&self, target: &Target) -> bool {
+        self.persist.removals.contains(target)
+            || self.persist.destroying_vehicles.contains(target)
+            || self.removal_pending(target)
+    }
+
+    pub(in crate::game) fn resident_source_target_visible(
         &self,
         dimension: DimensionKey,
         target: Target,
     ) -> bool {
+        let player = match target {
+            Target::Guest(conn) => Some(conn),
+            Target::Player => self.lan_acting,
+            _ => None,
+        };
+        if player
+            .and_then(|conn| self.command_guest(conn))
+            .is_some_and(|guest| !guest.body_present())
+        {
+            return false;
+        }
         if dimension == self.dim.key() {
-            return !self.persist.removals.contains(&target);
+            return !self.target_removed(&target);
         }
         let dim = match dimension {
             DimensionKey::OVERWORLD => Dim::Overworld,
@@ -158,10 +282,11 @@ impl Game<'_> {
             DimensionKey::END => Dim::End,
             key => Dim::Extra(key),
         };
-        self.levels
-            .parked
-            .get(&dim)
-            .is_none_or(|parked| !parked.persist.removals.contains(&target))
+        self.levels.parked.get(&dim).is_none_or(|parked| {
+            !parked.persist.removals.contains(&target)
+                && !parked.persist.destroying_vehicles.contains(&target)
+                && !self.removal_pending_in(dim, &target)
+        })
     }
 
     /// Visit exactly the actual physical lifetime slot. Resolution releases the
@@ -226,7 +351,7 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn server_resident_entity(&self, id: u32) -> EntityLookup<Target> {
+    pub(in crate::game) fn server_resident_entity(&self, id: u32) -> EntityLookup<Target> {
         let found = self
             .resident_entities
             .table
@@ -272,10 +397,10 @@ impl Game<'_> {
         let table = self.resident_entities.table.get_mut();
         table.reset();
         let journal = table.producer();
-        self.bind_resident_owners(&journal, self.dim.key());
+        self.bind_resident_owners(&journal, self.dim.key(), self.is_logical_server());
         self.bind_specialized_resident_owners(&journal);
         for (dim, parked) in &mut self.levels.parked {
-            parked.bind_resident_owners(&journal, dim.key());
+            parked.bind_resident_owners(&journal, dim.key(), true);
         }
     }
 }
@@ -305,16 +430,26 @@ impl Default for Pass {
     }
 }
 
+/// How long a server tick took and what it spent the time in.
+pub(super) struct TickTiming {
+    pub wall_ms: f32,
+    pub cpu_ms: Option<f32>,
+    /// Spans recorded inside the tick only, in observation order.
+    pub raw: Vec<horizon_client::spans::Span>,
+}
+
 /// The levels not in place, by dimension.
 #[derive(Default)]
 pub(super) struct Levels {
-    parked: HashMap<Dim, Parked>,
+    pub(super) parked: HashMap<Dim, Parked>,
     /// The levels whose open the mods heard (`native_level_load`), each to
     /// be told closed once.
     heard_open: Vec<Dim>,
     /// The levels a mod asked to have saved (`level_request_save`), each once, saved at the start
     /// of the next server tick.
     requested_saves: Vec<Dim>,
+    /// The levels mods opened while the server runs, and the requests waiting to be applied.
+    pub(super) runtime: super::runtime_levels::RuntimeTable,
 }
 
 impl Levels {
@@ -326,11 +461,24 @@ impl Levels {
         }
     }
 
+    /// Whether a save of `dim` is still waiting for a tick that admits
+    /// saves (the #2488 gate holds it back).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::game) fn save_pending(&self, dim: Dim) -> bool {
+        self.requested_saves.contains(&dim)
+    }
+
+    /// Drop a save of `dim` still waiting for a tick: its level is gone.
+    pub(super) fn cancel_requested_save(&mut self, dim: Dim) {
+        self.requested_saves.retain(|saved| *saved != dim);
+    }
+
     /// Clear every parked level and dimensions recorded as heard open.
     pub(super) fn clear(&mut self) {
         self.parked.clear();
         self.heard_open.clear();
         self.requested_saves.clear();
+        self.runtime.clear();
     }
 
     /// A parked level, without opening or loading it.
@@ -407,8 +555,35 @@ impl Levels {
         self.parked.get(&dim).map(|level| &level.border)
     }
 
+    pub(super) fn install_profession_save_snapshots(
+        &self,
+        table: Arc<horizon_client::mobs::villager::ResolvedProfessions>,
+    ) {
+        for level in self.parked.values() {
+            level.save.install_profession_snapshot(table.clone());
+        }
+    }
+
+    pub(super) fn install_mob_map_snapshots(
+        &self,
+        snapshot: &Arc<horizon_client::neoforge_mob_maps::NeoForgeMobMaps>,
+    ) {
+        for level in self.parked.values() {
+            if let Some(terrain) = &level.locator {
+                terrain.set_mob_maps(snapshot);
+            }
+        }
+    }
+
     pub(super) fn parked_worlds(&self) -> impl Iterator<Item = &World> {
         self.parked.values().map(|level| &level.world)
+    }
+
+    /// The streamers of the levels not in place.
+    pub(super) fn parked_streamings(
+        &self,
+    ) -> impl Iterator<Item = &horizon_client::streaming::Streaming> {
+        self.parked.values().map(|level| &level.streaming)
     }
 
     /// The level not in place, in `dim`.
@@ -428,6 +603,23 @@ impl Levels {
             .iter_mut()
             .find(|(dim, _)| dim.id() == dimension)
             .map(|(_, level)| level)
+    }
+
+    /// Whether a parked level's general rows hold any of these UUIDs (#792's
+    /// dimension-transfer check: a destination may not already hold a row
+    /// of the travelling tree's UUIDs).
+    pub(in crate::game) fn parked_general_holds_any_uuid(
+        &self,
+        dim: Dim,
+        uuids: &std::collections::HashSet<[i32; 4]>,
+    ) -> bool {
+        self.parked.get(&dim).is_some_and(|parked| {
+            parked
+                .general
+                .rows
+                .iter()
+                .any(|row| uuids.contains(&row.uuid))
+        })
     }
 
     /// The entities of a parked level, counted as `Game::entity_count` counts the one in place.
@@ -454,6 +646,18 @@ impl Levels {
     /// The mobs of a parked level.
     pub(super) fn parked_mobs(&self, dim: Dim) -> Option<&[Mob]> {
         self.parked.get(&dim).map(|level| &*level.mobs)
+    }
+
+    pub(super) fn parked_perf_views(
+        &self,
+    ) -> impl Iterator<Item = (Dim, &World, EntityCountView<'_>)> {
+        self.parked.iter().map(|(&dim, level)| {
+            (
+                dim,
+                &level.world,
+                entity_count_view!(level, &level.projectiles, &level.general.rows, &level.knots),
+            )
+        })
     }
 
     /// A parked level's loose entities, for `horizon-report`: items, experience orbs,
@@ -489,7 +693,12 @@ impl Levels {
 
 impl Game<'_> {
     /// A new level for `dim`, opened from the save (`MinecraftServer.createLevels`).
-    fn open_level(&self, dim: Dim) -> Result<Parked> {
+    pub(super) fn open_level(&self, dim: Dim) -> Result<Parked> {
+        // A level a mod opened has the seed and generator it asked for.
+        let (generate, seed) = match self.runtime_terrain(dim) {
+            Some((generate, seed)) => (Some(generate), seed),
+            None => (None, self.level.seed),
+        };
         let (streaming, save, locator) = super::world_loading::make_streaming(
             &self.res,
             &self.pack,
@@ -498,21 +707,30 @@ impl Game<'_> {
             &self.world_root,
             dim,
             self.level_shapes.get(dim.id()),
-            self.level.seed,
+            seed,
             &self.level.enabled_features,
-            self.server_loot.clone(),
+            self.world_biomes
+                .as_ref()
+                .unwrap_or_else(|| self.res.biomes())
+                .clone(),
+            generate.as_ref(),
         )?;
-        let mut world = World::new(self.res.facts().air, self.level.seed);
+        save.install_profession_snapshot(self.stations().professions.clone());
+        if let Some(terrain) = &locator {
+            terrain.set_mob_maps(self.mob_map_snapshot());
+        }
+        let mut world = Game::world_for_mods(self.res.facts().air, seed);
         world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = self.dimension_type_of(dim).fast_lava;
+        world.infiniburn = Some(self.resolve_level_infiniburn(self.dimension_type_of(dim)));
         let tickets = ChunkTickets::with_saved_portal(save.load_portal_tickets());
         Ok(Parked {
             world,
             streaming,
             locator,
             save,
-            block_ticks: Ticks::new(self.level.seed as i32),
+            block_ticks: Ticks::new(seed as i32),
             tick_chunks: Default::default(),
             tickets,
             random_tick_sections: Default::default(),
@@ -536,6 +754,7 @@ impl Game<'_> {
             rockets: Default::default(),
             ominous_spawners: Default::default(),
             tnts: Default::default(),
+            general: Default::default(),
             hoppers: HashMap::new(),
             mobs: Default::default(),
             knot_ids: HashMap::new(),
@@ -656,6 +875,9 @@ impl Game<'_> {
     fn swap_level(&mut self, p: &mut Parked) {
         use std::mem::swap;
         swap(&mut self.world, &mut p.world);
+        // The carrier first-use gate belongs to the world, not the
+        // level: a level swap keeps it.
+        self.world.carrier_data_existed_at_open = p.world.carrier_data_existed_at_open;
         swap(&mut self.streaming, &mut p.streaming);
         let mut locator = self.end.locator();
         swap(&mut locator, &mut p.locator);
@@ -690,6 +912,7 @@ impl Game<'_> {
         swap(&mut self.mobs, &mut p.mobs);
         swap(&mut self.knot_ids, &mut p.knot_ids);
         swap(&mut self.resident_entities.knots, &mut p.knots);
+        swap(&mut self.resident_entities.general, &mut p.general);
         swap(&mut self.creatures.projectiles, &mut p.projectiles);
         swap(&mut self.dropped, &mut p.dropped);
         swap(&mut self.orbs, &mut p.orbs);
@@ -798,7 +1021,7 @@ impl Game<'_> {
             let present = mob.is_some()
                 || p.boats.iter().any(|b| b.id == id)
                 || p.carts.iter().any(|c| c.id == id);
-            let removed = p.persist.removals.iter().any(|target| matches!(
+            let removed = p.persist.removals.iter().chain(p.persist.destroying_vehicles.iter()).any(|target| matches!(
                 target, commands::Target::Mob(n) | commands::Target::Boat(n) | commands::Target::Cart(n) if *n == id
             ));
             return (present && !removed).then_some(id);
@@ -889,6 +1112,7 @@ impl Game<'_> {
                 cart.id
             }
         };
+        self.journal_arrival(id);
         if self.uuid_admission_refused(self.persist.uuids.get(&id).copied()) {
             self.persist.off_level.insert(id, object);
             return;
@@ -987,7 +1211,14 @@ impl Game<'_> {
         let n = dims.len();
         let mut result = Ok(());
         for (k, dim) in dims.into_iter().enumerate() {
-            // Each level's share of the tick, recorded in local reports.
+            // Each level's share of the tick (the first one also reads the network and runs the
+            // tick's shared parts): `horizon-report`'s `level_*` spans.
+            horizon_threads::work::set_dim(match dim {
+                Dim::Overworld => 1,
+                Dim::Nether => 2,
+                Dim::End => 3,
+                Dim::Extra(_) => 0,
+            });
             let _level_span = horizon_client::spans::guard(match dim {
                 Dim::Overworld => "level_overworld",
                 Dim::Nether => "level_the_nether",
@@ -1007,8 +1238,11 @@ impl Game<'_> {
             if observe_level && let Some(level) = self.level(dim.id()) {
                 self.native_level_tick_pre(level);
             }
-            self.update_dedicated_streaming();
-            self.update_world();
+            horizon_client::spans::time("dedicated_streaming", || {
+                self.update_dedicated_streaming();
+            });
+            horizon_client::spans::time("update_world", || self.update_world());
+            let tick_span = horizon_client::spans::guard("level_tick");
             result = horizon_client::block_contact::in_level(
                 (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
                 || {
@@ -1025,6 +1259,7 @@ impl Game<'_> {
                     }
                 },
             );
+            drop(tick_span);
             self.drain_entity_inside();
             if result.is_err() {
                 break;
@@ -1034,10 +1269,11 @@ impl Game<'_> {
             }
             // Starling: the old hook, for the mods made for it (native_compat.rs).
             self.native_level_tick_post_old(dim.id());
-            self.publish_server_debug(dim);
+            horizon_client::spans::time("server_debug", || self.publish_server_debug(dim));
             // An entity that crossed into a level that already ticked this
             // server tick is in it when the tick ends (`addDuringTeleport`).
             if running == Some(true) {
+                let _span = horizon_client::spans::guard("late_portal_arrivals");
                 let mut moved = false;
                 for &earlier in &order[..k] {
                     if !self.arrival_chunks(earlier).is_empty() && self.enter_level(earlier).is_ok()
@@ -1051,6 +1287,10 @@ impl Game<'_> {
                 }
             }
         }
+        // The levels only `Loaded` areas name: streamed and sent, never ticked.
+        if result.is_ok() {
+            result = self.run_view_passes(&order);
+        }
         if let Some(&first) = order.first()
             && self.dim != first
         {
@@ -1061,6 +1301,8 @@ impl Game<'_> {
             self.native_lifecycle.cancel_server_tick();
         }
         result?;
+        // The levels mods asked to open or close: now that no level is in the middle of a tick.
+        self.apply_runtime_levels();
         let closed = {
             let _span = horizon_client::spans::guard("close_idle_levels");
             self.close_idle_levels()
@@ -1078,27 +1320,34 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// `tick_server` as a server thread runs it. With `HORIZON_SPIKES=MS`, a
-    /// tick longer than MS is logged with its thread CPU time and spans.
+    /// `tick_server` as a server thread runs it, timed whenever spans are on.
     pub(super) fn tick_server_timed(&mut self, paused: bool) -> Result<()> {
-        self.tick_server_spans(paused, |_, _, _, _| {})
+        self.tick_server_spans(paused, |_| {})
     }
 
-    /// `tick_server_timed`, handing the tick's wall time, thread CPU time
-    /// and spans (milliseconds, summed by name) to `record` while spans are on, with how many
-    /// spans the tick itself recorded: a dedicated server's performance report turns them on to
-    /// record its ticks.
+    /// `tick_server_timed`, handing the tick's timing to `record` while spans are on.
     pub(super) fn tick_server_spans(
         &mut self,
         paused: bool,
-        record: impl FnOnce(f32, Option<f32>, Vec<horizon_client::spans::Span>, usize),
+        record: impl FnOnce(TickTiming),
     ) -> Result<()> {
-        if self.options.spikes.is_none() && !horizon_client::spans::enabled() {
+        let started = Instant::now();
+        horizon_threads::work::tick_start();
+        let result = self.tick_server_recorded(paused, record);
+        horizon_threads::work::tick_end(started.elapsed().as_nanos() as u64);
+        result
+    }
+
+    fn tick_server_recorded(
+        &mut self,
+        paused: bool,
+        record: impl FnOnce(TickTiming),
+    ) -> Result<()> {
+        if self.options.spikes.is_none() && !horizon_client::spans::recording_here() {
             return self.tick_server(paused);
         }
-        // Spans recorded since the last tick ran between ticks (the chunk pump of the wait): they
-        // stay in the tick's list, but only the tick's own count as recorded in it.
-        let between = horizon_client::spans::take_raw();
+        // Discard between-tick work (such as the chunk pump) before timing this tick.
+        horizon_client::spans::take_raw();
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
         let result = self.tick_server(paused);
         let wall = started.elapsed().as_secs_f32() * 1000.0;
@@ -1107,25 +1356,22 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let raw = horizon_client::spans::take_raw();
-        let in_tick = raw.len();
-        let spans = if between.is_empty() {
-            horizon_client::spans::merge(&raw)
-        } else {
-            horizon_client::spans::merge(&[between, raw].concat())
-        };
+        // The spans go to the slow ring; whose packets or events took the tick stays in the owner's log.
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
             && wall > threshold
+            && !notes.is_empty()
         {
-            let cpu = cpu.map_or_else(String::new, |c| format!(", cpu {c:.1} ms"));
             log::info!(
-                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}{}",
-                self.mobs.len(),
-                horizon_client::spans::describe(&spans),
+                "Horizon: {wall:.1} ms tick was busy with: {}",
                 slowest_steps(&notes)
             );
         }
-        record(wall, cpu, spans, in_tick);
+        record(TickTiming {
+            wall_ms: wall,
+            cpu_ms: cpu,
+            raw,
+        });
         result
     }
 
@@ -1196,6 +1442,8 @@ impl Game<'_> {
                     // A portal ticket keeps its dimension active
                     // (`TicketType.shouldKeepDimensionActive`).
                     || !self.portal_tickets_in(*d).is_empty()
+                    // So does a viewed `Ticking` area (#3716), for its chunks only.
+                    || self.viewed_level(*d) == Some(true)
             })
             .collect();
         if dims.is_empty() {
@@ -1233,7 +1481,9 @@ impl Game<'_> {
     /// Count the parked levels' empty ticks, and save and close the ones
     /// (other than the Overworld) nobody has been in for a while.
     pub(super) fn close_idle_levels(&mut self) -> Result<()> {
-        let occupied = self.levels_to_tick();
+        let mut occupied = self.levels_to_tick();
+        // A level a viewed area names, ticked or not, or one a client still holds chunks of.
+        occupied.extend(Dim::all().into_iter().filter(|d| self.needs_view_pass(*d)));
         // A vehicle waiting there for its rider's arrival in another level.
         let waiting: Vec<Dim> = self
             .levels
@@ -1256,23 +1506,41 @@ impl Game<'_> {
         if closing.is_empty() {
             return Ok(());
         }
-        let back = self.dim;
         for dim in closing {
-            self.enter_level(dim)?;
-            // Vanilla saves the level's chunks before their unload hooks.
-            self.native_chunks_loaded();
-            self.save_level(true)?;
-            let chunks: Vec<_> = self.world.chunks.values().cloned().collect();
-            self.native_chunks_unloaded(&chunks);
-            // Its entities' attachments are saved with them; they leave memory too.
-            for id in self.persist.uuids.keys() {
-                self.entity_attachments.remove(id);
-            }
-            self.enter_level(back)?;
-            self.levels.parked.remove(&dim);
-            self.native_level_closed(dim);
+            self.close_parked_level(dim)?;
         }
         Ok(())
+    }
+
+    /// Save the parked level `dim` and drop it: the mods hear its chunks and the level unload. A
+    /// level a mod opened at run time stays known, and opens again when entered, as any other.
+    pub(super) fn close_parked_level(&mut self, dim: Dim) -> Result<()> {
+        let back = self.dim;
+        self.enter_level(dim)?;
+        // Vanilla saves the level's chunks before their unload hooks.
+        self.native_chunks_loaded();
+        if let Err(why) = self.save_level(true) {
+            // Not saved: the level stays parked, and the level in place is the one before.
+            self.enter_level(back)?;
+            return Err(why);
+        }
+        let chunks: Vec<_> = self.world.chunks.values().cloned().collect();
+        self.native_chunks_unloaded(&chunks);
+        // Its entities' attachments are saved with them; they leave memory too.
+        for id in self.persist.uuids.keys() {
+            self.entity_attachments.remove(id);
+        }
+        self.enter_level(back)?;
+        self.levels.parked.remove(&dim);
+        self.native_level_closed(dim);
+        Ok(())
+    }
+
+    /// A server's world opened: level.dat is read and no chunk is loaded. The
+    /// mods hear its saved mod list's differences (NeoForge's
+    /// `ModMismatchEvent`), then the level it opens in.
+    pub(super) fn native_world_opened(&mut self, dim: Dim) {
+        self.native_level_opened(dim);
     }
 
     /// The mods hear `dim`'s level open (`LevelEvent.Load`), on a server.
@@ -1285,9 +1553,9 @@ impl Game<'_> {
         }
         let journal = self.resident_entities.table.borrow().producer();
         if dim == self.dim {
-            self.bind_resident_owners(&journal, dim.key());
+            self.bind_resident_owners(&journal, dim.key(), true);
         } else if let Some(parked) = self.levels.parked.get_mut(&dim) {
-            parked.bind_resident_owners(&journal, dim.key());
+            parked.bind_resident_owners(&journal, dim.key(), true);
         }
         self.bind_dimension_attachments(dim);
         self.levels.heard_open.push(dim);
@@ -1303,7 +1571,13 @@ impl Game<'_> {
             self.levels.heard_open.remove(i);
             self.native_level_unload(dim.id());
         }
+        if dim == self.dim {
+            self.world.water_tickets.clear();
+        } else if let Some(world) = self.levels.parked_world_mut_of(dim.id()) {
+            world.water_tickets.clear();
+        }
         self.attachment_indexes.remove(&dim);
+        self.passages.retire_level(dim.key());
     }
 
     /// Every level still open closes with the server, however it ends
@@ -1357,17 +1631,13 @@ impl Game<'_> {
     }
 }
 
-/// A slow tick's line's end: the steps it noted as its slowest (`spans::note`), whose packets
-/// or which player's event, or nothing.
+/// The steps a slow tick noted as its slowest (`spans::note`), whose packets or which player's event.
 fn slowest_steps(notes: &[(f32, String)]) -> String {
-    if notes.is_empty() {
-        return String::new();
-    }
     let list: Vec<String> = notes
         .iter()
         .map(|(ms, what)| format!("{what} {ms:.1}"))
         .collect();
-    format!("; slowest: {}", list.join(", "))
+    list.join(", ")
 }
 
 impl Game<'_> {
@@ -1410,10 +1680,9 @@ mod tests {
         assert!(levels.parked.is_empty());
     }
 
-    /// `ServerLevel.getWorldBorder`: `/worldborder` in one level leaves the others' alone.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn each_level_keeps_its_own_world_border() {
+    /// A game on the prepared resources in `HORIZON_TEST_RESOURCES`, with no
+    /// world opened and commands allowed.
+    fn prepared_game() -> Game<'static> {
         use crate::game::{Audio, Options, Progress, Settings, load_resources};
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -1433,6 +1702,105 @@ mod tests {
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
         options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        // The game keeps its resources for the whole test.
+        let resources: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = Game::new(
+            resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game
+    }
+
+    /// `WorldBorderCommand.setSize` from `/worldborder add` with a time: the
+    /// new change lasts the ticks still running plus the argument
+    /// (`getLerpTime() + time`), where `/worldborder set` replaces it.
+    #[test]
+    #[ignore = "daily"]
+    fn worldborder_add_extends_a_change_in_flight() {
+        let mut game = prepared_game();
+        assert!(game.run_command("worldborder set 100 1000"));
+        assert_eq!(game.border.remaining_ticks(), 1000);
+        // Part way through the change, where the size is between its ends.
+        for _ in 0..100 {
+            game.border.tick();
+        }
+        assert_eq!(game.border.remaining_ticks(), 900);
+        let from = game.border.size();
+        assert!(from < 59_999_968.0 && from > 100.0);
+        // The new change starts from that size and lasts the ticks still
+        // running plus the argument, not just the argument.
+        assert!(game.run_command("worldborder add -50 5s"));
+        assert_eq!(game.border.target_size(), from - 50.0);
+        assert_eq!(game.border.remaining_ticks(), 1000);
+        // `set` starts over from the size the border has now.
+        assert!(game.run_command("worldborder set 200 40"));
+        assert_eq!(game.border.target_size(), 200.0);
+        assert_eq!(game.border.remaining_ticks(), 40);
+    }
+
+    /// `ServerLevel.getWorldBorder`: `/worldborder` in one level leaves the others' alone.
+    #[test]
+    #[ignore = "daily"]
+    fn each_level_keeps_its_own_world_border() {
+        let mut game = prepared_game();
+        assert!(game.run_command("worldborder set 1000"));
+        assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+        assert_eq!(game.dim, Dim::Overworld);
+        assert_eq!(game.border.size(), 1000.0);
+        let nether = game.levels.parked_border(Dim::Nether).unwrap();
+        assert_eq!(nether.size(), 100.0);
+    }
+
+    struct LogCapture;
+    static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    impl log::Log for LogCapture {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            LOGGED.lock().unwrap().push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
+    /// 300 slow ticks in ten seconds log no Horizon slow-tick line, and the ring holds the last 256.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn slow_ticks_enter_the_ring_and_not_the_log() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::server_perf::{ServerPerf, TickDetail, WorldCounts};
+        log::set_logger(&LogCapture).expect("no other logger in this test run");
+        log::set_max_level(log::LevelFilter::Info);
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        options.spikes = Some(0.0);
         let mut game = Game::new(
             &loaded.resources,
             loaded.pack,
@@ -1446,13 +1814,33 @@ mod tests {
         )
         .unwrap();
         game.build_registries();
-        game.set_allow_commands(true);
-        assert!(game.run_command("worldborder set 1000"));
-        assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
-        assert_eq!(game.dim, Dim::Overworld);
-        assert_eq!(game.border.size(), 1000.0);
-        let nether = game.levels.parked_border(Dim::Nether).unwrap();
-        assert_eq!(nether.size(), 100.0);
+        let mut perf = ServerPerf::new(0.0, 0.0);
+        for i in 0..300 {
+            let mut detail = None;
+            let started = Instant::now();
+            game.tick_server_spans(false, |timing| {
+                detail = Some(TickDetail {
+                    cpu_ms: timing.cpu_ms,
+                    spans: timing.raw,
+                });
+            })
+            .unwrap();
+            let wall_ms = started.elapsed().as_secs_f32() * 1000.0;
+            perf.tick(
+                f64::from(i) / 30.0,
+                wall_ms,
+                detail,
+                WorldCounts::default,
+                Vec::new,
+            );
+        }
+        let kept: Vec<u64> = perf.slow_records().map(|r| r.counter).collect();
+        assert_eq!(kept, (45..=300).collect::<Vec<u64>>());
+        let logged = LOGGED.lock().unwrap();
+        assert!(
+            logged.iter().all(|line| !line.contains("slow tick")),
+            "{logged:?}"
+        );
     }
 
     /// A game on a scratch world folder, the way `dedicated.rs` opens one
@@ -1526,6 +1914,8 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h260");
         let world = home.join("saves/h260");
+        // A new world each run: a border saved by the last one would already be 50.
+        let _ = std::fs::remove_dir_all(&home);
         {
             let mut resources = None;
             let mut game = open_game(&mut resources, &root, &home, &world);
@@ -1565,6 +1955,8 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
             .join("h260-controls");
+        // A new world each run, as the first open expects.
+        let _ = std::fs::remove_dir_all(&home);
         let world = home.join("saves/h260");
         let sizes = |game: &mut Game<'_>| {
             assert!(game.run_command("execute in minecraft:overworld run worldborder get"));

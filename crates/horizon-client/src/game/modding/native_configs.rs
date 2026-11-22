@@ -238,6 +238,24 @@ mod tests {
     use mod_api::ConfigKind::{Client, Common, Server};
 
     #[test]
+    fn engine_test_host_operation_reads_the_real_phase_provider() {
+        use mod_api::{
+            __private::{ModPhase, PhaseOwner},
+            Host,
+            prelude::EntitiesHost,
+        };
+        Game::initialize_mod_runtime_for_tests();
+        struct EmptyHost;
+        impl Host for EmptyHost {}
+        mod_api::impl_host_areas!(EmptyHost);
+        let _phase = PhaseOwner::scope(ModPhase::Setup);
+        assert_eq!(mod_api::__private::current_phase(), ModPhase::Setup);
+        let refused = std::panic::catch_unwind(|| EmptyHost.entity(1)).unwrap_err();
+        let message = refused.downcast_ref::<String>().unwrap();
+        assert!(message.contains("Setup"), "{message}");
+    }
+
+    #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn config_permissions_and_once_per_side_survive_two_worlds() {
         use mod_api::{Hooks, Host, HostSide, HostTransaction, ModEntry};
@@ -297,7 +315,7 @@ mod tests {
         }
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mods = vec![ModEntry::new("phase_probe", Box::new(Probe(calls.clone())))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             crate::game::native_entity_refs::tests::with_client_game(|game| {
                 game.mod_phase =
                     mod_api::__private::PhaseOwner::new(mod_api::__private::ModPhase::Setup);

@@ -284,6 +284,9 @@ struct Launcher {
     /// How the last native build ended ("Built (balanced, incremental)", or "Up to date").
     native_done: Option<String>,
     native_error: Option<String>,
+    /// Mods the last build would have switched off that worlds were saved with: the choice
+    /// between staying and backing those worlds up first, shown with `native_error`.
+    native_worlds: Option<native_mods::AtStake>,
     pending_consent: Option<PendingConsent>,
     /// Why the last Allow or Cancel failed, shown inside the dialog that the page is behind.
     consent_error: Option<String>,
@@ -298,7 +301,7 @@ struct Launcher {
     confirm_remove: Option<String>,
     /// The releases whose patch notes the Versions page shows open.
     notes_open: std::collections::HashSet<String>,
-    picker_open: bool,
+    picker: glass_home::PickerState,
     /// Settings' any-colour swatch shows the hue strip (the glass look).
     accent_strip: bool,
     /// Settings' Glass and Blur sliders (the glass look).
@@ -534,26 +537,29 @@ impl Launcher {
         })
         .detach();
         // Counts the time a partner banner is on screen, until it may be hidden.
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_secs(10))
-                .await;
-            let counting = this.update(cx, |this, cx| {
-                let s = &mut this.settings;
-                if s.partner_hidden || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
-                    return false;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(10))
+                    .await;
+                let counting = this.update(cx, |this, cx| {
+                    let s = &mut this.settings;
+                    if s.partner_hidden || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
+                        return false;
+                    }
+                    // On screen on every page: the card in the sidebar, the banner on Servers.
+                    s.partner_seen_secs += 10;
+                    if s.partner_seen_secs % 60 == 0
+                        || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
+                    {
+                        this.save_settings();
+                        cx.notify();
+                    }
+                    true
+                });
+                if !matches!(counting, Ok(true)) {
+                    break;
                 }
-                // On screen on every page: the card in the sidebar, the banner on Servers.
-                s.partner_seen_secs += 10;
-                if s.partner_seen_secs % 60 == 0 || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
-                {
-                    this.save_settings();
-                    cx.notify();
-                }
-                true
-            });
-            if !matches!(counting, Ok(true)) {
-                break;
             }
         })
         .detach();
@@ -632,6 +638,7 @@ impl Launcher {
             native_progress: None,
             native_done: None,
             native_error: None,
+            native_worlds: None,
             pending_consent: None,
             consent_error: None,
             native_for: None,
@@ -639,7 +646,7 @@ impl Launcher {
             native_log: Default::default(),
             confirm_remove: None,
             notes_open: Default::default(),
-            picker_open: false,
+            picker: glass_home::PickerState::default(),
             accent_strip: false,
             look_sliders: Default::default(),
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
@@ -903,7 +910,7 @@ impl Launcher {
                 self.mods.reset_lists();
             }
         }
-        self.picker_open = false;
+        self.picker.open = false;
         self.language_menu = false;
         self.mods.browse.sort_menu = false;
         self.account_menu = false;
@@ -1289,6 +1296,9 @@ impl Launcher {
                     if let (Err(e), false) = (result, cancelled) {
                         if matches!(e, native_mods::Failed::NoConsent) {
                             self.request_native_build_consent();
+                        }
+                        if let native_mods::Failed::Worlds(stake) = &e {
+                            self.keep_stop(stake);
                         }
                         self.native_error = Some(String::from(e));
                     }
@@ -3120,12 +3130,12 @@ impl Launcher {
                 .child(blocks::icon("chevron-down", 20., t.muted))
                 .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                     if !this.closed_by_this_press(event) {
-                        this.picker_open = !this.picker_open;
+                        this.picker.open = !this.picker.open;
                     }
                     cx.notify();
                 })),
         );
-        if self.picker_open {
+        if self.picker.open {
             let mut menu = div()
                 .absolute()
                 .top(px(theme::night::PLAY + 6.))
@@ -3139,7 +3149,7 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.picker_open = false;
+                    this.picker.open = false;
                     this.menu_closed_at = Some(event.position);
                     cx.notify();
                 }));
@@ -3179,7 +3189,7 @@ impl Launcher {
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| tag.clone()));
-                            this.picker_open = false;
+                            this.picker.open = false;
                             cx.notify();
                         })),
                 );
@@ -3199,7 +3209,7 @@ impl Launcher {
                     .child(tr("Manage versions"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.go(Page::Versions);
-                        this.picker_open = false;
+                        this.picker.open = false;
                         cx.notify();
                     })),
             );
@@ -4867,7 +4877,7 @@ impl Launcher {
                             },
                         )),
                     ),
-                )
+                );
             }
             Load::Ready(r) if r.is_empty() => {
                 return page.child(centered(tr("No releases yet."), &t));
@@ -5542,117 +5552,10 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
+mod startup;
+
 fn main() {
-    if let Some(code) = native_mods::internals_rustc_wrapper() {
-        std::process::exit(code);
-    }
-    if let Err(error) = console::attach_for_cli() {
-        eprintln!("Could not restore the launcher's terminal streams: {error}");
-        std::process::exit(1);
-    }
-    // Windows setup: `setup --quiet` / `uninstall --quiet` run here without a window, and never
-    // reach the CLI parser below (so neither the MCP tools nor the completions list them).
-    #[cfg(windows)]
-    if let Some(code) = horizon_launcher::installer::run_quiet() {
-        std::process::exit(code);
-    }
-    if let Some(code) = horizon_launcher::relocation::run_worker() {
-        std::process::exit(code);
-    }
-    // A broken location must still open a window: startup() falls back to the default
-    // folders and records the error, which Settings shows with Retry and Use the default folder.
-    // It keeps the migration lease for the life of the process.
-    let _location_error = horizon_launcher::data_location::startup();
-    perf::process_started();
-    backend::exe_path();
-    // The launcher's own installer (`update_handoff`): no window, no CLI parser.
-    if let Some(code) = horizon_launcher::update_handoff::run() {
-        std::process::exit(code);
-    }
-    #[cfg(windows)]
-    backend::remove_replaced_binaries();
-    backend::cleanup_launcher_updates();
-    // What the launcher downloads goes through the player's proxy, if they set one: the parts
-    // that build their own agents (`horizon-port-pack`) are told before anything starts.
-    horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
-    // The setup wizard and `horizon-launcher.exe uninstall` (what Control Panel runs) are windows,
-    // not CLI commands: asked of the CLI parser first, `uninstall` was refused as an unknown
-    // subcommand, with the error going to the console that Control Panel's start doesn't have.
-    #[cfg(windows)]
-    let setup_window = horizon_launcher::installer::window_mode();
-    #[cfg(not(windows))]
-    let setup_window: Option<horizon_launcher::setup_args::Mode> = None;
-    if setup_window.is_none() {
-        if let Some(code) = cli::run() {
-            std::process::exit(code);
-        }
-    }
-    // The GPU's texture limit, which caps the pictures made from disk (`picture_cache`).
-    horizon_launcher::pictures::probe_gpu_limit();
-    gpui_platform::application()
-        .with_assets(blocks::Assets)
-        // `move`: the closure owns `setup_window`; `run` wants it to outlive this frame.
-        .run(move |cx: &mut App| {
-            cx.text_system()
-                .add_fonts(vec![
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_MONO),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_REGULAR),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_MEDIUM),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_BOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_DISPLAY_BOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_DISPLAY_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_HEADING_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_REGULAR),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_MEDIUM),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_SEMIBOLD),
-                ])
-                .expect("bundled fonts");
-            cx.bind_keys(key_bindings());
-            cx.on_action(|_: &Quit, cx| shut_down(cx));
-            // The key press is being handled inside the window, so the window can only be
-            // removed once that update has finished.
-            cx.on_action(|_: &CloseWindow, cx| {
-                cx.defer(|cx| {
-                    for window in cx.windows() {
-                        let _ = window.update(cx, |_, window, _| window.remove_window());
-                    }
-                })
-            });
-            cx.set_menus(menus());
-            // The setup exe (and `horizon-launcher.exe uninstall`) opens its own window instead.
-            #[cfg(windows)]
-            if let Some(mode) = setup_window {
-                setup_page::open(mode, cx);
-                return;
-            }
-            #[cfg(not(windows))]
-            let _ = setup_window;
-            let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(960.), px(600.))),
-                    titlebar: Some(titlebar::options()),
-                    #[cfg(target_os = "linux")]
-                    window_decorations: Some(gpui::WindowDecorations::Client),
-                    app_id: Some(identity::APP_ID.into()),
-                    // GPUI draws a window without focus at most every 33 ms to save energy. A
-                    // benchmark's window often starts without it (KDE keeps focus from windows
-                    // a background process opens), and it measures drawing, not that limit.
-                    inactive_frame_interval: if perf::Bench::wanted() {
-                        None
-                    } else {
-                        WindowOptions::default().inactive_frame_interval
-                    },
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| Launcher::new(window, cx)),
-            )
-            .expect("window");
-            cx.on_window_closed(|cx, _| shut_down(cx)).detach();
-            cx.activate(true);
-        });
+    startup::run();
 }
 
 /// Whether the click `event` began with the mouse-down that closed a menu at `closed_at`.

@@ -19,7 +19,10 @@
 //! start, and the run is drawn indirectly with the count the copy reached.
 use super::SolidPipeline;
 use super::arena::GRAIN;
-use smallvec::SmallVec;
+
+#[path = "binding_cache.rs"]
+mod binding_cache;
+use binding_cache::BindingKey;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
 /// `QUADS` for a solid draw; phase 2: its entry in phase 2's draws), base
@@ -42,14 +45,18 @@ enum Source {
 struct Plan {
     phase1_calls: usize,
     solid_calls: usize,
-    /// Where the shadow camera's solid and translucent calls begin.
-    shadow_calls: [usize; 2],
+    /// Where each of `prepare`'s marks' calls begin.
+    marks: [usize; MARKS],
     /// Where Metal's opaque pass ends and its cutout pass begins in phase 1's calls,
     /// and where its cutout pass begins in phase 2's.
     pass_calls: [usize; 3],
     total: u64,
 }
 const QUADS: u32 = u32::MAX;
+/// The draws `prepare` gives calls of their own from, past the camera's (`usize::MAX`: none):
+/// the shadow camera's solid and translucent ones, then each world view's
+/// (`view_sections::Sections::marks`).
+pub const MARKS: usize = 2 + 2 * crate::render_views::MAX_WORLD_VIEWS;
 const GROUP_LIMIT: u32 = 65535;
 /// The page keys of the translucent arena (`Renderer::translucent_arena`, Translucent
 /// Batching): its page plus this. The section arena's pages are their own keys, all far
@@ -85,6 +92,11 @@ pub struct Call {
     pub count: u32,
 }
 
+struct CachedGroup<const N: usize> {
+    key: BindingKey<wgpu::Buffer, N>,
+    group: wgpu::BindGroup,
+}
+
 pub struct Flat {
     /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
     /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
@@ -98,6 +110,8 @@ pub struct Flat {
     pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub translucent_mark: wgpu::RenderPipeline,
+    /// `solid` and `translucent` as a mirrored world view draws them, culling the front.
+    pub flipped: super::world_views::Flipped,
     flatten: wgpu::ComputePipeline,
     compute_layout: wgpu::BindGroupLayout,
     flatten_seen: wgpu::ComputePipeline,
@@ -109,8 +123,9 @@ pub struct Flat {
     phase2_call_data: Vec<[u32; 5]>,
     /// GPU culling's phase 2 uses indirect draws; flat draws without culling do not.
     indirect_execution: bool,
-    /// The copy of phase 2's draws, and its ranges.
-    phase2_group: Option<(wgpu::BindGroup, u32)>,
+    /// Bindings reused while the range and all GPU buffers are unchanged.
+    phase2_group: Option<CachedGroup<4>>,
+    groups: Vec<CachedGroup<3>>,
     /// The layout of a page's bind group 1 (shader packs' terrain pipelines share it).
     pub(super) draw_layout: wgpu::BindGroupLayout,
     blocks_per_page: u64,
@@ -149,6 +164,8 @@ pub struct Flat {
     /// begin (`calls.len()` without them): the camera's translucent calls
     /// end at the first.
     pub shadow_calls: [usize; 2],
+    /// Where each mark's calls begin (`calls.len()` without them).
+    marks: [usize; MARKS],
     /// Frames with fewer sections in view keep the per-section draws.
     pub min_sections: usize,
     range_align: u64,
@@ -219,34 +236,70 @@ pub fn is_powervr_vulkan(info: &wgpu::AdapterInfo) -> bool {
         && (info.vendor == 0x1010 || info.name.contains("PowerVR"))
 }
 
+/// A released Mesa version from its driver info, allowing distribution suffixes.
+/// Development and release-candidate builds do not establish a stable release's safety.
+fn parse_mesa_version(driver_info: &str) -> Option<(u32, u32, u32)> {
+    let version = driver_info
+        .strip_prefix("Mesa ")?
+        .split_whitespace()
+        .next()?;
+    let (version, suffix) = version.split_once('-').unwrap_or((version, ""));
+    if suffix.starts_with("devel") || suffix.starts_with("rc") {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let version = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(version)
+}
+
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
-/// Raptor Lake) ANV Vulkan drivers have broken `first_instance` for
+/// Raptor Lake) ANV Vulkan drivers had broken `first_instance` for
 /// instance-step vertex attributes (#3529, #4599), causing terrain sections to
 /// be drawn with another section's origin and flicker.
+///
+/// PR #15007 tested Raptor Lake (RPL-U, 0xa7a1) on Mesa 26.0.8 without terrain
+/// flicker. Allow indirect multi-draw and GPU culling for Raptor Lake from that
+/// release; earlier or unidentified drivers keep the workaround.
 pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
-    info.backend == wgpu::Backend::Vulkan
-        && info.vendor == 0x8086
-        && (matches!(
-            info.device,
-            0x8a50..=0x8a71 // Gen11: Ice Lake
-                | 0x9a40..=0x9a7f // Gen12: Tiger Lake
-                | 0x4c80..=0x4c9a // Gen12: Rocket Lake
-                | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
-                | 0xa700..=0xa7ff // Gen12: Raptor Lake
-        ) || [
-            "ICL",
-            "Ice Lake",
-            "TGL",
-            "Tiger Lake",
-            "RKL",
-            "Rocket Lake",
-            "ADL",
-            "Alder Lake",
-            "RPL",
-            "Raptor Lake",
-        ]
-        .iter()
-        .any(|tag| info.name.contains(tag)))
+    if info.backend != wgpu::Backend::Vulkan || info.vendor != 0x8086 {
+        return false;
+    }
+
+    let is_raptor_lake = matches!(info.device, 0xa700..=0xa7ff)
+        || info.name.contains("RPL")
+        || info.name.contains("Raptor Lake");
+
+    if is_raptor_lake
+        && parse_mesa_version(&info.driver_info).is_some_and(|version| version >= (26, 0, 8))
+    {
+        return false;
+    }
+
+    matches!(
+        info.device,
+        0x8a50..=0x8a71 // Gen11: Ice Lake
+            | 0x9a40..=0x9a7f // Gen12: Tiger Lake
+            | 0x4c80..=0x4c9a // Gen12: Rocket Lake
+            | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
+            | 0xa700..=0xa7ff // Gen12: Raptor Lake
+    ) || [
+        "ICL",
+        "Ice Lake",
+        "TGL",
+        "Tiger Lake",
+        "RKL",
+        "Rocket Lake",
+        "ADL",
+        "Alder Lake",
+        "RPL",
+        "Raptor Lake",
+    ]
+    .iter()
+    .any(|tag| info.name.contains(tag))
 }
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
@@ -307,7 +360,7 @@ fn plan(
     pages: &[(u32, Option<u32>)],
     phase1_draws: usize,
     solid_draws: usize,
-    shadow: [usize; 2],
+    marks: [usize; MARKS],
     passes: [usize; 3],
     align: u64,
     key: impl Fn(u32, Option<u32>) -> u32,
@@ -319,7 +372,7 @@ fn plan(
     ranges.clear();
     segments.clear();
     let (mut phase1_calls, mut solid_calls) = (None, None);
-    let mut shadow_calls = [None; 2];
+    let mut mark_calls = [None; MARKS];
     let mut pass_calls = [None; 3];
     let mut total = 0u64;
     let mut by_source: Vec<(Source, Vec<Range>)> = Vec::new();
@@ -330,9 +383,9 @@ fn plan(
         if i == solid_draws {
             solid_calls = Some(calls.len());
         }
-        for (k, &from) in shadow.iter().enumerate() {
+        for (k, &from) in marks.iter().enumerate() {
             if i == from {
-                shadow_calls[k].get_or_insert(calls.len());
+                mark_calls[k].get_or_insert(calls.len());
             }
         }
         for (k, &from) in passes.iter().enumerate() {
@@ -341,7 +394,7 @@ fn plan(
             }
         }
         let starts =
-            i == phase1_draws || i == solid_draws || shadow.contains(&i) || passes.contains(&i);
+            i == phase1_draws || i == solid_draws || marks.contains(&i) || passes.contains(&i);
         let page = key(page, sorted);
         match calls.last_mut() {
             Some(last) if last.page == page && !starts => last.count += d[0],
@@ -381,7 +434,7 @@ fn plan(
     Plan {
         phase1_calls,
         solid_calls,
-        shadow_calls: shadow_calls.map(|c| c.unwrap_or(calls.len())),
+        marks: mark_calls.map(|c| c.unwrap_or(calls.len())),
         pass_calls: {
             let [opaque, cutout, phase2] = pass_calls.map(|c| c.unwrap_or(calls.len()));
             [
@@ -414,7 +467,7 @@ impl Flat {
             Option<wgpu::Face>,
             bool,
         ) -> wgpu::RenderPipeline,
-        solid: impl Fn(&wgpu::PipelineLayout, &str, &str, &str) -> SolidPipeline,
+        solid: impl Fn(&wgpu::PipelineLayout, &str, &str, &str, wgpu::Face) -> SolidPipeline,
     ) -> Self {
         let vertex = wgpu::ShaderStages::VERTEX;
         let compute = wgpu::ShaderStages::COMPUTE;
@@ -480,18 +533,21 @@ impl Flat {
                 "Terrain solid (flat)",
                 "vs_section_flat",
                 "fs_solid",
+                wgpu::Face::Back,
             ),
             solid_opaque: solid(
                 &layout,
                 "Terrain solid opaque (flat)",
                 "vs_section_flat_opaque",
                 "fs_opaque",
+                wgpu::Face::Back,
             ),
             solid_cutout: solid(
                 &layout,
                 "Terrain solid cutout (flat)",
                 "vs_section_flat_cutout",
                 "fs_solid",
+                wgpu::Face::Back,
             ),
             // The mirror flips the winding: its solid terrain culls the front.
             solid_mirror: pipeline(
@@ -521,6 +577,24 @@ impl Flat {
                 back,
                 false,
             ),
+            flipped: super::world_views::Flipped {
+                solid: solid(
+                    &layout,
+                    "Terrain solid flipped (flat)",
+                    "vs_section_flat",
+                    "fs_solid",
+                    wgpu::Face::Front,
+                ),
+                translucent: pipeline(
+                    &layout,
+                    "Terrain translucent flipped (flat)",
+                    "vs_terrain_flat",
+                    "fs_translucent",
+                    Some(wgpu::BlendState::ALPHA_BLENDING),
+                    Some(wgpu::Face::Front),
+                    false,
+                ),
+            },
             flatten,
             compute_layout,
             flatten_seen,
@@ -540,6 +614,7 @@ impl Flat {
             phase2_call_data: Vec::new(),
             indirect_execution,
             phase2_group: None,
+            groups: Vec::new(),
             draw_layout,
             blocks_per_page: page_vertices.div_ceil(GRAIN),
             translucent_blocks_per_page: page_vertices.div_ceil(GRAIN),
@@ -568,6 +643,7 @@ impl Flat {
             solid_calls: 0,
             pass_calls: [0; 3],
             shadow_calls: [0; 2],
+            marks: [0; MARKS],
             min_sections,
             range_align: (u64::from(device.limits().min_storage_buffer_offset_alignment) / 16)
                 .max(1),
@@ -653,6 +729,8 @@ impl Flat {
     }
     pub fn clear(&mut self) {
         self.pages.clear();
+        self.groups.clear();
+        self.phase2_group = None;
         self.free_ids.clear();
         self.next_id = 0;
         self.quad_ranges_submitted = false;
@@ -688,7 +766,7 @@ impl Flat {
         pages: &[(u32, Option<u32>)],
         phase1_draws: usize,
         solid_draws: usize,
-        shadow: [usize; 2],
+        marks: [usize; MARKS],
         passes: [usize; 3],
         phase2: Option<&wgpu::Buffer>,
         translucent_arena: bool,
@@ -697,7 +775,6 @@ impl Flat {
         cache_quads: bool,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
-        self.phase2_group = None;
         let phase2 = phase2.filter(|_| self.indirect_execution);
         let phase1_draws = if phase2.is_some() {
             phase1_draws
@@ -736,7 +813,7 @@ impl Flat {
         let Plan {
             phase1_calls,
             solid_calls,
-            shadow_calls,
+            marks: mark_calls,
             pass_calls,
             total,
         } = plan(
@@ -744,7 +821,7 @@ impl Flat {
             pages,
             phase1_draws,
             solid_draws,
-            shadow,
+            marks,
             passes,
             self.range_align,
             // Translucent draws, and only they, have sorted indices.
@@ -758,13 +835,18 @@ impl Flat {
         );
         self.phase1_calls = phase1_calls;
         self.solid_calls = solid_calls;
-        self.shadow_calls = shadow_calls;
+        self.shadow_calls = [mark_calls[0], mark_calls[1]];
+        self.marks = mark_calls;
         self.pass_calls = pass_calls;
         if total == 0 || total * 4 > device.limits().max_storage_buffer_binding_size {
+            // Do not retain bindings for a frame that cannot use flat draws.
+            self.phase2_group = None;
+            self.groups.clear();
             self.calls.clear();
             self.phase1_calls = 0;
             self.solid_calls = 0;
             self.shadow_calls = [0; 2];
+            self.marks = [0; MARKS];
             self.pass_calls = [0; 3];
             self.quad_ranges_submitted = false;
             return false;
@@ -853,40 +935,65 @@ impl Flat {
             phase2,
             self.segments.iter().find(|(s, ..)| *s == Source::Seen),
         ) {
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Flatten phase 2 section draws"),
-                layout: &self.seen_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: ranges_at(first, count),
+            let buffers = [&self.ranges, &self.indices, phase2, &self.phase2_calls];
+            if !self
+                .phase2_group
+                .as_ref()
+                .is_some_and(|cached| cached.key.matches(first, count, buffers))
+            {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Flatten phase 2 section draws"),
+                    layout: &self.seen_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: ranges_at(first, count),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.indices.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: phase2.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: self.phase2_calls.as_entire_binding(),
+                        },
+                    ],
+                });
+                self.phase2_group = Some(CachedGroup {
+                    key: BindingKey {
+                        first,
+                        count,
+                        buffers: buffers.map(|b| b.clone()),
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.indices.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: phase2.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: self.phase2_calls.as_entire_binding(),
-                    },
-                ],
-            });
-            self.phase2_group = Some((group, count as u32));
+                    group,
+                });
+            }
+        } else {
+            self.phase2_group = None;
         }
-        let groups: SmallVec<[(wgpu::BindGroup, u32); 8]> = self
-            .segments
-            .iter()
-            .filter_map(|&(source, first, count)| {
-                let sorted = match source {
-                    Source::Quads if reuse_quads => return None,
-                    Source::Quads => None,
-                    Source::Seen => return None,
-                    Source::Sorted(page) => Some(sorted_page(page)),
-                };
+        let mut groups = 0;
+        for &(source, first, count) in &self.segments {
+            let sorted = match source {
+                // Last frame's quad indices are still in `indices` (`reuse_quads`).
+                Source::Quads if reuse_quads => continue,
+                Source::Quads => None,
+                Source::Seen => continue,
+                Source::Sorted(page) => Some(sorted_page(page)),
+            };
+            let buffers = [
+                &self.ranges,
+                sorted.as_ref().unwrap_or(&self.empty),
+                &self.indices,
+            ];
+            if self
+                .groups
+                .get(groups)
+                .is_none_or(|cached| !cached.key.matches(first, count, buffers))
+            {
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Flatten section draws"),
                     layout: &self.compute_layout,
@@ -897,7 +1004,7 @@ impl Flat {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
-                            resource: sorted.as_ref().unwrap_or(&self.empty).as_entire_binding(),
+                            resource: buffers[1].as_entire_binding(),
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,
@@ -905,17 +1012,32 @@ impl Flat {
                         },
                     ],
                 });
-                Some((group, count as u32))
-            })
-            .collect();
+                let cached = CachedGroup {
+                    key: BindingKey {
+                        first,
+                        count,
+                        buffers: buffers.map(|b| b.clone()),
+                    },
+                    group,
+                };
+                if groups < self.groups.len() {
+                    self.groups[groups] = cached;
+                } else {
+                    self.groups.push(cached);
+                }
+            }
+            groups += 1;
+        }
+        self.groups.truncate(groups);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten section draws"),
             timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten")),
         });
         pass.set_pipeline(&self.flatten);
-        for (group, count) in &groups {
-            pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups((*count).min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
+        for cached in &self.groups {
+            let count = cached.key.count as u32;
+            pass.set_bind_group(0, &cached.group, &[]);
+            pass.dispatch_workgroups(count.min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
         }
         drop(pass);
         true
@@ -971,21 +1093,35 @@ impl Flat {
         encoder: &mut wgpu::CommandEncoder,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
-        let Some((group, count)) = &self.phase2_group else {
+        let Some(cached) = &self.phase2_group else {
             return;
         };
+        let count = cached.key.count as u32;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten phase 2 section draws"),
             timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten phase 2")),
         });
         pass.set_pipeline(&self.flatten_seen);
-        pass.set_bind_group(0, group, &[]);
-        pass.dispatch_workgroups((*count).min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
+        pass.set_bind_group(0, &cached.group, &[]);
+        pass.dispatch_workgroups(count.min(GROUP_LIMIT), count.div_ceil(GROUP_LIMIT), 1);
     }
 
     /// The camera's translucent calls.
     pub fn translucent_calls(&self) -> &[Call] {
         &self.calls[self.solid_calls..self.shadow_calls[0]]
+    }
+    /// The shadow camera's translucent calls.
+    pub fn shadow_translucent_calls(&self) -> &[Call] {
+        &self.calls[self.shadow_calls[1]..self.marks[2]]
+    }
+    /// World view `k`'s solid and translucent calls.
+    pub fn view_calls(&self, k: usize) -> [&[Call]; 2] {
+        let end = self.marks.get(4 + 2 * k).map_or(self.calls.len(), |&m| m);
+        let [solid, translucent] = [self.marks[2 + 2 * k], self.marks[3 + 2 * k]];
+        [
+            &self.calls[solid..translucent],
+            &self.calls[translucent..end],
+        ]
     }
 
     /// Draws `calls` with a flat pipeline set and `vertices` giving each
@@ -1132,6 +1268,70 @@ mod tests {
         assert!(!is_adreno_dx12(&info));
     }
 
+    #[test]
+    fn intel_vulkan_detection_preserves_workaround_on_older_mesa_and_allows_modern_raptor_lake() {
+        let mut info = wgpu::AdapterInfo {
+            name: "Intel(R) Iris(R) Xe Graphics (RPL-U)".into(),
+            vendor: 0x8086,
+            device: 0xa7a1,
+            device_type: wgpu::DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: "Intel open-source Mesa driver".into(),
+            driver_info: "Mesa 26.0.8-1ubuntu0.3".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        };
+        for (driver_info, broken) in [
+            ("Mesa 26.0.8-1ubuntu0.3", false),
+            ("Mesa 26.0.8", false),
+            ("Mesa 26.1.0", false),
+            ("Mesa 27.0.0", false),
+            ("Mesa 25.2.0", true),
+            ("Mesa 26.0.0", true),
+            ("Mesa 26.0.7", true),
+            ("Mesa 26.0.8-devel", true),
+            ("Mesa 27.0.0-rc1", true),
+            ("Mesa 27.0.0-devel (git-abcdef)", true),
+            ("Mesa 26", true),
+            ("Mesa 26.0.8.1", true),
+            ("Mesa unknown", true),
+            ("26.0.8", true),
+            ("", true),
+        ] {
+            info.driver_info = driver_info.into();
+            assert_eq!(is_broken_intel_vulkan(&info), broken, "{driver_info}");
+        }
+
+        // PCI identification and the name fallback both allow the tested family.
+        info.driver_info = "Mesa 26.0.8".into();
+        info.device = 0;
+        assert!(!is_broken_intel_vulkan(&info));
+        info.name = "Intel Graphics".into();
+        info.device = 0xa7a1;
+        assert!(!is_broken_intel_vulkan(&info));
+
+        // Earlier families keep their workaround even with a modern Mesa release.
+        for (device, name) in [
+            (0x8a52, "Intel Ice Lake"),
+            (0x9a49, "Intel Tiger Lake"),
+            (0x4c8a, "Intel Rocket Lake"),
+            (0x46a8, "Intel Alder Lake"),
+        ] {
+            info.device = device;
+            info.name = name.into();
+            assert!(is_broken_intel_vulkan(&info), "{name}");
+        }
+        // A Mesa-looking version cannot turn on this workaround for other backends/vendors.
+        info.backend = wgpu::Backend::Dx12;
+        assert!(!is_broken_intel_vulkan(&info));
+        info.backend = wgpu::Backend::Vulkan;
+        info.vendor = 0x10de;
+        assert!(!is_broken_intel_vulkan(&info));
+    }
+
     /// Draws as `render` writes them: solid (page, quads at a base vertex)
     /// first, then translucent (page, sorted page, count, first sorted index,
     /// base vertex).
@@ -1169,7 +1369,7 @@ mod tests {
             &pages,
             solid,
             solid,
-            [draws.len(); 2],
+            [draws.len(); MARKS],
             [draws.len(), 0, solid],
             4,
             |page, _| page,
@@ -1218,7 +1418,7 @@ mod tests {
             &pages,
             solid,
             solid,
-            [draws.len(); 2],
+            [draws.len(); MARKS],
             [3, 1, solid],
             4,
             |page, _| page,
@@ -1240,21 +1440,24 @@ mod tests {
         );
     }
 
-    /// A shader pack's shadow draws follow the camera's, in calls of their
-    /// own even from the same page: solid ones, then translucent ones.
+    /// A shader pack's shadow draws follow the camera's, and a world view's follow them, in
+    /// calls of their own even from the same page: solid ones, then translucent ones.
     #[test]
-    fn plan_gives_the_shadow_lists_calls_of_their_own() {
+    fn plan_gives_the_shadow_and_view_lists_calls_of_their_own() {
         let (mut draws, mut pages, solid) = sample();
         let camera = draws.len();
         draws.extend([[6, 1, 0, 40, 6], [6 * 2, 1, 0, 64, 7], [6, 1, 6, 80, 7]]);
-        pages.extend([(0, None), (0, None), (0, Some(0))]);
+        draws.extend([[6, 1, 0, 88, 8], [6, 1, 12, 90, 8]]);
+        pages.extend([(0, None), (0, None), (0, Some(0)), (0, None), (0, Some(0))]);
         let (mut calls, mut ranges, mut segments) = (Vec::new(), Vec::new(), Vec::new());
+        let mut marks = [usize::MAX; MARKS];
+        marks[..4].copy_from_slice(&[camera, camera + 2, camera + 3, camera + 4]);
         let plan = plan(
             &draws,
             &pages,
             solid,
             solid,
-            [camera, camera + 2],
+            marks,
             [camera, 0, solid],
             4,
             |page, _| page,
@@ -1262,13 +1465,24 @@ mod tests {
             &mut ranges,
             &mut segments,
         );
-        assert_eq!((plan.solid_calls, plan.shadow_calls), (3, [4, 5]));
+        assert_eq!(plan.solid_calls, 3);
+        // the views not asked for start at the end
+        assert_eq!(
+            plan.marks,
+            [4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
+        );
         let call = |page, first, count| Call { page, first, count };
         assert_eq!(
             &calls[3..],
-            [call(0, 60, 18), call(0, 78, 18), call(0, 96, 6)]
+            [
+                call(0, 60, 18),
+                call(0, 78, 18),
+                call(0, 96, 6),
+                call(0, 102, 6),
+                call(0, 108, 6)
+            ]
         );
-        assert_eq!(plan.total, 6 * 17);
+        assert_eq!(plan.total, 6 * 19);
     }
 
     /// Phase 2's draws (here the third and fourth) get calls of their own,
@@ -1283,7 +1497,7 @@ mod tests {
             &pages,
             2,
             solid,
-            [draws.len(); 2],
+            [draws.len(); MARKS],
             [draws.len(), 0, solid],
             4,
             |page, _| page,
@@ -1296,7 +1510,7 @@ mod tests {
             Plan {
                 phase1_calls: 1,
                 solid_calls: 3,
-                shadow_calls: [4, 4],
+                marks: [4; MARKS],
                 pass_calls: [1, 0, 3],
                 total: 6 * 13
             }
@@ -1323,6 +1537,7 @@ mod tests {
     /// of the draws the test saw, in order, and their calls count them.
     #[test]
     fn flatten_writes_the_indices_of_the_per_section_draws() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("no GPU adapter: skipped");
@@ -1401,7 +1616,7 @@ mod tests {
                 &pages,
                 phase1,
                 solid,
-                [draws.len(); 2],
+                [draws.len(); MARKS],
                 [draws.len(), 0, solid],
                 align,
                 |page, _| page,

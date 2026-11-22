@@ -225,6 +225,19 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         })
     }
 
+    /// Boolean collision query with the same cursor, budget, and callback order
+    /// as the ordinary iterator.
+    pub fn any_collision(
+        world: &'w mut W,
+        context: CollisionContext<'c>,
+        bounds: Aabb,
+        only_suffocating: bool,
+        candidate_budget: usize,
+    ) -> Result<bool, CollisionScanError<W::Error>> {
+        let mut scan = Self::new(world, context, bounds, only_suffocating, candidate_budget)?;
+        Ok(scan.find_next()?.is_some())
+    }
+
     /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
     /// same row and chunk, never more than the budget has left: what can be passed at once.
     fn rest_in_chunk(&self, x: usize, block_x: i32) -> usize {
@@ -360,11 +373,10 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                     self.cursor[2] += 1;
                 }
             }
-            let kind = relative
-                .into_iter()
-                .zip(self.sizes)
-                .filter(|(p, size)| *p == 0 || *p == size - 1)
-                .count();
+            // How many of the cell's three coordinates lie on the box's outer layer.
+            let kind = usize::from(relative[0] == 0 || relative[0] == width - 1)
+                + usize::from(relative[1] == 0 || relative[1] == height - 1)
+                + usize::from(relative[2] == 0 || relative[2] == depth - 1);
             if kind == 3 {
                 continue;
             }

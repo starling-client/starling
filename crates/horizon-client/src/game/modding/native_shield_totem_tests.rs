@@ -72,7 +72,7 @@ fn heard(setup: Heard, test: impl FnOnce(&mut super::Game<'_>)) -> Heard {
         Box::new(Probe(log.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || with_game(test));
+    mod_platform::testing::with_mods(mods, || with_game(test));
     std::mem::take(&mut *log.lock().unwrap())
 }
 
@@ -157,8 +157,8 @@ fn the_totem_hook_fires_after_the_health_is_gone_and_a_cancel_lets_the_mob_die()
         heard.totem,
         [(226005, Hand::Main, "minecraft:totem_of_undying".to_string())]
     );
-    // Post's health loss lands first, then the totem is asked.
-    assert_eq!(heard.order, ["shield", "post", "totem"]);
+    // The totem is asked first, and Post closes `hurtServer`.
+    assert_eq!(heard.order, ["shield", "totem", "post"]);
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn the_shield_hook_draws_from_the_hits_random() {
                 ..Heard::default()
             },
             |game| {
-                game.world.random = horizon_core::random::LegacyRandom::new(5);
+                *game.world.random = horizon_core::random::LegacyRandom::new(5);
                 let mut hit = zombie(game, 226007);
                 hit.damage(damage_level_of!(game), 1.0, Damage::of(DamageKind::Generic));
                 *next.lock().unwrap() = game.world.random.next_int();

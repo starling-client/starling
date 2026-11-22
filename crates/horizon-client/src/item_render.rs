@@ -14,6 +14,8 @@ mod glint_tests;
 pub mod gui;
 mod special;
 #[cfg(test)]
+mod special_parts_tests;
+#[cfg(test)]
 mod tint_tests;
 
 use crate::{
@@ -24,10 +26,10 @@ use crate::{
 use glam::{Mat3, Mat4, Vec3};
 use horizon_assets::{
     animation::AnimationMetadata,
-    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model},
+    item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model, bake_sprite_layer},
     item_model::{
         ClientItem, Context, DisplayContext, FoilType, ItemEnv, ItemModels, LayerContent,
-        LevelState, OwnerState, SpecialModel, StackView,
+        LevelState, OwnerState, PreparedParts, SpecialModel, StackView,
     },
     model::Direction,
     palette::PalettedPermutations,
@@ -670,8 +672,11 @@ pub struct ItemRenderer {
     /// GUI items already drawn: the HUD vertices of a static item at a GUI position
     /// (`gui::draw`), which are the same every frame it stays there.
     pub(crate) gui_drawn: Mutex<HashMap<gui::DrawnKey, Arc<[crate::hud::HudVertex]>>>,
-    /// Entity model layers of the special renderers.
+    /// Entity model layers of the special renderers, with the head of each skull type a native
+    /// mod registered, under its kind.
     parts: HashMap<String, ModelPart>,
+    /// The default texture of each skull type a native mod registered (`SKIN_BY_TYPE`).
+    skull_textures: HashMap<&'static str, &'static str>,
     /// `colormap/grass.png` as ARGB.
     grass: Vec<i32>,
     /// `minecraft:item` registry ids (`Item.getId`).
@@ -800,7 +805,7 @@ impl ItemRenderer {
                 .read_to_string("assets/minecraft/atlases/items.json")
                 .unwrap_or_default(),
         );
-        let parts = if drawn {
+        let mut parts = if drawn {
             entity_models.map_or_else(
                 || special::load_parts(root.prepared()),
                 special::load_parts_from_document,
@@ -808,6 +813,14 @@ impl ItemRenderer {
         } else {
             HashMap::new()
         };
+        // Mod skull types, resolved once here so a head draws as a vanilla one does.
+        let mut skull_textures = HashMap::new();
+        if drawn {
+            for (kind, part, texture) in crate::skull_models::all() {
+                parts.insert(kind.to_owned(), part.clone());
+                skull_textures.insert(kind, texture);
+            }
+        }
         let grass = if drawn {
             root.source()
                 .read("assets/minecraft/textures/colormap/grass.png")
@@ -845,18 +858,30 @@ impl ItemRenderer {
             extents: Mutex::default(),
             gui_drawn: Mutex::default(),
             parts,
+            skull_textures,
             grass,
             cit,
         })
     }
     /// `ModelBakery` item baking, cached per model.
     pub fn bake(&self, model: &str) -> Arc<BakedItemModel> {
+        self.baked_with(model, || {
+            bake_item_model(&self.library, &self.sprites, model)
+        })
+    }
+    /// A layer baked from something other than a model id, such as an extruded sprite,
+    /// cached under `key` (which no model id can equal: identifiers hold no NUL).
+    fn baked_with(
+        &self,
+        key: &str,
+        bake: impl FnOnce() -> std::result::Result<BakedItemModel, horizon_assets::DecodeError>,
+    ) -> Arc<BakedItemModel> {
         if let Ok(cache) = self.baked.lock()
-            && let Some(hit) = cache.get(model)
+            && let Some(hit) = cache.get(key)
         {
             return hit.clone();
         }
-        let baked = bake_item_model(&self.library, &self.sprites, model)
+        let baked = bake()
             .or_else(|_| bake_item_model(&self.library, &self.sprites, MISSING_MODEL))
             .map(Arc::new)
             .unwrap_or_else(|_| {
@@ -871,7 +896,7 @@ impl ItemRenderer {
                 })
             });
         if let Ok(mut cache) = self.baked.lock() {
-            cache.insert(model.to_owned(), baked.clone());
+            cache.insert(key.to_owned(), baked.clone());
         }
         baked
     }
@@ -900,6 +925,72 @@ impl ItemRenderer {
             cache.insert(key, out.clone());
         }
         out
+    }
+    /// A special model renderer's answer `parts` for a model node of `base`, prepared to draw:
+    /// `base` and each part's model baked, once, when the answer is accepted, so a draw looks
+    /// nothing up by name. A part naming a model the packs don't have refuses them all, and the
+    /// layer draws the missing model.
+    pub fn prepare_parts(
+        &self,
+        base: &str,
+        parts: &[horizon_assets::item_model::SpecialPart],
+    ) -> PreparedParts {
+        let part = |model: &str, tints, pose| {
+            let geometry = self.bake(model);
+            PreparedPart {
+                extents: self.quad_extents(model, &geometry),
+                geometry,
+                tints,
+                pose,
+            }
+        };
+        let parts = match parts.iter().find(|p| !self.library.resolves(&p.model)) {
+            Some(unknown) => {
+                warn_unknown_part_once(&unknown.model);
+                vec![part(
+                    MISSING_MODEL,
+                    Vec::new(),
+                    horizon_assets::math::Mat4::IDENTITY,
+                )]
+            }
+            None => parts
+                .iter()
+                .map(|p| part(&p.model, p.tints.clone(), p.pose))
+                .collect(),
+        };
+        PreparedParts(Arc::new(PreparedSpecial {
+            base: self.bake(base),
+            parts,
+        }))
+    }
+    /// The layers of a prepared answer (`LayerContent::Parts`), one for each part: the part's own
+    /// model's quads, posed under the layer's transform, with the base model's display transform,
+    /// particle and GUI light.
+    fn push_parts(
+        &self,
+        layers: &mut Vec<LayerRender>,
+        display: DisplayContext,
+        (foil, transform): (FoilType, horizon_assets::math::Mat4),
+        prepared: &PreparedParts,
+    ) {
+        let Some(prepared) = prepared.0.downcast_ref::<PreparedSpecial>() else {
+            // Only `prepare_parts` makes them.
+            return;
+        };
+        let base = &prepared.base;
+        for part in &prepared.parts {
+            // Under `applyTransform`'s half-block offset, so a part's pose is about the model's
+            // corner, as its elements are.
+            layers.push(LayerRender {
+                geometry: LayerGeometry::Quads(part.geometry.clone()),
+                tints: part.tints.clone(),
+                foil,
+                matrix: glam_matrix(&base.layer_matrix(display, &transform.mul(&part.pose))),
+                uses_block_light: base.uses_block_light,
+                particle: sprite_name(&base.particle.sprite).to_owned(),
+                extents: part.extents.clone(),
+            });
+        }
     }
     /// `ItemModelResolver.updateForTopItem`.
     pub fn resolve(
@@ -935,50 +1026,66 @@ impl ItemRenderer {
         };
         let resolved = self.models.resolve(stack, &ctx, env);
         let mut animated = false;
-        let layers = resolved
-            .layers
-            .into_iter()
-            .map(|layer| {
-                let (geometry, baked, extents) = match layer.content {
-                    LayerContent::Model { model } => {
-                        let (baked, extents) = rule
-                            .and_then(|rule| self.cit_layer(rule, &model))
-                            .unwrap_or_else(|| {
-                                let baked = self.bake(&model);
-                                let extents = self.quad_extents(&model, &baked);
-                                (baked, extents)
-                            });
-                        (LayerGeometry::Quads(baked.clone()), baked, extents)
-                    }
-                    LayerContent::Missing => {
-                        let baked = self.bake(MISSING_MODEL);
-                        let extents = self.quad_extents(MISSING_MODEL, &baked);
-                        (LayerGeometry::Quads(baked.clone()), baked, extents)
-                    }
-                    LayerContent::Special {
-                        base,
-                        model,
-                        argument,
-                    } => {
-                        let baked = self.bake(&base);
-                        let extents = self.special_extents(&model);
-                        (LayerGeometry::Special { model, argument }, baked, extents)
-                    }
-                };
-                if layer.foil != FoilType::None {
+        let mut layers = Vec::with_capacity(resolved.layers.len());
+        for layer in resolved.layers {
+            let (geometry, baked, extents) = match layer.content {
+                LayerContent::Model { model } => {
+                    let (baked, extents) = rule
+                        .and_then(|rule| self.cit_layer(rule, &model))
+                        .unwrap_or_else(|| {
+                            let baked = self.bake(&model);
+                            let extents = self.quad_extents(&model, &baked);
+                            (baked, extents)
+                        });
+                    (LayerGeometry::Quads(baked.clone()), baked, extents)
+                }
+                LayerContent::Sprite { sprite, mask } => {
+                    let key = sprite_layer_key(&sprite, mask.as_deref());
+                    let baked = self.baked_with(&key, || {
+                        bake_sprite_layer(&self.library, &self.sprites, &sprite, mask.as_deref())
+                    });
+                    let extents = self.quad_extents(&key, &baked);
+                    (LayerGeometry::Quads(baked.clone()), baked, extents)
+                }
+                LayerContent::Missing => {
+                    let baked = self.bake(MISSING_MODEL);
+                    let extents = self.quad_extents(MISSING_MODEL, &baked);
+                    (LayerGeometry::Quads(baked.clone()), baked, extents)
+                }
+                LayerContent::Special {
+                    base,
+                    model,
+                    argument,
+                } => {
+                    let baked = self.bake(&base);
+                    let extents = self.special_extents(&model);
+                    (LayerGeometry::Special { model, argument }, baked, extents)
+                }
+                LayerContent::Parts(prepared) => {
+                    // What a mod drew may change with every draw, so no GUI item is kept.
                     animated = true;
+                    self.push_parts(
+                        &mut layers,
+                        display,
+                        (layer.foil, layer.transform),
+                        &prepared,
+                    );
+                    continue;
                 }
-                LayerRender {
-                    geometry,
-                    tints: layer.tints,
-                    foil: layer.foil,
-                    matrix: glam_matrix(&baked.layer_matrix(display, &layer.transform)),
-                    uses_block_light: baked.uses_block_light,
-                    particle: sprite_name(&baked.particle.sprite).to_owned(),
-                    extents,
-                }
-            })
-            .collect();
+            };
+            if layer.foil != FoilType::None {
+                animated = true;
+            }
+            layers.push(LayerRender {
+                geometry,
+                tints: layer.tints,
+                foil: layer.foil,
+                matrix: glam_matrix(&baked.layer_matrix(display, &layer.transform)),
+                uses_block_light: baked.uses_block_light,
+                particle: sprite_name(&baked.particle.sprite).to_owned(),
+                extents,
+            });
+        }
         ItemRenderState {
             display,
             layers,
@@ -1020,6 +1127,10 @@ impl ItemRenderer {
         self.parts.get(key)
     }
 }
+/// A cache key for an extruded sprite layer: `\0` keeps it out of model ids' space.
+fn sprite_layer_key(sprite: &str, mask: Option<&str>) -> String {
+    format!("\0{sprite}\0{}", mask.unwrap_or_default())
+}
 /// `CuboidItemModelWrapper.computeExtents`: the distinct quad corners.
 fn corners(baked: &BakedItemModel) -> Vec<Vec3> {
     let mut out: Vec<Vec3> = Vec::new();
@@ -1032,6 +1143,32 @@ fn corners(baked: &BakedItemModel) -> Vec<Vec3> {
         }
     }
     out
+}
+/// A special model renderer's answer as [`ItemRenderer::prepare_parts`] baked it.
+struct PreparedSpecial {
+    /// The model node's `base`: its display transforms, particle and GUI light.
+    base: Arc<BakedItemModel>,
+    parts: Vec<PreparedPart>,
+}
+struct PreparedPart {
+    geometry: Arc<BakedItemModel>,
+    extents: Arc<Vec<Vec3>>,
+    tints: Vec<i32>,
+    pose: horizon_assets::math::Mat4,
+}
+/// Says once per model id that a mod's special model renderer drew a model the packs don't have.
+fn warn_unknown_part_once(model: &str) {
+    static SEEN: Mutex<std::collections::BTreeSet<String>> =
+        Mutex::new(std::collections::BTreeSet::new());
+    if SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(model.to_owned())
+    {
+        log::warn!(
+            "Horizon: a special model renderer drew the model {model}, which no pack has; the item draws the missing model"
+        );
+    }
 }
 /// A `horizon-assets` (row-major, JOML-exact) matrix as glam's.
 pub fn glam_matrix(m: &horizon_assets::math::Mat4) -> Mat4 {

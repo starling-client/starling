@@ -2,12 +2,14 @@
 
 ## What and why
 
-<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). Over about 500 lines: link the issue with its
-     approved spec too ("Spec: #123"), CONTRIBUTING.md "Large pull requests". -->
+<!-- What this changes, and why. Link the issue it fixes ("Fixes #123"). Over about 500 lines of code
+     (docs and test files don't count): link the issue with its approved spec too ("Spec: #123"), CONTRIBUTING.md
+     "Large pull requests". -->
 
 ## Kind
 
-<!-- Tick one: it sets the pull request's label (CONTRIBUTING.md "Pull requests"). -->
+<!-- Tick one: it sets the pull request's label (CONTRIBUTING.md "Pull requests"). Start the title with it too:
+     `kind(area): what changes`, for example `parity(mobs): ...`. -->
 
 - [ ] parity: Horizon now does what vanilla 26.3 does
 - [ ] bug: a crash or a breakage
@@ -32,20 +34,15 @@
 <!-- The vanilla classes and methods this follows (tools/rea_vanilla.py), and the harness that checks it.
      "Horizon-only" for a feature vanilla doesn't have; "none" for tooling or docs. -->
 
-## Other projects' code
-
-<!-- "none", or for each project you read or copied from: its link at the commit, its license (only MIT,
-     BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC, zlib, 0BSD, MIT-0, Unlicense or CC0-1.0), and what you took.
-     CONTRIBUTING.md "Only original code". Shader packs: also the sections of docs/cleanroom/shader-packs-spec.md,
-     the documentation pages and the packs you used. -->
-
 ## Self-check
 
 <!-- Paste the block `python3 tools/pr_ready.py` prints (`--base upstream/main` from a fork). -->
+
+Tried in game: <what you did and saw, or "no: <why>", or "n/a">
 
 ## Screenshots
 
 <!-- For anything players see: before and after. Delete this section otherwise. -->
 
-<!-- Please tick "Allow edits by maintainers": we push small fixups ourselves instead of a round trip.
-     See CONTRIBUTING.md. -->
+<!-- On this fork we never push to your branch: small fixes are carried in our own commits on top of yours in a
+     rollup, and your pull request shows as merged. See CONTRIBUTING.md. -->

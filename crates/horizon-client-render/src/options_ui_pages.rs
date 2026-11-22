@@ -1,7 +1,6 @@
 //! The pages crates add to the options screens: a native mod's settings page (its keys and
 //! buttons), and the pages crates above the engine register (`horizon_hooks::pages`, docs/layers.md
-//! "Platform registries") with their entries on Horizon Settings. Kept out of options_ui.rs, which
-//! may not grow (tools/check_file_size.py).
+//! "Platform registries") with their entries on Horizon Settings. Kept out of options_ui.rs.
 use super::*;
 use horizon_hooks::pages as added;
 
@@ -85,6 +84,7 @@ pub(super) fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Agent => "horizon.pages.agent.tooltip",
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
+        Page::GpuDrivers => "horizon.pages.gpu_drivers.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
         Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         Page::Music => "horizon.pages.music.tooltip",
@@ -168,7 +168,7 @@ impl OptionsUi {
                 added::Row::Text { text, .. } => {
                     out.extend(wrap(&text, 64).into_iter().map(Row::Note))
                 }
-                added::Row::Space(_) => continue,
+                added::Row::Space(_) | added::Row::Field { .. } => continue,
                 added::Row::Button {
                     label,
                     active,

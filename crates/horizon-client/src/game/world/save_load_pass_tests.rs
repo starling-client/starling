@@ -61,7 +61,7 @@ fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
                 ])
             })
             .collect();
-        game.world.loaded_entities.push(((0, 0), tags));
+        game.world.queue_entity_nbt((0, 0), tags);
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
             "save-loaded-join",
             Box::new(SaveOnLoadedJoin {
@@ -70,7 +70,7 @@ fn loaded_queue_join_save_refuses_without_losing_remaining_rows() {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             mod_api::__private::mark_game_thread();
             game.spawn_loaded_entities();
         });

@@ -1,5 +1,4 @@
 use super::*;
-use horizon_core::level_id::valid_level_id;
 
 /// The dimensions registered at startup, for the executable to hand to the engine.
 pub(crate) fn installed_dimension_list() -> &'static [crate::world::dimension::DimensionInfo] {
@@ -12,29 +11,10 @@ pub(crate) fn installed_chunk_generator_list()
     installed().map_or(&[], |installed| installed.chunk_generators.as_slice())
 }
 
-/// The levels every world has, which no mod's can be.
-const VANILLA_DIMENSIONS: [&str; 3] = [
-    "minecraft:overworld",
-    "minecraft:the_nether",
-    "minecraft:the_end",
-];
-
-impl PartRegistrar {
-    /// Refuses a dimension whose generator no one provides. After every mod has
-    /// registered, as a generator may come from a later mod's registration.
-    pub(crate) fn refuse_unknown_dimension_generators(&mut self) {
-        for dimension in &self.dimensions {
-            let generator = &dimension.settings.generator;
-            if generator != crate::world::dimension::NOISE_GENERATOR
-                && !self.chunk_generators.iter().any(|g| *g.id == **generator)
-            {
-                self.refused.push(format!(
-                    "{} registered dimension {} with the unknown generator {generator:?}",
-                    dimension.mod_id, dimension.id
-                ));
-            }
-        }
-    }
+/// The biome sources registered at startup, for the executable to hand to the engine.
+pub(crate) fn installed_biome_source_list() -> &'static [crate::world::biome_source::BiomeSourceInfo]
+{
+    installed().map_or(&[], |installed| installed.biome_sources.as_slice())
 }
 
 impl dyn Registrar + '_ {
@@ -53,12 +33,27 @@ impl dyn Registrar + '_ {
     /// Register chunk generator `name` (`void` or `mymod:void`) once at
     /// startup: a level whose stem names `mymod:void` then has the terrain of
     /// `generator`, whose [`build_terrain`](crate::ChunkGenerator::build_terrain)
-    /// runs on the worldgen worker threads. The level gets no surface, carvers
-    /// or features. The id may use any manifest-owned namespace. An unowned
+    /// runs on the worldgen worker threads. The level gets the vanilla stages
+    /// its [`vanilla_stages`](crate::ChunkGenerator::vanilla_stages) asks for,
+    /// read here, once. The id may use any manifest-owned namespace. An unowned
     /// namespace, an empty name, a name that is no folder of the world and an id
     /// registered twice refuse the mods at startup, naming the mod.
     pub fn register_chunk_generator<T: crate::ChunkGenerator>(&mut self, name: &str, generator: T) {
         self.add_chunk_generator(name, Arc::new(generator));
+    }
+    /// Register biome source `name` (`chaos` or `mymod:chaos`) once at
+    /// startup: a level whose stem's `biome_source` is `{"type": "mymod:chaos"}`,
+    /// or whose [`DimensionSettings`](crate::DimensionSettings) name it in
+    /// `mod_biome_source`, then takes its biomes from `source`, whose
+    /// [`noise_biome`](crate::BiomeSource::noise_biome) runs on the worldgen
+    /// worker threads. It serves the game's noise generator, its structures and
+    /// decoration included, and a mod's chunk generator. Its
+    /// [`possible_biomes`](crate::BiomeSource::possible_biomes) are read here,
+    /// once. An unowned namespace, an empty name, a name that is no folder of
+    /// the world, an id registered twice and an empty biome list refuse the
+    /// mods at startup, naming the mod.
+    pub fn register_biome_source<T: crate::BiomeSource>(&mut self, name: &str, source: T) {
+        self.add_biome_source(name, Arc::new(source));
     }
 }
 
@@ -79,91 +74,16 @@ pub trait DimensionsRegistrar {
              the game's own in its dimension's settings"
         );
     }
-}
-
-impl DimensionsRegistrar for PartRegistrar {
-    fn add_dimension(&mut self, name: &str, settings: crate::DimensionSettings) {
-        let id = match self.owned_declaration_id(name) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.refused.push(reason);
-                return;
-            }
-        };
-        let refusal = if !valid_level_id(&id) {
-            Some(format!(
-                "{} registered dimension {id:?}, whose name must be lowercase letters, digits and \
-                 _ . - with / between segments, none empty, `.` or `..`: it names a folder of the world",
-                self.mod_id
-            ))
-        } else if VANILLA_DIMENSIONS.contains(&id.as_str()) {
-            Some(format!(
-                "{} registered dimension {id}, which is a vanilla level",
-                self.mod_id
-            ))
-        } else if self.dimensions.iter().any(|d| *d.id == *id) {
-            Some(format!("{} registered dimension {id} twice", self.mod_id))
-        } else if !(self.dimension_shape)(&settings) {
-            Some(format!(
-                "{} registered dimension {id} with a build height the game refuses: min_y {}, \
-                 height {}, logical_height {}",
-                self.mod_id, settings.min_y, settings.height, settings.logical_height
-            ))
-        } else if let Some(why) = settings
-            .invalid_biome_source()
-            .or_else(|| settings.invalid_field())
-        {
-            Some(format!(
-                "{} registered dimension {id} with a dimension type the game refuses: {why}",
-                self.mod_id
-            ))
-        } else {
-            None
-        };
-        if let Some(refusal) = refusal {
-            self.refused.push(refusal);
-            return;
-        }
-        self.dimensions
-            .push(crate::world::dimension::DimensionInfo {
-                mod_id: self.mod_id,
-                id: id.into(),
-                settings,
-            });
-    }
-    fn add_chunk_generator(&mut self, name: &str, generator: Arc<dyn crate::ChunkGenerator>) {
-        let id = match self.owned_declaration_id(name) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.refused.push(reason);
-                return;
-            }
-        };
-        let refusal = if !valid_level_id(&id) {
-            Some(format!(
-                "{} registered chunk generator {id:?}, whose name must be lowercase letters, \
-                 digits and _ . - with / between segments, none empty, `.` or `..`",
-                self.mod_id
-            ))
-        } else if id == crate::world::dimension::NOISE_GENERATOR {
-            Some(format!(
-                "{} registered chunk generator {id}, which is the game's own",
-                self.mod_id
-            ))
-        } else {
-            self.chunk_generators
-                .iter()
-                .any(|g| *g.id == *id)
-                .then(|| format!("{} registered chunk generator {id} twice", self.mod_id))
-        };
-        if let Some(refusal) = refusal {
-            self.refused.push(refusal);
-            return;
-        }
-        self.chunk_generators
-            .push(crate::world::chunk_generator::ChunkGeneratorInfo {
-                id: id.into(),
-                generator,
-            });
+    /// Register biome source `name` with `source`; mods reach it through
+    /// `register_biome_source`.
+    ///
+    /// Not on wasm: BiomeSource is not bound by the generated worker interface. A wasm mod's
+    /// dimension can name a biome source a native mod registered.
+    fn add_biome_source(&mut self, name: &str, source: Arc<dyn crate::BiomeSource>) {
+        let _ = source;
+        panic!(
+            "biome source {name:?}: a wasm mod cannot register a biome source, only name one a \
+             native mod registered in its dimension's settings"
+        );
     }
 }

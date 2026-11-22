@@ -146,6 +146,12 @@ impl WorldOptions {
         self.initial.difficulty = self.difficulty;
         self.initial.locked = self.locked;
     }
+    /// `WorldOptionsScreen.updatePortControlsState`: the port box takes an
+    /// edit only with LAN on; it stays focusable either way, so its value can
+    /// be read, selected and copied while LAN is off.
+    fn update_port_controls(&mut self) {
+        self.port.editable = self.lan;
+    }
     fn parsed_port(&self) -> Option<u16> {
         if self.port.value.is_empty() {
             return Some(self.hint);
@@ -157,8 +163,13 @@ impl WorldOptions {
     /// the cursor is over it. The box is drawn even with LAN off, so the tooltip
     /// shows there too; a remote world has no such box.
     fn port_tooltip(port: &EditBox, cursor: (f32, f32), remote: bool) -> Option<Text> {
-        (!remote && ui::hovered(cursor, port.x, port.y, port.width, port.height))
-            .then(|| Text::translate("lanServer.port", &[]))
+        if remote || !ui::hovered(cursor, port.x, port.y, port.width, port.height) {
+            return None;
+        }
+        Some(match port_error(&port.value) {
+            Some(key) => Text::translate(key, &[Text::literal("1024"), Text::literal("65535")]),
+            None => Text::translate("lanServer.port", &[]),
+        })
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -550,6 +561,18 @@ impl Restrictions {
     }
 }
 
+/// `WorldOptionsScreen.tryParsePort`'s invalid value: not a number in
+/// `PORT_LOWER_BOUND..=PORT_HIGHER_BOUND`. A number another process holds
+/// (`HttpUtil.isPortAvailable`) is not checked: the port map records that gap.
+fn port_error(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        return None;
+    }
+    match value.parse::<u32>() {
+        Ok(port) if (1024..=65535).contains(&port) => None,
+        _ => Some("lanServer.port.invalid"),
+    }
+}
 impl Game<'_> {
     pub(super) fn remote_world_options_permission(&mut self, permission: bool) {
         if let Some(o) = self.world_options.as_mut() {
@@ -717,20 +740,47 @@ impl Game<'_> {
     }
 
     pub(super) fn draw_world_options(&mut self, batch: &mut HudBatch) {
-        let Some(mut o) = self.world_options.take() else {
+        let Some(view) = self.world_options.as_ref().map(|o| o.view) else {
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
             return;
         };
-        match o.view {
-            View::Options => self.draw_options_view(&mut o, batch, self.cursor),
+        match view {
+            View::Options => self.draw_options_view(batch, self.cursor, true),
             View::LockQuestion => {
                 // PopupScreen: the screen behind without the pointer, then the popup.
-                self.draw_options_view(&mut o, batch, (-1.0, -1.0));
-                self.draw_lock_question(&o, batch);
+                self.draw_options_view(batch, (-1.0, -1.0), false);
+                self.draw_lock_question(batch);
             }
             View::Restrictions => self.draw_restrictions(batch),
             View::GameRules => {
-                if let Some(rules) = o.rules.as_mut() {
-                    rules.draw(batch, &self.gui.atlas, self.cursor);
+                if self.world_options.as_ref().unwrap().rules.is_some() {
+                    self.world_options
+                        .as_ref()
+                        .unwrap()
+                        .rules
+                        .as_ref()
+                        .unwrap()
+                        .draw_background(batch, &self.gui.atlas);
+                    self.draw_screen_phase(
+                        batch,
+                        horizon_client::screen_draw::RenderPhase::Background,
+                    );
+                    let tooltip = self
+                        .world_options
+                        .as_mut()
+                        .unwrap()
+                        .rules
+                        .as_mut()
+                        .unwrap()
+                        .draw_contents(batch, &self.gui.atlas, self.cursor);
+                    self.draw_screen_phase(
+                        batch,
+                        horizon_client::screen_draw::RenderPhase::Foreground,
+                    );
+                    if let Some(tooltip) = tooltip {
+                        ui::tooltip(batch, &self.gui.atlas, &tooltip, self.cursor);
+                    }
                 } else {
                     ui::menu_background(
                         batch,
@@ -741,13 +791,21 @@ impl Game<'_> {
                         batch.height,
                         true,
                     );
+                    self.draw_screen_phase(
+                        batch,
+                        horizon_client::screen_draw::RenderPhase::Background,
+                    );
+                    self.draw_screen_phase(
+                        batch,
+                        horizon_client::screen_draw::RenderPhase::Foreground,
+                    );
                 }
             }
         }
-        self.world_options = Some(o);
     }
 
-    fn draw_lock_question(&self, o: &WorldOptions, batch: &mut HudBatch) {
+    fn draw_lock_question(&self, batch: &mut HudBatch) {
+        let o = self.world_options.as_ref().unwrap();
         // PopupScreen over WorldOptionsScreen: its title and message.
         horizon_client::widgets::begin_screen(|| {
             let name = Text::translate(
@@ -784,6 +842,7 @@ impl Game<'_> {
             fh,
             u32::MAX,
         );
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         for (line, x, y) in &p.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
@@ -803,6 +862,7 @@ impl Game<'_> {
                 hover,
             );
         }
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
     }
 
     fn draw_restrictions(&self, batch: &mut HudBatch) {
@@ -815,6 +875,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         let title = Text::translate("restrictions_screen.title", &[]);
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
@@ -855,9 +916,10 @@ impl Game<'_> {
             true,
             hover,
         );
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
     }
 
-    fn draw_options_view(&self, o: &mut WorldOptions, batch: &mut HudBatch, cursor: (f32, f32)) {
+    fn draw_options_view(&mut self, batch: &mut HudBatch, cursor: (f32, f32), active_screen: bool) {
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new(
                 "world_options",
@@ -866,11 +928,16 @@ impl Game<'_> {
         });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
-        o.scroll = o.scroll.clamp(0.0, o.scroll_limit(h));
         // extractMenuBackground: the in-world background, the list
         // background under the content, then the separators over it.
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         ui::list_background(batch, atlas, HEADER, h - FOOTER, true);
+        ui::separators(batch, atlas, HEADER, h - FOOTER, true);
+        if active_screen {
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        }
+        let o = self.world_options.as_mut().unwrap();
+        o.scroll = o.scroll.clamp(0.0, o.scroll_limit(h));
         let title = Text::translate("options.worldOptions.title", &[]);
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
@@ -959,7 +1026,7 @@ impl Game<'_> {
         if !o.remote {
             o.port.x = x + 158.0;
             o.port.y = top + PORT_TOP;
-            o.port.focused = o.lan && o.port.focused;
+            o.update_port_controls();
             o.port.text_color = if !o.lan {
                 rgba(0x70, 0x70, 0x70, 255)
             } else if o.parsed_port().is_some() {
@@ -1006,7 +1073,6 @@ impl Game<'_> {
             o.content_height(),
             o.scroll.trunc(),
         );
-        ui::separators(batch, atlas, HEADER, h - FOOTER, true);
         for (b, bx, by, bw) in WorldOptions::footer(w, h) {
             let active = o.active(b);
             let is_focused = o.focused_button == Some(b);
@@ -1028,9 +1094,14 @@ impl Game<'_> {
                 hover,
             );
         }
+        let tooltip = WorldOptions::port_tooltip(&o.port, cursor, o.remote);
+        if active_screen {
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
+        }
         // The widgets are drawn; the port box's tooltip goes over them.
-        if let Some(tip) = WorldOptions::port_tooltip(&o.port, cursor, o.remote) {
-            ui::tooltip(batch, atlas, &[tip], cursor);
+        if let Some(tip) = tooltip {
+            // Tooltip.splitTooltip: font.split(message, 170).
+            ui::tooltip(batch, atlas, &atlas.font.split(&tip, 170.0), cursor);
         }
     }
 
@@ -1183,7 +1254,6 @@ impl Game<'_> {
         }
         let inside = self.cursor.1 >= HEADER && self.cursor.1 < h - FOOTER;
         o.port.focused = !o.remote
-            && o.lan
             && inside
             && ui::hovered(
                 self.cursor,
@@ -1418,7 +1488,7 @@ impl Game<'_> {
                 let reverse = shift;
                 let next = match o.focused_button {
                     Some(cur) => {
-                        if !o.remote && o.lan {
+                        if !o.remote {
                             if !reverse && cur == Button::Lan {
                                 o.port.focused = true;
                                 o.focused_button = None;
@@ -1942,13 +2012,59 @@ mod tests {
     }
 
     /// `portEdit.setTooltip(PORT_INFO_TEXT)`: hovering the port box shows its
-    /// label; a remote world (`o.remote`) has no port box to hover.
+    /// label; `setPortError` turns that into the reason a number is rejected.
+    /// A remote world (`o.remote`) has no port box to hover.
     #[test]
     fn the_port_box_explains_itself_on_hover() {
-        let port = EditBox::new(158.0, 100.0, 40.0, 20.0);
-        assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), false).is_some());
+        let mut port = EditBox::new(158.0, 100.0, 40.0, 20.0);
+        let tip = |port: &EditBox| {
+            // Observe the component key, independent of the loaded UI language.
+            WorldOptions::port_tooltip(port, (159.0, 101.0), false)
+                .and_then(|t| t.translation_key().map(str::to_owned))
+        };
+        assert_eq!(tip(&port).as_deref(), Some("lanServer.port"));
+        // Empty takes the suggestion, a number in range is fine.
+        assert_eq!(tip(&port).as_deref(), Some("lanServer.port"));
+        for bad in ["0", "80", "70000", "abc", "-1"] {
+            port.set_value(bad);
+            assert_eq!(
+                tip(&port).as_deref(),
+                Some("lanServer.port.invalid"),
+                "{bad}"
+            );
+        }
+        for good in ["1024", "25565", "65535"] {
+            port.set_value(good);
+            assert_eq!(tip(&port).as_deref(), Some("lanServer.port"), "{good}");
+        }
         assert!(WorldOptions::port_tooltip(&port, (157.0, 101.0), false).is_none());
         assert!(WorldOptions::port_tooltip(&port, (159.0, 121.0), false).is_none());
         assert!(WorldOptions::port_tooltip(&port, (159.0, 101.0), true).is_none());
+    }
+
+    /// `WorldOptionsScreen.updatePortControlsState`: with LAN off the port box
+    /// is read-only but keeps the focus, so its value can be selected and
+    /// copied; the caret moves, Backspace is consumed without a change, and
+    /// with LAN on it edits again.
+    #[test]
+    fn the_port_box_is_read_only_but_focusable_with_lan_off() {
+        use winit::keyboard::KeyCode;
+        let mut o = options(false, false);
+        assert!(!o.lan);
+        o.port.focused = true;
+        o.update_port_controls();
+        assert!(!o.port.editable);
+        assert!(o.port.focused);
+        o.port.set_value("25565");
+        assert!(o.port.key(KeyCode::Backspace, false, false));
+        assert_eq!(o.port.value, "25565");
+        assert!(o.port.key(KeyCode::ArrowLeft, false, false));
+        assert_eq!(o.port.cursor, 4);
+        // LAN on: the box takes the edit.
+        o.lan = true;
+        o.update_port_controls();
+        assert!(o.port.editable);
+        assert!(o.port.key(KeyCode::Backspace, false, false));
+        assert_eq!(o.port.value, "2555");
     }
 }

@@ -70,6 +70,9 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
             .add_empty_chunk(ChunkPos::new(x, 0))
             .unwrap();
     }
+    for x in 0..3 {
+        game.load_ticking_neighbourhood(x, 0);
+    }
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(24.5, 201.0, 12.5)).unwrap());
     let net = NetConfig {
         announce: false,
@@ -98,6 +101,8 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
         },
     )
     .unwrap();
+    // Reserve the manually installed guest in the shared runtime ID allocator.
+    game.next_entity = game.next_entity.max(2);
     let (tx, _rx) = mpsc::channel();
     let mut guest = Guest::new(
         Joined {

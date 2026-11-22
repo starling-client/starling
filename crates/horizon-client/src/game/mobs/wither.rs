@@ -20,19 +20,35 @@ impl Game<'_> {
             Some(Who::Mob(id))
                 if m.ai.last_hurt_by_player <= 0
                     && m.age as i32 - m.ai.last_hurt_by_time <= 100
-                    && self
-                        .mobs
-                        .iter()
-                        .any(|o| o.id == id && o.alive() && o.species() == Species::Wither) =>
+                    && self.is_wither(id) =>
             {
-                id
+                Some(id)
             }
-            _ => return,
+            _ => None,
+        };
+        let position = [m.position.x, m.position.y, m.position.z];
+        self.create_wither_rose_at(position, wither);
+    }
+    /// `LivingEntity.createWitherRose` for a dying player (`ServerPlayer.die`),
+    /// whose kill credit is `killer`.
+    pub(super) fn create_wither_rose_by(&mut self, position: [f64; 3], killer: Option<u32>) {
+        let wither = killer.filter(|&id| self.is_wither(id));
+        self.create_wither_rose_at(position, wither);
+    }
+    /// `getKillCredit` naming a wither that is still in the level.
+    fn is_wither(&self, id: u32) -> bool {
+        self.mobs
+            .iter()
+            .any(|o| o.id == id && o.alive() && o.species() == Species::Wither)
+    }
+    fn create_wither_rose_at(&mut self, position: [f64; 3], wither: Option<u32>) {
+        let Some(wither) = wither else {
+            return;
         };
         let pos = [
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32,
-            m.position.z.floor() as i32,
+            position[0].floor() as i32,
+            position[1].floor() as i32,
+            position[2].floor() as i32,
         ];
         let registry = self.pack.assets.registry;
         let rose = registry.default_state("minecraft:wither_rose");
@@ -50,11 +66,7 @@ impl Game<'_> {
             let _ = self.level_set(pos, rose);
             return;
         }
-        self.spawn_item_own(
-            ItemStack::new("minecraft:wither_rose", 1),
-            [m.position.x, m.position.y, m.position.z],
-            0,
-        );
+        self.spawn_item_own(ItemStack::new("minecraft:wither_rose", 1), position, 0);
     }
     fn is_wither_skull(&self, p: [i32; 3]) -> bool {
         let name = &*self
@@ -256,19 +268,45 @@ impl Game<'_> {
             self.combat.blast_resistance_cap = Some(0.8);
         }
         self.combat.explosion_direct = Some(p.id);
-        let result = self.with_hive_emptying_blast(|g| {
-            g.explode(
-                Some(p.id),
-                at,
-                1.0,
-                super::explosion::ExplosionSource::default().with_silence(g.entity_silent(p.id)),
-            )
+        let result = self.with_impacting_projectile(p, |g| {
+            g.with_hive_emptying_blast(|g| {
+                g.explode(
+                    Some(p.id),
+                    at,
+                    1.0,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(g.entity_silent(p.id)),
+                )
+            })
         });
         self.combat.explosion_direct = None;
         self.combat.blast_resistance_cap = None;
         self.set_blast_by_player(false);
         self.combat.explosion_owner = None;
         self.combat.explosion_in_water = false;
+        result
+    }
+    /// Runs `blast` with the impacting projectile `p` back among the level's
+    /// projectiles, as vanilla's skull is still in the level while it
+    /// explodes: the tick removed its row before the hit, so a part asked
+    /// during the blast (`can_entity_destroy` with the skull) could not read
+    /// it. The row returns under its own id and join (`push` keeps a numbered
+    /// join), and leaves again afterwards.
+    fn with_impacting_projectile<R>(
+        &mut self,
+        p: &Projectile,
+        blast: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.creatures.projectiles.push(p.clone());
+        let result = blast(self);
+        let row = self
+            .creatures
+            .projectiles
+            .iter()
+            .position(|q| q.id == p.id && q.join == p.join);
+        if let Some(row) = row {
+            self.creatures.projectiles.remove(row);
+        }
         result
     }
     /// `livingOwner.heal(5.0F)` after the skull killed: `LivingEntity.heal`

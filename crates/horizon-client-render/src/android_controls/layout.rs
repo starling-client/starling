@@ -1295,6 +1295,57 @@ impl Settings {
         })
     }
 
+    /// Deletes a user-created preset of `style`; the protected Default stays. A deleted preset the
+    /// system had active, or remembered, gives way to Default.
+    pub fn delete_preset(
+        &mut self,
+        game_home: &std::path::Path,
+        style: ControlStyle,
+        id: &str,
+    ) -> std::io::Result<()> {
+        let clean = Self::sanitize_profile_name(id);
+        if clean == "default" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "The Default preset is protected and cannot be deleted",
+            ));
+        }
+        std::fs::remove_file(Self::system_dir(game_home, style).join(format!("{clean}.json")))?;
+        let remembered = match style {
+            ControlStyle::Mcpe => &mut self.active_mcpe_preset,
+            ControlStyle::GoyControl => &mut self.active_goy_preset,
+        };
+        if Self::sanitize_profile_name(remembered) == clean {
+            *remembered = "default".into();
+        }
+        if self.control_style == style && Self::sanitize_profile_name(&self.preset_id) == clean {
+            self.select_preset(game_home, style, "default");
+            Ok(())
+        } else {
+            self.save_to(&game_home.join("horizon-touch.json"))
+        }
+    }
+
+    /// `name`, or `name 2`, `name 3`... when a preset of `style` already shows that name: saving
+    /// from the same preset twice gives two presets told apart.
+    pub fn unique_preset_name(
+        game_home: &std::path::Path,
+        style: ControlStyle,
+        name: &str,
+    ) -> String {
+        let taken: Vec<String> = Self::list_presets(game_home, style)
+            .into_iter()
+            .map(|p| p.name.to_lowercase())
+            .collect();
+        if !taken.contains(&name.to_lowercase()) {
+            return name.to_owned();
+        }
+        (2..=999)
+            .map(|n| format!("{name} {n}"))
+            .find(|candidate| !taken.contains(&candidate.to_lowercase()))
+            .unwrap_or_else(|| format!("{name} copy"))
+    }
+
     /// Selects and activates a preset within `style`, preserving both systems' remembered selections.
     pub fn select_preset(&mut self, game_home: &std::path::Path, style: ControlStyle, id: &str) {
         let prev_mcpe = self.active_mcpe_preset.clone();
@@ -1433,7 +1484,8 @@ impl Settings {
         }
         let style = self.control_style;
         let new_id = Self::allocate_unique_preset_id(game_home, style, trimmed_name);
-        let display_name: String = trimmed_name.chars().take(48).collect();
+        let shown: String = trimmed_name.chars().take(44).collect();
+        let display_name = Self::unique_preset_name(game_home, style, &shown);
         let display_desc: String = if description.trim().is_empty() {
             format!("Custom {} preset", style.label())
         } else {
@@ -2299,6 +2351,54 @@ mod tests {
             [0.92, 0.78]
         );
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_deleted_preset_is_gone_and_the_active_one_gives_way_to_default() {
+        let tmp =
+            std::env::temp_dir().join(format!("horizon-preset-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut settings = Settings::default_for_style(ControlStyle::Mcpe);
+        // Saving from Default twice: two presets, told apart by name.
+        let first = settings
+            .save_new_preset(&tmp, "Default Custom", "")
+            .unwrap();
+        let second = settings
+            .save_new_preset(&tmp, "Default Custom", "")
+            .unwrap();
+        assert_eq!(first.name, "Default Custom");
+        assert_eq!(second.name, "Default Custom 2");
+        assert_eq!(settings.preset_id, second.id);
+
+        // The one not in use goes, and the active one stays.
+        settings
+            .delete_preset(&tmp, ControlStyle::Mcpe, &first.id)
+            .unwrap();
+        assert!(
+            !tmp.join(format!("controls/mcpe/{}.json", first.id))
+                .exists()
+        );
+        assert_eq!(settings.preset_id, second.id);
+
+        // The active one goes too: Default takes its place, here and remembered.
+        settings
+            .delete_preset(&tmp, ControlStyle::Mcpe, &second.id)
+            .unwrap();
+        assert_eq!(settings.preset_id, "default");
+        assert_eq!(settings.active_mcpe_preset, "default");
+        let names: Vec<_> = Settings::list_presets(&tmp, ControlStyle::Mcpe)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(names, ["default"]);
+
+        // Default is protected.
+        assert!(
+            settings
+                .delete_preset(&tmp, ControlStyle::Mcpe, "default")
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

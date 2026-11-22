@@ -8,8 +8,10 @@
 //! launcher hands over after its owner check (`auth::current`). Without one (offline play, an
 //! expired token) the screen says so and makes no request. Every request runs on a worker
 //! thread; the title polls the results once a frame (`poll`).
+pub mod availability;
 pub mod client;
 pub mod download;
+mod draw_notice;
 pub mod upload;
 
 use crate::hud::{HudAtlas, HudBatch, rgba};
@@ -929,8 +931,7 @@ pub enum Popup {
     },
 }
 
-/// `RealmsResetWorldScreen`'s entry points: the slot's world is replaced. `forNewRealm`
-/// belongs to the realm-creation screen, which the port has no equivalent of.
+/// `RealmsResetWorldScreen`'s entry points (`forResetSlot`, `forEmptySlot`, `forNewRealm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetKind {
     /// `forResetSlot`: the world is replaced after a warning; the active slot's.
@@ -5060,6 +5061,7 @@ impl Screen {
                     slot,
                     kind,
                     creation,
+                    reset: None,
                     ..
                 } = &self.subscreen
                 {
@@ -6549,15 +6551,7 @@ impl Screen {
             }
         }
         // `RealmsResetWorldScreen`'s tiles are drawn, not widgets: the click is a rectangle.
-        if let SubScreen::ResetWorld {
-            server,
-            slot,
-            kind,
-            creation,
-            reset,
-            ..
-        } = &self.subscreen
-        {
+        if let SubScreen::ResetWorld { reset, .. } = &self.subscreen {
             if reset.is_some() {
                 return Outcome::None;
             }
@@ -6569,15 +6563,7 @@ impl Screen {
                 x >= tx && x < tx + 60.0 && y >= ty && y < ty + 69.0
             });
             if let Some(tile) = tile {
-                let (server, slot, kind) = (server.clone(), *slot, *kind);
-                let creation = creation.clone();
-                if tile == 1 {
-                    self.open_upload_select(server, slot, kind, creation);
-                } else if tile >= 2
-                    && let Some(group) = TemplateGroup::ALL.get(tile - 2)
-                {
-                    self.open_template_list(server, slot, kind, creation, Some(*group));
-                }
+                return self.click(Some(70 + tile as u8), x, y, (w, h));
             }
             return Outcome::None;
         }
@@ -7989,12 +7975,26 @@ impl Screen {
         w: f32,
         h: f32,
         list_focused: bool,
+        phases: &mut dyn FnMut(crate::screen_draw::RenderPhase, &mut HudBatch),
     ) {
         let (w, h) = (w.ceil(), h.ceil());
         let cx = (w / 2.0).floor();
         let mid = (h / 2.0).floor();
         let t = crate::lang::get;
         crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+        // Popup underlays and the configure tab strip are part of the active
+        // screen's background; report only after their final background paint.
+        match &self.subscreen {
+            SubScreen::Configure { .. } => {}
+            SubScreen::Popup(popup)
+                if !matches!(popup, Popup::Uninvite { .. } | Popup::OpenLink { .. }) => {}
+            SubScreen::Backups {
+                restore_job,
+                download_task,
+                ..
+            } if restore_job.is_some() || download_task.is_some() => {}
+            _ => phases(crate::screen_draw::RenderPhase::Background, batch),
+        }
 
         match &self.subscreen {
             SubScreen::JoinCode { code, error, job } => {
@@ -8248,6 +8248,7 @@ impl Screen {
                 // the dots show. Nothing of the list may leak through behind them.
                 if restore_job.is_some() || download_task.is_some() {
                     crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                    phases(crate::screen_draw::RenderPhase::Background, batch);
                     let top = task_stack_top((w, h));
                     realms_logo(batch, atlas, cx, top);
                     let title = if download_task.is_some() {
@@ -8625,6 +8626,7 @@ impl Screen {
                     16.0,
                     u32::MAX,
                 );
+                phases(crate::screen_draw::RenderPhase::Background, batch);
                 let (bar_x, tab_w) = tab_geometry(w);
                 let now = crate::hud_overlays::now_ms();
                 for (i, which) in ConfigureTab::ALL.iter().enumerate() {
@@ -10084,6 +10086,7 @@ impl Screen {
                         rgba(16, 16, 16, 255),
                     );
                 }
+                phases(crate::screen_draw::RenderPhase::Background, batch);
                 let mut y = top;
                 let heading = Text::literal(title.clone()).bold();
                 let tw = HudBatch::text_width(atlas, title);
@@ -10242,7 +10245,17 @@ impl Screen {
                 if let Some(subscreen) = underlay {
                     let mut parent = self.clone();
                     parent.subscreen = subscreen;
-                    parent.draw(batch, atlas, caret, focused_at, cursor, w, h, list_focused);
+                    parent.draw(
+                        batch,
+                        atlas,
+                        caret,
+                        focused_at,
+                        cursor,
+                        w,
+                        h,
+                        list_focused,
+                        &mut |_, _| {},
+                    );
                 }
                 // `PopupScreen`: the dimmed background, the `popup/background` panel — the
                 // 250-wide default minus its 18 border on each side, so 214 of content —
@@ -10321,6 +10334,7 @@ impl Screen {
                         rgba(16, 16, 16, 255),
                     );
                 }
+                phases(crate::screen_draw::RenderPhase::Background, batch);
                 let heading = Text::translate(title, &[]).bold();
                 let tw = HudBatch::text_width(atlas, &t(title));
                 batch.text_styled(atlas, &heading, cx - (tw / 2.0).floor(), top, color, true);
@@ -11071,100 +11085,6 @@ impl Screen {
             }
             SubScreen::Main => self.draw_main(batch, atlas, cursor, w, h, list_focused),
         }
-    }
-
-    /// `RealmsMainScreen.NotificationMessageEntry`: the info sprite, the message centred in
-    /// the 220 the 40-wide margins leave, the dismiss cross and the open-link button.
-    /// Returns the entry's height, which moves the servers below it.
-    fn draw_notice(
-        &self,
-        batch: &mut HudBatch,
-        atlas: &HudAtlas,
-        cursor: (f32, f32),
-        rx: f32,
-        top: f32,
-        bottom: f32,
-    ) -> f32 {
-        let Some(notification) = self.notice() else {
-            self.notice_height.set(0.0);
-            return 0.0;
-        };
-        let lines = self.notice_lines(atlas);
-        // `MultiLineTextWidget`'s line height is 9 (`wordWrapHeight`).
-        let message_height = lines.len() as f32 * 9.0;
-        // `addEntriesForNotification`: HEIGHT_WITHOUT_TEXT 38 plus the wrapped message.
-        let height = 38.0 + message_height;
-        let y = top + 2.0;
-        self.notice_height.set(height);
-        // The list scrolled the entry out of view: nothing draws, nothing clicks.
-        if y + height <= top || y >= bottom {
-            self.notice_rects.set([[0.0; 4]; 2]);
-            return height;
-        }
-        // The grid starts at the entry's content origin: the entry's own +2.
-        let content_x = rx + 2.0;
-        // `ImageWidget.sprite(20, 20, icon/info)`, padded 7.
-        crate::ui::blit_sprite(
-            batch,
-            atlas,
-            "gui/sprites/icon/info",
-            content_x + 7.0,
-            y + 7.0,
-            20.0,
-            20.0,
-            u32::MAX,
-        );
-        // Row 0's height is the icon's 27 or the text frame's 7 + message; the text is
-        // centred in `textWidth` (300 - 80) from the content's 40.
-        let row_height = 27.0_f32.max(7.0 + message_height);
-        for (i, line) in lines.iter().enumerate() {
-            let width = HudBatch::text_width(atlas, line);
-            batch.text(
-                atlas,
-                line,
-                content_x + 40.0 + ((ROW_WIDTH - 80.0 - width) / 2.0).floor(),
-                y + 7.0 + i as f32 * 9.0,
-                u32::MAX,
-                true,
-            );
-        }
-        // `VisitUrl.buildOpenLinkButton`: 150 wide, 4 below row 0, centred in the text
-        // frame's 220.
-        let button = [
-            content_x + 40.0 + ((ROW_WIDTH - 80.0 - 150.0) / 2.0).floor(),
-            y + row_height + 4.0,
-            150.0,
-            20.0,
-        ];
-        let label = Text::literal(notification.visit_button_text());
-        let hovered = crate::ui::hovered(cursor, button[0], button[1], button[2], button[3]);
-        crate::ui::button(
-            batch, atlas, button[0], button[1], button[2], button[3], &label, true, hovered,
-        );
-        // `CrossButton`: 14x14, padded 7 from the content's right and top.
-        let dismiss = [content_x + ROW_WIDTH - 7.0 - 14.0, y + 7.0, 14.0, 14.0];
-        if notification.dismissable {
-            let hovered =
-                crate::ui::hovered(cursor, dismiss[0], dismiss[1], dismiss[2], dismiss[3]);
-            let sprite = if hovered {
-                "gui/sprites/widget/cross_button_highlighted"
-            } else {
-                "gui/sprites/widget/cross_button"
-            };
-            crate::ui::blit_sprite(
-                batch,
-                atlas,
-                sprite,
-                dismiss[0],
-                dismiss[1],
-                dismiss[2],
-                dismiss[3],
-                u32::MAX,
-            );
-        }
-        self.notice_rects.set([button, dismiss]);
-        self.notice_height.set(height);
-        height
     }
 
     fn draw_main(
@@ -12668,24 +12588,70 @@ mod tests {
     /// the Realm, slot and reset kind to upload into.
     #[test]
     fn the_generate_tile_asks_for_the_create_world_screen() {
-        let mut screen = listed(vec![server(7, None)]);
-        screen.subscreen = SubScreen::ResetWorld {
-            server: server(7, None),
-            slot: 2,
-            kind: ResetKind::Empty,
-            creation: None,
-            templates: None,
-            job: None,
-            reset: None,
-            error: None,
-        };
-        match screen.click(Some(70), 0.0, 0.0, (854.0, 480.0)) {
-            Outcome::CreateWorld(request) => {
-                assert_eq!((request.server.id, request.slot), (7, 2));
-                assert_eq!(request.kind, ResetKind::Empty);
-                assert!(request.creation.is_none());
+        for (size, (tx, ty)) in [
+            ((854.0, 480.0), (305.0, 63.0)),
+            ((400.0, 243.0), (78.0, 56.0)),
+        ] {
+            for kind in [ResetKind::Reset, ResetKind::Empty, ResetKind::NewRealm] {
+                let creation = (kind == ResetKind::NewRealm)
+                    .then(|| ("Realm name".to_owned(), "Description".to_owned()));
+                let mut screen = listed(vec![server(7, None)]);
+                screen.subscreen = SubScreen::ResetWorld {
+                    server: server(7, None),
+                    slot: 2,
+                    kind,
+                    creation: creation.clone(),
+                    templates: None,
+                    job: None,
+                    reset: None,
+                    error: None,
+                };
+                for (hit, (x, y)) in [
+                    (Some(70), (0.0, 0.0)),
+                    (None, (tx, ty)),
+                    (None, (tx + 30.0, ty + 34.0)),
+                    (None, (tx + 59.5, ty + 68.5)),
+                ] {
+                    match screen.click(hit, x, y, size) {
+                        Outcome::CreateWorld(request) => {
+                            assert_eq!((request.server.id, request.slot), (7, 2));
+                            assert_eq!(request.kind, kind);
+                            assert_eq!(request.creation, creation);
+                        }
+                        _ => panic!("the Generate New World tile asks for Create World"),
+                    }
+                }
+                for (dx, dy) in [(-1.0, 0.0), (60.0, 0.0), (0.0, -1.0), (0.0, 69.0)] {
+                    assert!(matches!(
+                        screen.click(None, tx + dx, ty + dy, size),
+                        Outcome::None
+                    ));
+                }
+                let abort = Arc::new(AtomicBool::new(false));
+                if let SubScreen::ResetWorld { reset, .. } = &mut screen.subscreen {
+                    *reset = Some(RunningTask {
+                        job: Arc::new(Mutex::new(None)),
+                        title: Arc::new(Mutex::new(String::new())),
+                        abort: Arc::clone(&abort),
+                    });
+                }
+                for hit in [
+                    None,
+                    Some(70),
+                    Some(71),
+                    Some(72),
+                    Some(73),
+                    Some(74),
+                    Some(75),
+                ] {
+                    assert!(matches!(screen.click(hit, tx, ty, size), Outcome::None));
+                    assert!(matches!(
+                        screen.subscreen,
+                        SubScreen::ResetWorld { reset: Some(_), .. }
+                    ));
+                    assert!(!abort.load(Ordering::Relaxed));
+                }
             }
-            _ => panic!("the Generate New World tile asks for Create World"),
         }
     }
 

@@ -5,8 +5,9 @@ use super::native_entity_refs::tests::with_client_game;
 use super::packs::ReloadKind;
 use mod_api::{
     ClientHost, ClientResourcesReloadedEvent, ClientSetupEvent, Hooks, Identifier, ModEntry,
-    ModelBakingCompletedEvent, ModelError, ModelRef, TextureAtlasStitchedEvent, testing::with_mods,
+    ModelBakingCompletedEvent, ModelError, ModelRef, TextureAtlasStitchedEvent,
 };
+use mod_platform::testing::with_mods;
 use std::sync::{Arc, Mutex};
 
 /// The standalone model the mod asked for, installed by the fixture as `standalone_models`
@@ -22,6 +23,7 @@ struct Kept {
     heard: Vec<String>,
     part: Vec<Result<ModelRef, ModelError>>,
     nobody: Vec<Result<ModelRef, ModelError>>,
+    forms: Vec<[Result<ModelRef, ModelError>; 3]>,
 }
 struct Keeper(Arc<Mutex<Kept>>);
 #[mod_api::__subscriptions]
@@ -43,6 +45,11 @@ impl Hooks for Keeper {
         let assets = host.render_assets();
         kept.part.push(assets.model(&id(PART)));
         kept.nobody.push(assets.model(&id(NOBODY)));
+        kept.forms.push([
+            assets.model(&id("keeper:turned")),
+            assets.model(&id("keeper:assembly")),
+            assets.model(&id("keeper:missing")),
+        ]);
     }
     fn client_setup(&self, _: &mut dyn ClientHost, _: &mut ClientSetupEvent) {
         self.0.lock().unwrap().heard.push("setup".into());
@@ -67,7 +74,7 @@ fn keeper() -> (Arc<Mutex<Kept>>, mod_api::Mods) {
 }
 
 /// F3+T: the reload stages on a worker and applies here.
-fn reload(game: &mut super::Game<'_>) {
+pub(in crate::game) fn reload(game: &mut super::Game<'_>) {
     game.spawn_pack_reload(ReloadKind::Selection).unwrap();
     let started = std::time::Instant::now();
     while game.pack_reload.is_some() {
@@ -133,6 +140,98 @@ fn a_client_mod_hears_model_baking_completed_once_per_load_and_keeps_its_handles
                 game.pack.render.resolve_model(first).err(),
                 Some(ModelError::StaleModel),
                 "the first load's handle is superseded"
+            );
+        });
+    });
+}
+
+/// Real Game/resource-load/model-registry proof, not a GPU render proof.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn standalone_forms_resolve_as_one_model_and_republish_after_resource_reload() {
+    use horizon_client::models::StandaloneFormRegistration;
+    use mod_api::StandaloneModelForm;
+    let cube = "minecraft:block/stone";
+    let entry = |form| StandaloneFormRegistration {
+        owner: "keeper",
+        form,
+    };
+    let _fixture = horizon_client::models::standalone_fixture(vec![PART.into()]).with_forms(vec![
+        entry(StandaloneModelForm::Rotated {
+            id: "keeper:turned".into(),
+            model: cube.into(),
+            turns: [0, 1, 0],
+            uvlock: true,
+        }),
+        entry(StandaloneModelForm::Combined {
+            id: "keeper:assembly".into(),
+            parts: vec![cube.into(), "minecraft:block/stone_slab".into()],
+        }),
+        entry(StandaloneModelForm::Combined {
+            id: "keeper:missing".into(),
+            parts: vec![cube.into(), "keeper:absent_dependency".into()],
+        }),
+    ]);
+    let (kept, mods) = keeper();
+    with_mods(mods, || {
+        with_client_game(|game| {
+            game.publish_initial_client_models();
+            let [Ok(turned), Ok(assembly), Err(ModelError::UnknownModel)] =
+                kept.lock().unwrap().forms[0]
+            else {
+                panic!("forms not published atomically");
+            };
+            assert_eq!(
+                game.pack.render.resolve_model(turned).unwrap().faces.len(),
+                6
+            );
+            let model = game.pack.render.resolve_model(assembly).unwrap();
+            assert_eq!(model.faces.len(), 12);
+            // Both original geometries survive one ModelRef, not two draws or two copies
+            // of the first part. The full block and the bottom slab have distinct tops.
+            for (faces, height) in [(&model.faces[..6], 1.0), (&model.faces[6..], 0.5)] {
+                assert!(
+                    faces
+                        .iter()
+                        .any(|face| face.quad.positions.iter().all(|p| p[1] == height))
+                );
+            }
+            reload(game);
+            let kept = kept.lock().unwrap();
+            assert_eq!(kept.forms.len(), 2);
+            let [
+                Ok(second_turned),
+                Ok(second_assembly),
+                Err(ModelError::UnknownModel),
+            ] = kept.forms[1]
+            else {
+                panic!("forms not republished");
+            };
+            assert_eq!(
+                game.pack.render.resolve_model(turned).err(),
+                Some(ModelError::StaleModel)
+            );
+            assert_eq!(
+                game.pack.render.resolve_model(assembly).err(),
+                Some(ModelError::StaleModel)
+            );
+            assert_eq!(
+                game.pack
+                    .render
+                    .resolve_model(second_turned)
+                    .unwrap()
+                    .faces
+                    .len(),
+                6
+            );
+            assert_eq!(
+                game.pack
+                    .render
+                    .resolve_model(second_assembly)
+                    .unwrap()
+                    .faces
+                    .len(),
+                12
             );
         });
     });

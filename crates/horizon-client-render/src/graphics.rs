@@ -28,6 +28,29 @@ fn marker_driver(text: &str) -> &str {
 /// like the PowerVR GE8320's in `vkQueueSubmit`), so Auto and Vulkan become OpenGL ES.
 pub const RENDERER_MARKER: &str = "horizon-renderer-pending";
 
+/// The `RENDERER_MARKER`s this process wrote ([`note_start_marker`]).
+static START_MARKERS: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// A `RENDERER_MARKER` written for a renderer that is starting, for the panic hook to find.
+pub fn note_start_marker(marker: &Path) {
+    START_MARKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(marker.to_owned());
+}
+/// For the panic hook (`crash::install`): the markers go, as a panic is the game's, which the
+/// hook just caught, not the driver's. A start that panicked before its first frame (a mod's hook
+/// asking for what had not loaded yet, 2026-11-16) sent every start after it to OpenGL ES.
+pub fn forget_start_markers_after_panic() {
+    let markers = std::mem::take(
+        &mut *START_MARKERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for marker in markers {
+        let _ = fs::remove_file(marker);
+    }
+}
+
 /// What the system reports for the display HDR output goes to, in nits in HDR output's
 /// scale: where its SDR white sits (the desktop's white) and the peak. Each renderer keeps its
 /// own display's (`gfx::DisplayReading`).
@@ -35,8 +58,9 @@ pub const RENDERER_MARKER: &str = "horizon-renderer-pending";
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
-    /// The peak is the display's own claim (DXGI's `MaxLuminance`, mostly its EDID figure),
-    /// which often runs high: Auto still uses it, but the HDR page asks to calibrate.
+    /// The peak is the system's own figure (DXGI's `MaxLuminance`): the display's, or a
+    /// calibration profile's (Windows HDR Calibration), which Horizon can't tell apart. Auto
+    /// uses it, and the HDR page offers calibration.
     pub peak_guessed: bool,
 }
 
@@ -45,7 +69,7 @@ pub struct Reported {
 pub enum HdrSetup {
     /// The system says nothing: the player calibrates.
     Unknown,
-    /// The system says, but only guesses the peak: the player calibrates.
+    /// The system says, but not where its peak comes from: the page offers calibration.
     Guessed,
     /// Peak Brightness and Paper White follow the system.
     Automatic,
@@ -94,6 +118,8 @@ fn nits_setting(nits: u32) -> u32 {
 /// Simple-level presets. `Custom` leaves every option as the player set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Preset {
+    /// Every saving on, over the lowest settings (`preset::table`).
+    FullPerformance,
     Performance,
     Balanced,
     Quality,
@@ -102,7 +128,8 @@ pub enum Preset {
     Custom,
 }
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
+        Preset::FullPerformance,
         Preset::Performance,
         Preset::Balanced,
         Preset::Quality,
@@ -111,6 +138,7 @@ impl Preset {
     ];
     pub fn name(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "full_performance",
             Preset::Performance => "performance",
             Preset::Balanced => "balanced",
             Preset::Quality => "quality",
@@ -120,6 +148,7 @@ impl Preset {
     }
     pub fn label(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "Full Performance",
             Preset::Performance => "Performance",
             Preset::Balanced => "Balanced",
             Preset::Quality => "Quality",
@@ -609,6 +638,45 @@ pub fn translucent_batching_offered() -> bool {
     TRANSLUCENT_BATCHING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Parallel Tick's setting, for the worlds this game runs itself (single player, open to LAN):
+/// whether the server tick's phases that give the same result in any order share their work
+/// among helper threads (`parallel`). Auto shares it only while the tick is heavy and sharing
+/// makes it faster; a quiet world stays on one thread and starts no helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ParallelTickMode {
+    #[default]
+    Off = 0,
+    Auto = 1,
+    On = 2,
+}
+impl ParallelTickMode {
+    pub const ALL: [ParallelTickMode; 3] = [
+        ParallelTickMode::Off,
+        ParallelTickMode::Auto,
+        ParallelTickMode::On,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+            Self::On => "on",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Auto => "Auto",
+            Self::On => "On",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// GPU Culling's setting: off, on where it is offered, or Auto, which has it on only where the
 /// CPU limits the frame and it makes the frame faster (`autotune::GpuCullingAuto`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -718,6 +786,44 @@ pub fn gpu_culling_lost() -> bool {
     GPU_CULLING_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static RAY_TRACING_WANTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// The Ray Tracing switch (experimental, #470) as `horizon-graphics.txt` had it when it was
+/// read (`Graphics::load`): the device a renderer opens asks for ray queries with it, so a
+/// change applies at the next start.
+pub fn ray_tracing_wanted() -> bool {
+    RAY_TRACING_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static RAY_TRACING_OFFERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Whether the adapter offers hardware ray tracing (`Features::EXPERIMENTAL_RAY_QUERY`):
+/// set when the renderer opens its device. The Ray Tracing switch is greyed out where it
+/// is false, whatever `horizon-graphics.txt` says.
+pub fn offer_ray_tracing(on: bool) {
+    RAY_TRACING_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn ray_tracing_offered() -> bool {
+    RAY_TRACING_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static RAY_TRACING_MISSING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Why the adapter offers no ray queries, for the settings screen: the missing device
+/// extensions `open_backend` enumerated, if it could (`None`: not enumerated, e.g. the
+/// graphics API is not Vulkan). Overwritten on every device open.
+pub fn set_ray_tracing_missing(missing: Option<&[&str]>) {
+    *RAY_TRACING_MISSING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = missing.map(|m| m.join(", "));
+}
+/// [`set_ray_tracing_missing`]'s message, if one was recorded.
+pub fn ray_tracing_missing() -> Option<String> {
+    RAY_TRACING_MISSING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -801,9 +907,9 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
     /// is offered (`gpu_culling_offer`). Off by default (GPU Culling, Performance graphics); it
-    /// applies at once, and no preset sets it. Every save writes it, so a default turned on later
-    /// needs a new key, as `batchTranslucent` did. Auto turns it on only where the CPU limits the
-    /// frame and it makes the frame faster (`autotune`).
+    /// applies at once, and every preset sets it to Auto. Every save writes it, so a default
+    /// turned on later needs a new key, as `batchTranslucent` did. Auto turns it on only where
+    /// the CPU limits the frame and it makes the frame faster (`autotune`).
     pub gpu_culling: GpuCullingMode,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
@@ -849,9 +955,17 @@ pub struct Graphics {
     pub pacing: Pacing,
     /// Chunk worker threads; 0 uses every core but one. Applies at the next start.
     pub workers: u32,
+    /// Parallel Tick (Performance graphics, beside Worker Threads): applies from the next tick,
+    /// and no preset sets it.
+    pub parallel_tick: ParallelTickMode,
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
+    /// Dynamic Resolution: below 100%, `resolution_scale` is the floor, and the scale rises
+    /// toward 100% while the GPU keeps `target_fps` (`crate::dynamic_resolution`). Off by default.
+    pub dynamic_resolution: bool,
+    /// The frame rate Dynamic Resolution keeps (30..=240).
+    pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
@@ -908,6 +1022,10 @@ pub struct Graphics {
     /// is made (start, resource-pack reload), like `translucent_batching`, where the renderer's
     /// device draws it (`EffectiveOutput::wide_frame_supported`).
     pub hdr_smooth_gradients: bool,
+    /// Hardware ray tracing (ray queries): asked of a device whose adapter offers it,
+    /// when this is on (off by default). Falls back to a plain device when the
+    /// ray-tracing one fails to open.
+    pub ray_tracing: bool,
     /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -992,8 +1110,11 @@ impl Default for Graphics {
             present_mode: PresentMode::Auto,
             pacing: Pacing::Efficient,
             workers: 0,
+            parallel_tick: ParallelTickMode::Off,
             overlay: Overlay::Off,
             resolution_scale: 100,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
@@ -1012,6 +1133,7 @@ impl Default for Graphics {
             api: GraphicsApi::Auto,
             translucent_batching: true,
             hdr_smooth_gradients: true,
+            ray_tracing: false,
             shader_pack: String::new(),
             shader_profile: String::new(),
         }
@@ -1062,7 +1184,13 @@ impl Graphics {
                 &crate::logging::private_home(),
             ));
         }
-        if driver_died && cfg!(target_os = "android") && after_driver_crash(g.api) != g.api {
+        if driver_died
+            && cfg!(target_os = "android")
+            // A custom GPU driver keeps Vulkan: its own start counter (gpu_drivers::note_start)
+            // sets it aside after repeated crashes, instead of swinging the API to OpenGL ES.
+            && crate::gpu_drivers::active().is_none()
+            && after_driver_crash(g.api) != g.api
+        {
             g.api = after_driver_crash(g.api);
             g.save(dir);
             log::warn!(
@@ -1070,6 +1198,8 @@ impl Graphics {
                  graphics API is OpenGL ES now (Video Settings, or graphicsApi in {FILE})"
             );
         }
+        // Ray Tracing (experimental, #470): the renderers this start makes read it.
+        RAY_TRACING_WANTED.store(g.ray_tracing, std::sync::atomic::Ordering::Relaxed);
         g
     }
     /// Whether HDR output is held back on a window whose graphics driver is `driver`
@@ -1139,6 +1269,7 @@ impl Graphics {
                 "particleCulling" => g.particle_culling = ParticleCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "opaqueIce" => g.opaque_ice = flag(g.opaque_ice),
+                "parallelTick" => g.parallel_tick = ParallelTickMode::parse(value),
                 "blockEntityCache" => {
                     let enabled = flag(false);
                     g.cache_shulker_boxes = enabled;
@@ -1182,6 +1313,8 @@ impl Graphics {
                 }
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(25, 200),
+                "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
+                "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
@@ -1211,6 +1344,7 @@ impl Graphics {
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
+                "rayTracing" => g.ray_tracing = flag(g.ray_tracing),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 // Starling's pick before it took this page's key (`off`: none).
@@ -1242,7 +1376,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\nrayTracing:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1280,6 +1414,8 @@ impl Graphics {
                 Overlay::Stats => "stats",
             },
             self.resolution_scale,
+            bool_text(self.dynamic_resolution),
+            self.target_fps,
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
@@ -1300,6 +1436,8 @@ impl Graphics {
             bool_text(self.translucent_batching),
             bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
+            self.parallel_tick.name(),
+            bool_text(self.ray_tracing),
         );
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
@@ -1384,37 +1522,9 @@ impl Graphics {
     }
 }
 
-/// A preset's values for vanilla's options and Horizon's own.
-pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
-    let (rd, sim, clouds, particles, shadows, blend, mipmaps, entity, leaves, weather_r) =
-        match preset {
-            Preset::Performance => (8, 6, "false", 2, false, 0, 0, 0.5, false, 3),
-            Preset::Balanced => (12, 8, "fast", 1, true, 1, 2, 0.75, true, 5),
-            Preset::Quality => (16, 12, "true", 0, true, 2, 4, 1.0, true, 10),
-            Preset::Ultra => (24, 12, "true", 0, true, 3, 4, 1.5, true, 10),
-            Preset::Custom => return,
-        };
-    s.render_distance = rd;
-    s.simulation_distance = sim;
-    s.clouds = clouds.into();
-    s.particles = particles;
-    s.entity_shadows = shadows;
-    s.biome_blend = blend;
-    s.mipmap_levels = mipmaps;
-    s.entity_distance = entity;
-    s.cutout_leaves = leaves;
-    s.weather_radius = weather_r;
-    s.graphics_preset = "custom".into();
-    let g = &mut s.horizon;
-    g.preset = preset;
-    g.cave_culling = true;
-    g.animated_textures = true;
-    g.chunk_updates = 0;
-    g.upload_budget_kib = 0;
-    g.sky = true;
-    g.fog = true;
-    g.weather = true;
-}
+#[path = "graphics_preset.rs"]
+mod preset;
+pub use preset::apply_preset;
 
 /// A phone's first start: settings for its tier instead of the desktop's (measured on a
 /// Snapdragon 8 Gen 2 at 3200x1440; slower tiers scaled down from it).
@@ -1451,11 +1561,12 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
     s.graphics_preset = "custom".into();
     let g = &mut s.horizon;
     g.preset = Preset::Custom;
-    g.resolution_scale = match tier {
-        Tier::High => 100,
-        Tier::Mid => 85,
-        Tier::Low => 70,
-    };
+    // Every tier at the window's own size, the world drawn straight to the screen. Below it the
+    // world goes to a target of its own and a full-screen pass scales it up, which costs a phone
+    // more than the pixels save: its GPU is held back by geometry (below), and on a Moto G51
+    // (Adreno 619, Low tier) the 70% this gave the Low tier ran far slower than 100% (a player's
+    // report, 2026-11-19). The Resolution Scale slider still lowers it.
+    g.resolution_scale = 100;
     g.animated_textures = tier != Tier::Low;
     // A phone's GPU is held back by geometry, which far terrain is most of: on the Snapdragon 8
     // Gen 2 at render distance 8 and LOD distance 128, Full drew the frame in 29 to 31 ms of GPU
@@ -1466,9 +1577,36 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
     g.leaf_culling = LeafCullingMode::Hidden;
 }
 
+/// A phone that started before every tier began at the window's own size: the 70% (Low tier) or
+/// 85% (Mid tier) its first start saved goes to 100. Run once per installation (game.rs keeps the
+/// marker); a player who had picked one of them on the slider picks it again. Whether it changed.
+pub fn lift_old_mobile_resolution(s: &mut crate::settings::Settings) -> bool {
+    let g = &mut s.horizon;
+    let old_default = matches!(g.resolution_scale, 70 | 85);
+    if old_default {
+        g.resolution_scale = 100;
+    }
+    old_default
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_old_phone_defaults_go_to_the_window_size_and_other_scales_stay() {
+        for (saved, now, changed) in [
+            (70, 100, true),
+            (85, 100, true),
+            (75, 75, false),
+            (100, 100, false),
+        ] {
+            let mut s = crate::settings::Settings::default();
+            s.horizon.resolution_scale = saved;
+            assert_eq!(lift_old_mobile_resolution(&mut s), changed, "{saved}");
+            assert_eq!(s.horizon.resolution_scale, now, "{saved}");
+        }
+    }
 
     /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
     /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.
@@ -1521,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn hdr_setup_asks_to_calibrate_where_the_peak_is_guessed() {
+    fn hdr_setup_offers_calibration_where_the_peaks_source_is_unknown() {
         let wayland = Reported {
             paper_white: 203,
             peak: 1015,
@@ -1536,7 +1674,7 @@ mod tests {
         assert_eq!(g.hdr_setup(None), HdrSetup::Unknown);
         assert_eq!(g.hdr_setup(Some(wayland)), HdrSetup::Automatic);
         assert_eq!(g.hdr_setup(Some(windows)), HdrSetup::Guessed);
-        // Auto still takes the guess, over the 1000-nit default.
+        // Auto still takes the reported peak, over the 1000-nit default.
         assert_eq!(g.peak_nits(Some(windows)), 1000);
         assert_eq!(g.paper_white_nits(Some(windows)), 400);
         for (peak, paper_white) in [(800, 0), (0, 240)] {
@@ -1589,7 +1727,11 @@ mod tests {
             (low.clouds.as_str(), high.clouds.as_str()),
             ("false", "fast")
         );
-        assert!(low.horizon.resolution_scale < high.horizon.resolution_scale);
+        // The window's size on every tier: below it the upscale pass costs more than it saves.
+        assert_eq!(
+            (low.horizon.resolution_scale, high.horizon.resolution_scale),
+            (100, 100)
+        );
         assert!(!low.horizon.animated_textures && high.horizon.animated_textures);
         // Auto-Jump on, as on Bedrock's touch screens.
         assert!(low.auto_jump && high.auto_jump);
@@ -1738,8 +1880,11 @@ mod tests {
             present_mode: PresentMode::Mailbox,
             pacing: Pacing::Precise,
             workers: 6,
+            parallel_tick: ParallelTickMode::Auto,
             overlay: Overlay::Graph,
             resolution_scale: 75,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
@@ -1760,6 +1905,7 @@ mod tests {
             api: GraphicsApi::Dx12,
             translucent_batching: false,
             hdr_smooth_gradients: false,
+            ray_tracing: true,
             shader_pack: "Golden Hour".into(),
             shader_profile: "LOW".into(),
         };
@@ -2117,10 +2263,12 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
+        // Vanilla's bound: one core is always left for the render and server threads.
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // The count itself is `horizon_threads::default_workers`, which is one less than
+        // the *smaller* of the machine's cores and its performance cores (a Linux hybrid
+        // CPU reports fewer of the latter), so it is not always `cores - 1`.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

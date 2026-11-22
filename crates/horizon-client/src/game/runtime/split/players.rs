@@ -479,7 +479,8 @@ impl Split<'_> {
         // `options.resources` is P1's overlay when a pack is on: never the vanilla root, as a
         // reload would rebuild that overlay out of itself.
         let vanilla_root = host.vanilla_root();
-        let gui = UiResources::load(&host.pack.source)?;
+        let mut gui = UiResources::load(&host.pack.source)?;
+        gui.splashes = host.gui.splashes.clone();
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
@@ -512,6 +513,7 @@ impl Split<'_> {
             None,
             host.settings.horizon.api,
             host.settings.horizon.translucent_batching,
+            host.settings.vsync,
             &host.settings.horizon,
             // The pack its own game loads, from its profile.
             crate::game::shader_packs::picked_pack_shape(&guest.settings),
@@ -626,6 +628,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn offline_guests_join_only_local_servers() {
         for local in [
             "127.0.0.1:25565",

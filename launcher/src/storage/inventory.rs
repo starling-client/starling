@@ -7,11 +7,7 @@ use crate::{backend, instances, native_mods};
 use serde::Serialize;
 use std::sync::Arc;
 
-const BUILD_CACHES: [BuildCache; 13] = [
-    BuildCache::Stage,
-    BuildCache::PendingStage,
-    BuildCache::NewStage,
-    BuildCache::Patched,
+const BUILD_CACHES: [BuildCache; 9] = [
     BuildCache::Source,
     BuildCache::Tools,
     BuildCache::PrebuiltOutput,
@@ -122,16 +118,25 @@ impl Entry {
         let revision = if parent == Path::new("native/tools") {
             (name.len() == 12).then_some(name)?
         } else if parent == Path::new("native/prebuilt") {
-            let (revision, archive) = name.split_once('-')?;
+            let (revision, rest) = name.split_once('-')?;
+            // A build's SDK slices (`<build id>-<target>[-server]`, a developer install's with
+            // `.developer`), and the older single-archive caches (`<commit>-horizon-prebuilt-v<n>-
+            // <target>`), which native builds no longer read but eviction must still recognize.
+            let rest = rest.strip_suffix(".developer").unwrap_or(rest);
+            let current = horizon_mod_package::index::native::prebuilt_prefix();
+            let target = [
+                "horizon-prebuilt-v3-",
+                "horizon-prebuilt-v4-",
+                "horizon-prebuilt-v5-",
+                current.as_str(),
+            ]
+            .into_iter()
+            .find_map(|prefix| rest.strip_prefix(prefix))
+            .unwrap_or(rest);
+            let target = target.strip_suffix("-server").unwrap_or(target);
             crate::rust_toolchain::hosts()
                 .iter()
-                .any(|host| {
-                    [false, true].into_iter().any(|server| {
-                        horizon_mod_package::index::native::prebuilt_archive(host.target, server)
-                            .trim_end_matches(".tar.gz")
-                            == archive
-                    })
-                })
+                .any(|host| host.target == target)
                 .then_some(revision)?
         } else if parent == Path::new("native/internals-sync") {
             if let Some(catalog) = name.strip_prefix("catalog-") {
@@ -158,6 +163,22 @@ impl Entry {
                 .bytes()
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
         .then_some(revision)
+    }
+
+    /// What an interrupted unpack or download left beside the units of `native/prebuilt`: a
+    /// `.partial` folder, a `.lock` file, a `.download` archive. Nothing uses one while the build
+    /// lease is held, and eviction holds it, so a lock file is removed only under that lease.
+    fn leftover(&self) -> bool {
+        self.relative.parent() == Some(Path::new("native/prebuilt"))
+            && self
+                .relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    [".partial", ".lock", ".download"]
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix))
+                })
     }
 
     fn last_used(&self) -> Result<Option<std::time::SystemTime>, Error> {
@@ -261,9 +282,9 @@ impl Storage {
                 BuildCache::Rust
                     | BuildCache::Source
                     | BuildCache::Tools
+                    | BuildCache::PrebuiltOutput
                     | BuildCache::Prebuilt
                     | BuildCache::InternalsSync
-                    | BuildCache::Patched
             ) {
                 let parent = self.root.join(cache.relative());
                 if checked(&parent, true)?.is_some() {
@@ -291,7 +312,6 @@ impl Storage {
         let build_files = Category::BuildFiles;
         for name in [
             "built.json",
-            "points.json",
             "internals.json",
             "build.log",
             "catalog.partial",
@@ -504,6 +524,8 @@ impl Storage {
                 {
                     // Conservatively retain the whole toolchain set while consent is enabled.
                     Tier::Protected
+                } else if entry.leftover() {
+                    Tier::Expiring
                 } else if [
                     "native/source",
                     "native/tools",
@@ -870,6 +892,30 @@ mod eviction_tests {
                 Some(sha),
             ),
             (
+                format!("native/prebuilt/{sha}-horizon-prebuilt-v3-x86_64-unknown-linux-gnu-server"),
+                Some(sha),
+            ),
+            (
+                format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu"),
+                Some(sha),
+            ),
+            (
+                format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu-server"),
+                Some(sha),
+            ),
+            (format!("native/prebuilt/{sha}-horizon-prebuilt-v3-unknown-target"), None),
+            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-unknown-target"), None),
+            (format!("native/prebuilt/{sha}-horizon-prebuilt-v30-x86_64-unknown-linux-gnu"), None),
+            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu-server-server"), None),
+            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu.tar.gz"), None),
+            (format!("native/prebuilt/not-{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu"), None),
+            // A build's SDK slices, and a developer install's laid-out game.
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu"), Some(sha)),
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu-server"), Some(sha)),
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu.developer"), Some(sha)),
+            (format!("native/prebuilt/{sha}-unknown-target"), None),
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu.partial"), None),
+            (
                 format!("native/internals-sync/catalog-{sha}-x86_64-unknown-linux-gnu"),
                 Some(sha),
             ),
@@ -881,6 +927,17 @@ mod eviction_tests {
                     .revision(),
                 expected
             );
+        }
+        // What an interrupted unpack or download left is known as such, and nothing else is.
+        for (path, leftover) in [
+            (format!("native/prebuilt/.{sha}-horizon-prebuilt-v6-x86_64-unknown-linux-gnu.tar.gz.partial"), true),
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu.lock"), true),
+            ("native/prebuilt/runtime-x86_64-unknown-linux-gnu.tar.xz.download".to_owned(), true),
+            (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu"), false),
+            (format!("native/source/{sha}.partial"), false),
+        ] {
+            let entry = Entry::fixed(&root, Path::new(&path), Category::BuildFiles).unwrap();
+            assert_eq!(entry.leftover(), leftover, "{path}");
         }
     }
     #[test]

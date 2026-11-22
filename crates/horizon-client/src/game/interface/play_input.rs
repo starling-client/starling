@@ -59,6 +59,25 @@ impl Game<'_> {
             self.keys.remove(&key);
         }
     }
+    pub(super) fn update_modifiers(&mut self, state: winit::keyboard::ModifiersState) {
+        self.modifiers = state;
+        if let Some(title) = &mut self.title {
+            title.set_alt_down(state.alt_key());
+        }
+        horizon_client_input::modifiers::reconcile(
+            self.modifiers,
+            &mut self.physical_keys,
+            &self.settings.keys,
+            &mut self.toggles,
+            [self.settings.toggle_crouch, self.settings.toggle_sprint],
+            [
+                self.pad.holds_action("key.sneak"),
+                self.pad.holds_action("key.sprint"),
+            ],
+        );
+        self.sync_toggle(SNEAK);
+        self.sync_toggle(SPRINT);
+    }
     /// Let a held sneak, sprint or modifier key go when the keyboard reports
     /// its modifier up. A release does not always reach the mapping: a screen
     /// reads presses only, and an unfocused window is given no release at all,
@@ -91,6 +110,16 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if !self.modifiers.alt_key() {
+            for key in [KeyCode::AltLeft, KeyCode::AltRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
+        if !self.modifiers.super_key() {
+            for key in [KeyCode::SuperLeft, KeyCode::SuperRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
         for (slot, mapping, needs_toggle) in [
             (0, "key.sneak", self.settings.toggle_crouch),
             (1, "key.sprint", self.settings.toggle_sprint),
@@ -102,7 +131,12 @@ impl Game<'_> {
             };
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
-            let pad = self.input_holds(mapping);
+            // Nor does the modifier say anything of a mod's hold (`set_mapping_down`).
+            let pad = self.input_holds(mapping)
+                || self.keys.held_by(
+                    &[KeyCode::ShiftLeft, KeyCode::ControlLeft][slot],
+                    Source::Mod,
+                );
             if !held && !pad {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
@@ -123,7 +157,7 @@ impl Game<'_> {
                     .translate_all(*physical)
                     .contains(&Ok(key))
             }),
-            Source::Agent => false,
+            Source::Agent | Source::Mod => false,
         }
     }
     /// Apply a physical key to every mapping bound to it.
@@ -352,7 +386,7 @@ impl Game<'_> {
             _ => return false,
         };
         match source {
-            Source::Keyboard | Source::Agent => self.input_holds(mapping),
+            Source::Keyboard | Source::Agent | Source::Mod => self.input_holds(mapping),
             Source::Pad => {
                 let keys = &self.settings.keys;
                 self.physical_buttons
@@ -391,61 +425,10 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.remote.is_some() {
-            return self.remote_mouse(button, pressed);
-        }
-        match button {
-            MouseButton::Left => {
-                // KeyMapping.click: Minecraft.tick starts the attack.
-                if pressed {
-                    self.attack_clicks += 1;
-                }
-                self.toggles
-                    .button(2, pressed, false, self.settings.toggle_attack);
-                self.left = self.toggles.is_down(2);
-            }
-            MouseButton::Right => {
-                self.toggles
-                    .button(3, pressed, false, self.settings.toggle_use);
-                self.right = self.toggles.is_down(3);
-                // handleKeybinds consumes use clicks without acting while an
-                // item is in use. Minecraft.tick runs them after the attack
-                // clicks, so a place and a break in one tick replace the block.
-                if pressed && self.using.is_none() {
-                    self.use_clicks += 1;
-                }
-            }
-            MouseButton::Middle if pressed => {
-                // handleKeybinds: the number keys select before key.pickItem.
-                self.select_queued_hotbar();
-                // Minecraft.pickBlockOrEntity -> the server's handlePickItemFromBlock:
-                // the block's clone item, with its block entity's data on Ctrl in
-                // creative, picked from the inventory (`pick_item`).
-                if let Some(entity) = self.pick_entity_hit() {
-                    // handlePickItemFromEntity: the entity's pick result.
-                    if let Some(stack) = entity.and_then(|id| self.entity_pick_result(id)) {
-                        let infinite = self.creative;
-                        horizon_client::pick_item::pick(
-                            &mut self.inventory[..36],
-                            &mut self.selected,
-                            &stack,
-                            infinite,
-                        );
-                    }
-                } else if let Some(hit) = self.pick() {
-                    let include_data = self.creative && self.has_control_down();
-                    if let Some(stack) = self.picked_stack(hit.pos, include_data) {
-                        let infinite = self.creative;
-                        horizon_client::pick_item::pick(
-                            &mut self.inventory[..36],
-                            &mut self.selected,
-                            &stack,
-                            infinite,
-                        );
-                    }
-                }
-            }
-            _ => {}
+        // MouseHandler.onButton: `KeyMapping.set`, then `KeyMapping.click` for a press.
+        self.mouse_mapping_set_down(button, pressed);
+        if pressed {
+            self.mouse_mapping_click(button);
         }
         Ok(())
     }

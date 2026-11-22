@@ -8,7 +8,7 @@ use super::{Game, Screen};
 use horizon_client::{
     chat::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
-        SYSTEM_INDICATOR, normalize_chat_message,
+        QUEUE_EXPAND_ID, SYSTEM_INDICATOR, normalize_chat_message,
     },
     command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
@@ -33,6 +33,18 @@ pub(super) fn chat_tree(
         Some(server) => &server.chat_tree,
         None => horizon_client::command::vanilla::game_dispatcher(),
     }
+}
+/// The arguments of a typed `/profiler` the client answers itself: only when the chat tree's `profiler` is Horizon's, else the server or mod that owns the name runs it.
+fn horizon_profiler_args<'a>(
+    message: &'a str,
+    server_tree: Option<&horizon_client::command::Dispatcher>,
+) -> Option<&'a str> {
+    let args = message
+        .strip_prefix('/')
+        .and_then(super::profile_capture::profiler_args)?;
+    server_tree
+        .is_none_or(|tree| tree.has_horizon_profiler())
+        .then_some(args)
 }
 use winit::{
     event::KeyEvent,
@@ -185,7 +197,7 @@ impl Game<'_> {
         // (native_compat.rs).
         let mut names = vec!["studio"];
         self.native_commands(&mut names);
-        with_studio_commands(&with_native_commands(&tree_with_mods, &names))
+        with_studio_commands(&with_native_commands(&tree_with_mods, &names)).with_profiler()
     }
 }
 
@@ -212,7 +224,7 @@ impl Default for WorldClock {
         }
     }
 }
-/// A clock time marker from the timelines (ClockTimeMarker).
+/// A clock time marker from the timelines (ClockTimeMarker); `resolve` is None past `i64::MAX`.
 #[derive(Clone, Copy, Debug)]
 pub struct TimeMarker {
     pub ticks: i64,
@@ -226,13 +238,13 @@ impl TimeMarker {
             None => self.ticks == total,
         }
     }
-    pub fn resolve(&self, total: i64) -> i64 {
+    pub fn resolve(&self, total: i64) -> Option<i64> {
         match self.period {
             Some(p) => {
                 let d = self.ticks - total.rem_euclid(p);
-                total + if d > 0 { d } else { p + d }
+                total.checked_add(if d > 0 { d } else { p + d })
             }
-            None => self.ticks,
+            None => Some(self.ticks),
         }
     }
 }
@@ -268,6 +280,8 @@ impl Default for SessionDispatcher {
 /// UI and command state that lives beside the game.
 #[derive(Default)]
 pub struct UiState {
+    #[cfg(target_os = "android")]
+    pub(super) interface_origin: [f32; 2],
     pub chat: Chat,
     pub chat_screen: Option<ChatScreen>,
     /// `ChatComponent.latestDraft`.
@@ -503,26 +517,15 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
         return ids.clone();
     }
     let data = root.join("data/minecraft");
-    let mut entity_types: Vec<String> = serde_json::from_slice::<serde_json::Value>(
-        &std::fs::read(root.join("entity-types.json")).unwrap_or_default(),
-    )
-    .ok()
-    .and_then(|v| {
-        v.as_object().map(|o| {
-            o.keys()
-                .map(|k| horizon_client::command::args::normalize(k))
-                .collect()
-        })
-    })
-    .unwrap_or_default();
-    entity_types.sort();
+    let entity_types = super::entity_type_rows::entity_type_rows(root).ids.clone();
     let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
         // `/recipe <id>` must suggest a content mod's recipes too.
         recipes: json_ids_of_every_namespace(root, "recipe"),
         templates: templates_under(&root.join("worldgen/structure")),
         entity_types,
-        enchantments: json_ids_in(&data.join("enchantment")),
+        // A content mod's enchantments too (`/enchant`, `/give` components).
+        enchantments: json_ids_of_every_namespace(root, "enchantment"),
         structures: json_ids_in(&data.join("worldgen/structure")),
         biomes: json_ids_in(&data.join("worldgen/biome")),
         clocks: json_ids_in(&data.join("world_clock")),
@@ -576,7 +579,7 @@ static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<Registries>>)>> = Mutex::
 /// its 1.6 MB again took about 15 ms of every world opening. Only the part
 /// the registries fill from stays, not the parsed export (4.2 MB, against
 /// 2.2 MB). A dedicated server opens its world once and keeps nothing.
-fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
+pub(super) fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
     let mut cache = COMMAND_EXPORTS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, export)) = cache.iter().find(|(cached, _)| cached == dir) {
         return export.clone();
@@ -767,25 +770,6 @@ impl Game<'_> {
         self.ui.registries.permission = level;
         out
     }
-    /// Active enchantment registry snapshot for command codecs and completions.
-    /// Replace both ID views; keep the existing registry tags intact.
-    pub(super) fn sync_enchantment_registries(&mut self) {
-        let mut ids: Vec<String> = self
-            .active_enchantment_definitions()
-            .list
-            .iter()
-            .map(|entry| entry.id.to_string())
-            .collect();
-        ids.sort();
-        ids.dedup();
-        self.ui.registries.enchantments = ids.clone();
-        self.ui
-            .registries
-            .by_registry
-            .entry("minecraft:enchantment".into())
-            .or_default()
-            .ids = ids;
-    }
     /// `ResourceOrIdArgument`'s loot tables are the server's: every table the
     /// world plays with, the game's, the content mods' and its packs'.
     pub(in crate::game) fn sync_loot_table_ids(&mut self) {
@@ -937,8 +921,11 @@ impl Game<'_> {
             .map(|(k, _)| k.clone())
             .collect();
         self.sync_enchantment_registries();
+        if self.remote.is_none() {
+            self.ui.registries.selector_tokens = super::native_entity_selectors::selector_tokens();
+        }
         // After the export, which keys the registry with vanilla's tags.
-        self.ui.registries.sync_damage_type_ids();
+        self.sync_stat_registries();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -953,7 +940,7 @@ impl Game<'_> {
         };
         self.ui.registries.target_block = hit.as_ref().map(|h| h.pos);
         self.ui.registries.target_point =
-            hit.map(|h| h.point.map(horizon_client::java_text::format_fixed2));
+            hit.map(|h| h.point.map(horizon_core::java_number::format_fixed2));
         self.ui.registries.selected_entities = self.crosshair_entity_uuid().into_iter().collect();
         // ClientPacketListener.getOnlinePlayerNames on a server.
         if let Some(names) = self.remote_online_names() {
@@ -1000,7 +987,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let b = self.interface_batch(size);
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1029,7 +1016,7 @@ impl Game<'_> {
         // InBedChatScreen.onClose: leaving the screen means getting up; the
         // screen goes once the player has woken (`tick_in_bed_chat`).
         if self.ui.in_bed_chat && self.sleeping.is_some() {
-            self.wake_up();
+            self.wake_up(false, true);
             return;
         }
         let text = self
@@ -1114,8 +1101,9 @@ impl Game<'_> {
             self.ui.in_bed_chat = self.screen == Screen::Chat;
         }
     }
-    /// The Leave Bed button of `InBedChatScreen`: its bounds.
-    fn leave_bed_button(width: f32, height: f32) -> (i32, i32, i32, i32) {
+    /// The Leave Bed button of `InBedChatScreen`: its bounds, laid out once
+    /// per build (`ChatLayout`).
+    pub(super) fn leave_bed_button(width: f32, height: f32) -> (i32, i32, i32, i32) {
         (width as i32 / 2 - 100, height as i32 - 40, 200, 20)
     }
     /// The Leave Bed button's draws. It registers as a button
@@ -1124,10 +1112,8 @@ impl Game<'_> {
     fn leave_bed_draws(
         m: &Measure,
         mouse: (i32, i32),
-        width: f32,
-        height: f32,
+        (x, y, w, h): (i32, i32, i32, i32),
     ) -> Vec<horizon_client::screen_draw::Draw> {
-        let (x, y, w, h) = Self::leave_bed_button(width, height);
         let label = Text::literal(horizon_client::lang::get_or(
             "multiplayer.stopSleeping",
             "Leave Bed",
@@ -1242,7 +1228,7 @@ impl Game<'_> {
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
         // PvP & HUD's chat search: Ctrl+F starts and stops it, Enter stops it (sends nothing).
-        if self.settings.extras.pvp.chat.search
+        if self.pvp_chat().search
             && match key {
                 KeyCode::KeyF => ctrl,
                 KeyCode::Enter | KeyCode::NumpadEnter => self.pvp.chat_search,
@@ -1390,6 +1376,12 @@ impl Game<'_> {
             return;
         }
         self.ui.chat.add_recent(&message);
+        if let Some(args) =
+            horizon_profiler_args(&message, self.remote.as_ref().map(|r| &r.chat_tree))
+        {
+            self.profiler_chat(args);
+            return;
+        }
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {
@@ -1426,32 +1418,16 @@ impl Game<'_> {
         }
     }
     /// The pointer where the chat lays its parts out: over the on-screen keyboard the chat is
-    /// drawn higher (`lift_over_keyboard`), so the point under a finger is that much lower in it;
-    /// beside a camera cutout it is drawn further right (`draw_clear_of_cutout`), so that much
-    /// further left in it.
+    /// drawn higher (`lift_over_keyboard`), so the point under a finger is that much lower in it.
     fn chat_pointer(&self) -> (f32, f32) {
         let scale = self.renderer.as_ref().map_or(1.0, |r| {
-            HudBatch::new(
-                [r.config.width, r.config.height],
-                self.settings.gui_scale_inputs(),
-            )
-            .scale
+            self.interface_batch([r.config.width, r.config.height])
+                .scale
         });
-        (
-            self.cursor.0 - self.safe_gui_insets(scale)[0],
-            self.cursor.1 + self.chat_lift(scale),
-        )
+        (self.cursor.0, self.cursor.1 + self.chat_lift(scale))
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
         let cursor = self.chat_pointer();
-        let height = self.renderer.as_ref().map_or(720.0, |r| {
-            HudBatch::new(
-                [r.config.width, r.config.height],
-                self.settings.gui_scale_inputs(),
-            )
-            .height
-        });
-        let _ = height;
         let mouse = (cursor.0.floor() as i32, cursor.1.floor() as i32);
         if let Some(screen) = self.ui.chat_screen.as_mut()
             && screen.scroll(mouse, amount as f64)
@@ -1466,11 +1442,8 @@ impl Game<'_> {
     pub(super) fn chat_click(&mut self) {
         let cursor = self.chat_pointer();
         let height = self.renderer.as_ref().map_or(720.0, |r| {
-            HudBatch::new(
-                [r.config.width, r.config.height],
-                self.settings.gui_scale_inputs(),
-            )
-            .height
+            self.interface_batch([r.config.width, r.config.height])
+                .height
         });
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
@@ -1479,17 +1452,16 @@ impl Game<'_> {
         };
         if self.ui.in_bed_chat && self.sleeping.is_some() {
             let width = self.renderer.as_ref().map_or(1280.0, |r| {
-                HudBatch::new(
-                    [r.config.width, r.config.height],
-                    self.settings.gui_scale_inputs(),
-                )
-                .width
+                self.interface_batch([r.config.width, r.config.height])
+                    .width
             });
-            let (x, y, w, h) = Self::leave_bed_button(width, height);
+            let (x, y, w, h) = self
+                .built_chat(width, height)
+                .map_or_else(|| Self::leave_bed_button(width, height), |l| l.leave_bed);
             // The button is in the middle, where the cutout's strip moves nothing.
             let at = (self.cursor.0 as i32, cursor.1 as i32);
             if horizon_client::screen_draw::inside(at, x, y, w, h) {
-                self.wake_up();
+                self.wake_up(false, true);
                 return;
             }
         }
@@ -1501,14 +1473,25 @@ impl Game<'_> {
         } else {
             return;
         }
-        let style = self.ui.chat.style_at(
-            &self.gui.atlas.font,
-            height as i32,
-            cursor.0 as f64,
-            cursor.1 as f64,
-        );
+        let style = self
+            .ui
+            .chat
+            .style_at(
+                &self.gui.atlas.font,
+                height as i32,
+                cursor.0 as f64,
+                cursor.1 as f64,
+            )
+            .or_else(|| {
+                self.ui.chat.queue_style_at(
+                    &self.gui.atlas.font,
+                    height as i32,
+                    cursor.0 as f64,
+                    cursor.1 as f64,
+                )
+            });
         // PvP & HUD's copy on click: a message where the click has nothing else to do.
-        if self.settings.extras.pvp.chat.copy
+        if self.pvp_chat().copy
             && !self.has_shift_down()
             && style.as_ref().is_none_or(|s| s.click.is_none())
             && let Some(message) =
@@ -1551,10 +1534,23 @@ impl Game<'_> {
                 }
             }
             Some(ClickEvent::RunCommand(command)) => self.click_command(&command),
+            Some(ClickEvent::Profiler(command)) => {
+                if let Some(args) = command
+                    .strip_prefix('/')
+                    .and_then(super::profile_capture::profiler_args)
+                {
+                    self.profiler_chat(args);
+                }
+            }
             // Screen.defaultHandleGameClickEvent: the dialog opens over the
             // screen, and closes back to it; a custom action goes back to the server.
             Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
             // Screen.defaultHandleGameClickEvent: custom actions retain chat.
+            // ChatScreen.handleComponentClicked: the queue row's internal id
+            // shows the next held-back message; other custom ids go on.
+            Some(ClickEvent::Custom { id, .. }) if id == QUEUE_EXPAND_ID => {
+                self.accept_next_delayed_message();
+            }
             Some(ClickEvent::Custom { id, payload }) => {
                 if let Some(remote) = &self.remote {
                     remote
@@ -1688,7 +1684,7 @@ impl Game<'_> {
     /// Chat lines over the HUD (focused while the chat screen is open).
     pub(super) fn draw_chat(&mut self, batch: &mut HudBatch) {
         let focused = self.screen == Screen::Chat;
-        let options = self.settings.extras.pvp.chat;
+        let options = self.pvp_chat();
         self.ui.chat.set_qol(&self.gui.atlas, options.qol());
         // A search ends with its option; a chat closed some other way ends it in keep_chat_draft.
         if self.pvp.chat_search && self.ui.chat_screen.is_none() {
@@ -1706,6 +1702,8 @@ impl Game<'_> {
             .map(|s| s.value());
         self.ui.chat.set_search(&self.gui.atlas, query);
         self.ui.chat.search_prompt = focused && self.pvp.chat_search;
+        // `ChatComponent`'s queue row: the messages Chat Delay holds back.
+        self.ui.chat.queue = self.chat_queue_len();
         // ChatComponent.isChatHidden: Chat Visibility Hidden draws no lines (a server is told
         // too, and leaves out other players' chat for Commands Only).
         if (self.ui.hide_gui || self.settings.chat_visibility == 2) && !focused {
@@ -1722,9 +1720,7 @@ impl Game<'_> {
         let (home_x, home_y) = (0, height - 40);
         let (mut x, mut y) = (home_x, home_y);
         self.native_customize_chat_overlay(width, height, focused, &mut x, &mut y);
-        // Out of a camera cutout's strip at the left, as the chat box below it (#166).
-        let clear = self.safe_gui_insets(batch.scale)[0];
-        let offset = [(x - home_x) as f32 + clear, (y - home_y) as f32];
+        let offset = [(x - home_x) as f32, (y - home_y) as f32];
         self.ui
             .chat
             .draw_at(batch, &self.gui.atlas, now, focused, offset);
@@ -1765,7 +1761,10 @@ impl Game<'_> {
         Some(horizon_protocol::crypto::uuid_string(bits))
     }
     pub(super) fn draw_chat_screen(&mut self, batch: &mut HudBatch) {
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        self.gui_layer("minecraft:chat", batch, |g, batch| g.draw_chat(batch));
         let Some(mut screen) = self.ui.chat_screen.take() else {
+            self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
             return;
         };
         // ChatScreen.updateNarrationState: the restricted prompt is
@@ -1779,6 +1778,7 @@ impl Game<'_> {
                 &super::screen_info::tr,
             )
         });
+        // The build made the box at this size (`ChatScreen.resize`).
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1797,33 +1797,40 @@ impl Game<'_> {
             .ui
             .chat_opened
             .map_or(0, |t| t.elapsed().as_millis() as u64);
-        // The box and its suggestions keep out of a camera cutout's strips (#166).
-        self.draw_clear_of_cutout(batch, |batch, clear| {
-            screen.resize(&m, &c, batch.width as i32, batch.height as i32);
-            let mouse = ((pointer.0 - clear).floor() as i32, mouse.1);
-            let draws = screen.draw(&m, mouse, blink, background);
-            horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
-        });
+        screen.resize(&m, &c, batch.width as i32, batch.height as i32);
+        let draws = screen.draw(&m, mouse, blink, background);
+        let tooltip = horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {
-            let button = Self::leave_bed_draws(&m, mouse, batch.width, batch.height);
-            horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
+            let (w, h) = (batch.width, batch.height);
+            let rect = self
+                .built_chat(w, h)
+                .map_or_else(|| Self::leave_bed_button(w, h), |l| l.leave_bed);
+            let button = Self::leave_bed_draws(&m, mouse, rect);
+            let _ = horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
+        horizon_client::screen_draw::paint_tooltip(batch, &self.gui.atlas, &draws, tooltip);
         // The hovered message part's tooltip (`renderComponentHoverEffect`),
         // or the text of the message tag under the cursor.
         let height = batch.height as i32;
-        // The lines are drawn that much further right (`draw_chat`).
-        let clear = self.safe_gui_insets(batch.scale)[0];
-        let (cx, cy) = (f64::from(pointer.0 - clear), f64::from(pointer.1));
+        let (cx, cy) = (f64::from(pointer.0), f64::from(pointer.1));
         // handleTagIcon: the chat-modified icons over the cursor or its message.
         let (tag_tooltip, tag_icons) =
             self.ui
                 .chat
                 .focused_tags(&self.gui.atlas.font, height, cx, cy);
-        let start = batch.vertices.len();
         horizon_client::hud_layout::paint(batch, &self.gui.atlas, &tag_icons);
-        batch.translate_since(start, clear, 0.0);
-        if let Some(style) = self.ui.chat.style_at(&self.gui.atlas.font, height, cx, cy) {
+        let style = self
+            .ui
+            .chat
+            .style_at(&self.gui.atlas.font, height, cx, cy)
+            .or_else(|| {
+                self.ui
+                    .chat
+                    .queue_style_at(&self.gui.atlas.font, height, cx, cy)
+            });
+        if let Some(style) = style {
             // ActiveTextCollector.ClickableStyleFinder: a click event, or an
             // insertion while Shift is held (ChatScreen.includeInsertions).
             if style.click.is_some() || (style.insertion.is_some() && self.has_shift_down()) {
@@ -1883,7 +1890,7 @@ impl Game<'_> {
         if !mod_api::__private::listened(mod_api::HookId::ComponentHover) {
             return false;
         }
-        let Some(hover) = crate::game::api_values::style_hover(style) else {
+        let Some(hover) = horizon_client_lib::api_text::style_hover(style) else {
             return false;
         };
         let mut cancel = false;
@@ -2105,12 +2112,9 @@ impl Game<'_> {
     }
     /// `ServerClockManager.ServerClockInstance.loadFrom`: restore the existing
     /// Overworld state when a world opens; clear the other command-state cache.
-    pub(super) fn load_world_state(&mut self) {
-        self.ui.rules = GameRules::load_with_registry(
-            &self.world_root,
-            &self.level.enabled_features,
-            self.level.rule_registry.clone(),
-        );
+    /// The carrier store's open-time state settles here too, before the
+    /// first tick and any player: a refusal fails the open.
+    pub(super) fn load_world_state(&mut self) -> crate::Result<()> {
         self.ui.dispatcher = SessionDispatcher(Arc::new(
             horizon_client::command::vanilla::session_dispatcher(
                 &self.level.rule_registry,
@@ -2162,6 +2166,7 @@ impl Game<'_> {
         // The world opens with its test instances (`Registries.TEST_INSTANCE`).
         self.snapshot_test_defs();
         self.sync_rules();
+        self.carrier_world_opened()
     }
     /// Save the clock beside level.dat (Level.write saves the game rules: a
     /// second writer of game_rules.dat could leave it with the rules loaded
@@ -2412,6 +2417,31 @@ const LINK_COPY: usize = 1;
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_typed_profiler_is_the_clients_unless_the_server_owns_the_name() {
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        let ours = vanilla.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&ours)),
+            Some(" share")
+        );
+        assert_eq!(super::horizon_profiler_args("/profiler", None), Some(""));
+        assert_eq!(
+            super::horizon_profiler_args("/profilers", Some(&ours)),
+            None
+        );
+        let mut server = vanilla.clone();
+        let node = server.literal(0, "profiler");
+        server.executes(node, "server:profiler");
+        let theirs = server.with_profiler();
+        assert_eq!(
+            super::horizon_profiler_args("/profiler share", Some(&theirs)),
+            None
+        );
+    }
+
+    /// A mod's text reaches the chat box as typing would leave it: emoji and
+    /// accents stay, control characters, DEL and the section sign go.
     #[test]
     fn canceled_screenshot_keeps_a_custom_line_or_the_default_reason() {
         let custom = Text::literal("kept");
@@ -2922,11 +2952,11 @@ mod tests {
             ChatAbilities::new(ChatVisibility::Full),
         );
         screen.draw(&m, (0, 0), 0, 0);
-        Game::leave_bed_draws(&m, (0, 0), width, height);
+        let (x, y, w, h) = Game::leave_bed_button(width, height);
+        Game::leave_bed_draws(&m, (0, 0), (x, y, w, h));
         horizon_client::widgets::end_frame(u64::MAX);
 
         let targets = key_focus::drawn_targets();
-        let (x, y, w, h) = Game::leave_bed_button(width, height);
         let bed = targets
             .iter()
             .copied()
@@ -3005,10 +3035,7 @@ mod enchantment_snapshot_tests {
         game.world_root = dir;
         let stack = game.reload_datapacks(false, &[]).unwrap();
         let root = game.options.resources.clone();
-        game.world_tables = game
-            .build_world_tables(&stack, false, &root, game.mods.data_switched)
-            .unwrap()
-            .0;
+        game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
         assert!(
             game.world_tables.is_some(),
             "the real active table container must be available"
@@ -3026,7 +3053,8 @@ mod enchantment_snapshot_tests {
                 .unwrap(),
         );
         game.world_tables.as_mut().unwrap().stations.enchantments = synced.clone();
-        game.world_tables.as_mut().unwrap().items.enchantments = synced;
+        std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).enchantments =
+            synced;
         assert!(
             game.active_enchantment_definitions()
                 .get("h024:audit")
@@ -3070,7 +3098,8 @@ mod enchantment_snapshot_tests {
             assert_eq!(reg.effects, effects);
         }
         game.world_tables.as_mut().unwrap().stations.enchantments = base.clone();
-        game.world_tables.as_mut().unwrap().items.enchantments = base;
+        std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).enchantments =
+            base;
         assert!(
             game.active_enchantment_definitions()
                 .get("h024:audit")
@@ -3158,9 +3187,8 @@ mod damage_type_registry_tests {
         .unwrap();
         game.world_root = dir;
         let stack = game.reload_datapacks(false, &[]).unwrap();
-        (game.world_tables, game.health_resources) = game
-            .build_world_tables(&stack, false, &root, game.mods.data_switched)
-            .unwrap();
+        (game.world_tables, game.health_resources, _) =
+            game.stage_world_tables(&stack, false, &root).unwrap();
         game.level.allow_commands = Some(true);
         game.build_registries();
 

@@ -3,6 +3,7 @@
 //! `onSyncedDataUpdated`): what a client draws from it rather than from its
 //! own simulation, which a client of a server doesn't run.
 use super::Game;
+#[cfg(test)]
 use horizon_client::mobs::render::VILLAGER_TYPES;
 use horizon_client::mobs::{
     Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
@@ -16,7 +17,7 @@ use horizon_world::registry::BlockStateId;
 /// The values `apply` takes from one SetEntityData packet, by vanilla's entry
 /// indices (Entity 0..=7, LivingEntity 8..=14, Mob 15, then the subclasses).
 /// `builtin` names the ids of built-in registries.
-fn apply(
+pub(super) fn apply(
     m: &mut Mob,
     values: &[(u8, i32, Value)],
     builtin: &Builtin,
@@ -165,9 +166,9 @@ fn apply(
             }
             // Piglin.DATA_IS_DANCING: the dance pose.
             (Species::Piglin, 19, Value::Bool(dancing)) => m.extra.scratch[0] = i32::from(*dancing),
-            // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
+            // TamableAnimal.DATA_FLAGS_ID: in the sitting pose 1, tame 4.
             (Species::Wolf | Species::Cat | Species::Parrot, 18, Value::Byte(flags)) => {
-                m.extra.sitting = flags & 1 != 0;
+                m.extra.sitting_pose = flags & 1 != 0;
                 m.extra.tame = flags & 4 != 0;
             }
             // Cat.IS_LYING and RELAX_STATE_ONE.
@@ -479,32 +480,7 @@ fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
         .collect()
 }
 
-/// VillagerData as the network sends it: the type and the profession by
-/// their built-in registry ids, then the level.
-fn villager_data(m: &mut Mob, data: &[i32], builtin: &Builtin) {
-    let &[kind, profession, level] = data else {
-        return;
-    };
-    let index = |registry: &str, id: i32, names: &[&str]| {
-        let name = builtin
-            .get(registry)?
-            .name(id)?
-            .strip_prefix("minecraft:")?;
-        names.iter().position(|n| *n == name).map(|i| i as u8)
-    };
-    if let Some(t) = index("minecraft:villager_type", kind, &VILLAGER_TYPES) {
-        m.extra.variant = t;
-    }
-    if let Some(p) = builtin
-        .get("minecraft:villager_profession")
-        .and_then(|r| r.name(profession))
-        .and_then(|name| name.strip_prefix("minecraft:"))
-        .and_then(horizon_client::mobs::villager::profession_index)
-    {
-        m.extra.profession = horizon_client::mobs::villager::ProfessionState::from_index(p);
-    }
-    m.extra.villager_level = level.max(1);
-}
+use super::villager_client::villager_data;
 
 impl Game<'_> {
     /// SetEntityData for a mob of the server's.
@@ -518,8 +494,10 @@ impl Game<'_> {
             (14, _, Value::OptPos(bed)) => Some(bed.map_or(0, |b| self.bed_facing(b))),
             _ => None,
         });
+        let professions = r.professions.clone();
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
-            let stare_sound = apply(m, values, &r.builtin, r.entity_id);
+            let stare_sound =
+                super::villager_client::receive(m, values, &r.builtin, r.entity_id, &professions);
             apply_registry_data(m, values, &r.registries, self.world.game_time);
             if let Some(code) = bed
                 && m.species() == Species::Villager
@@ -578,6 +556,7 @@ mod tests {
         // Metadata needs no AI or model. Avoid the resource loader, which also
         // initializes process-wide item tags used by unrelated mob tests.
         let kind = Arc::new(MobType {
+            shadow: None,
             id: kind.into(),
             species,
             width: 0.6,
@@ -597,6 +576,7 @@ mod tests {
             jump_strength: 0.42,
             attributes: Arc::default(),
             item_stack_limits: Arc::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -620,7 +600,7 @@ mod tests {
             brain: Brain::Passive,
             anim: Anim::Zombie,
             sounds: [""; 3],
-            step_sound: None,
+            sound_overrides: Default::default(),
             food: Arc::default(),
             tempt: Arc::default(),
             passenger_attachments: Vec::new(),
@@ -745,6 +725,7 @@ mod tests {
                     position: [0.0; 3],
                     view_distance: 10,
                     chunks: &chunks,
+                    sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
                     gone: None,
@@ -908,6 +889,7 @@ mod tests {
                     position: [0.0; 3],
                     view_distance: 10,
                     chunks: &chunks,
+                    sources: None,
                     tracker: &mut tracker,
                     out: &mut packets,
                     gone: None,
@@ -1155,6 +1137,14 @@ mod tests {
                 "minecraft:parrot#main": {}}"#,
         )
         .unwrap();
+        fs::write(
+            root.join("attributes.json"),
+            format!(
+                r#"{{"data_version": {}, "attributes": [], "entities": {{}}}}"#,
+                horizon_core::version::DATA_VERSION
+            ),
+        )
+        .unwrap();
         let mut types = MobTypes::load(&root).unwrap();
         fs::remove_dir_all(root).unwrap();
         for kind in ["minecraft:happy_ghast", "minecraft:nautilus"] {
@@ -1204,6 +1194,14 @@ mod tests {
         fs::write(
             root.join("entity-models.json"),
             r#"{"minecraft:bat#main": {"children": {"right_wing": {}, "head": {}}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("attributes.json"),
+            format!(
+                r#"{{"data_version": {}, "attributes": [], "entities": {{}}}}"#,
+                horizon_core::version::DATA_VERSION
+            ),
         )
         .unwrap();
         let mut types = MobTypes::load(&root).unwrap();
@@ -1265,7 +1263,7 @@ mod tests {
                 (21, s::INT, Value::Int(11)),
             ],
         );
-        assert!(m.extra.tame && m.extra.sitting);
+        assert!(m.extra.tame && m.extra.sitting_pose);
         assert_eq!(m.extra.color, 11);
     }
 
@@ -1348,7 +1346,8 @@ mod tests {
                 VILLAGER_TYPES[m.extra.variant as usize],
                 horizon_client::mobs::villager::profession_table().entries()
                     [m.extra.profession.index().unwrap_or(0) as usize]
-                    .id,
+                    .id
+                    .as_str(),
                 m.extra.villager_level,
             )
         };
@@ -1577,6 +1576,14 @@ mod tests {
             r#"{"minecraft:pig#main": {}, "minecraft:strider#main": {}}"#,
         )
         .unwrap();
+        fs::write(
+            root.join("attributes.json"),
+            format!(
+                r#"{{"data_version": {}, "attributes": [], "entities": {{}}}}"#,
+                horizon_core::version::DATA_VERSION
+            ),
+        )
+        .unwrap();
         let mut types = MobTypes::load(&root).unwrap();
         fs::remove_dir_all(root).unwrap();
 
@@ -1623,3 +1630,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "remote_mob_data/pet_pose_meta_tests.rs"]
+mod pet_pose_meta_tests;

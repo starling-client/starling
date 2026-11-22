@@ -326,6 +326,9 @@ pub struct Chat {
     history_file: Option<std::path::PathBuf>,
     scroll: usize,
     new_since_scroll: bool,
+    /// `ChatComponent`'s delayed queue size (`ChatListener.queueSize`): the
+    /// `chat.queue` row under the messages, while Chat Delay holds some.
+    pub queue: usize,
     pub options: ChatOptions,
     /// The smooth chat extra: a new line slides in from the left while it
     /// fades in, instead of appearing whole.
@@ -350,6 +353,25 @@ pub struct Chat {
     #[cfg(test)]
     clock: Option<(u8, u8)>,
 }
+/// `ChatComponent.QUEUE_EXPAND_ID`: the queue row's click event, handled by
+/// the chat screen itself (`ChatListener.acceptNextDelayedMessage`).
+pub const QUEUE_EXPAND_ID: &str = "minecraft:internal/expand_chat_queue";
+
+/// `ChatComponent`'s queue row: how many messages Chat Delay holds, with the
+/// style that shows the next one (a click, and `chat.queue.tooltip` on hover).
+pub fn queue_line(queued: usize) -> Text {
+    Text::translate("chat.queue", &[Text::literal(queued.to_string())]).with_style(&Style {
+        click: Some(ClickEvent::Custom {
+            id: QUEUE_EXPAND_ID.into(),
+            payload: None,
+        }),
+        hover: Some(std::sync::Arc::new(Text::translate(
+            "chat.queue.tooltip",
+            &[],
+        ))),
+        ..Style::default()
+    })
+}
 impl Chat {
     pub fn lines_per_page(&self, focused: bool) -> usize {
         (self.options.height_px(focused) / self.options.line_height().max(1)) as usize
@@ -360,6 +382,7 @@ impl Chat {
     }
     /// ChatComponent.addMessage: wrap, prepend and trim to 100 lines. A
     /// message the Chat option hides is dropped, unlogged.
+    #[horizon_mod_api_macros::replaceable]
     pub fn add(
         &mut self,
         atlas: &HudAtlas,
@@ -568,6 +591,8 @@ impl Chat {
     pub fn set_qol(&mut self, atlas: &HudAtlas, qol: ChatQol) {
         if self.qol != qol {
             self.qol = qol;
+            self.scroll = 0;
+            self.new_since_scroll = false;
             self.rewrap(&atlas.font);
         }
     }
@@ -593,20 +618,25 @@ impl Chat {
             .filter(|q| !q.trim().is_empty());
         if self.search != query {
             self.search = query;
+            self.scroll = 0;
+            self.new_since_scroll = false;
             self.rewrap(font);
         }
     }
     pub fn searching(&self) -> bool {
         self.search.is_some()
     }
-    /// Re-wrap after a width or scale change (ChatComponent.rescaleChat),
-    /// keeping only the messages the Chat option shows.
+    /// Re-wrap after a width or scale change (`ChatComponent.rescaleChat`):
+    /// `resetChatScroll`, then the messages the Chat option shows.
     pub fn rescale(&mut self, atlas: &HudAtlas) {
-        self.rewrap(&atlas.font);
-    }
-    fn rewrap(&mut self, font: &crate::font::Font) {
         self.scroll = 0;
         self.new_since_scroll = false;
+        self.rewrap(&atlas.font);
+    }
+    /// `ChatComponent.refreshTrimmedMessages`: the lines are laid out again
+    /// where the reader was (`chatScrollbarPos` survives a filter change);
+    /// `rescale` resets the scroll itself, as `rescaleChat` does.
+    fn rewrap(&mut self, font: &crate::font::Font) {
         self.lines.clear();
         let mut messages = std::mem::take(&mut self.messages);
         for m in messages.iter_mut().rev() {
@@ -877,8 +907,58 @@ impl Chat {
                 ));
             }
         }
+        if self.queue > 0 {
+            // ChatComponent: the queue row under the messages, a background
+            // band and the count at half text opacity.
+            out.push(hud_layout::fill(
+                -2,
+                chat_bottom,
+                max_width + 4,
+                chat_bottom + 9,
+                hud_layout::as8(background_opacity) << 24,
+            ));
+            out.push(GuiDraw::Text {
+                text: queue_line(self.queue),
+                x: 0,
+                y: chat_bottom + 1,
+                color: hud_layout::white(0.5 * text_opacity),
+                shadow: true,
+            });
+        }
         out.push(GuiDraw::Pop);
         out
+    }
+    /// `ChatComponent`'s queue row under the cursor while the chat is open: the
+    /// style of its glyph (`queue_line`'s click and hover).
+    pub fn queue_style_at(
+        &self,
+        font: &crate::font::Font,
+        height: i32,
+        x: f64,
+        y: f64,
+    ) -> Option<Style> {
+        if self.queue == 0 || self.lines.is_empty() {
+            return None;
+        }
+        let o = &self.options;
+        let scale = o.scale as f32;
+        let chat_bottom = hud_layout::floor((height - 40) as f32 / scale);
+        let (mouse_x, mouse_y) = (x / f64::from(scale) - 4.0, y / f64::from(scale));
+        if mouse_y < f64::from(chat_bottom + 1) || mouse_y >= f64::from(chat_bottom + 10) {
+            return None;
+        }
+        let line = queue_line(self.queue);
+        let mut x = mouse_x;
+        if x < 0.0 {
+            return None;
+        }
+        for (c, style) in line.resolve_legacy().chars() {
+            x -= f64::from(font.advance(c, style));
+            if x < 0.0 {
+                return Some(style.clone());
+            }
+        }
+        None
     }
     /// Draws [`Chat::layout`] into the HUD batch, and with the chat screen
     /// open the restricted prompt above the lines.
@@ -1304,6 +1384,9 @@ pub struct ChatScreen {
     /// `CommandSuggestions.setRestrictions`: what the Chat option allows.
     pub abilities: ChatAbilities,
     pub layout: SuggestLayout,
+    /// `MouseHandler.lastClick`: a click within 250 ms of the last one on
+    /// this screen is a double click.
+    last_click: Option<std::time::Instant>,
 }
 /// Local completions waiting for the server's reply to request `id`.
 struct Awaiting {
@@ -1503,6 +1586,7 @@ impl ChatScreen {
             auto_suggestions: true,
             abilities,
             layout: SuggestLayout::CHAT,
+            last_click: None,
         };
         s.update_command_info(m, c);
         s
@@ -1541,6 +1625,7 @@ impl ChatScreen {
             auto_suggestions: true,
             abilities: ChatAbilities::new(ChatVisibility::Full),
             layout: SuggestLayout::COMMAND_BLOCK,
+            last_click: None,
         };
         s.update_command_info(m, c);
         s
@@ -1649,6 +1734,7 @@ impl ChatScreen {
         }
     }
     /// `CommandSuggestions.updateCommandInfo`.
+    #[horizon_mod_api_macros::replaceable]
     fn update_command_info(&mut self, m: &Measure, c: &Commands) {
         let command = self.input.value.clone();
         if self.parse.as_ref().is_some_and(|p| p.input != command) {
@@ -2085,8 +2171,15 @@ impl ChatScreen {
             }
             self.suggestions = Some(l);
         }
+        // MouseHandler: the same screen's click within 250 ms is a double
+        // click, which selects the word under the pointer.
+        let now = std::time::Instant::now();
+        let double = self
+            .last_click
+            .is_some_and(|at| now.duration_since(at).as_millis() < 250);
+        self.last_click = Some(now);
         if self.input.contains(x, y) {
-            self.input.click(m, x, false);
+            self.input.click(m, x, false, double);
             return true;
         }
         false
@@ -2100,7 +2193,11 @@ impl ChatScreen {
             return false;
         }
         let max = l.list.len().saturating_sub(self.layout.line_limit) as i32;
-        l.offset = ((l.offset as f64 - amount.clamp(-1.0, 1.0)) as i32).clamp(0, max) as usize;
+        // Round instead of truncating: touchpad/PixelDelta produces fractional
+        // amounts and truncation drops movement in one direction (#14338).
+        l.offset = (l.offset as f64 - amount.clamp(-1.0, 1.0))
+            .round()
+            .clamp(0.0, max as f64) as usize;
         true
     }
     /// `CommandSuggestions.formatText`: argument colours over the input. The
@@ -2212,6 +2309,11 @@ impl ChatScreen {
     ) {
         let limit = l.list.len().min(self.layout.line_limit);
         let [rx, ry, rw, rh] = l.rect;
+        // SuggestionsList.extractRenderState: the whole list asks for the
+        // pointing hand while the pointer is inside its rectangle.
+        if mouse.0 >= rx && mouse.0 < rx + rw && mouse.1 >= ry && mouse.1 < ry + rh {
+            crate::widgets::request_cursor(crate::widgets::Cursor::PointingHand);
+        }
         let has_prev = l.offset > 0;
         let has_next = l.list.len() > l.offset + limit;
         let moved = l.last_mouse != mouse;

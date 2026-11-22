@@ -43,7 +43,9 @@ impl Scene {
             OsString::from_wide(&[110, 0xd800])
         };
         let path = root.path().canonicalize().unwrap().join(&name);
-        fs::create_dir(&path).unwrap();
+        #[cfg(unix)]
+        let path = path.join("long-launcher-home-".repeat(8));
+        fs::create_dir_all(&path).unwrap();
         let data = path.join("data");
         let registry = Registry::with_release(&data, Release::Close).unwrap();
         let snapshots: Vec<_> = [("image", !native), ("world", false), ("sdk", true)]
@@ -100,7 +102,16 @@ impl Scene {
         let (record, file) = record::Reference::publish(&snapshots[1], &entry, &selection).unwrap();
         Self {
             _root: root,
-            marker: Marker::new(path.join("endpoint")).unwrap(),
+            marker: {
+                #[cfg(unix)]
+                {
+                    Marker::runtime().unwrap()
+                }
+                #[cfg(windows)]
+                {
+                    Marker::new(path.join("endpoint")).unwrap()
+                }
+            },
             request: Request {
                 entry,
                 program,
@@ -215,6 +226,7 @@ fn windows_controller_quietly_declines_managed_mode_without_spawning() {
 }
 #[cfg(unix)]
 #[test]
+#[ignore = "daily"]
 fn controller_checks_capability_before_spawn_and_refuses_stale_or_wrong_ack() {
     for mode in ["legacy", "wrong-ack", "stale-ack", "late"] {
         let scene = Scene::new(false);
@@ -261,6 +273,7 @@ fn controller_checks_capability_before_spawn_and_refuses_stale_or_wrong_ack() {
     }
 }
 #[test]
+#[ignore = "daily"]
 fn failed_kill_hands_unreaped_child_off_without_exceeding_launch_budget() {
     use std::sync::mpsc;
     for budget in [Duration::ZERO, Duration::from_millis(40)] {
@@ -303,6 +316,7 @@ fn failed_kill_hands_unreaped_child_off_without_exceeding_launch_budget() {
     }
 }
 #[test]
+#[ignore = "daily"]
 fn failed_reaper_spawn_retains_ownership_without_waiting_or_panicking() {
     use std::sync::{
         Arc,
@@ -338,6 +352,8 @@ fn failed_reaper_spawn_retains_ownership_without_waiting_or_panicking() {
         "unreaped owner was silently dropped"
     );
 }
+/// Used by the Unix-only holder tests below.
+#[cfg(unix)]
 fn assert_record_owned(data: &Path, expected: bool) {
     let record = fs::read_dir(data.join("run-records"))
         .unwrap()
@@ -360,6 +376,8 @@ fn assert_record_owned(data: &Path, expected: bool) {
         );
     }
 }
+/// Used by the Unix-only holder tests below.
+#[cfg(unix)]
 fn released_record(data: &Path) {
     let end = deadline();
     loop {
@@ -382,6 +400,7 @@ fn released_record(data: &Path) {
 }
 #[cfg(unix)]
 #[test]
+#[ignore = "daily"]
 fn committed_game_retains_independent_record_after_gui_process_exit() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().canonicalize().unwrap();
@@ -400,6 +419,7 @@ fn committed_game_retains_independent_record_after_gui_process_exit() {
 }
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "daily"]
 fn independent_game_retains_record_after_holder_death_even_through_closefrom_wrapper() {
     for mode in ["stdin", "closefrom"] {
         let mut scene = Scene::new(false);
@@ -433,6 +453,7 @@ fn independent_game_retains_record_after_holder_death_even_through_closefrom_wra
 }
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "daily"]
 fn game_owned_record_capture_writes_after_both_supervisors_die() {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::fs::PermissionsExt;
@@ -518,6 +539,7 @@ fn game_owned_record_capture_writes_after_both_supervisors_die() {
     }
 }
 #[test]
+#[ignore = "daily"]
 fn private_version_is_refused_before_normal_startup() {
     let status = Command::new(actor())
         .env(ENV, r#"{"version":99}"#)
@@ -526,6 +548,7 @@ fn private_version_is_refused_before_normal_startup() {
     assert_eq!(status.code(), Some(78));
 }
 #[test]
+#[ignore = "daily"]
 fn malformed_entry_is_noncreating_and_versioned() {
     let scene = Scene::new(false);
     let mut entry = scene.request.entry.clone();
@@ -550,6 +573,7 @@ fn malformed_entry_is_noncreating_and_versioned() {
     );
 }
 #[test]
+#[ignore = "daily"]
 fn replaced_tree_completion_or_unreserved_image_never_starts_game() {
     for change in 0..3 {
         let mut scene = Scene::new(false);
@@ -582,6 +606,7 @@ fn replaced_tree_completion_or_unreserved_image_never_starts_game() {
     }
 }
 #[test]
+#[ignore = "daily"]
 fn eof_wrong_commit_and_postcommit_replacement_refuse_even_wrappers() {
     for change in 0..4 {
         let mut scene = Scene::new(false);
@@ -606,6 +631,7 @@ fn eof_wrong_commit_and_postcommit_replacement_refuse_even_wrappers() {
     }
 }
 #[test]
+#[ignore = "daily"]
 fn native_paths_arguments_and_scrubbed_metadata_survive_committed_launch() {
     for native in [false, true] {
         let mut scene = Scene::new(native);
@@ -621,6 +647,7 @@ fn native_paths_arguments_and_scrubbed_metadata_survive_committed_launch() {
     }
 }
 #[test]
+#[ignore = "daily"]
 #[cfg(target_os = "linux")]
 fn independently_retained_objects_and_claims_survive_native_exit_callbacks() {
     use std::os::unix::fs::MetadataExt as Unix;
@@ -653,6 +680,7 @@ fn independently_retained_objects_and_claims_survive_native_exit_callbacks() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn direct_game_owns_install_resources_and_home_until_process_exit() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().canonicalize().unwrap();
@@ -663,7 +691,7 @@ fn direct_game_owns_install_resources_and_home_until_process_exit() {
         fs::create_dir(path).unwrap();
     }
     fs::write(install.join(".installed"), b"").unwrap();
-    let registry = Registry::with_release(&data, Release::Close).unwrap();
+    let registry = Registry::with_release(&data, Release::Unlock).unwrap();
     let directories: Vec<_> = [&install, &resources, &home]
         .into_iter()
         .map(|p| open_directory(p).unwrap())

@@ -39,7 +39,11 @@ impl CustomButton {
             || crate::keybinds::mouse_button(token).is_some()
             || matches!(
                 token,
-                "mouse.scroll.up" | "mouse.scroll.down" | "mouse.virtual.toggle" | "mouse.look"
+                "mouse.scroll.up"
+                    | "mouse.scroll.down"
+                    | "mouse.virtual.toggle"
+                    | "mouse.look"
+                    | "mouse.keyboard"
             )
             || token
                 .strip_prefix("action:")
@@ -138,6 +142,7 @@ pub fn friendly_token_name(token: &str) -> String {
         "mouse.scroll.down" => "Wheel Down".into(),
         "mouse.virtual.toggle" => "Virtual Mouse".into(),
         "mouse.look" => "Mouse Look".into(),
+        "mouse.keyboard" => "Keyboard".into(),
         _ => {
             if let Some(name) = token.strip_prefix("action:") {
                 let tr = crate::text::Text::translate(name, &[]).plain();

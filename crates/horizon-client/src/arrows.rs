@@ -13,6 +13,7 @@ use crate::{
     projectiles::{Hit, Projectile, ProjectileKind},
     world::World,
 };
+use horizon_core::nbt::Tag;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, sweep_intersected_blocks},
     position::BlockPos,
@@ -178,6 +179,9 @@ pub struct ArrowState {
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
     pub fired_from_weapon: Option<crate::items::ItemStack>,
+    /// `AbstractArrow.soundEvent` is `item.crossbow.hit` (`CrossbowItem.createProjectile`)
+    /// until the first block hit sets it back to `entity.arrow.hit`.
+    pub crossbow_hit_sound: bool,
     pub no_physics: bool,
     /// `Arrow.ID_EFFECT_COLOR` as a client has it from its server (-1: none).
     pub effect_color: i32,
@@ -237,7 +241,36 @@ impl Default for ArrowState {
         Self::new()
     }
 }
+const ARROW_HIT: &str = "minecraft:entity.arrow.hit";
+const CROSSBOW_HIT: &str = "minecraft:item.crossbow.hit";
+
 impl ArrowState {
+    /// `AbstractArrow.addAdditionalSaveData`'s `SoundEvent`: the crossbow's
+    /// until the first block hit, else the loaded one (a trident's own) or
+    /// `entity.arrow.hit`.
+    pub fn saved_sound_event(&self, loaded: Option<&Tag>) -> Tag {
+        let loaded = match loaded {
+            Some(Tag::String(s)) => s.to_string_lossy(),
+            _ => ARROW_HIT.into(),
+        };
+        let sound = match (self.crossbow_hit_sound, loaded.as_ref()) {
+            (true, _) => CROSSBOW_HIT,
+            (false, CROSSBOW_HIT) => ARROW_HIT,
+            (false, other) => other,
+        };
+        Tag::String(sound.into())
+    }
+    /// `AbstractArrow.readAdditionalSaveData`'s `weapon` and `SoundEvent`.
+    pub fn load_weapon_and_sound(
+        &mut self,
+        tag: &Tag,
+        item: impl FnOnce(&Tag) -> Option<crate::items::ItemStack>,
+    ) {
+        self.fired_from_weapon = tag.get("weapon").and_then(item);
+        let saved = tag.get("SoundEvent");
+        self.crossbow_hit_sound =
+            matches!(saved, Some(Tag::String(s)) if s.to_string_lossy() == CROSSBOW_HIT);
+    }
     pub fn new() -> Self {
         Self {
             in_ground: false,
@@ -251,6 +284,7 @@ impl ArrowState {
             spectral_duration: 200,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
+            crossbow_hit_sound: false,
             no_physics: false,
             effect_color: -1,
             pierce: 0,
@@ -276,8 +310,8 @@ impl ArrowState {
     /// `Arrow.getColor` of the server's own arrow: the colour of the potion on
     /// its pickup item, None for a plain arrow (`PotionContents.EMPTY`).
     pub fn potion_color(&self) -> Option<u32> {
-        let potion = self.pickup_item.potion()?;
-        Some(crate::brewing::potion_color(Some(potion)))
+        (!crate::brewing::contents_empty(&self.pickup_item))
+            .then(|| crate::brewing::contents_color(&self.pickup_item))
     }
     /// The `AbstractArrow` constructor's `pickupItemStack`: the drawn ammo
     /// (one item). Ammo drawn without being used up (`INTANGIBLE_PROJECTILE`)
@@ -873,7 +907,7 @@ impl Ticker<'_, '_, '_, '_> {
         if !self.st.first_tick && self.st.fluids.is_in_fluid(&Tags, LAVA) {
             self.st.fall_distance *= 0.5;
         }
-        if self.position().y < f64::from(self.scene.world.bottom_y() - 64) {
+        if self.position().y < self.scene.world.below_world_y() {
             self.st.removed = true;
         }
         self.st.first_tick = false;
@@ -1022,11 +1056,7 @@ impl Ticker<'_, '_, '_, '_> {
     fn hit_sound(&mut self) {
         let pitch = 1.2 / (self.p.entity_random().next_float() * 0.2 + 0.9);
         // CrossbowItem.createProjectile: its arrows hit with the crossbow's sound.
-        let crossbow = self
-            .st
-            .fired_from_weapon
-            .as_ref()
-            .is_some_and(|s| &*s.item == "minecraft:crossbow");
+        let crossbow = self.st.crossbow_hit_sound;
         let sound = if self.trident() {
             ArrowSound::TridentHitGround
         } else if crossbow {
@@ -1095,6 +1125,8 @@ impl Ticker<'_, '_, '_, '_> {
         self.hit_sound();
         self.st.in_ground = true;
         self.st.shake = 7;
+        // setSoundEvent(SoundEvents.ARROW_HIT): later hits and the save.
+        self.st.crossbow_hit_sound = false;
         self.p.set_critical(false);
         self.st.pierce = 0;
         self.st.pierced.clear();
@@ -1143,8 +1175,11 @@ impl Ticker<'_, '_, '_, '_> {
             _ => None,
         }
     }
-    /// `Entity.applyEffectsFromBlocks`: the shared sweep keeps the arrow's
-    /// contact hooks and bubble-column pushes before applying the fire effects.
+    /// `Entity.applyEffectsFromBlocks`: the sweep keeps the arrow's
+    /// bubble-column pushes and applies the fire effects; the part's contact
+    /// fires at the batch that ticks it (Game::sweep_projectile_inside), on
+    /// the shared walk, as items' and the other projectiles' do — this own
+    /// walk no longer records it for the drain.
     fn apply_effects_from_blocks(&mut self, from: Vec3, to: Vec3) {
         if self.st.removed || self.st.no_physics {
             return;
@@ -1153,7 +1188,6 @@ impl Ticker<'_, '_, '_, '_> {
         let (fire_ticks, extinguished) =
             scene.apply_block_effects(from, to, self.st.fire_ticks, |state, p, precise| {
                 let name = &*scene.facts.get(state).name;
-                crate::block_contact::inside(self.p.id as i32, state, p, precise);
                 if name == "minecraft:bubble_column" && precise {
                     self.bubble_column(state, p);
                 }

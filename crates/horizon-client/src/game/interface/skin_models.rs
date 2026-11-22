@@ -28,6 +28,11 @@ impl SkinModels {
         Some(model.clone())
     }
 
+    pub(super) fn forget(&mut self, skin: &str) {
+        self.entries.remove(&(skin.to_owned(), false));
+        self.entries.remove(&(skin.to_owned(), true));
+    }
+
     pub(super) fn insert(&mut self, key: (String, bool), model: Arc<Part>) {
         self.clock += 1;
         if self.entries.len() >= Self::CAP

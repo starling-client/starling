@@ -162,6 +162,8 @@ pub enum Event {
     Orb(i32),
     /// The villager reached this level (regeneration for 200 ticks).
     LevelUp(i32),
+    /// A level-up recomputed the trading player's special prices.
+    OffersRefreshed,
     /// `notifyTradeUpdated`: the merchant says yes (a result) or no, at
     /// this pitch.
     TradeUpdated(bool, f32),
@@ -240,7 +242,7 @@ impl Session {
     /// may draw while trading: those of the levels above it.
     pub fn sequences_needed(trades: &Trades, profession: &str, level: i32) -> Vec<String> {
         (level.saturating_add(1)..=5)
-            .filter_map(|l| trades.sequence(&Trades::set_for(profession, l)))
+            .filter_map(|l| trades.sequence(&trades.set_for(profession, l)))
             .collect()
     }
     /// `Villager.updateSpecialPrices` for the trading player.
@@ -274,11 +276,12 @@ impl Session {
             if can_level_up(self.level) && self.xp >= max_xp(self.level) {
                 self.level += 1;
                 if let Some(env) = env {
-                    let set = Trades::set_for(&self.profession, self.level);
+                    let set = env.trades.set_for(&self.profession, self.level);
                     if env.trades.sets.contains_key(&set) {
                         let more = self.offers_from_set(env, items, &set);
                         self.offers.extend(more);
                         self.update_special_prices();
+                        self.events.push(Event::OffersRefreshed);
                         prices = true;
                     }
                 }
@@ -333,6 +336,7 @@ impl Session {
 
 /// The trade registries.
 pub struct Trades {
+    pub professions: std::sync::Arc<crate::mobs::villager::ResolvedProfessions>,
     pub trades: HashMap<String, Value>,
     /// villager_trade tags, ordered.
     pub tags: HashMap<String, Vec<String>>,
@@ -447,6 +451,7 @@ impl Trades {
         Self {
             trades,
             tags: expand_all(&raw),
+            professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets,
             potion_tags: expand_all(&raw_potions),
         }
@@ -466,12 +471,11 @@ impl Trades {
         v
     }
     /// `VillagerProfession.getTrades(level)`.
-    pub fn set_for(profession: &str, level: i32) -> String {
-        let name = profession.trim_start_matches("minecraft:");
-        let base = crate::mobs::villager::profession_index(name)
-            .and_then(|index| crate::mobs::villager::profession(index).trade_set)
-            .unwrap_or(name);
-        format!("minecraft:{base}/level_{level}")
+    pub fn set_for(&self, profession: &str, level: i32) -> String {
+        self.professions
+            .trade_key(profession, level)
+            .unwrap_or("")
+            .to_owned()
     }
     fn trade_list(&self, spec: &Value) -> Vec<String> {
         match spec {
@@ -748,7 +752,7 @@ impl Trades {
             "minecraft:enchant_with_levels" => {
                 let levels = int_provider(&m["levels"], random);
                 // EnchantmentHelper.enchantItem on the loot context's random.
-                let chosen = e.select(ctx.items, random, &stack.item, levels, &pool(&m["options"]));
+                let chosen = e.select(ctx.items, random, &stack, levels, &pool(&m["options"]));
                 let mut out = if &*stack.item == "minecraft:book" {
                     ItemStack::new("minecraft:enchanted_book", stack.count)
                 } else {
@@ -1092,6 +1096,7 @@ mod tests {
         let t = Trades {
             trades,
             tags,
+            professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets,
             potion_tags: HashMap::new(),
         };
@@ -1143,6 +1148,7 @@ mod tests {
         let t = Trades {
             trades: HashMap::new(),
             tags: HashMap::new(),
+            professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets: HashMap::new(),
             potion_tags: HashMap::new(),
         };
@@ -1167,5 +1173,49 @@ mod tests {
         );
         assert_eq!(o.base_cost_a.stack.count, 7);
         assert_eq!(o.cost_b.unwrap().stack.count, 2);
+    }
+}
+
+#[cfg(test)]
+mod enchant_select_tests {
+    use super::*;
+    use horizon_core::random::{LegacyRandom, RandomSource};
+    use serde_json::json;
+
+    #[test]
+    fn trade_removed_enchantable_preserves_random() {
+        let items = crate::enchant::tests::sample_items();
+        let e = crate::enchant::tests::sample();
+        let trades = Trades {
+            trades: HashMap::new(),
+            tags: HashMap::new(),
+            sets: HashMap::new(),
+            professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
+            potion_tags: HashMap::new(),
+        };
+        let ctx = TradeContext {
+            items: &items,
+            enchantments: &e,
+            variant: "minecraft:plains",
+            origin: [0.0; 3],
+            maps: None,
+        };
+        let mut random = LegacyRandom::new(11);
+        let mut expected = random.clone();
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        stack.data_mut().set_other(
+            "!minecraft:enchantable",
+            Some(horizon_core::nbt::Tag::Compound(Default::default())),
+        );
+        let (stack, _) = trades
+            .apply_modifier(
+                &ctx,
+                &json!({"function":"minecraft:enchant_with_levels","levels":30}),
+                stack,
+                &mut random,
+            )
+            .unwrap();
+        assert!(stack.enchantments().is_empty());
+        assert_eq!(random.next_long(), expected.next_long());
     }
 }

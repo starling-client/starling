@@ -16,6 +16,7 @@ pub mod ocean_ruin;
 pub mod piece_limited;
 pub mod processor;
 pub mod ruined_portal;
+pub(crate) mod saved_legacy;
 pub(crate) mod saved_templates;
 pub mod simple;
 pub mod start;
@@ -32,10 +33,12 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, RwLock},
 };
+pub mod block_entity_transform;
+
 pub use template::{BlockInfo, EntityInfo, JigsawInfo, StructureTemplate, save_nbt};
 use {
     crate::registry::{BlockRegistry, BlockStateId},
-    horizon_core::{nbt, nbt::Limits},
+    horizon_core::nbt::Limits,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -202,6 +205,18 @@ impl StateTransforms {
                 .map_or(state, |t| BlockStateId(t[r as usize - 1])),
         }
     }
+    /// `BlockState.rotate(level, pos, rotation)` as a template places `state`, already
+    /// mirrored, at `pos` (NeoForge's `IBlockExtension.rotate`): this table's turned state, or
+    /// another state of the block its parts answer (`rotate`). Every template placement turns
+    /// its states through here.
+    pub fn rotate_at(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+        rotation: Rotation,
+    ) -> BlockStateId {
+        crate::native_worldgen_hooks::rotate(state, pos, rotation, self.rotate(state, rotation))
+    }
     pub fn mirror(&self, state: BlockStateId, mirror: Mirror) -> BlockStateId {
         match mirror {
             Mirror::None => state,
@@ -253,12 +268,13 @@ impl TemplateStore {
             flate2::read::GzDecoder::new(bytes.as_slice())
                 .read_to_end(&mut raw)
                 .ok()?;
-            let tag = nbt::read_named(&raw, Limits::templates()).ok()?.0.tag;
-            Some(StructureTemplate::from_nbt(
-                &tag,
+            StructureTemplate::from_bytes(
+                &raw,
+                Limits::templates(),
                 self.registry,
                 &self.transforms,
-            ))
+            )
+            .ok()
         });
         // StructureTemplateManager.getOrCreate: missing templates are empty.
         let mut loaded = loaded.unwrap_or_else(StructureTemplate::empty);

@@ -22,6 +22,16 @@ fn route_player_events(
             };
             events.insert(k, *event);
         }
+        // A hoglin broadcast carries the source's player, not the receiving
+        // hoglin's independently selected player.
+        if let MobEvent::HoglinAttackTarget {
+            target: Who::Player,
+            player,
+            ..
+        } = &mut events[k]
+        {
+            *player = conn;
+        }
         // ShulkerBullet stores a target for later projectile ticks. Preserve
         // the selected guest's entity ID instead of the host-player sentinel.
         if let Some(conn) = conn
@@ -79,7 +89,7 @@ impl Game<'_> {
         Option<Box<dyn std::any::Any + Send>>,
     ) {
         let passenger_objects = state.passenger_objects;
-        let blocked = state.blocked;
+        let mut blocked = std::borrow::Cow::Borrowed(state.blocked);
         let mut mobs = state.mobs.take_owned_pass();
         let mut snapshot = std::mem::take(state.snapshot);
         let mut events = std::mem::take(state.events);
@@ -100,6 +110,36 @@ impl Game<'_> {
         let uuid = state.uuid;
         let level_id = state.level_id;
         let round = state.round;
+        // Each mob's position updates in its tick, in order, filed and told before the next mob
+        // is examined. The small record remains separate from `Mob` because teleports update
+        // the same position field as ordinary movement.
+        let section_table = round.sections().then(|| {
+            std::rc::Rc::new(std::cell::RefCell::new(std::mem::take(
+                &mut self.native_lifecycle.entity_sections,
+            )))
+        });
+        let mut section_moves = section_table
+            .as_ref()
+            .map(|sections| std::mem::take(&mut sections.borrow_mut().ticked))
+            .unwrap_or_default();
+        crate::mobs::living::section_writes::begin(section_table.is_some());
+        let section_scope = round
+            .sections()
+            .then(|| self.entity_section_scope())
+            .flatten();
+        let live_section_observer: Option<crate::mobs::living::section_writes::Observer> =
+            section_scope
+                .zip(section_table.as_ref())
+                .map(|(scope, sections)| {
+                    let observer: crate::mobs::living::section_writes::Observer =
+                        std::rc::Rc::new(std::cell::RefCell::new(
+                            crate::game::entity_sections::LiveSectionObserver::new(
+                                std::rc::Rc::clone(sections),
+                                scope,
+                            ),
+                        ));
+                    observer
+                });
         let mut dispatch_panic = None;
         let mut pushes = std::mem::take(state.pushes);
         let original_len = snapshot.len();
@@ -124,6 +164,9 @@ impl Game<'_> {
         }
         let mut cursor = 0;
         let mut resuming = false;
+        // An invalid removed vehicle is retried once at this rider's own
+        // eligible entity tick, never from the later global positioning pass.
+        let mut retried_rider = None;
         let mut resume_from = 0;
         let mut resume_credit_expiring = false;
         let mut resume_was_on_fire = false;
@@ -134,6 +177,11 @@ impl Game<'_> {
         let (mut tick_ms, mut ticked_count) = (0.0f32, 0usize);
         loop {
             let mut pause = None;
+            let mut retry_rider = None;
+            // A mob's list is lifted while its world view is borrowed.  Once a
+            // position write was captured, stop after this mob, restore the
+            // list, and tell its writes while the live row is readable.
+            let mut section_yield = false;
             {
                 let ticking = self.entity_ticking_area();
                 let players = self.level_players();
@@ -146,6 +194,9 @@ impl Game<'_> {
                     .map(super::super::boat_leads::boat_state)
                     .collect();
                 let mut base = self.mob_world_base(&[]);
+                // Install the shared observer only on the per-mob view below; keeping the
+                // reusable base empty lets its reference fields remain copyable between rows.
+                base.section_writer = None;
                 base.passenger_objects = passenger_objects;
                 let mut level = horizon_client::health::DamageLevel::lent(
                     &self.world,
@@ -175,6 +226,7 @@ impl Game<'_> {
                         }
                     };
                     let m = &mut mobs[i];
+                    let retried = retried_rider.take() == Some(m.id);
                     if blocked.contains(&m.id) {
                         cursor += 1;
                         resuming = false;
@@ -223,6 +275,7 @@ impl Game<'_> {
                     // event, patched into `Mob.checkDespawn`, never fires for it;
                     // a mannequin is no `Mob` and never checks despawning.
                     if !resuming
+                        && !retried
                         && mod_api::__private::listened(mod_api::HookId::MobDespawn)
                         && !matches!(
                             m.species(),
@@ -259,6 +312,7 @@ impl Game<'_> {
                             nearest_player,
                             player: None,
                             teams: std::sync::Arc::clone(&base.teams),
+                            section_writer: None,
                             ..base
                         };
                         let kept = horizon_client::mobs::ai::despawn_check(m, &w);
@@ -291,6 +345,15 @@ impl Game<'_> {
                         cursor += 1;
                         continue;
                     }
+                    if !resuming
+                        && !retried
+                        && m.extra.mount.is_some_and(|vehicle| {
+                            self.persist.removed_vehicles.contains_key(&vehicle)
+                        })
+                    {
+                        retry_rider = Some(m.id);
+                        break;
+                    }
                     // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
                     // not the local player's (a server thread has no player).
                     let chunk_key = (bx >> 4, bz >> 4);
@@ -305,6 +368,15 @@ impl Game<'_> {
                     };
                     horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                     horizon_client::mobs::blocks_changed(m, &path_changes);
+                    if !resuming {
+                        // LivingEntity.aiStep -> EntityEquipment.tick, before movement.
+                        super::super::inventory_tick::equipment_inventory_tick(
+                            &self.world,
+                            self.res.facts(),
+                            level_id,
+                            &mut m.extra.equipment,
+                        );
+                    }
                     let from = if resuming { resume_from } else { events.len() };
                     // The guest's view is lent to the mob for its tick, not copied:
                     // the tick only reads it (`&MobWorld`), and it goes back to the
@@ -381,8 +453,10 @@ impl Game<'_> {
                         player_identity: active_identity,
                         player_selection: selection.as_ref(),
                         teams: std::sync::Arc::clone(&base.teams),
+                        section_writer: None,
                         ..base
                     };
+                    w.section_writer = live_section_observer.clone();
                     w.controlling_player_movement = controlling_player_movement;
                     let credit_expiring = if resuming {
                         resume_credit_expiring
@@ -392,9 +466,12 @@ impl Game<'_> {
                     ticked.insert(m.id);
                     // `horizon-report`'s cost by mob type (tick_profile.rs).
                     let sampled = if resuming {
+                        horizon_threads::work::set_entity(horizon_threads::work::entity_id(
+                            &mobs[i].kind.id,
+                        ));
                         resume_sampled.take()
                     } else {
-                        super::super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()))
+                        super::super::tick_profile::start_mob(&mobs[i].kind)
                     };
                     let run_tick = || {
                         if resuming {
@@ -472,13 +549,41 @@ impl Game<'_> {
                             resume_sampled = sampled;
                             resume_guest = seen_guest;
                             pause = Some(decision);
+                            horizon_threads::work::clear_work();
                             break;
                         }
                     };
-                    if let Some((started, kind)) = sampled {
-                        super::super::tick_profile::add(level_id, &kind, started);
-                    }
+                    super::super::tick_profile::end_mob(level_id, sampled);
                     let m = &mut mobs[i];
+                    // Its `xo` (`previous`) is where its tick began, unless a teleport in the
+                    // tick (`snapTo`) moved it along: that teleport, then where the tick left
+                    // it, are two position updates (`EntityInLevelCallback.onMove` for each).
+                    if round.sections() {
+                        let captured = crate::mobs::living::section_writes::drain_for(
+                            m.id,
+                            &mut section_moves,
+                        );
+                        if kept && !m.removed {
+                            let changed = captured != 0 || m.previous != m.position;
+                            if changed && captured == 0 {
+                                // A position changed before the lifted tick (or a raw test fixture)
+                                // still has the old filed section as its first write.
+                                section_moves.push(
+                                    crate::mobs::living::section_writes::PositionWrite::baseline(
+                                        m.id, m.join, m.previous,
+                                    ),
+                                );
+                            }
+                            if changed && captured == 0 {
+                                section_moves.push(
+                                    crate::mobs::living::section_writes::PositionWrite::captured(
+                                        m.id, m.join, m.previous, m.position,
+                                    ),
+                                );
+                                section_yield = true;
+                            }
+                        }
+                    }
                     if let Some(selection) = &selection
                         && selection.has_switched()
                         && let Some(player) = selection.selected()
@@ -541,7 +646,7 @@ impl Game<'_> {
                     keep[slot] = kept;
                     // ServerLevel ticks entities one after another: the ones
                     // after this mob see it as it is now.
-                    snapshot[slot] = seen(m, uuid);
+                    snapshot[slot] = seen(m, uuid, world_items!(self));
                     snapshot[slot].alive &= kept;
                     grid.update(slot, snapshot[slot].bounds);
                     horizon_client::mobs::apply_brain_events(
@@ -551,18 +656,25 @@ impl Game<'_> {
                         from,
                     );
                     cursor += 1;
+                    if section_yield {
+                        break;
+                    }
                 }
             }
-            let Some(decision) = pause else { break };
+            if pause.is_none() && retry_rider.is_none() && !section_yield {
+                break;
+            }
             // No MobWorld, DamageLevel or navigation loan crosses this boundary.
             // The callback sees the real owning rows and level RNG/attachments,
             // and its writes are the state the continuation will resume from.
             lent.give_back(&mut self.world);
-            // Earlier mobs' pushes become visible before the listener can read
-            // or replace another actor's velocity. Departed rows must no longer
-            // resolve as live handles while the batch is temporarily installed.
-            for m in &mut mobs {
-                horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
+            // Earlier mobs' pushes become visible before a real pause callback
+            // can read or replace another actor's velocity. A section-only
+            // yield must not change the normal end-of-pass push ordering.
+            if pause.is_some() || retry_rider.is_some() {
+                for m in &mut mobs {
+                    horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
+                }
             }
             mobs.retain(|m| {
                 index
@@ -580,9 +692,22 @@ impl Game<'_> {
                 std::mem::swap(&mut host.mob_players, &mut bindings);
             }
             let callback_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.apply_fox_consumption(&decision);
+                if section_yield && let Some(sections) = section_table.as_ref() {
+                    self.entity_sections_ticked_live(
+                        &mut sections.borrow_mut(),
+                        &mut section_moves,
+                    );
+                }
+                if let Some(id) = retry_rider {
+                    self.dismount_mob(id);
+                } else if let Some(decision) = pause.as_ref() {
+                    self.apply_fox_consumption(decision);
+                }
             }))
             .err();
+            if retry_rider.is_some() {
+                blocked = std::borrow::Cow::Owned(self.mobs_below_off_level());
+            }
             mobs = self.mobs.lift();
             std::mem::swap(&mut self.last_hurt_by_player, &mut player_credit);
             std::mem::swap(&mut self.died, &mut died);
@@ -612,7 +737,7 @@ impl Game<'_> {
                 mobs.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
             for (slot, s) in snapshot.iter_mut().enumerate() {
                 if let Some(&i) = current.get(&s.id) {
-                    *s = seen(&mobs[i], uuid);
+                    *s = seen(&mobs[i], uuid, world_items!(self));
                     s.alive &= keep.get(slot).copied().unwrap_or(true);
                 } else {
                     s.alive = false;
@@ -622,7 +747,7 @@ impl Game<'_> {
                 if let std::collections::hash_map::Entry::Vacant(entry) = index.entry(m.id) {
                     let slot = snapshot.len();
                     entry.insert(slot as u32);
-                    snapshot.push(seen(m, uuid));
+                    snapshot.push(seen(m, uuid, world_items!(self)));
                 }
             }
             villager_slots.clear();
@@ -642,7 +767,8 @@ impl Game<'_> {
                 path_writes.append(writes);
             }
             lent = horizon_client::health::LentLevel::take(&mut self.world);
-            resuming = true;
+            resuming = retry_rider.is_none() && !section_yield;
+            retried_rider = retry_rider;
         }
         horizon_client::spans::add("entities.mob_tick", tick_ms);
         horizon_client::spans::add("entities.ticked_count", ticked_count as f32);
@@ -686,6 +812,20 @@ impl Game<'_> {
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
             }
         }
+        crate::mobs::living::section_writes::finish();
+        drop(live_section_observer);
+        // Keep the reusable write storage for the next pass; the live-row callback has already
+        // consumed every record that belonged to this family tick.
+        section_moves.clear();
+        if let Some(table) = section_table {
+            let mut sections = std::rc::Rc::try_unwrap(table)
+                .ok()
+                .expect("live section observer still held");
+            sections.get_mut().ticked = section_moves;
+            self.native_lifecycle.entity_sections = sections.into_inner();
+        } else {
+            self.native_lifecycle.entity_sections.ticked = section_moves;
+        }
         *state.pushes = pushes;
         *state.mobs = mobs;
         *state.snapshot = snapshot;
@@ -709,7 +849,7 @@ impl Game<'_> {
 impl Game<'_> {
     /// The killing blow of a mob as the death hooks name it: its damage
     /// type and the causing entity's id (0 for none).
-    pub(super) fn mob_damage_source(&self, m: &Mob) -> (&'static str, u32) {
+    pub(in crate::game) fn mob_damage_source(&self, m: &Mob) -> (&'static str, u32) {
         let (damage_type, attacker) = match m.last_damage {
             Some((d, _)) => (source_damage_type(d), d.attacker),
             None => ("minecraft:generic", None),
@@ -737,7 +877,7 @@ impl Game<'_> {
                 .off_level
                 .values()
                 .filter_map(crate::game::persist::OffLevel::as_mob)
-                .map(|m| seen(m, uuid))
+                .map(|m| seen(m, uuid, self.items()))
                 .collect()
         }
     }
@@ -818,5 +958,37 @@ mod off_level_tests {
             game.tick_creature_entities().unwrap();
             assert_eq!(game.mob_object(73).unwrap().age, 20);
         });
+    }
+}
+
+#[cfg(test)]
+mod hoglin_routing_tests {
+    use super::*;
+
+    #[test]
+    fn broadcast_keeps_source_player_connection() {
+        for (seen_guest, tag, expected) in [
+            (Some(12), None, Some(12)),
+            (None, None, None),
+            (Some(12), Some(Some(13)), Some(13)),
+            (Some(12), Some(None), None),
+        ] {
+            let event = MobEvent::HoglinAttackTarget {
+                mob: 9001,
+                target: Who::Player,
+                player: None,
+            };
+            let mut events = vec![match tag {
+                Some(conn) => MobEvent::ForPlayer {
+                    conn,
+                    event: Box::new(event),
+                },
+                None => event,
+            }];
+            route_player_events(&mut events, 0, seen_guest, &[], &mut Vec::new(), 9000);
+            assert!(matches!(events[0], MobEvent::HoglinAttackTarget {
+                player, ..
+            } if player == expected));
+        }
     }
 }

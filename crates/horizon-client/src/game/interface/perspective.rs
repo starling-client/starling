@@ -12,6 +12,7 @@ use horizon_client::{
 // (`use super::perspective::CameraType`).
 pub(crate) use horizon_client::camera::CameraType;
 use horizon_client::{
+    entities::nameplate::NameplateDistances,
     hud::HudBatch,
     mobs::{Anim, Brain, Mob, MobType},
     mouse::Rotation,
@@ -188,6 +189,7 @@ pub(super) fn player_type_with_document(
 fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Option<Arc<MobType>> {
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
+            shadow: None,
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.
             species: horizon_client::mobs::Species::Zombie,
@@ -208,6 +210,7 @@ fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Optio
             jump_strength: 0.42,
             attributes: Default::default(),
             item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -237,7 +240,7 @@ fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Optio
                 "entity.player.hurt",
                 "entity.player.death",
             ],
-            step_sound: None,
+            sound_overrides: Default::default(),
             food: Arc::from([]),
             tempt: Arc::from([]),
             passenger_attachments: Vec::new(),
@@ -319,9 +322,9 @@ impl Game<'_> {
         }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending, entity_kind) = match self.camera_mob() {
-            Some(m) => (
-                super::remote_camera::mob_camera_entity(m),
+        let (entity, descending, entity_kind) = match self.spectated_camera_snapshot() {
+            Some(e) => (
+                e,
                 false,
                 horizon_world::collision_context::EntityContextKind::Living,
             ),
@@ -394,6 +397,17 @@ impl Game<'_> {
             view.y_rot,
             view.x_rot,
         ))
+    }
+    /// `Camera.rotation()` as the quads of particles take it: the frame's camera (a
+    /// bed's, a front view's, a mod's), not the player's own yaw and pitch.
+    pub(super) fn particle_rotation(&self) -> glam::Quat {
+        if self.studio.flying() {
+            return self.camera_orientation();
+        }
+        let (yaw, pitch) = self
+            .posed_rotation
+            .unwrap_or((self.view.y_rot, self.view.x_rot));
+        super::camera_rotation(CameraType::FirstPerson, yaw, pitch)
     }
     /// The player as `Camera.alignWithEntity` sees it.
     fn player_camera_entity(&mut self) -> Option<CameraEntity> {
@@ -478,11 +492,17 @@ impl Game<'_> {
     /// Keep the player's model in step with the player (`LivingEntity.tick`
     /// body turning, `WalkAnimationState`, the swing and the pose).
     pub(super) fn tick_player_model(&mut self) {
-        let scale = self
-            .player
-            .as_mut()
-            .and_then(|p| p.attribute("minecraft:scale").ok())
-            .unwrap_or(1.0) as f32;
+        let (scale, nameplate) = self.player.as_mut().map_or_else(
+            || (1.0, NameplateDistances::default()),
+            |p| {
+                let scale = p.attribute("minecraft:scale").unwrap_or(1.0) as f32;
+                let nameplate = NameplateDistances {
+                    name_tag: p.attribute("minecraft:name_tag_distance").ok(),
+                    below_name: p.attribute("minecraft:below_name_distance").ok(),
+                };
+                (scale, nameplate)
+            },
+        );
         let Some(p) = self.player.as_ref() else {
             self.player_model = None;
             return;
@@ -545,6 +565,7 @@ impl Game<'_> {
         };
         m.extra.ints[1] = bed;
         m.extra.model_scale = scale;
+        m.set_nameplate(nameplate);
         // The crouch flag is still last tick's here.
         let (from, at) =
             player_model_positions(previous_position, position, m.extra.crouching, crouching);
@@ -771,7 +792,7 @@ impl Game<'_> {
         &self,
         camera: glam::DVec3,
         alpha: f64,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         if !self.player_model_shown() {
             return;
@@ -790,24 +811,21 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
-        // `native_player_submit`: a native mod's own model for this player,
-        // in place of the vanilla one and its layers (an invisible player is
-        // not asked, as for the others).
+        // The mods' pre hooks (`render_player_pre`, then `render_living_pre`), as for the other
+        // players: a cancel skips the rest of this player's drawing and its post hooks, and the
+        // frame's later passes (flames, name tag) leave it out too.
         let name = self.own_profile_name();
         let who = PlayerRender {
             name: &name,
             local: true,
         };
-        let (drawn, hidden) = match body {
-            true => self.mod_player_geometry(m, who, alpha as f32, camera, packed, out),
-            false => (false, mod_api::HiddenParts::default()),
-        };
-        if drawn {
-            return;
-        }
-        // `native_mob_layer`'s posed parts, kept from the draw below while a mod listens.
-        let mut parts = None;
         let listened = self.mob_render_listened();
+        let pre = self.mod_render_pre(m, Some(who), listened, alpha as f32, camera, packed, out);
+        let Some(hidden) = pre else {
+            return;
+        };
+        // The mods' layers' posed parts, kept from the draw below while they want them.
+        let (mut parts, layers) = (None, self.mod_layers(m));
         // A spectator still draws its own model in third person: the poses'
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
@@ -822,7 +840,7 @@ impl Game<'_> {
                 self.res.mob_data(),
                 &self.player_armor_layers(),
                 hidden,
-                listened.then_some(&mut parts),
+                (listened || layers.is_some()).then_some(&mut parts),
                 out,
             );
         } else {
@@ -834,7 +852,7 @@ impl Game<'_> {
                 packed,
                 self.res.mob_data(),
                 &self.player_armor_layers(),
-                listened.then_some(&mut parts),
+                (listened || layers.is_some()).then_some(&mut parts),
                 out,
             );
         }
@@ -843,7 +861,14 @@ impl Game<'_> {
             let chest = self.armor[1].as_ref().map(|s| &*s.item);
             // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
             if !self.own_invisible() {
-                self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
+                self.player_cape_geometry(
+                    m,
+                    chest,
+                    camera,
+                    alpha as f32,
+                    (self.res.mob_data(), packed),
+                    out,
+                );
             }
             self.player_ears_geometry(
                 m,
@@ -862,9 +887,20 @@ impl Game<'_> {
             self.held_item_geometry(m, camera, alpha, packed, true, None, out);
             // CustomHeadLayer: a pumpkin, skull or other head item.
             self.head_item_geometry(m, camera, alpha, packed, true, out);
-            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
-            self.mod_mob_layer_geometry(m, Some(who), parts, alpha as f32, camera, packed, out);
+            // Mods' layers (`register_entity_layers`), over vanilla's.
+            self.mod_layer_geometry(
+                m,
+                Some(who),
+                parts,
+                layers,
+                alpha as f32,
+                camera,
+                packed,
+                out,
+            );
         }
+        // The post hooks, whether or not the layers drew (a spectator draws none).
+        self.mod_render_post(m, Some(who), parts, alpha as f32, camera, packed, out);
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         let vanilla = self
             .potions
@@ -999,7 +1035,7 @@ impl Game<'_> {
             .filter(|_| in_world)
             .map(|s| &*s.item);
         if !self.own_invisible() {
-            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+            self.player_cape_geometry(&m, chest, camera, 1.0, (data, 240 | 240 << 8), &mut verts);
         }
         self.player_ears_geometry(
             &m,
@@ -1064,7 +1100,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         let stack = m
             .extra
@@ -1113,7 +1149,7 @@ impl Game<'_> {
         crouching: bool,
         light: u32,
         overlay: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         // The worn stack's own `equippable`, for the chest slot, with an asset
         // (getEquipmentIfRenderable: anything else counts as nothing worn).
@@ -1206,8 +1242,8 @@ impl Game<'_> {
         chest: Option<&str>,
         camera: glam::DVec3,
         partial: f32,
-        light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        (data, light): (&horizon_client::mobs::MobData, u32),
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         let Some(rect) = m
             .cape
@@ -1220,15 +1256,17 @@ impl Game<'_> {
             return;
         }
         // CapeLayer.hasLayer: the worn stack's own `equippable` asset.
-        let items = self.res.items();
-        let equippable = match m
-            .extra
-            .slot_stack(horizon_items::equipment::CHEST)
-            .filter(|s| chest == Some(&*s.item))
-        {
-            Some(s) => horizon_client::item_sync::equippable(s, items),
-            None => chest.and_then(|item| horizon_client::item_sync::item_equippable(item, items)),
-        };
+        let equippable = chest.and_then(|chest| {
+            let items = self.res.items();
+            match m
+                .extra
+                .slot_stack(horizon_items::equipment::CHEST)
+                .filter(|s| chest == &*s.item)
+            {
+                Some(s) => horizon_client::item_sync::equippable(s, items),
+                None => horizon_client::item_sync::item_equippable(chest, items),
+            }
+        });
         let layers = equippable
             .filter(|e| e.slot == "chest")
             .and_then(|e| e.asset_id)
@@ -1246,7 +1284,7 @@ impl Game<'_> {
             base,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
-            self.res.mob_data(),
+            data,
             out,
         );
     }
@@ -1259,7 +1297,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         if name != "deadmau5" {
             return;
@@ -1373,7 +1411,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         let sprites = &self.gui.atlas.sprites;
         let layers = [
@@ -1417,7 +1455,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         let Some(parrot) = self.res.mob_types().get("minecraft:parrot") else {
             return;
@@ -1441,7 +1479,7 @@ impl Game<'_> {
         camera: glam::DVec3,
         partial: f32,
         light: u32,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         if !m.extra.auto_spin_attack {
             return;
@@ -1489,7 +1527,7 @@ fn entity_in_ui_shade(normal: glam::Vec3) -> f32 {
 }
 
 pub(super) fn player_preview_quads(
-    verts: Vec<mod_render::render::Vertex>,
+    verts: Vec<horizon_client_render::render_geometry::Vertex>,
     gui: glam::Mat4,
     fire: Option<(f32, f32)>,
     sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
@@ -1501,7 +1539,7 @@ pub(super) fn player_preview_quads(
 /// kept when they look away (a `NoCull` render type); their light still comes
 /// from the face's own outward normal, as the vertex normal gives it.
 pub(super) fn player_preview_quads_no_cull(
-    mut verts: Vec<mod_render::render::Vertex>,
+    mut verts: Vec<horizon_client_render::render_geometry::Vertex>,
     gui: glam::Mat4,
     fire: Option<(f32, f32)>,
     sprites: &std::collections::HashMap<String, horizon_client::hud::Rect>,
@@ -1845,7 +1883,7 @@ mod preview_tests {
 
     #[test]
     fn no_cull_faces_stay_in_the_preview_when_they_look_away() {
-        use mod_render::render::Vertex;
+        use horizon_client_render::render_geometry::Vertex;
         // The wings' `armorCutoutNoCull`: a face turned from the viewer is
         // dropped by the preview's culling unless its vertices are no-cull.
         let face = |z: f32| {
@@ -2029,7 +2067,7 @@ mod preview_tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         let draw = |body: bool| {
             let mut out = Vec::new();

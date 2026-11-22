@@ -13,6 +13,7 @@ pub const HELP: &[&str] = &[
     "signedit X Y Z [front|back]    open the sign editor for the sign at X Y Z",
     "section-draws [flat|indirect|direct]  how terrain sections are drawn: flat, indirect multi-draws or a call per section (A/B checks); replies the mode",
     "sky-order [early|late]         the vanilla sky before or after solid terrain, on Android's Vulkan (A/B checks); replies the mode",
+    "section-layout compact|wide    solid quads' layout in the arena, all meshed again (A/B checks); replies compact",
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
     "static-cutout [on|off]         cutouts without their fade while nothing fades, on Adreno's Vulkan (A/B checks); replies the mode",
     "section-sides [on|off]         leave out solid quads facing away from the eye (A/B checks); replies the mode",

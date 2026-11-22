@@ -59,6 +59,7 @@ fn actual_game_stage_refuses_nested_frame_and_mutated_actor() {
                 mod_type: Some(kind),
                 craft: None,
                 links: vec![],
+                asks_still_valid: false,
             });
         });
         let before = game.mod_book_menu_snapshot(12, 1, "review:menu").unwrap();

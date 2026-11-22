@@ -115,12 +115,20 @@ fn acquire(home: &Path, blocking: bool) -> io::Result<Option<HomeLockGuard>> {
         .create(true)
         .truncate(false)
         .open(guard.path.join(".mod-browser.lock"))?;
+    // A filesystem without file locks (Android's shared storage answers ENOSYS, Unsupported): the
+    // registry above still orders this process's threads, and a phone runs one game at a time, as a
+    // world opens there unlocked (`save::SessionLock`).
     if blocking {
-        file.lock()?;
+        if let Err(e) = file.lock()
+            && !locks_unsupported(&e)
+        {
+            return Err(e);
+        }
     } else {
         match file.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(fs::TryLockError::Error(e)) if locks_unsupported(&e) => {}
             Err(fs::TryLockError::Error(e)) => return Err(e),
         }
     }
@@ -131,6 +139,11 @@ fn acquire(home: &Path, blocking: bool) -> io::Result<Option<HomeLockGuard>> {
         .expect("the guard reserves this home")
         .file = Some(file);
     Ok(Some(guard))
+}
+
+/// Whether `error` says the filesystem keeps no file locks (ENOSYS maps to Unsupported).
+fn locks_unsupported(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
 }
 
 /// Acquires exclusive mutation access, waiting for other threads or processes.

@@ -122,13 +122,13 @@ impl Game<'_> {
                 return Ok((guest.conn, menu.size, menu.window));
             }
             if let Some((window, _, menu, _)) = host
-                .play
+                .menus
                 .get(&guest.conn)
                 .and_then(|p| p.crafting.table.as_ref())
             {
                 return Ok((guest.conn, menu.slot_count() - 36, *window));
             }
-            if let Some(station) = host.play.get(&guest.conn).and_then(|p| p.station.as_ref()) {
+            if let Some(station) = host.menus.get(&guest.conn).and_then(|p| p.station.as_ref()) {
                 return Ok((guest.conn, station.menu.slot_count() - 36, station.window));
             }
             Ok((guest.conn, 0, 0))
@@ -270,6 +270,8 @@ impl Game<'_> {
                     let command = op["cmd"].as_str().unwrap_or("");
                     self.chat_capture = Some(Vec::new());
                     self.cmds.results = Some(Vec::new());
+                    let earlier = self.adv.announced.len();
+                    self.cmds.broadcast_announced = earlier;
                     self.harness_owner(|g| {
                         let previous = g.command_source;
                         if op["source"].as_str() == Some("console") {
@@ -286,7 +288,24 @@ impl Game<'_> {
                         g.command_source = previous;
                         Ok(())
                     })?;
-                    let messages = self.chat_capture.take().unwrap_or_default();
+                    // What the command's own `broadcastChanges` earned is announced
+                    // before its feedback, as a guest's command sends it
+                    // (`announce_guest_advancements`); the rest is left for the tick.
+                    let earned: Vec<_> = {
+                        let len = self.adv.announced.len();
+                        let end = self.cmds.broadcast_announced.clamp(earlier.min(len), len);
+                        self.adv.announced.drain(earlier.min(len)..end).collect()
+                    };
+                    if let Some(host) = self.lan.as_mut() {
+                        for text in &earned {
+                            host.hub
+                                .system_message(horizon_client::lan::data::component_nbt(
+                                    &text.component(),
+                                ));
+                        }
+                    }
+                    let mut messages = earned;
+                    messages.extend(self.chat_capture.take().unwrap_or_default());
                     let results = self.cmds.results.take().unwrap_or_default();
                     if op["record"].as_bool() != Some(false) || op["trace"].as_bool() == Some(true)
                     {
@@ -850,7 +869,7 @@ impl Game<'_> {
                             .ok_or("craft fixture: no connected owner")?;
                         (|| -> Result<Value> {
                             let host = g.lan.as_ref().ok_or("no hub")?;
-                            let (window, revision, _, _) = host.play.get(&conn)
+                            let (window, revision, _, _) = host.menus.get(&conn)
                                 .and_then(|p| p.crafting.table.as_ref())
                                 .ok_or("craft fixture: crafting menu not open")?;
                             let (window, revision) = (*window, *revision);
@@ -874,7 +893,7 @@ impl Game<'_> {
                                         horizon_protocol::packets::play::ContainerClose { container: window }));
                                 return Ok(Value::Null);
                             }
-                            let (_, _, menu, _) = host.play.get(&conn)
+                            let (_, _, menu, _) = host.menus.get(&conn)
                                 .and_then(|p| p.crafting.table.as_ref()).unwrap();
                             if menu.kind() != horizon_client::menu::Kind::Crafting {
                                 return Err("craft fixture: wrong menu kind".into());
@@ -1081,6 +1100,13 @@ impl Game<'_> {
                         Ok(Value::Null)
                     })?;
                     if observe {
+                        let mut state = state;
+                        if !op["offer_packets"].as_bool().unwrap_or(false) {
+                            state.as_object_mut().unwrap().remove("sent_offers");
+                            for offer in state["offers"].as_array_mut().unwrap() {
+                                offer.as_object_mut().unwrap().remove("demand");
+                            }
+                        }
                         out.push_str(&json!({"cmd":format!("#merchant_state {}",op["label"].as_str().unwrap_or("")),
                             "messages":[],"results":[],"state":state}).to_string());
                         out.push('\n');
@@ -1185,7 +1211,10 @@ impl Game<'_> {
                     horizon_client::random_source::set_thread_uniquifier(uniquifier)?;
                     self.harness_owner(|g| {
                         g.next_entity = u32::try_from(entity_id)?;
-                        g.world.random = horizon_core::random::LegacyRandom::new(level_seed);
+                        horizon_core::random::RandomSource::set_seed(
+                            &mut g.world.random,
+                            level_seed,
+                        );
                         Ok(())
                     })?;
                 }

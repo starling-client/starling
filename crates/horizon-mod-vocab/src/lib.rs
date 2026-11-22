@@ -1,10 +1,7 @@
-//! Trait mods implement `Hooks` and link into the game executable.
-//! The executable passes the ordered `Mods` to `entry::main_with`.
-//! Trait mods are process-wide, like mixin module statics.
-//! Hooks use `&self + Send + Sync` for shared and reentrant calls; see `docs/modding/src/how-to/native-mods.md`.
-//! Generate the trait and dispatch with `cargo run -p xtask -- mod-api`.
+//! The API vocabulary re-exported by `horizon-mod-api`.
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
+#![deny(ambiguous_glob_reexports)]
 extern crate self as mod_api;
 
 use std::sync::{Arc, OnceLock};
@@ -26,13 +23,3 @@ mod generated {
 
 include!(concat!(env!("OUT_DIR"), "/mod_api_exports_root.rs"));
 include!(concat!(env!("OUT_DIR"), "/wire_generated.rs"));
-
-#[cfg(test)]
-mod brewing_dispatch_tests {
-    include!("item/brewing_dispatch_tests.rs");
-}
-
-#[cfg(test)]
-mod item_model_dispatch_tests {
-    include!("item/item_model_dispatch_tests.rs");
-}

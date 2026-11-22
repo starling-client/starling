@@ -1,6 +1,8 @@
 // game-module-visibility: pub(crate)
 //! The game-owned conversion boundary between API records and engine values.
 //! Rust's orphan rule prevents foreign From/TryFrom implementations here.
+#[path = "api_values/ingredient.rs"]
+mod ingredient_values;
 use horizon_core::nbt::{Compound, JavaString, Tag};
 use horizon_items::items::{ItemStack as EngineStack, Items};
 use mod_api::item::item_stack::{ItemStack as ApiStack, StackWriteError};
@@ -86,6 +88,8 @@ pub(crate) fn behavior_block(
 pub(crate) use super::native_ground::alter_ground;
 pub(in crate::game) use super::native_worldgen::prepare as prepare_block_states;
 pub(in crate::game) use block_state::install as install_block_states;
+#[path = "api_values/inside_write.rs"]
+mod inside_write;
 #[path = "api_values/landing_write.rs"]
 mod landing_write;
 #[path = "api_values/recipe_inputs.rs"]
@@ -121,6 +125,14 @@ pub(in crate::game) fn resolve_enchantment_registry(
 pub(in crate::game) fn resolve_block_definitions(
     registry: &horizon_world::registry::BlockRegistry,
 ) -> Result<(), String> {
+    // Without installed parts the completed keys land in one process-wide table that keeps the
+    // first registry resolved; in a test process that is whichever test got there first, so a
+    // test that installed no parts gets its own empty installation, as tests do their mods.
+    #[cfg(test)]
+    if !mod_api::__private::parts_installation::parts_installed() {
+        mod_platform::__private::part_tests::install_parts_fixture(&[])
+            .map_err(|errors| errors.join("\n"))?;
+    }
     block_state::clear();
     if mod_api::__private::block_definitions().is_some() {
         return bind_worker_blocks(registry);
@@ -179,13 +191,39 @@ fn bind_worker_blocks(registry: &horizon_world::registry::BlockRegistry) -> Resu
 
 #[cfg(test)]
 #[test]
+fn a_test_without_parts_resolves_its_own_blocks_after_another_resolved_fewer() {
+    // Another test thread, with no parts installed, resolves a registry of air alone first.
+    std::thread::spawn(|| {
+        let air =
+            r#"{"defaults":{"minecraft:air":0},"states":[["air",true,false,"","minecraft:air"]]}"#;
+        let air = horizon_world::registry::BlockRegistry::from_facts_json(air.as_bytes()).unwrap();
+        resolve_block_definitions(&air).unwrap();
+    })
+    .join()
+    .unwrap();
+    // This one, with no parts installed either, still resolves its own block.
+    let own = r#"{"defaults":{"minecraft:air":0,"regression:own_block":1},"states":[
+        ["air",true,false,"","minecraft:air"],
+        ["b",false,false,"","regression:own_block"]
+    ]}"#;
+    let own = horizon_world::registry::BlockRegistry::from_facts_json(own.as_bytes()).unwrap();
+    resolve_block_definitions(&own).unwrap();
+    let state = own
+        .state(horizon_world::registry::BlockStateId(1))
+        .unwrap()
+        .try_into_api();
+    assert!(state.is_ok(), "{state:?}");
+}
+
+#[cfg(test)]
+#[test]
 fn block_definition_import_preserves_defaults_and_is_immutable_after_load() {
     let facts = r#"{"defaults":{"minecraft:air":0,"minecraft:stairs":2},"states":[
         ["air",true,false,"","minecraft:air"],
         ["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"north"}}],
         ["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"east"}}]
     ]}"#;
-    mod_api::__private::part_tests::install_parts_fixture(&[]).unwrap();
+    mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
     let registry =
         horizon_world::registry::BlockRegistry::from_facts_json(facts.as_bytes()).unwrap();
     resolve_block_definitions(&registry).unwrap();
@@ -228,25 +266,9 @@ impl TryIntoApi for horizon_client::boss_overlay::ModBar {
     }
 }
 
-/// Registry access for generated stack write-back in full and narrowed hook hosts.
-pub(in crate::game) trait ItemBoundary {
-    fn boundary_items(&self) -> Option<&Items>;
-}
-impl ItemBoundary for super::Game<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        Some(self.items())
-    }
-}
-impl ItemBoundary for super::GameLevel<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        Some(self.items)
-    }
-}
-impl ItemBoundary for super::native_hooks::HitLevel<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        self.0.tags()
-    }
-}
+#[path = "api_values/item_snapshot.rs"]
+mod item_snapshot;
+pub(in crate::game) use item_snapshot::ItemBoundary;
 
 impl TryIntoApi for horizon_world::chunk::BlockState {
     type Api = mod_api::BlockState;
@@ -267,7 +289,7 @@ impl TryIntoApi for horizon_world::chunk::BlockState {
 #[test]
 fn block_values_keep_frozen_ordinals_when_world_state_ids_reorder() {
     use horizon_world::registry::{BlockRegistry, BlockStateId};
-    mod_api::__private::part_tests::install_parts_fixture(&[]).unwrap();
+    mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
     let first = r#"{"defaults":{"minecraft:air":0,"minecraft:stairs":2},"states":[["air",true,false,"","minecraft:air"],["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"north"}}],["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"east"}}]]}"#;
     let first = BlockRegistry::from_facts_json(first.as_bytes()).unwrap();
     resolve_block_definitions(&first).unwrap();
@@ -403,6 +425,11 @@ where
 /// Validate a mod value against the game's registry before admitting it to engine state.
 #[path = "api_values/content_declarations.rs"]
 mod content_declarations;
+pub(in crate::game) use content_declarations::push_reaction;
+
+#[path = "api_values/stack_count.rs"]
+mod stack_count;
+pub(crate) use stack_count::TryIntoEnginePreservingCount;
 
 pub(crate) trait TryIntoEngine<Context: ?Sized = Items> {
     type Engine;
@@ -610,25 +637,20 @@ impl TryIntoApi for super::spill::BlockItemDrop {
     type Api = mod_api::ItemDrop;
     type Error = StackReadError;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::ItemDrop::new(
+        Ok(self.state.to_api(mod_api::ItemDrop::new(
             self.stack.try_into_api()?,
             self.position,
             self.velocity,
             self.pickup_delay,
-        ))
+        )))
     }
 }
 impl TryIntoEngine for mod_api::ItemDrop {
     type Engine = super::spill::BlockItemDrop;
     type Error = StackWriteError;
     fn try_into_engine(&self, items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(Self::Engine {
-            random: None,
-            stack: self.stack.try_into_engine(items)?,
-            position: self.position,
-            velocity: self.velocity,
-            pickup_delay: self.pickup_delay,
-        })
+        let stack = self.stack.try_into_engine(items)?;
+        Ok(Self::Engine::from_api(self, stack))
     }
 }
 
@@ -798,71 +820,6 @@ fn encode_stack(
     Ok(stack)
 }
 
-impl TryIntoEngine for ApiStack {
-    type Engine = EngineStack;
-    type Error = StackWriteError;
-
-    fn try_into_engine(&self, items: &Items) -> Result<EngineStack, Self::Error> {
-        let id =
-            mod_api::__private::item_key_id(self.item()).ok_or(StackWriteError::UnknownItem)?;
-        let (id, definition) = items
-            .items
-            .get_key_value(id)
-            .ok_or(StackWriteError::UnknownItem)?;
-        let stack = encode_stack(self, id.clone())?;
-        let effective = |name: &str, default: u32| -> Result<u32, StackWriteError> {
-            match stack.data().and_then(|data| data.other(name)) {
-                Some(Tag::Int(value)) => {
-                    u32::try_from(*value).map_err(|_| StackWriteError::InvalidMaximum)
-                }
-                Some(_) => Err(StackWriteError::InvalidMaximum),
-                None => Ok(default),
-            }
-        };
-        let maximum = if stack.carries_component(Some(definition), "minecraft:max_stack_size") {
-            effective("minecraft:max_stack_size", definition.max_stack)?
-        } else {
-            1
-        };
-        if !(1..=99).contains(&maximum) {
-            return Err(StackWriteError::InvalidMaximum);
-        }
-        if !horizon_world::item_template::durability_allows_stack_size(
-            stack.carries_component(Some(definition), "minecraft:max_damage"),
-            i64::from(maximum),
-        ) {
-            return Err(StackWriteError::StackableDamageable);
-        }
-        if stack.count > maximum {
-            return Err(StackWriteError::CountExceeded { maximum });
-        }
-        let maximum = if stack.carries_component(Some(definition), "minecraft:max_damage") {
-            effective("minecraft:max_damage", definition.max_damage)?
-        } else {
-            0
-        };
-        let damage = self.damage_component().map_or_else(
-            || {
-                u32::try_from(stack.effective_damage(Some(definition))).map_err(|_| {
-                    StackWriteError::InvalidComponents {
-                        reason: mod_api::StackError::InvalidDamage,
-                    }
-                })
-            },
-            Ok,
-        )?;
-        if damage > maximum {
-            return Err(StackWriteError::DamageExceeded { maximum });
-        }
-        if i32::try_from(damage).is_err() {
-            return Err(StackWriteError::InvalidComponents {
-                reason: mod_api::StackError::InvalidDamage,
-            });
-        }
-        Ok(stack)
-    }
-}
-
 impl TryIntoApi for crate::crafting::RecipeRule {
     type Api = mod_api::RecipeRule;
     type Error = StackReadError;
@@ -1015,45 +972,6 @@ impl TryIntoApi for crate::crafting::RecipeRule {
     }
 }
 
-impl TryIntoApi for crate::crafting::Ingredient {
-    type Api = mod_api::Ingredient;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::Ingredient {
-            items: self.items.clone(),
-            order: self.order.clone(),
-            custom: self.custom.clone(),
-            children: self
-                .children
-                .as_ref()
-                .map(|(shape, kids)| Ok((shape.clone(), kids.try_into_api()?)))
-                .transpose()?,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::Ingredient {
-    type Engine = crate::crafting::Ingredient;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, _items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::crafting::Ingredient {
-            items: self.items.clone(),
-            order: self.order.clone(),
-            custom: self.custom.clone(),
-            children: self
-                .children
-                .as_ref()
-                .map(|(shape, kids)| {
-                    Ok::<_, StackWriteError>((
-                        shape.clone(),
-                        kids.iter()
-                            .map(|k| k.try_into_engine(_items))
-                            .collect::<Result<_, _>>()?,
-                    ))
-                })
-                .transpose()?,
-        })
-    }
-}
 impl TryIntoApi for crate::crafting::RecipeTemplate {
     type Api = mod_api::RecipeTemplate;
     type Error = StackReadError;
@@ -1188,24 +1106,19 @@ impl mod_api::item::menu::SlotView for ApiSlot<'_> {
         }
     }
 }
-/// Adapt a synchronous slot event; engine slot rules still own every write.
-pub(crate) fn menu_slot_rules(
+/// Adapt a player's block menu `stillValid` check; the game asks only for a menu
+/// whose type has a part answering it (`menu_still_valid_listens`, when it opened).
+pub(crate) fn menu_still_valid(
     context: &horizon_world::native_load_context::LoopContext,
+    player: u128,
     menu: &str,
-    slot: usize,
-    stack: &EngineStack,
-    may_place: &mut bool,
-    max_stack: &mut u32,
+    pos: [i32; 3],
+    eye: [f64; 3],
+    valid: &mut bool,
 ) {
-    if !mod_api::__private::has_part_hook(mod_api::HookId::MenuSlotRules) {
-        return;
-    }
-    let Ok(stack) = stack.try_into_api() else {
-        return;
-    };
     let reader = horizon_client_render::api_context::LoopReader(context);
     let context = reader.context();
-    mod_api::dispatch_menu_slot_rules(&context, menu, slot, &stack, may_place, max_stack);
+    mod_api::dispatch_menu_still_valid(&context, player, menu, pos, eye, valid);
 }
 
 pub(crate) fn stacked_on_other(
@@ -1510,8 +1423,9 @@ mod attribute_boundary_tests {
     use horizon_items::item_data::ModifierRow;
     use mod_api::{
         AttributeModifier, AttributeOperation, EquipmentSlotGroup, Hooks, Identifier,
-        ItemAttributeModifierEvent, ModEntry, testing::with_mods,
+        ItemAttributeModifierEvent, ModEntry,
     };
+    use mod_platform::testing::with_mods;
     use std::borrow::Cow;
     /// Makes a netherite chestplate heavier: +0.4 knockback resistance in
     /// the chest slot, and no armor toughness.
@@ -1703,7 +1617,8 @@ mod attribute_boundary_tests {
 mod enchantment_boundary_tests {
     use super::EngineStack as ItemStack;
     use crate::enchantment_levels::get_enchantment_level;
-    use mod_api::{GetEnchantmentLevelEvent, Hooks, Identifier, ModEntry, testing::with_mods};
+    use mod_api::{GetEnchantmentLevelEvent, Hooks, Identifier, ModEntry};
+    use mod_platform::testing::with_mods;
     use std::borrow::Cow;
     use std::sync::Arc;
     fn id(text: &str) -> Identifier {
@@ -1800,7 +1715,7 @@ mod brewed_boundary_tests {
     fn brewed_event_reports_player_and_converted_stack() {
         prepare_stack_boundary_tests();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new(
                 "watch",
                 Box::new(Watch(seen.clone())),
@@ -1857,107 +1772,9 @@ impl TryIntoApi for crate::containers::ModBlockEntity {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BlockEntitySnapshotError {
-    InvalidRevision,
-    InvalidStack,
-}
-
-fn apply_block_entity_snapshot(
-    entity: &mut crate::containers::ModBlockEntity,
-    snapshot: &mod_api::ModBlockEntity,
-    before: mod_api::item::containers::ModRevision,
-    items: &Items,
-) -> Result<(), BlockEntitySnapshotError> {
-    let current = entity.revision();
-    let revision = snapshot.revision();
-    if snapshot.id() != entity.id()
-        || revision.identity() != current.identity()
-        || revision.changes() < current.changes()
-    {
-        return Err(BlockEntitySnapshotError::InvalidRevision);
-    }
-    if revision != before {
-        let fields = (**snapshot)
-            .try_into_engine(items)
-            .map_err(|_| BlockEntitySnapshotError::InvalidStack)?;
-        entity.apply_snapshot(fields, snapshot.revision().changes());
-    }
-    if let Some(fields) = snapshot.client_update_fields() {
-        entity.set_client_update_fields(fields.clone());
-    }
-    Ok(())
-}
-
-// Validation runs after all listeners return; dispatch does not retain per-mod provenance.
-// Bound diagnostics even when mods register many entity types.
-fn finish_block_entity_writeback<T>(
-    entity: &mut crate::containers::ModBlockEntity,
-    snapshot: &mod_api::ModBlockEntity,
-    before: mod_api::item::containers::ModRevision,
-    items: &Items,
-    hook: &'static str,
-    output: Result<T, BlockEntitySnapshotError>,
-) -> Result<T, BlockEntitySnapshotError> {
-    let result = output.and_then(|output| {
-        apply_block_entity_snapshot(entity, snapshot, before, items)?;
-        Ok(output)
-    });
-    if let Err(reason) = &result {
-        let changes = entity
-            .revision()
-            .changes()
-            .max(snapshot.revision().changes())
-            .saturating_add(1);
-        entity.apply_snapshot((**entity).clone(), changes);
-        static REPORTED: std::sync::Mutex<Vec<(String, &'static str)>> =
-            std::sync::Mutex::new(Vec::new());
-        let mut reported = REPORTED.lock().unwrap_or_else(|poison| poison.into_inner());
-        if reported.len() < 1024
-            && !reported
-                .iter()
-                .any(|(id, name)| id == entity.id() && *name == hook)
-        {
-            reported.push((entity.id().to_owned(), hook));
-            log::warn!(
-                "Rejected block entity writeback: entity type {}, hook {}, reason {:?}",
-                entity.id(),
-                hook,
-                reason
-            );
-        }
-    }
-    result
-}
+include!("api_values/block_entity_writeback.rs");
 
 impl super::Game<'_> {
-    pub(in crate::game) fn api_block_entity_tick(
-        &mut self,
-        pos: [i32; 3],
-        entity: &mut crate::containers::ModBlockEntity,
-    ) {
-        // #2051: the one decision whether a block entity ticks is its
-        // type's own ticker (`native_block_entity_ticks`,
-        // `EntityBlock.getTicker`), answered when the world opens — the
-        // level's ticking list carries it here, whichever path registered
-        // the type (a Registrar part or a bare declaration whose tick
-        // arrives another way). No second gate: a parts-only check here
-        // kept declared types' ticks — and the injections on
-        // `native_block_entity_tick` — unreachable.
-        let Ok(mut api) = entity.try_into_api() else {
-            return;
-        };
-        let revision = api.revision();
-        self.native_block_entity_tick(pos, &mut api);
-        let _ = finish_block_entity_writeback(
-            entity,
-            &api,
-            revision,
-            self.items(),
-            "block_entity_tick",
-            Ok(()),
-        );
-    }
     pub(in crate::game) fn api_block_entity_update_tag(
         pos: [i32; 3],
         entity: &crate::containers::ModBlockEntity,
@@ -2701,87 +2518,6 @@ mod item_model_snapshot_tests {
     }
 }
 
-impl TryIntoApi for horizon_mod_package::Side {
-    type Api = mod_api::Side;
-    type Error = std::convert::Infallible;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(match self {
-            Self::Client => mod_api::Side::Client,
-            Self::Both => mod_api::Side::Both,
-        })
-    }
-}
-
-fn package_snapshot(
-    manifest: &horizon_mod_package::Manifest,
-    kind: mod_api::PackageKind,
-) -> mod_api::PackageInfo {
-    mod_api::PackageInfo::new(
-        manifest.id.clone(),
-        manifest.version.clone(),
-        kind,
-        manifest.side.try_into_api().unwrap(),
-        std::iter::once(&manifest.id)
-            .chain(&manifest.namespaces)
-            .cloned()
-            .collect(),
-        manifest.dependencies.keys().cloned().collect(),
-    )
-}
-impl TryIntoApi for horizon_mod_package::Manifest {
-    type Api = mod_api::PackageInfo;
-    type Error = std::convert::Infallible;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(package_snapshot(
-            self,
-            if self.wasm.is_some() {
-                mod_api::PackageKind::Code
-            } else {
-                mod_api::PackageKind::Content
-            },
-        ))
-    }
-}
-impl TryIntoApi for horizon_mod_package::packages::AdjacentManifest {
-    type Api = mod_api::PackageInfo;
-    type Error = std::convert::Infallible;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(package_snapshot(&self.manifest, mod_api::PackageKind::Code))
-    }
-}
-
-pub(in crate::game) fn install_packages(
-    native: &[horizon_mod_package::packages::AdjacentManifest],
-    content: &[horizon_mod_package::selection::SelectedPackage],
-) {
-    let native: Vec<_> = native.iter().map(|p| p.try_into_api().unwrap()).collect();
-    let content: Vec<_> = content
-        .iter()
-        .map(|p| p.package.manifest.try_into_api().unwrap())
-        .collect();
-    mod_api::__private::install_packages(&native, &content);
-}
-
-#[cfg(test)]
-mod package_snapshot_tests {
-    use super::*;
-    #[test]
-    fn package_metadata_keeps_declared_side_and_namespace_order() {
-        for (side, expected) in [
-            ("client", mod_api::Side::Client),
-            ("both", mod_api::Side::Both),
-        ] {
-            let manifest = horizon_mod_package::Manifest::parse(&format!(
-                "id='test'\nname='Test'\nversion='1'\napi='0.2'\nside='{side}'\ncapabilities=['registries']\n"
-            )).unwrap();
-            let snapshot = manifest.try_into_api().unwrap();
-            assert_eq!(snapshot.side(), expected);
-            assert_eq!(snapshot.namespaces().collect::<Vec<_>>(), ["test"]);
-            assert_eq!(snapshot.kind(), mod_api::PackageKind::Content);
-        }
-    }
-}
-
 impl TryIntoApi for horizon_client_core::suggestion::Suggestion {
     type Api = mod_api::Suggestion;
     type Error = std::convert::Infallible;
@@ -3027,7 +2763,6 @@ impl<C: ?Sized> TryIntoEngine<C> for mod_api::client::hud_layout::GuiDraw {
 
 #[path = "api_values/text_boundary.rs"]
 mod text_boundary;
-pub(in crate::game) use text_boundary::style_hover;
 #[cfg(test)]
 mod gui_draw_boundary_tests {
     use super::{TryIntoApi, TryIntoEngine};
@@ -3214,6 +2949,19 @@ impl TryIntoApi for horizon_client_core::gamerules::Value {
     }
 }
 
+impl TryIntoEngine for mod_api::GameRuleValue {
+    type Engine = horizon_client_core::gamerules::Value;
+    type Error = ();
+    fn try_into_engine(&self, _: &Items) -> Result<Self::Engine, Self::Error> {
+        match *self {
+            Self::Bool(value) => Ok(Self::Engine::Bool(value)),
+            Self::Int(value) => Ok(Self::Engine::Int(value)),
+            // A kind this game has no rule of.
+            _ => Err(()),
+        }
+    }
+}
+
 #[test]
 fn game_rule_int_snapshot_preserves_full_range() {
     for value in [i32::MIN, -1, 0, 256, i32::MAX] {
@@ -3235,15 +2983,40 @@ fn with_rule_schema<T>(f: impl FnOnce(&mod_api::__private::RuleSchema<'_>) -> T)
             .expect("vanilla rule count fits u32"),
     })
 }
+/// Supply the real platform when unit tests bypass executable startup.
+#[cfg(test)]
+pub(in crate::game) fn install_test_platform() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let result = horizon_engine_slots::install_platform(horizon_engine_slots::Platform {
+            install_packages: mod_platform::__private::install_packages,
+            install_registration_data: mod_platform::__private::install_registration_data,
+            install_parts: mod_platform::__private::install_parts,
+            profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
+            profiler_start: mod_platform::__private::profiler::start,
+            profiler_stop: mod_platform::__private::profiler::stop,
+            profiler_summary: mod_platform::__private::profiler::summary,
+            profiler_firefox_profile: mod_platform::__private::profiler::firefox_profile,
+        });
+        assert!(
+            result.is_ok()
+                || result == Err(horizon_engine_slots::PlatformRefusal::AlreadyInstalled)
+        );
+    });
+}
 pub(in crate::game) fn install_parts(mods: &[mod_api::ModEntry]) -> Result<(), Vec<String>> {
+    #[cfg(test)]
+    install_test_platform();
     with_rule_schema(|schema| {
-        mod_api::__private::install_parts(mods, schema, super::native_dimensions::valid_shape)
+        (horizon_engine_slots::platform()
+            .map_err(|e| vec![e.to_string()])?
+            .install_parts)(mods, schema, super::native_dimensions::valid_shape)
     })
 }
 #[cfg(test)]
 pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>) {
     with_rule_schema(|schema| {
-        mod_api::__private::part_tests::register_game_keys(
+        mod_platform::__private::part_tests::register_game_keys(
             ids,
             schema,
             super::native_dimensions::valid_shape,
@@ -3256,7 +3029,19 @@ pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>)
     )
     .unwrap();
     if let Some(types) = horizon_client_core::block_entity_types::current() {
-        mod_api::__private::resolve_block_entity_types(types.names(), |id| types.key(id)).unwrap();
+        // Registration just replaced the mod snapshot, but the process-wide engine
+        // table can still belong to an earlier fixture. Include this fixture's
+        // declarations before resolving its requested keys, as content loading does.
+        let declared = mod_api::__private::block_entity_types();
+        mod_api::__private::resolve_block_entity_types(
+            types
+                .names()
+                .chain(declared.iter().map(|kind| kind.id.as_str())),
+            |id| {
+                (types.key(id).is_some() || declared.iter().any(|kind| kind.id == id)).then_some(())
+            },
+        )
+        .unwrap();
     }
 }
 
@@ -3277,10 +3062,13 @@ pub(in crate::game) mod damage;
 #[path = "api_values/item_properties.rs"]
 mod item_properties;
 #[path = "api_values/loot_values.rs"]
-mod loot_values;
+pub(crate) mod loot_values;
 #[path = "api_values/particle_values.rs"]
 mod particle_values;
 pub(crate) use loot_values::{dispatch_loot_condition, dispatch_loot_function};
+#[path = "api_values/package_snapshot.rs"]
+mod package_snapshot;
+pub(in crate::game) use package_snapshot::install_packages;
 #[path = "api_values/phase_values.rs"]
 mod phase_values;
 #[path = "api_values/small_values.rs"]

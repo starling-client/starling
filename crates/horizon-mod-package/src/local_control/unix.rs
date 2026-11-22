@@ -15,13 +15,54 @@ pub struct Endpoint {
     path: PathBuf,
     listener: Option<UnixListener>,
 }
+impl Marker {
+    /// Fresh short-lived control address, independent of installed data paths.
+    /// The endpoint creates its own private directory; no secret is encoded in its name.
+    pub fn runtime() -> io::Result<Self> {
+        Self::runtime_at(
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .as_deref()
+                .map(std::path::Path::new),
+        )
+    }
+
+    fn runtime_at(runtime: Option<&std::path::Path>) -> io::Result<Self> {
+        let mut nonce = [0u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| io::ErrorKind::Other)?;
+        let name = format!("hz-{:032x}", u128::from_ne_bytes(nonce));
+        let suitable = |path: &std::path::Path| -> bool {
+            socket2::SockAddr::unix(path.join(&name).join("control")).is_ok()
+                && open_directory(path).is_ok_and(|dir| check_directory(&dir, true).is_ok())
+                && path.ancestors().skip(1).all(|ancestor| {
+                    open_directory(ancestor).is_ok_and(|dir| check_directory(&dir, false).is_ok())
+                })
+        };
+        if let Some(runtime) = runtime.filter(|path| suitable(path)) {
+            return Self::new(runtime.join(name));
+        }
+        // Deliberately not temp_dir(): TMPDIR may be arbitrarily long or unsafe.
+        // Endpoint::bind checks /tmp and every ancestor and creates a 0700 leaf
+        // with exclusive mkdir, rejecting collisions rather than reusing anything.
+        #[cfg(target_os = "macos")]
+        let fallback = "/private/tmp"; // /tmp is a symlink on macOS.
+        #[cfg(not(target_os = "macos"))]
+        let fallback = "/tmp";
+        Self::new(std::path::Path::new(fallback).join(name))
+    }
+}
+
 impl Endpoint {
     pub fn bind(marker: &Marker) -> io::Result<Self> {
         let parent = marker
             .directory
             .parent()
             .ok_or(io::ErrorKind::InvalidInput)?;
-        let parent = open_directory(parent).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let parent = open_directory(parent).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("open control socket parent {}: {error:?}", parent.display()),
+            )
+        })?;
         check_directory(&parent, false)?;
         for ancestor in marker.directory.ancestors().skip(2) {
             let directory = open_directory(ancestor).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -31,7 +72,16 @@ impl Endpoint {
             .directory
             .file_name()
             .ok_or(io::ErrorKind::InvalidInput)?;
-        rustix::fs::mkdirat(&parent, name, rustix::fs::Mode::RWXU)?;
+        rustix::fs::mkdirat(&parent, name, rustix::fs::Mode::RWXU).map_err(|error| {
+            let error = io::Error::from(error);
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "create control socket directory {}: {error}",
+                    marker.directory.display()
+                ),
+            )
+        })?;
         let mut endpoint = Self {
             parent,
             path: marker.directory.clone(),
@@ -39,7 +89,13 @@ impl Endpoint {
         };
         let directory = endpoint.parent.open_dir_nofollow(name)?;
         check_directory(&directory, true)?;
-        let listener = UnixListener::bind(endpoint.path.join("control"))?;
+        let socket_path = endpoint.path.join("control");
+        let listener = UnixListener::bind(&socket_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("bind control socket {}: {error}", socket_path.display()),
+            )
+        })?;
         listener.set_nonblocking(true)?;
         endpoint.listener = Some(listener);
         Ok(endpoint)
@@ -190,5 +246,55 @@ impl Drop for Endpoint {
             }
             let _ = self.parent.remove_dir(name);
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn runtime_addresses_validate_candidates_and_exchange() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(target_os = "macos")]
+    let fallback = "/private/tmp";
+    #[cfg(not(target_os = "macos"))]
+    let fallback = "/tmp";
+    let root = tempfile::tempdir_in(fallback).unwrap();
+    let safe = root.path().canonicalize().unwrap().join("runtime");
+    std::fs::create_dir(&safe).unwrap();
+    std::fs::set_permissions(&safe, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let first = Marker::runtime_at(Some(&safe)).unwrap();
+    let second = Marker::runtime_at(Some(&safe)).unwrap();
+    assert_ne!(first.directory, second.directory);
+    assert_eq!(first.directory.parent(), Some(safe.as_path()));
+    let second_endpoint = Endpoint::bind(&second).unwrap();
+    let mut endpoint = Endpoint::bind(&first).unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    let client = connect(&first, deadline).unwrap();
+    let server = endpoint.accept(deadline).unwrap();
+    let client = super::Channel::authenticate(client, &first, false, deadline).unwrap();
+    let server = super::Channel::authenticate(server, &first, true, deadline).unwrap();
+    client.send(&42u32).unwrap();
+    assert_eq!(server.receive::<u32>().unwrap().1, 42);
+    let link = root.path().join("link");
+    symlink(&safe, &link).unwrap();
+    let long = safe.join("long-home-".repeat(18));
+    std::fs::create_dir(&long).unwrap();
+    std::fs::set_permissions(&long, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(socket2::SockAddr::unix(long.join("control")).is_err());
+    let old_marker = Marker::new(long.join("holder-control-123-456")).unwrap();
+    assert!(Endpoint::bind(&old_marker).is_err());
+    assert!(!old_marker.directory.exists());
+    drop(second_endpoint);
+    std::fs::set_permissions(&safe, std::fs::Permissions::from_mode(0o777)).unwrap();
+    for candidate in [
+        Some(safe.as_path()),
+        Some(link.as_path()),
+        Some(long.as_path()),
+        None,
+    ] {
+        let marker = Marker::runtime_at(candidate).unwrap();
+        assert_ne!(marker.directory.parent(), candidate);
+        let endpoint = Endpoint::bind(&marker).unwrap();
+        drop(endpoint);
+        assert!(!marker.directory.exists());
     }
 }

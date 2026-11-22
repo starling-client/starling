@@ -15,7 +15,7 @@ use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named
 
 use super::native_shaders::{fingerprint, outcome, refused, remember};
 use super::{Dim, Game};
-use mod_render::render::EntitySpan;
+use horizon_client_render::render_geometry::EntitySpan;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
@@ -105,8 +105,9 @@ pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str
 pub(crate) struct PickedPack {
     /// It draws flat where the device can (`pack_draws_flat`): the sections are laid out so.
     pub draws_flat: bool,
-    /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
-    pub linear: bool,
+    /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`, with its `[frame] blend`:
+    /// the frame is float.
+    pub linear: Option<horizon_shader_api::Blend>,
     /// Under `HORIZON_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
     /// layered float one where HDR output is on (docs/design/hdr-linear-light.md, The HUD and
     /// menus; the renderer decides, `FrameRequest::hdr_float`).
@@ -116,7 +117,8 @@ impl PickedPack {
     /// What it asks of the renderer's frame.
     pub(crate) fn frame(self) -> horizon_client::gfx::FrameRequest {
         horizon_client::gfx::FrameRequest {
-            linear_pack: self.linear,
+            linear_pack: self.linear.is_some(),
+            linear_blend: self.linear == Some(horizon_shader_api::Blend::Linear),
             hdr_float: self.hdr_float,
         }
     }
@@ -136,16 +138,15 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
         && path
             .file_name()
             .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
-    let linear = || {
-        super::native_shaders::linear_frame_switch()
-            && horizon_shader_api::Pack::read_manifest(&path)
-                .is_ok_and(|m| m.api == horizon_shader_api::Api::V0_2)
-    };
-    let linear = active && linear();
+    let linear = (active && super::native_shaders::linear_frame_switch())
+        .then(|| horizon_shader_api::Pack::read_manifest(&path).ok())
+        .flatten()
+        .filter(|m| m.api == horizon_shader_api::Api::V0_2)
+        .map(|m| m.blend);
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
         linear,
-        hdr_float: (!active || linear) && super::native_shaders::linear_frame_switch(),
+        hdr_float: (!active || linear.is_some()) && super::native_shaders::linear_frame_switch(),
     }
 }
 
@@ -736,7 +737,11 @@ impl Game<'_> {
     /// The world's resolution, of the screen's: the player's, and no more than Auto's while it
     /// runs a pack that isn't a light one.
     pub(super) fn world_scale(&self) -> f32 {
-        let chosen = self.settings.horizon.resolution_scale as f32 / 100.0;
+        // Dynamic Resolution's scale where it is on, else the setting's.
+        let chosen =
+            super::frame_autotune::world_scale(&self.settings.horizon, &self.dynamic_resolution)
+                as f32
+                / 100.0;
         match &self.shader_choice {
             Some((name, profile))
                 if profile == AUTO_PROFILE
@@ -1029,7 +1034,7 @@ fn block_item_ids(
 
 /// Spans for a native mod (`native_render::RenderNeeds::entity_spans`), without a pack.
 fn native_spans() -> bool {
-    horizon_client::gfx::native_render::needs().entity_spans
+    horizon_client_render::render_slots::needs().entity_spans
 }
 
 /// A span's id for entity type `name` without a pack: stable, so a mod can match runs from one
@@ -1325,7 +1330,7 @@ mod native_pack_tests {
     fn unknown_pack_is_optimistic_but_refusal_owner_and_presence_override_it() {
         use crate::game::native_shaders::{fingerprint, remember};
         use horizon_client::settings::Settings;
-        use horizon_shader_api::Api;
+        use horizon_shader_api::{Api, Blend};
         let mut settings = Settings::default();
         settings.horizon.hdr = horizon_client_render::graphics::HdrMode::On;
         settings.mods.installed.push(Installed {
@@ -1346,7 +1351,7 @@ mod native_pack_tests {
         let switch = crate::game::native_shaders::linear_frame_switch();
         // A 0.2 pack with HDR on asks for the layered frame, as no pack does.
         let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, switch);
+        assert_eq!(shape.linear, switch.then_some(Blend::Gamma));
         assert_eq!(shape.hdr_float, switch);
         for api in [Api::V0_1, Api::V0_2] {
             let manifest = path.join(horizon_shader_api::MANIFEST);
@@ -1359,21 +1364,33 @@ mod native_pack_tests {
             .unwrap();
             remember(&path, fingerprint(&path), Some(api));
             let shape = picked_pack_shape(&settings);
-            assert_eq!(shape.linear, switch && api == Api::V0_2);
+            assert_eq!(shape.linear.is_some(), switch && api == Api::V0_2);
             assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
         }
+        // The frame's blend comes with it: the frame a pack that changes it asks for is
+        // another, so the game makes the renderer again (`follow_frame`).
+        let manifest = path.join(horizon_shader_api::MANIFEST);
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(&manifest, text.clone() + "[frame]\nblend = \"linear\"\n").unwrap();
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        let shape = picked_pack_shape(&settings);
+        assert_eq!(shape.linear, switch.then_some(Blend::Linear));
+        assert_eq!(shape.frame().linear_blend, switch);
+        std::fs::write(&manifest, text).unwrap();
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        assert!(!picked_pack_shape(&settings).frame().linear_blend);
         settings.mods.disabled.insert("frame_owner".into());
         let shape = picked_pack_shape(&settings);
-        assert!(!shape.linear);
+        assert_eq!(shape.linear, None);
         assert_eq!(shape.hdr_float, switch);
         settings.mods.disabled.clear();
-        assert_eq!(picked_pack_shape(&settings).linear, switch);
+        assert_eq!(picked_pack_shape(&settings).linear.is_some(), switch);
         remember(&path, fingerprint(&path), None);
         assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
         remember(&path, fingerprint(&path), Some(Api::V0_2));
         std::fs::remove_dir_all(root).unwrap();
         let missing = picked_pack_shape(&settings);
-        assert!(!missing.linear);
+        assert_eq!(missing.linear, None);
         assert_eq!(missing.hdr_float, switch);
     }
 

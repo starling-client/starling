@@ -137,6 +137,9 @@ struct SectionCoder {
     flags: Vec<u8>,
     /// Network biome id per internal biome index.
     biome_ids: Vec<i32>,
+    /// Plains' network id, sent for an index past `biome_ids`: a placeholder for a saved
+    /// biome the world lacks, which plays as plains.
+    biome_fallback: i32,
     biome_bits: u8,
 }
 
@@ -313,7 +316,7 @@ impl SectionCoder {
             self.biome_ids
                 .get(usize::from(v as u16))
                 .copied()
-                .unwrap_or(0)
+                .unwrap_or(self.biome_fallback)
         };
         if let Some(v) = section.biomes.uniform() {
             return Paletted {
@@ -619,6 +622,10 @@ impl ChunkEncoder {
             coder: Arc::new(SectionCoder {
                 flags,
                 biome_ids,
+                biome_fallback: biome_registry
+                    .iter()
+                    .position(|b| b == "minecraft:plains")
+                    .map_or(0, |i| i as i32),
                 biome_bits: ceil_log2(biome_registry.len()),
             }),
             entity_types,
@@ -672,6 +679,41 @@ impl ChunkEncoder {
         )
     }
 
+    /// The section entries and the column heightmaps cached, each as (entries, bytes).
+    pub fn cache_census(&self) -> [(usize, usize); 2] {
+        use std::mem::size_of;
+        let (entries, sections, wire) = {
+            let cache = self.cache.lock().unwrap();
+            let wire: usize = cache
+                .values()
+                .filter_map(|e| e.wire.as_ref())
+                .map(|(bytes, entities)| bytes.len() + entities.len() * size_of::<(u16, u32)>())
+                .sum();
+            (
+                cache.len(),
+                cache.capacity() * (size_of::<(usize, Encoded)>() + 1),
+                wire,
+            )
+        };
+        let heights = self.heights.lock().unwrap();
+        let maps: usize = heights
+            .values()
+            .map(|h| {
+                h.sections.capacity() * size_of::<std::sync::Weak<Section>>()
+                    + h.maps
+                        .iter()
+                        .map(|(_, v)| v.capacity() * 8 + 24)
+                        .sum::<usize>()
+            })
+            .sum();
+        [
+            (entries, sections + wire),
+            (
+                heights.len(),
+                maps + heights.capacity() * (size_of::<((i32, i32), Heights)>() + 1),
+            ),
+        ]
+    }
     /// The cached entry for a section, made with `non_air` when missing.
     fn cached<T>(&self, section: &Arc<Section>, read: impl FnOnce(&mut Encoded) -> T) -> T {
         read(self.entry(&mut self.cache.lock().unwrap(), section))
@@ -903,6 +945,12 @@ impl ChunkEncoder {
             &world.block_entities,
             self.around(chunk, world, protos),
         )
+    }
+
+    /// A lit resident far column, with its live block entities and every light layer:
+    /// neighbours outside the loading buffer need not be loaded just to send it.
+    pub(super) fn body_far(&self, chunk: &Chunk, world: &crate::world::World) -> Vec<u8> {
+        self.body(chunk, &world.block_entities, SectionMask::ALL)
     }
 
     /// An encoder of the same level with caches of its own, for threads that encode saved chunks no
@@ -2042,13 +2090,15 @@ mod tests {
                 data: Vec::new()
             }
         );
+        // An index past the table (a placeholder for a saved biome the world lacks) is sent as
+        // plains, network id 1 here, not as whichever biome sorts first.
         section.biomes =
             horizon_core::paletted::PalettedContainer::new(section.biomes.strategy(), 99);
         assert_eq!(
             encoder.coder.biomes(&section),
             Paletted {
                 bits: 0,
-                palette: vec![0],
+                palette: vec![1],
                 data: Vec::new()
             }
         );

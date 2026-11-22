@@ -143,6 +143,11 @@ fn range(section: &str, field: &str) -> Option<std::ops::RangeInclusive<i64>> {
     match (section, field) {
         ("server", "view_distance" | "simulation_distance") => Some(2..=32),
         ("server", "max_view_distance") => Some(0..=32),
+        ("server", "max_viewed_loaded_chunks" | "max_viewed_ticking_chunks") => Some(0..=65536),
+        (
+            "server",
+            "max_viewed_loaded_chunks_per_level" | "max_viewed_ticking_chunks_per_level",
+        ) => Some(0..=1_048_576),
         ("server", "max_players") => Some(1..=1000),
         ("backups", "keep") => Some(1..=1000),
         _ => None,
@@ -254,6 +259,11 @@ pub fn apply(
 /// The settings the control API may change: none of `[engine]` (which program runs), `[panel]` and `[api]`
 /// (who can reach the server), `[discord]` (its webhook is a secret), nor the vanilla keys that open another remote console.
 pub fn changeable_remotely(key: &str) -> bool {
+    // Checked as written, but applied trimmed (parse_change): a key with any space in it,
+    // " engine.path" for one, would pass here as another section and be written as itself.
+    if key.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
     let (section, field) = key.split_once('.').unwrap_or((key, ""));
     !matches!(section, "engine" | "panel" | "api" | "discord")
         && !(section == "properties"
@@ -280,6 +290,23 @@ pub fn shown(dir: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_the_api_may_not_change_stay_refused_however_spaced() {
+        for key in [
+            "engine.path",
+            " engine.path",
+            "\tapi.allow_public",
+            "discord.webhook ",
+            " properties.enable-rcon",
+            "properties. rcon.password",
+            "panel\n.allow_public",
+        ] {
+            assert!(!changeable_remotely(key), "{key:?}");
+        }
+        assert!(changeable_remotely("world.difficulty"));
+        assert!(changeable_remotely("properties.motd"));
+    }
 
     fn table() -> toml::Table {
         toml::Table::try_from(config::Config::default()).unwrap()

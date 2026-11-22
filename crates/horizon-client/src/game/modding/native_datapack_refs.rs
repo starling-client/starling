@@ -9,9 +9,8 @@ impl Game<'_> {
         &self,
         level: LevelRef,
     ) -> Option<std::sync::Arc<mod_api::DatapackRegistrySet>> {
-        (self.native_lifecycle.epoch() == Some(level.epoch())
-            && level.dimension() == self.native_level_key())
-        .then_some(())?;
+        (self.level_handle_current(level) && level.dimension() == self.native_level_key())
+            .then_some(())?;
         if self.is_logical_server() {
             self.mods.datapack_registries.clone()
         } else {
@@ -82,7 +81,7 @@ mod tests {
                 .unwrap();
             }
         }
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![ModEntry::new("example", Box::new(RegistryMod))].into(),
             || {
                 super::super::native_entity_refs::tests::with_game(|game| {
@@ -93,7 +92,7 @@ mod tests {
                             mod_api::__private::datapack_registry_declarations(),
                             &[(
                                 "data/addon/example/spell/fire.json".into(),
-                                vec![br#"{"power":7}"#.to_vec()],
+                                vec![("pack".to_owned(), br#"{"power":7}"#.to_vec())],
                             )],
                         )
                         .unwrap()

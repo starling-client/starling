@@ -9,6 +9,7 @@ use crate::{
     blocks::{BlockFacts, Fluid},
     collisions::SceneCollisions,
     items::ItemStack,
+    motion::block_friction,
     world::World,
 };
 use horizon_core::{
@@ -82,10 +83,17 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 }
 
 mod fluids;
+mod item_environment;
 mod item_fall;
+mod item_merge;
+mod item_move;
 mod item_no_physics;
 pub use fluids::flow_vector;
+pub mod nameplate;
+mod obstacles;
 pub use fluids::{fall_reset_hit, fluid_flow, update_entity_fluids, water_clip};
+pub use item_merge::{ItemCells, merge_with_neighbours};
+pub use obstacles::ObstacleGrid;
 
 #[cfg(test)]
 mod drop_motion_tests {
@@ -279,9 +287,28 @@ pub enum ItemSplash {
         velocity: [f64; 3],
     },
 }
-/// `Entity.doWaterSplashEffect` for a dropped item.
+/// `Entity.doWaterSplashEffect` of an entity with no rider, `width` wide, at
+/// `position` moving at `velocity` (a dropped item, a firework rocket).
+pub fn water_splash_effect(
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
+    random: &mut horizon_core::random::LegacyRandom,
+    splash: &mut impl FnMut(ItemSplash),
+) {
+    let mut water = ItemWater {
+        position,
+        velocity,
+        width,
+        random,
+        splash,
+    };
+    let _ = horizon_world::water_splash::water_splash(&mut water, 1_000_000);
+}
 struct ItemWater<'a, F> {
-    item: &'a mut ItemEntity,
+    position: Vec3,
+    velocity: Vec3,
+    width: f32,
     random: &'a mut horizon_core::random::LegacyRandom,
     splash: &'a mut F,
 }
@@ -294,7 +321,7 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(None)
     }
     fn velocity(&mut self, _: ()) -> Result<Vec3, Self::Error> {
-        Ok(self.item.velocity)
+        Ok(self.velocity)
     }
     fn splash_sound(&mut self, _: bool) -> Result<(), Self::Error> {
         Ok(())
@@ -306,19 +333,15 @@ impl<F: FnMut(ItemSplash)> horizon_world::water_splash::WaterSplashWorld for Ite
         Ok(self.random.next_double())
     }
     fn play_sound(&mut self, _: (), volume: f32, pitch: f32) -> Result<(), Self::Error> {
-        let at = [
-            self.item.position.x,
-            self.item.position.y,
-            self.item.position.z,
-        ];
+        let at = [self.position.x, self.position.y, self.position.z];
         (self.splash)(ItemSplash::Sound { at, volume, pitch });
         Ok(())
     }
     fn position(&self) -> Vec3 {
-        self.item.position
+        self.position
     }
     fn width(&self) -> f32 {
-        ItemEntity::WIDTH as f32
+        self.width
     }
     fn particle(
         &mut self,
@@ -420,9 +443,10 @@ impl ItemEntity {
         border: Option<&BorderGeometry>,
         blocks: Option<&BoundMovementProperties>,
     ) -> bool {
-        let (water, lava) =
-            self.update_fluids(world, fluids, crate::test_resources::server_loop_context());
-        self.water_entry(water > 0.0, self.ticks == 0, &mut |_| {});
+        let context = crate::test_resources::server_loop_context();
+        let before = self.velocity;
+        let (water, lava) = self.update_fluids(world, fluids, context);
+        self.water_entry(water > 0.0, self.ticks == 0, before, &mut |_| {});
         self.lava_fall(lava > 0.0);
         let step = self.tick_move(
             world,
@@ -433,7 +457,7 @@ impl ItemEntity {
             entity_boxes,
             border,
             blocks,
-            crate::test_resources::server_loop_context(),
+            context,
         );
         crate::motion::bubble_column_push(
             world,
@@ -443,10 +467,10 @@ impl ItemEntity {
             self.bounds(),
             &mut self.velocity,
         );
-        let alive = self.tick_settle(world, facts, no_physics, step);
-        let (water, _) =
-            self.update_fluids(world, fluids, crate::test_resources::server_loop_context());
-        self.water_entry(water > 0.0, false, &mut |_| {});
+        let alive = self.tick_settle(world, facts, no_physics, step, context);
+        let before = self.velocity;
+        let (water, _) = self.update_fluids(world, fluids, context);
+        self.water_entry(water > 0.0, false, before, &mut |_| {});
         alive
     }
 }
@@ -486,105 +510,6 @@ impl ItemEntity {
             ),
         )
     }
-    pub fn environment_tick(
-        &mut self,
-        mut world: &World,
-        facts: &BlockFacts,
-        registry: &horizon_world::registry::BlockRegistry,
-        items: &crate::items::Items,
-    ) -> ItemEnvironmentTick {
-        self.environment_tick_inner(&mut world, facts, registry, items, |_, _| false)
-    }
-    /// As `environment_tick`, allowing the caller to decide each actual damage attempt.
-    pub fn environment_tick_with_hook(
-        &mut self,
-        mut world: &mut World,
-        facts: &BlockFacts,
-        registry: &horizon_world::registry::BlockRegistry,
-        items: &crate::items::Items,
-        mut invulnerable: impl FnMut(&mut World, &str) -> bool,
-    ) -> ItemEnvironmentTick {
-        self.environment_tick_inner(&mut world, facts, registry, items, |world, damage| {
-            invulnerable(world, damage)
-        })
-    }
-    fn environment_tick_inner<W: std::ops::Deref<Target = World>>(
-        &mut self,
-        world: &mut W,
-        facts: &BlockFacts,
-        registry: &horizon_world::registry::BlockRegistry,
-        items: &crate::items::Items,
-        mut invulnerable: impl FnMut(&mut W, &str) -> bool,
-    ) -> ItemEnvironmentTick {
-        let at = world.block(
-            self.position.x.floor() as i32,
-            (self.position.y + 0.1).floor() as i32,
-            self.position.z.floor() as i32,
-        );
-        let fluid = facts.get(at).fluid;
-        let fire_immune = items.resists_fire(&self.stack, "minecraft:in_fire");
-        let mut spilled = Vec::new();
-        if fluid == Fluid::Water || fire_immune {
-            self.fire_ticks = 0;
-        }
-        if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && fluid != Fluid::Lava
-                && !items.resists_fire(&self.stack, "minecraft:on_fire")
-                && !invulnerable(world, "minecraft:on_fire")
-            {
-                spilled.extend(self.hurt(1).unwrap_or_default());
-            }
-            self.fire_ticks -= 1;
-        }
-        let mut lava_hurt = false;
-        // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
-        // A cauldron is not a lava fluid, and removed items get no block effects.
-        if self.health > 0 && !fire_immune {
-            let contacts = usize::from(fluid == Fluid::Lava)
-                + lava_cauldron_contacts(world, registry, self.bounds());
-            if contacts > 0 {
-                self.fire_ticks = self.fire_ticks.max(300);
-            }
-            // StepBasedCollector coalesces ignition, but keeps each block's
-            // runAfter(lavaHurt) callback. Stop once an item is destroyed.
-            for _ in 0..contacts {
-                if self.health <= 0 {
-                    break;
-                }
-                if !items.resists_fire(&self.stack, "minecraft:lava")
-                    && !invulnerable(world, "minecraft:lava")
-                {
-                    spilled.extend(self.hurt(4).unwrap_or_default());
-                    lava_hurt = true;
-                }
-            }
-        }
-        let fire_damage = crate::motion::environment::fire_contact(world, registry, self.bounds());
-        if fire_damage > 0.0 && !fire_immune {
-            self.fire_ticks = self.fire_ticks.max(160);
-            if !items.resists_fire(&self.stack, "minecraft:in_fire")
-                && !invulnerable(world, "minecraft:in_fire")
-            {
-                spilled.extend(self.hurt(fire_damage as i32).unwrap_or_default());
-            }
-        }
-        // CactusBlock.entityInside: `entity.hurt(cactus, 1.0)`. An item has no
-        // hurt cooldown, so it loses 1 health every tick it touches a cactus
-        // (5 health: gone in 5 ticks). Fire resistance does not help;
-        // `ItemStack.canBeHurtBy` only skips it for a damage_resistant stack.
-        if crate::motion::environment::cactus_contact(world, registry, self.bounds())
-            && !items.resists_cactus(&self.stack)
-            && !invulnerable(world, "minecraft:cactus")
-        {
-            spilled.extend(self.hurt(1).unwrap_or_default());
-        }
-        ItemEnvironmentTick {
-            alive: self.health > 0,
-            lava_hurt,
-            spilled,
-        }
-    }
     /// `ItemEntity.hurtServer`'s health: `amount` off the health, and an item
     /// whose health reaches 0 is destroyed at once (`ItemStack.onDestroyed`,
     /// then `discard`), so what it held leaves it here. None while the item
@@ -619,11 +544,13 @@ impl ItemEntity {
         )
     }
     /// `Entity.updateFluidInteraction`: water resets the fall, and entering
-    /// it after the first tick runs `doWaterSplashEffect`.
+    /// it after the first tick runs `doWaterSplashEffect` at `velocity`, the
+    /// motion before the fluids' currents push it.
     pub fn water_entry<F: FnMut(ItemSplash)>(
         &mut self,
         in_water: bool,
         first_tick: bool,
+        velocity: Vec3,
         splash: &mut F,
     ) {
         if in_water {
@@ -635,14 +562,8 @@ impl ItemEntity {
                     .wrapping_mul(0x5DEECE66D)
                     .wrapping_add(self.ticks as i64),
             );
-            let _ = horizon_world::water_splash::water_splash(
-                &mut ItemWater {
-                    item: self,
-                    random: &mut random,
-                    splash,
-                },
-                1_000_000,
-            );
+            let width = Self::WIDTH as f32;
+            water_splash_effect(self.position, velocity, width, &mut random, splash);
         }
         self.was_touching_water = in_water;
     }
@@ -676,276 +597,6 @@ impl ItemEntity {
             self.velocity.z * drag,
         );
     }
-    /// `ItemEntity.tick` up to the blocks' push. The game has just run the
-    /// fluid push (`Entity::push_by_fluid`) and passes the heights it found;
-    /// it pushes by a bubble column next (`Entity::push_by_bubble_column`) and
-    /// then calls [`ItemEntity::tick_settle`]. `no_physics`: the item moves
-    /// through blocks this tick ([`ItemEntity::inside_block`]).
-    pub fn tick_move(
-        &mut self,
-        world: &World,
-        facts: &BlockFacts,
-        collision: &BlockCollisionRegistry<'_>,
-        no_physics: bool,
-        heights: (f64, f64),
-        entity_boxes: &[Aabb],
-        border: Option<&BorderGeometry>,
-        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
-        context: &horizon_world::native_load_context::LoopContext,
-    ) -> ItemStep {
-        let step = self.tick_move_before_block_effects(
-            world,
-            facts,
-            collision,
-            no_physics,
-            None,
-            heights,
-            entity_boxes,
-            border,
-            blocks,
-        );
-        self.finish_move_block_effects(world, facts, no_physics, blocks, step, context);
-        step
-    }
-
-    /// `Entity.move`: resolve the item's move before the owner handles block
-    /// contact and resumes block effects. `escape_speed`: with `no_physics`
-    /// on a server, the speed of `Entity.moveTowardsClosestSpace`
-    /// (`nextFloat() * 0.2 + 0.1`).
-    pub fn tick_move_before_block_effects(
-        &mut self,
-        world: &World,
-        facts: &BlockFacts,
-        collision: &BlockCollisionRegistry<'_>,
-        no_physics: bool,
-        escape_speed: Option<f32>,
-        (water_height, lava_height): (f64, f64),
-        entity_boxes: &[Aabb],
-        border: Option<&BorderGeometry>,
-        blocks: Option<&BoundMovementProperties>,
-    ) -> ItemStep {
-        self.ticks += 1;
-        self.previous = self.position;
-        if self.pickup_delay > 0 && !self.has_infinite_pickup_delay() {
-            self.pickup_delay -= 1;
-        }
-        let prior_fall = self.fall_distance;
-        let old_velocity = self.velocity;
-        // Entity.updateInWaterStateAndDoFluidPushing: touching water resets the fall.
-        if water_height > 0.0 {
-            self.fall_distance = 0.0;
-        }
-        let in_water = water_height > f64::from(0.1f32);
-        if in_water {
-            // ItemEntity.setUnderwaterMovement: 0.99F, 5.0E-4F, 0.06F.
-            self.set_fluid_movement(0.99_f32);
-        } else if lava_height > f64::from(0.1f32) {
-            // ItemEntity.setUnderLavaMovement: 0.95F, 5.0E-4F, 0.06F.
-            self.set_fluid_movement(0.95_f32);
-        } else {
-            self.velocity.y -= self.get_gravity();
-        }
-        // ItemEntity.tick: out of a block placed on it after gravity, so the
-        // escape's 0.75 scales the fallen vertical speed (#12018).
-        if let Some(speed) = escape_speed {
-            self.move_towards_closest_space(world, facts, speed);
-        }
-        let horizontal = self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z;
-        // ItemEntity.tick: skip move 3 of 4 ticks while grounded with no
-        // horizontal speed. The idle branch still runs bubble-column push
-        // (`applyEffectsFromBlocksForLastMovements`), so lift builds up and
-        // the item moves on the next wake-up (#4558).
-        if !self.on_ground
-            || horizontal > 1.0e-5
-            || self.ticks.wrapping_add(self.id).is_multiple_of(4)
-        {
-            let scene = SceneCollisions {
-                world,
-                binding: collision,
-                subject: None,
-            };
-            let from = self.position;
-            let mut wanted = self.velocity;
-            // Entity.move: a block the item sits in (cobweb, powder snow)
-            // scales this move once and stops it.
-            if self.stuck.length_squared() > 1.0e-7 {
-                wanted = wanted.multiply(self.stuck);
-                self.stuck = Vec3::ZERO;
-                self.velocity = Vec3::ZERO;
-            }
-            // Entity.move with noPhysics: straight through, the ground as it was.
-            let moved = if no_physics {
-                wanted
-            } else {
-                // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
-                // so does the world border (`Entity.collectColliders`).
-                crate::collisions::EntityCollisions {
-                    blocks: scene,
-                    entities: entity_boxes,
-                    border: border.map(|b| (b, [self.position.x, self.position.z])),
-                }
-                .resolve_with_context(
-                    self.bounds(),
-                    wanted,
-                    0.0,
-                    self.on_ground,
-                    self.collision_context(),
-                )
-                .unwrap_or(Vec3::ZERO)
-            };
-            let applied = move_applies(wanted, moved);
-            if applied {
-                self.position = Vec3::new(
-                    self.position.x + moved.x,
-                    self.position.y + moved.y,
-                    self.position.z + moved.z,
-                );
-            }
-            let mut landed = None;
-            if !no_physics {
-                self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-                // Entity.checkFallDamage: the move's drop counts out of water, and a landing
-                // hands the whole fall to the block below (`getOnPosLegacy`).
-                if water_height <= 0.0 && moved.y < 0.0 {
-                    self.fall_distance -= f64::from(moved.y as f32);
-                }
-                if self.on_ground {
-                    if self.fall_distance > 0.0 {
-                        let below = Vec3::new(0.0, -f64::from(0.2_f32), 0.0);
-                        let on = BlockPos::containing(self.position.add_vector(below));
-                        landed = Some((on, self.fall_distance));
-                    }
-                    self.fall_distance = 0.0;
-                }
-            }
-            // Entity.move: what the move was stopped on. They outlive the
-            // tick, as vanilla's fields do, for the tracker that sends the
-            // position at the type's update interval.
-            self.vertical_collision = moved.y != wanted.y;
-            // `Mth.equal` on x and z (1e-5 as a float), exact on y.
-            let differs = |a: f64, b: f64| (b - a).abs() >= 9.999_999_747_378_752e-6;
-            self.horizontal_collision = differs(moved.x, wanted.x) || differs(moved.z, wanted.z);
-            if moved.x != wanted.x {
-                self.velocity.x = 0.0;
-            }
-            if moved.z != wanted.z {
-                self.velocity.z = 0.0;
-            }
-            let vertical_contact = if self.vertical_collision && !no_physics {
-                let contact = self.vertical_contact(world, collision, blocks, moved);
-                let slime =
-                    self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
-                self.velocity.y = vertical_collision_velocity(
-                    wanted.y,
-                    moved.y,
-                    ITEM_GRAVITY,
-                    self.on_ground,
-                    slime,
-                );
-                contact
-            } else {
-                None
-            };
-            return ItemStep {
-                old_velocity,
-                vertical_contact,
-                movement: Some(moved),
-                landed,
-                prior_fall,
-                fall_move: (!no_physics).then_some((from, moved, applied)),
-            };
-        }
-        // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
-        if !no_physics {
-            self.slime_step_on(world, facts);
-        }
-        ItemStep {
-            old_velocity,
-            landed: None,
-            vertical_contact: None,
-            movement: None,
-            prior_fall,
-            fall_move: None,
-        }
-    }
-
-    /// `Entity.getOnPosLegacy` for a clipped move. Resolve the support under
-    /// the full item box: at a honey wall, its center can be outside the slime
-    /// block even though its box landed on it.
-    fn vertical_contact(
-        &self,
-        world: &World,
-        collision: &BlockCollisionRegistry<'_>,
-        blocks: Option<&BoundMovementProperties>,
-        movement: Vec3,
-    ) -> Option<BlockPos> {
-        let mut scene = SceneCollisions {
-            world,
-            binding: collision,
-            subject: None,
-        };
-        let mut ground = horizon_world::ground_support::GroundState::default();
-        ground
-            .check_support(self.on_ground, self.bounds(), Some(movement), |bounds| {
-                horizon_world::ground_support::find_supporting_block(
-                    &mut scene,
-                    horizon_world::collision_context::CollisionContext::empty(false),
-                    self.position,
-                    bounds,
-                    1_000_000,
-                )
-            })
-            .ok()?;
-        if let Some(blocks) = blocks {
-            return Some(crate::motion::legacy_block_support_at(
-                world,
-                blocks,
-                self.position,
-                ground.supporting_block,
-            ));
-        }
-        // Standalone tests can omit the movement table and its fence/wall tags.
-        Some(ground.supporting_block.unwrap_or_else(|| {
-            let offset = f64::from(horizon_world::movement_support::LEGACY_SUPPORT_OFFSET);
-            BlockPos::containing(self.position.subtract(Vec3::new(0.0, offset, 0.0)))
-        }))
-    }
-
-    /// Resume the normal block effects after the collision response.
-    pub fn finish_move_block_effects(
-        &mut self,
-        world: &World,
-        facts: &BlockFacts,
-        no_physics: bool,
-        blocks: Option<&BoundMovementProperties>,
-        step: ItemStep,
-        context: &horizon_world::native_load_context::LoopContext,
-    ) {
-        if step.movement.is_some() {
-            // Entity.move applies the block's speed factor before block effects.
-            if !no_physics && let Some(blocks) = blocks {
-                let factor = crate::motion::block_speed_factor_at(
-                    world,
-                    blocks,
-                    context,
-                    self.position,
-                    None,
-                );
-                self.velocity =
-                    horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
-            }
-            self.apply_honey_slide(world, facts);
-            self.stuck = match self.stuck_multiplier(world, facts) {
-                // Entity.makeStuckInBlock resets the fall.
-                Some(stuck) => {
-                    self.fall_distance = 0.0;
-                    stuck
-                }
-                None => Vec3::ZERO,
-            };
-        }
-    }
     /// The rest of `ItemEntity.tick`, after the bubble column's push: slime,
     /// drag, block contact, age. Returns false when the item should be
     /// removed. The game then runs the fluid push again (`ItemEntity.tick`
@@ -956,6 +607,7 @@ impl ItemEntity {
         facts: &BlockFacts,
         no_physics: bool,
         step: ItemStep,
+        context: &horizon_world::native_load_context::LoopContext,
     ) -> bool {
         if step.movement.is_some() {
             // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn, with the
@@ -967,12 +619,9 @@ impl ItemEntity {
             // the block's friction as a float, then widened for the scale.
             let mut friction = 0.98_f32;
             if self.on_ground {
-                let below = world.block(
-                    self.position.x.floor() as i32,
-                    (self.position.y - 0.999_999).floor() as i32,
-                    self.position.z.floor() as i32,
-                );
-                friction *= facts.get(below).friction;
+                let below =
+                    BlockPos::containing(self.position.subtract(Vec3::new(0.0, 0.999_999, 0.0)));
+                friction *= block_friction(context, self.id, "minecraft:item", world, facts, below);
             }
             let friction = f64::from(friction);
             let air = f64::from(0.98_f32);
@@ -987,6 +636,9 @@ impl ItemEntity {
         }
         if !no_physics {
             // Entity.applyEffectsFromBlocks: stepOn, then checkInsideBlocks.
+            // The block sweep itself runs at the batch that ticks the item
+            // (Game::sweep_item_inside), where the level host for a part's
+            // contact is: the item's own tick sees the world read-only.
             if self.on_ground {
                 let p = BlockPos::containing(self.position.add_vector(Vec3::new(
                     0.0,
@@ -1004,21 +656,14 @@ impl ItemEntity {
                     },
                 );
             }
-            crate::block_contact::swept_inside(
-                self.id as i32,
-                self.previous,
-                self.position,
-                self.bounds(),
-                |p| world.block(p.x, p.y, p.z),
-            );
         }
         if self.velocity.subtract(step.old_velocity).length_squared() > 0.01 {
             self.needs_sync = true;
         }
         if self.age != i16::MIN as i32 {
-            self.age += 1;
+            self.age = self.age.wrapping_add(1);
         }
-        self.age < 6000 && self.position.y > -128.0
+        self.age < 6000 && self.position.y >= f64::from(world.shape.min_y - 64)
     }
     /// `Entity.makeStuckInBlock` as `WebBlock.entityInside` and
     /// `PowderSnowBlock.entityInside` call it for an item (which, unlike a
@@ -1196,240 +841,6 @@ fn lava_cauldron_contacts(
     }
     contacts
 }
-/// The boxes that stop a dropped item (boats, minecarts, shulkers, a held-still happy ghast),
-/// binned by 8-block cell, so an item looks only at the ones near it: a farm with many drops and
-/// many vehicles checks a handful of boxes per item, not every box in the level.
-#[derive(Default)]
-pub struct ObstacleGrid {
-    cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
-    boxes: Vec<Aabb>,
-    /// Each box's entity's `getRootVehicle` when it rides something; empty
-    /// when none was given.
-    roots: Vec<Option<u32>>,
-    found: Vec<u32>,
-}
-impl ObstacleGrid {
-    const CELL: f64 = 8.0;
-    pub fn new(boxes: Vec<Aabb>) -> Self {
-        Self::with_roots(boxes, Vec::new())
-    }
-    /// [`Self::new`] with the vehicle at the bottom of what each box's entity
-    /// rides (`roots[i]` for `boxes[i]`), so [`Self::near_except`] can leave a
-    /// mover's own riders out.
-    pub fn with_roots(boxes: Vec<Aabb>, roots: Vec<Option<u32>>) -> Self {
-        let mut cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>> = Default::default();
-        for (i, b) in boxes.iter().enumerate() {
-            let (lo, hi) = Self::span(*b);
-            for x in lo.0..=hi.0 {
-                for y in lo.1..=hi.1 {
-                    for z in lo.2..=hi.2 {
-                        cells.entry((x, y, z)).or_default().push(i as u32);
-                    }
-                }
-            }
-        }
-        Self {
-            cells,
-            boxes,
-            roots,
-            found: Vec::new(),
-        }
-    }
-    fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
-        let cell = |v: Vec3| {
-            (
-                (v.x / Self::CELL).floor() as i32,
-                (v.y / Self::CELL).floor() as i32,
-                (v.z / Self::CELL).floor() as i32,
-            )
-        };
-        (cell(b.min_position()), cell(b.max_position()))
-    }
-    pub fn is_empty(&self) -> bool {
-        self.boxes.is_empty()
-    }
-    /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
-    pub fn near(&mut self, area: Aabb, out: &mut Vec<Aabb>) {
-        self.near_except(area, None, out);
-    }
-    /// [`Self::near`] without the boxes of what rides `vehicle` (given with
-    /// [`Self::with_roots`]): `Entity.canCollideWith` leaves out
-    /// `isPassengerOfSameVehicle`, so a stand's riders do not stop it.
-    pub fn near_except(&mut self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
-        out.clear();
-        if self.boxes.is_empty() {
-            return;
-        }
-        let kept = |i: usize| vehicle.is_none() || self.roots.get(i).copied().flatten() != vehicle;
-        let (lo, hi) = Self::span(area);
-        let side = |lo: i32, hi: i32| (i64::from(hi) - i64::from(lo) + 1).max(0);
-        let cells = side(lo.0, hi.0)
-            .saturating_mul(side(lo.1, hi.1))
-            .saturating_mul(side(lo.2, hi.2));
-        // An area over more cells than there are boxes (a stand loaded with a
-        // huge Motion asks for one millions of blocks long): test each box
-        // once rather than walk the cells.
-        if cells > self.boxes.len() as i64 {
-            out.extend(
-                self.boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, b)| kept(i) && b.intersects(area))
-                    .map(|(_, b)| *b),
-            );
-            return;
-        }
-        self.found.clear();
-        for x in lo.0..=hi.0 {
-            for y in lo.1..=hi.1 {
-                for z in lo.2..=hi.2 {
-                    if let Some(list) = self.cells.get(&(x, y, z)) {
-                        self.found.extend(list);
-                    }
-                }
-            }
-        }
-        self.found.sort_unstable();
-        self.found.dedup();
-        for &i in &self.found {
-            let b = self.boxes[i as usize];
-            if kept(i as usize) && b.intersects(area) {
-                out.push(b);
-            }
-        }
-    }
-}
-
-/// Dropped items by block cell, for `ItemEntity.mergeWithNeighbours`'s
-/// search around an item. Holds indexes into the tick's item list.
-#[derive(Default)]
-pub struct ItemCells {
-    cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
-}
-impl ItemCells {
-    pub fn new(items: &[ItemEntity]) -> Self {
-        let mut cells = Self::default();
-        for (i, item) in items.iter().enumerate() {
-            cells.add(i, item.position);
-        }
-        cells
-    }
-    fn cell(p: Vec3) -> (i32, i32, i32) {
-        (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
-    }
-    fn add(&mut self, i: usize, at: Vec3) {
-        self.cells.entry(Self::cell(at)).or_default().push(i as u32);
-    }
-    pub fn remove(&mut self, i: usize, at: Vec3) {
-        if let Some(list) = self.cells.get_mut(&Self::cell(at)) {
-            list.retain(|&j| j as usize != i);
-        }
-    }
-    pub fn moved(&mut self, i: usize, from: Vec3, to: Vec3) {
-        if Self::cell(from) != Self::cell(to) {
-            self.remove(i, from);
-            self.add(i, to);
-        }
-    }
-    /// The items whose cells could hold a box meeting `area`, in the order
-    /// they were added (vanilla lists a section's entities in the order they
-    /// entered it).
-    fn near(&self, area: Aabb, out: &mut Vec<u32>) {
-        out.clear();
-        // An item's box reaches 0.125 sideways and 0.25 up from its position.
-        let (min, max) = (area.min_position(), area.max_position());
-        let (lo, hi) = (
-            Self::cell(Vec3::new(min.x - 0.125, min.y - 0.25, min.z - 0.125)),
-            Self::cell(Vec3::new(max.x + 0.125, max.y, max.z + 0.125)),
-        );
-        for x in lo.0..=hi.0 {
-            for y in lo.1..=hi.1 {
-                for z in lo.2..=hi.2 {
-                    if let Some(list) = self.cells.get(&(x, y, z)) {
-                        out.extend_from_slice(list);
-                    }
-                }
-            }
-        }
-        out.sort_unstable();
-    }
-}
-/// `ItemEntity.mergeWithNeighbours` for `items[i]`, which has just moved in
-/// its tick (its `age` already counts this tick; vanilla's doesn't yet): each
-/// mergeable item whose box meets this one's grown by 0.5 sideways takes this
-/// stack or gives it its own, the smaller into the larger
-/// (`ItemEntity.tryToMerge`), until this item is used up. An emptied item is
-/// marked in `removed`.
-pub fn merge_with_neighbours<I>(
-    items: &mut I,
-    removed: &mut [bool],
-    cells: &mut ItemCells,
-    i: usize,
-    max_stack: &dyn Fn(&ItemStack) -> u32,
-) where
-    I: AsRef<[ItemEntity]> + std::ops::IndexMut<usize, Output = ItemEntity> + ?Sized,
-{
-    let age = |items: &[ItemEntity], j: usize| {
-        if j == i && items[j].age != i16::MIN as i32 {
-            items[j].age - 1
-        } else {
-            items[j].age
-        }
-    };
-    if removed[i] || !items[i].mergeable(age(items.as_ref(), i), max_stack(&items[i].stack)) {
-        return;
-    }
-    let area = items[i].bounds().inflate(Vec3::new(0.5, 0.0, 0.5));
-    let mut near = Vec::new();
-    cells.near(area, &mut near);
-    for j in near {
-        let j = j as usize;
-        if j == i
-            || removed[j]
-            || !items[j].bounds().intersects(area)
-            || !items[j].mergeable(age(items.as_ref(), j), max_stack(&items[j].stack))
-        {
-            continue;
-        }
-        // ItemEntity.areMergable: both fit one stack of the same item and components.
-        let (this, other) = (&items[i].stack, &items[j].stack);
-        if items[i].target != items[j].target
-            || this.count + other.count > max_stack(other)
-            || !this.same_item_same_components(other)
-        {
-            continue;
-        }
-        let (to, from) = if other.count < this.count {
-            (i, j)
-        } else {
-            (j, i)
-        };
-        // ItemEntity.merge(toStack, fromStack, 64).
-        // A component limit above 64 permits an overstacked target. Vanilla's
-        // signed room then moves the excess back into the source stack.
-        let room =
-            i64::from(max_stack(&items[to].stack).min(64)) - i64::from(items[to].stack.count);
-        let moved = room.min(i64::from(items[from].stack.count));
-        items[to].stack.count = (i64::from(items[to].stack.count) + moved) as u32;
-        items[from].stack.count = (i64::from(items[from].stack.count) - moved) as u32;
-        let (delay, from_age, to_age) = (
-            items[from].pickup_delay,
-            age(items.as_ref(), from),
-            age(items.as_ref(), to),
-        );
-        let to_item = &mut items[to];
-        to_item.pickup_delay = to_item.pickup_delay.max(delay);
-        // This item's age goes up once its tick ends.
-        to_item.age = to_age.min(from_age) + i32::from(to == i);
-        if items[from].stack.count == 0 {
-            removed[from] = true;
-            cells.remove(from, items[from].position);
-        }
-        if removed[i] {
-            return;
-        }
-    }
-}
 /// `ExperienceOrbRenderer.submit`'s billboard before its 0.3 scale, in the
 /// order of its four `vertex` calls (bottom left, bottom right, top right, top
 /// left). The quad is a whole block tall about the orb's centre and hangs a
@@ -1463,13 +874,49 @@ pub struct ExperienceOrb {
     pub ticks: u32,
     /// `ExperienceOrb.health`: damage wears it down from 5 (`hurtServer`).
     pub health: i32,
+    /// `Entity.airSupply`: loaded and saved as is; an orb never breathes.
+    pub air: i32,
     /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
     /// until they are gone or further than 8 blocks. Never saved.
     pub following: Option<u32>,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
+}
+/// An orb's `Entity.move` this tick, for the fall bookkeeping its caller
+/// finishes (the long-move cast, `checkFallDamage`'s HIT_GROUND).
+#[derive(Clone, Copy, Debug)]
+pub struct OrbMove {
+    pub from: Vec3,
+    pub moved: Vec3,
+    /// `Entity.isInWater` from this tick's fluid step.
+    pub in_water: bool,
 }
 impl ExperienceOrb {
+    /// A fresh orb (`new ExperienceOrb(level, pos, motion, value)`): full
+    /// health, no age, fall or followed player, not yet ticked.
+    pub fn new(id: u32, position: Vec3, velocity: Vec3, value: i32) -> Self {
+        Self {
+            attachment_lifetime: Default::default(),
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id,
+            position,
+            previous: position,
+            velocity,
+            value,
+            age: 0,
+            on_ground: false,
+            count: 1,
+            ticks: 0,
+            health: 5,
+            air: 300,
+            no_gravity: false,
+            following: None,
+            fall_distance: 0.0,
+        }
+    }
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
     /// `int`; an orb at 0 or below is discarded. True when it is gone.
     pub fn hurt(&mut self, damage: f32) -> bool {
@@ -1594,7 +1041,7 @@ impl ExperienceOrb {
         context: &horizon_world::native_load_context::LoopContext,
         on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
-        self.tick_among(
+        let (stays, _) = self.tick_among(
             world,
             facts,
             collision,
@@ -1606,10 +1053,12 @@ impl ExperienceOrb {
             context,
             on_sound,
             &[],
-        )
+        );
+        stays
     }
     /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
     /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    /// Also gives the move it made, whose fall bookkeeping the caller finishes.
     #[allow(clippy::too_many_arguments)]
     pub fn tick_among(
         &mut self,
@@ -1624,7 +1073,7 @@ impl ExperienceOrb {
         context: &horizon_world::native_load_context::LoopContext,
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
-    ) -> bool {
+    ) -> (bool, OrbMove) {
         let mut world = world;
         self.tick_among_inner(
             &mut world,
@@ -1658,7 +1107,7 @@ impl ExperienceOrb {
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
         invulnerable: &mut dyn FnMut(&mut World) -> bool,
-    ) -> bool {
+    ) -> (bool, OrbMove) {
         self.tick_among_inner(
             &mut world,
             facts,
@@ -1690,12 +1139,12 @@ impl ExperienceOrb {
         on_sound: &mut dyn FnMut([f64; 3], f32),
         entities: &[Aabb],
         invulnerable: &mut dyn FnMut(&mut W) -> bool,
-    ) -> bool {
+    ) -> (bool, OrbMove) {
         self.ticks += 1;
         self.previous = self.position;
         // `Entity.baseTick`'s fluid step, whose `updateFluidOnEyes` answer the
         // water branch below reads: the orb's eye, not its feet, decides.
-        let eye_in_water = self.update_fluids(world, fluids, context);
+        let (eye_in_water, in_water) = self.update_fluids(world, fluids, context);
         let block = world.block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
@@ -1756,12 +1205,31 @@ impl ExperienceOrb {
         // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
         // push and before the move.
         let wanted = self.velocity;
+        // The orb's Entity.move goes through the move gate (#2414); PR 1a
+        // records the movement unchanged.
+        let mut gate = crate::move_gate::armed(
+            context,
+            self.id,
+            "minecraft:experience_orb",
+            horizon_world::entity_move::MoverType::SelfMovement,
+            wanted,
+        );
+        let wanted = gate.delta();
         // Entity.collide: the world border's walls and the entities that
         // `canBeCollidedWith` it (a boat, a shulker) stop the orb too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
-        let moved = scene
-            .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
-            .unwrap_or(Vec3::ZERO);
+        let moved = crate::move_gate::scene_resolve_in_border_with(
+            &mut gate,
+            scene,
+            bounds,
+            wanted,
+            0.0,
+            self.on_ground,
+            border,
+            entities,
+        )
+        .unwrap_or(Vec3::ZERO);
+        let from = self.position;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
@@ -1794,12 +1262,10 @@ impl ExperienceOrb {
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
         if self.on_ground {
-            let below = world.block(
-                self.position.x.floor() as i32,
-                (self.position.y - 0.999_999).floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            friction *= facts.get(below).friction;
+            let below =
+                BlockPos::containing(self.position.subtract(Vec3::new(0.0, 0.999_999, 0.0)));
+            let kind = "minecraft:experience_orb";
+            friction *= block_friction(context, self.id, kind, world, facts, below);
         }
         let friction = f64::from(friction);
         // The drag scales every axis by the same friction, the ground's
@@ -1816,7 +1282,12 @@ impl ExperienceOrb {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
-        !discarded && self.age < 6000
+        let step = OrbMove {
+            from,
+            moved,
+            in_water,
+        };
+        (!discarded && self.age < 6000, step)
     }
     /// `LavaFluid.entityInside` -> `Entity.lavaHurt`: four damage on the
     /// server, through the orb's existing hurt/discard policy, playing the generic
@@ -2194,8 +1665,8 @@ pub struct ItemFrame {
     pub facing: u8,
     pub glow: bool,
     pub item: Option<crate::items::ItemStack>,
-    /// 0..8, in 45 degree steps.
-    pub rotation: u8,
+    /// Java `%` remainder of ItemRotation, so -7..=7 in 45 degree steps.
+    pub rotation: i8,
     pub drop_chance: f32,
     pub fixed: bool,
     pub invisible: bool,
@@ -2283,6 +1754,11 @@ pub struct ArmorStand {
     /// is false with it, as with `Marker`: `travel` does nothing, so the stand
     /// never moves, and the blocks it stands in do not touch it.
     pub no_gravity: bool,
+    /// `Entity.noPhysics`. `None` is `!hasPhysics()` (`Marker` or `NoGravity`),
+    /// which `ArmorStand.readAdditionalSaveData` recomputes on every load;
+    /// `Some` is a mod's write, which lasts only until the stand is saved and
+    /// loaded again.
+    pub no_physics: Option<bool>,
     /// `CustomName`: the text of a hologram.
     pub custom_name: Option<crate::text::Text>,
     /// `CustomNameVisible`.
@@ -2318,6 +1794,8 @@ pub struct ArmorStand {
     /// (`getAttribute`) on the stand's first server tick, and a save that lists
     /// it loads it back, so a stand summoned this tick has none yet.
     pub speed_instance: bool,
+    /// `NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE` from server attribute updates.
+    pub nameplate: crate::entities::nameplate::NameplateDistances,
 }
 /// The fluid a stand travels in (`LivingEntity.travelInFluid`: water first,
 /// then lava), from the heights `Entity::push_by_fluid` measured.
@@ -2389,7 +1867,8 @@ impl ArmorStand {
         in_water: bool,
         border: Option<&BorderGeometry>,
     ) {
-        if let Some(step) = self.tick_move(scene, facts, climbing, in_water, border, &[]) {
+        let context = crate::test_resources::server_loop_context();
+        if let Some(step) = self.tick_move(scene, facts, climbing, in_water, border, &[], context) {
             let medium = if in_water {
                 StandMedium::Water
             } else {
@@ -2401,20 +1880,6 @@ impl ArmorStand {
     }
 }
 impl ArmorStand {
-    /// `NameTagItem.interactLivingEntity`: a custom name handles the use;
-    /// only a living target changes. Stack consumption belongs to the caller.
-    pub fn name_with_tag(&mut self, stack: &ItemStack) -> bool {
-        if &*stack.item != "minecraft:name_tag" {
-            return false;
-        }
-        let Some(name) = stack.data().and_then(|data| data.custom_name.as_ref()) else {
-            return false;
-        };
-        if self.health > 0.0 {
-            self.custom_name = Some(crate::component::name_text(name));
-        }
-        true
-    }
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
     /// The `Pose` compound's keys.
     pub const POSE_KEYS: [&'static str; 6] =
@@ -2560,6 +2025,7 @@ impl ArmorStand {
             invisible: false,
             marker: false,
             no_gravity: false,
+            no_physics: None,
             custom_name: None,
             name_visible: false,
             last_hit: i64::MIN / 2,
@@ -2573,6 +2039,7 @@ impl ArmorStand {
             first_tick: true,
             support: Default::default(),
             speed_instance: false,
+            nameplate: Default::default(),
         }
     }
     /// `Entity.getOnPos(0.2)` (`getOnPosLegacy`): the supporting block's
@@ -2731,6 +2198,7 @@ impl ArmorStand {
         in_water: bool,
         border: Option<&BorderGeometry>,
         entities: &[Aabb],
+        context: &horizon_world::native_load_context::LoopContext,
     ) -> Option<StandStep> {
         use crate::entity_rules::EntityRules;
         self.previous = self.position;
@@ -2758,12 +2226,10 @@ impl ArmorStand {
         // `travelInAir` reads ground friction before the move.
         let falling = wanted.y <= 0.0;
         let friction = if !in_water && self.on_ground {
-            let below = scene.world.block(
-                self.position.x.floor() as i32,
-                (self.position.y - 0.500_001).floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            facts.get(below).friction
+            let below =
+                BlockPos::containing(self.position.subtract(Vec3::new(0.0, 0.500_001, 0.0)));
+            let kind = "minecraft:armor_stand";
+            block_friction(context, self.id, kind, scene.world, facts, below)
         } else {
             1.0
         };
@@ -2789,14 +2255,25 @@ impl ArmorStand {
         }
         let mut velocity = wanted;
         let mut horizontal_collision = false;
+        // The stand's Entity.move goes through the move gate (#2414); PR 1a
+        // records the movement unchanged.
+        let mut gate = crate::move_gate::armed(
+            context,
+            self.id,
+            "minecraft:armor_stand",
+            horizon_world::entity_move::MoverType::SelfMovement,
+            wanted,
+        );
+        let wanted = gate.delta();
         // Entity.collide: the world border's walls and the entities that
         // `canBeCollidedWith` the stand stop it too.
-        let moved = SceneCollisions {
-            world: scene.world,
-            binding: scene.binding,
-            subject: scene.subject,
-        }
-        .resolve_in_border_with(
+        let moved = crate::move_gate::scene_resolve_in_border_with(
+            &mut gate,
+            SceneCollisions {
+                world: scene.world,
+                binding: scene.binding,
+                subject: scene.subject,
+            },
             self.bounds(),
             wanted,
             0.0,
@@ -2865,6 +2342,8 @@ impl ArmorStand {
         border: Option<&BorderGeometry>,
         entities: &[Aabb],
         travels_after: bool,
+        mover: horizon_world::entity_move::MoverType,
+        context: &horizon_world::native_load_context::LoopContext,
     ) {
         let mut scene = SceneCollisions {
             subject: self.feet_are_leather_boots().then_some(
@@ -2875,12 +2354,18 @@ impl ArmorStand {
             ),
             ..scene
         };
-        let Ok(moved) = SceneCollisions {
-            world: scene.world,
-            binding: scene.binding,
-            subject: scene.subject,
-        }
-        .resolve_in_border_with(
+        // The lid's `Entity.move(mover, delta)` goes through the
+        // move gate (#2414); PR 1a records the movement unchanged.
+        let mut gate =
+            crate::move_gate::armed(context, self.id, "minecraft:armor_stand", mover, delta);
+        let delta = gate.delta();
+        let Ok(moved) = crate::move_gate::scene_resolve_in_border_with(
+            &mut gate,
+            SceneCollisions {
+                world: scene.world,
+                binding: scene.binding,
+                subject: scene.subject,
+            },
             self.bounds(),
             delta,
             0.0,
@@ -3040,13 +2525,18 @@ mod experience_tests;
 #[cfg(test)]
 mod fire_environment_tests {
     use super::*;
-    use horizon_world::loot::PackOverlay;
     #[test]
+    #[ignore = "requires prepared resources"]
     fn ordinary_items_burn_but_native_netherite_resists_lava() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/horizon-client")
-            .join(horizon_core::VANILLA_VERSION);
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
         if !root.join("items.json").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -3057,14 +2547,14 @@ mod fire_environment_tests {
             .unwrap();
         let facts = BlockFacts::load(&root, assets.registry).unwrap();
         let defaults = horizon_world::item_defaults::read(&root).unwrap();
-        let items = crate::items::Items::load(
-            &root,
-            assets.registry,
-            &facts,
-            &PackOverlay::NONE,
-            &defaults,
-        )
-        .unwrap();
+        let damage = crate::health::HealthResources::load(&root).unwrap();
+        let can_hurt = |stack: &ItemStack, name: &str| {
+            let default = defaults
+                .entries()
+                .get(stack.item.as_ref())
+                .and_then(|components| components.get("minecraft:damage_resistant"));
+            crate::item_damage::stack_can_be_hurt_by(default, &damage.damage, stack, name).unwrap()
+        };
         let mut world = World::test_scene(&assets, &render, 3).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         world
@@ -3113,7 +2603,7 @@ mod fire_environment_tests {
             &mut world,
             &facts,
             assets.registry,
-            &items,
+            &can_hurt,
             |_, damage| {
                 heard.push(damage.to_owned());
                 damage == "minecraft:lava"
@@ -3128,7 +2618,7 @@ mod fire_environment_tests {
         );
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
-        let first = wood.environment_tick(&world, &facts, assets.registry, &items);
+        let first = wood.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert!(first.alive && first.lava_hurt);
         assert!(
             !first.should_play_lava_hurt_sound(1),
@@ -3139,7 +2629,7 @@ mod fire_environment_tests {
             wood.fire_ticks > 0,
             "lava contact must ignite dropped items"
         );
-        let last = wood.environment_tick(&world, &facts, assets.registry, &items);
+        let last = wood.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert!(
             !last.alive && last.lava_hurt,
             "lethal lava damage still emits burn sound"
@@ -3149,7 +2639,13 @@ mod fire_environment_tests {
             "the lethal hit must always play the sound"
         );
         for _ in 0..40 {
-            let result = metal.environment_tick(&world, &facts, assets.registry, &items);
+            let (result, allocations) = horizon_threads::allocation_probe::measure(|| {
+                metal.environment_tick(&world, &facts, assets.registry, &can_hurt)
+            });
+            assert_eq!(
+                allocations.calls, 0,
+                "immune environmental tick: {allocations:?}"
+            );
             assert!(result.alive && !result.lava_hurt);
             assert!(!result.should_play_lava_hurt_sound(10));
         }
@@ -3164,7 +2660,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut burning = make("minecraft:oak_planks");
-        let result = burning.environment_tick(&world, &facts, assets.registry, &items);
+        let result = burning.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert!(result.alive && !result.lava_hurt);
         assert!(burning.fire_ticks > 0);
         world
@@ -3179,7 +2675,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let mut soul = make("minecraft:oak_planks");
-        soul.environment_tick(&world, &facts, assets.registry, &items);
+        soul.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert_eq!(soul.health, 3);
         let mut stand = ArmorStand::new(2, at, 0.0);
         world
@@ -3230,17 +2726,22 @@ mod fire_environment_tests {
 #[cfg(test)]
 mod destroyed_bundle_environment_tests {
     use super::*;
-    use horizon_world::loot::PackOverlay;
 
     /// `BundleItem.onDestroyed`: the lava that destroys a dropped bundle
     /// hands its stacks to the item tick (`ItemUtils.onContainerDestroyed`),
     /// and the bundle keeps none of them.
     #[test]
+    #[ignore = "requires prepared resources"]
     fn lava_that_destroys_a_bundle_spills_its_contents() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.local/horizon-client")
-            .join(horizon_core::VANILLA_VERSION);
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
         if !root.join("items.json").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -3251,14 +2752,14 @@ mod destroyed_bundle_environment_tests {
             .unwrap();
         let facts = BlockFacts::load(&root, assets.registry).unwrap();
         let defaults = horizon_world::item_defaults::read(&root).unwrap();
-        let items = crate::items::Items::load(
-            &root,
-            assets.registry,
-            &facts,
-            &PackOverlay::NONE,
-            &defaults,
-        )
-        .unwrap();
+        let damage = crate::health::HealthResources::load(&root).unwrap();
+        let can_hurt = |stack: &ItemStack, name: &str| {
+            let default = defaults
+                .entries()
+                .get(stack.item.as_ref())
+                .and_then(|components| components.get("minecraft:damage_resistant"));
+            crate::item_damage::stack_can_be_hurt_by(default, &damage.damage, stack, name).unwrap()
+        };
         let mut world = World::test_scene(&assets, &render, 3).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         world
@@ -3302,9 +2803,9 @@ mod destroyed_bundle_environment_tests {
             was_touching_water: false,
         };
         // 5 health against 4 a tick: the first tick leaves 1 and nothing out.
-        let first = bundle.environment_tick(&world, &facts, assets.registry, &items);
+        let first = bundle.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert!(first.alive && first.spilled.is_empty());
-        let second = bundle.environment_tick(&world, &facts, assets.registry, &items);
+        let second = bundle.environment_tick(&world, &facts, assets.registry, &can_hurt);
         assert!(!second.alive);
         assert_eq!(
             second
@@ -3527,7 +3028,7 @@ mod merge_tests {
     fn merge(items: &mut [ItemEntity], i: usize) -> Vec<Option<u32>> {
         let mut removed = vec![false; items.len()];
         let mut cells = ItemCells::new(items);
-        merge_with_neighbours(items, &mut removed, &mut cells, i, &max_stack);
+        merge_with_neighbours(items, &mut removed, &mut cells, i, true, &max_stack);
         items
             .iter()
             .zip(removed)
@@ -3547,7 +3048,7 @@ mod merge_tests {
         let joins: Vec<_> = items.iter().map(|item| item.join).collect();
         let mut removed = [false; 3];
         let mut cells = ItemCells::new(&items);
-        merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &max_stack);
+        merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, true, &max_stack);
         let mut removed = removed.into_iter();
         items.retain(|_| !removed.next().unwrap());
         assert_eq!(items.len(), 2);
@@ -3596,7 +3097,7 @@ mod merge_tests {
             items[1].pickup_delay = 30;
             let mut removed = [false; 2];
             let mut cells = ItemCells::new(&items);
-            merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &|_| 99);
+            merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, true, &|_| 99);
             assert_eq!([items[0].stack.count, items[1].stack.count], expected);
             assert_eq!(removed, [false, false]);
             assert_eq!(items[0].pickup_delay, 30);
@@ -3716,7 +3217,7 @@ mod merge_tests {
         let from = items[1].position;
         items[1].position.x = 0.9;
         cells.moved(1, from, items[1].position);
-        merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, &max_stack);
+        merge_with_neighbours(&mut items, &mut removed, &mut cells, 0, true, &max_stack);
         assert_eq!(removed, [true, false]);
         assert_eq!(items[1].stack.count, 2);
     }
@@ -3735,6 +3236,7 @@ mod world_border_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -3798,6 +3300,7 @@ mod world_border_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -3827,6 +3330,7 @@ mod world_border_tests {
             );
             let mut orb = ExperienceOrb {
                 attachment_lifetime: Default::default(),
+                fall_distance: 0.0,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -3840,6 +3344,7 @@ mod world_border_tests {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                air: 300,
                 following: None,
             };
             orb.tick(
@@ -3883,6 +3388,7 @@ mod honey_slide_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -3936,6 +3442,7 @@ mod honey_slide_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4007,6 +3514,7 @@ mod honey_slide_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4286,6 +3794,7 @@ mod slime_bounce_tests {
                 prior_fall: item.fall_distance,
                 fall_move: None,
             },
+            crate::test_resources::server_loop_context(),
         );
         assert_eq!(item.velocity.x.to_bits(), 0x3fb9_1687_3333_3334);
         assert_eq!(item.velocity.y.to_bits(), 0x3fc9_1687_3333_3334);
@@ -4313,6 +3822,7 @@ mod slime_bounce_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4442,6 +3952,7 @@ mod entity_collision_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4491,6 +4002,7 @@ mod entity_collision_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4648,6 +4160,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4767,6 +4280,7 @@ mod armor_stand_motion_tests {
                     .join(horizon_core::VANILLA_VERSION)
             });
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4861,6 +4375,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4921,6 +4436,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -4941,6 +4457,7 @@ mod armor_stand_motion_tests {
         )
         .unwrap();
         let shulker = Aabb::new(Vec3::new(20.0, 4.0, 20.0), Vec3::new(21.0, 5.0, 21.0));
+        let context = crate::test_resources::server_loop_context();
         let run = |stand: &mut ArmorStand, boxes: &[Aabb], ticks: usize| {
             for _ in 0..ticks {
                 let mut scene = SceneCollisions {
@@ -4949,7 +4466,7 @@ mod armor_stand_motion_tests {
                     subject: None,
                 };
                 if let Some(step) =
-                    stand.tick_move(&mut scene, &facts, &climbing, false, None, boxes)
+                    stand.tick_move(&mut scene, &facts, &climbing, false, None, boxes, context)
                 {
                     stand.tick_settle(StandMedium::Air, step);
                 }
@@ -5027,6 +4544,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -5067,6 +4585,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -5101,6 +4620,7 @@ mod armor_stand_motion_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             return;
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
@@ -5311,6 +4831,7 @@ mod orb_underwater_tests {
             .map(|(v, _)| {
                 let mut orb = ExperienceOrb {
                     attachment_lifetime: Default::default(),
+                    fall_distance: 0.0,
                     rotation: [0.0, 0.0],
                     join: Default::default(),
                     no_gravity: false,
@@ -5324,6 +4845,7 @@ mod orb_underwater_tests {
                     count: 1,
                     ticks: 0,
                     health: 5,
+                    air: 300,
                     following: None,
                 };
                 orb.set_underwater_movement();
@@ -5346,6 +4868,7 @@ mod render_light_tests {
     fn orb(y: f64) -> ExperienceOrb {
         ExperienceOrb {
             attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -5359,6 +4882,7 @@ mod render_light_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
         }
     }
@@ -5554,6 +5078,7 @@ mod orb_lava_tests {
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
         if !root.join("movement-properties.nbt").exists() {
+            crate::test_fixtures::report_missing();
             eprintln!("orb lava fixture unavailable: prepared resources missing");
             return;
         }
@@ -5573,6 +5098,7 @@ mod orb_lava_tests {
     fn sample_orb(at: Vec3, health: i32) -> ExperienceOrb {
         ExperienceOrb {
             attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -5586,6 +5112,7 @@ mod orb_lava_tests {
             count: 1,
             ticks: 0,
             health,
+            air: 300,
             following: None,
         }
     }
@@ -5654,23 +5181,26 @@ mod orb_lava_tests {
             let mut orb = sample_orb(Vec3::new(20.5, 4.1, 20.5), 5);
             let mut sounds = 0;
             let mut calls = 0;
-            assert!(orb.tick_among_with_hook(
-                world,
-                facts,
-                collision,
-                None,
-                true,
-                &mut || 0.0,
-                None,
-                fluids,
-                crate::test_resources::server_loop_context(),
-                &mut |_, _| sounds += 1,
-                &[],
-                &mut |_| {
-                    calls += 1;
-                    true
-                },
-            ));
+            assert!(
+                orb.tick_among_with_hook(
+                    world,
+                    facts,
+                    collision,
+                    None,
+                    true,
+                    &mut || 0.0,
+                    None,
+                    fluids,
+                    crate::test_resources::server_loop_context(),
+                    &mut |_, _| sounds += 1,
+                    &[],
+                    &mut |_| {
+                        calls += 1;
+                        true
+                    },
+                )
+                .0
+            );
             assert_eq!(orb.health, 5);
             assert_eq!(calls, 1);
             assert_eq!(sounds, 1);
@@ -5987,4 +5517,41 @@ fn orb_lava_contacts(
         segment(to, to, 1);
     }
     contacts
+}
+
+#[cfg(test)]
+mod orb_lava_shape_tests {
+    use super::*;
+
+    fn contacts(from: Vec3, to: Vec3) -> usize {
+        orb_lava_contacts(from, to, to.subtract(from), |p| {
+            (p == BlockPos::new(0, 0, 0)).then_some(f64::from(8.0_f32 / 9.0))
+        })
+    }
+
+    #[test]
+    fn lava_uses_the_swept_box_and_fluid_height_not_the_feet_block() {
+        let side = Vec3::new(-0.2, 0.1, 0.5);
+        assert_eq!(contacts(side, side), 1);
+        let above = Vec3::new(0.5, 0.95, 0.5);
+        assert_eq!(contacts(above, above), 0);
+        let through = Vec3::new(-1.0, 0.1, 0.5);
+        let end = Vec3::new(2.0, 0.1, 0.5);
+        assert_eq!(contacts(through, end), 1);
+        let away = Vec3::new(-1.0, 0.1, -1.0);
+        assert_eq!(contacts(away, away), 0);
+    }
+
+    #[test]
+    fn axis_segments_do_not_damage_twice_for_the_same_lava_cell() {
+        let from = Vec3::new(0.1, 0.1, 0.1);
+        let to = Vec3::new(0.7, 0.2, 0.7);
+        assert_eq!(contacts(from, to), 1);
+        assert_eq!(
+            orb_lava_contacts(from, to, Vec3::new(0.1, 0.1, 0.9), |p| {
+                (p == BlockPos::new(0, 0, 0)).then_some(1.0)
+            }),
+            1
+        );
+    }
 }

@@ -1,7 +1,6 @@
 //! Fishing: `FishingRodItem.use` (cast / reel in), the `FishingHook` (flight,
 //! bobbing, lure and bite timers, open water, hooking mobs, retrieving the
 //! `gameplay/fishing` loot) and `FishingHookRenderer` (bobber and line).
-use super::api_values::TryIntoApi;
 use super::{Game, creatures::ProjectileHitter, lan_mobs::guest_bounds, view_vector};
 use horizon_client::advancements::EntityView;
 use horizon_client::lan::entity::States;
@@ -333,7 +332,7 @@ impl Game<'_> {
             self.install_fishing_hook(hook);
             let item_start = self.dropped.len();
             let orb_start = self.orbs.len();
-            self.world.random = LegacyRandom::new(seed);
+            self.world.random.set_seed(seed);
             self.use_fishing_rod(&rod);
             let items: Vec<_> = self
                 .dropped
@@ -571,15 +570,15 @@ impl Game<'_> {
     }
     /// `FishingHook.retrieve`: the rod damage it costs.
     fn retrieve_hook(&mut self, rod: &ItemStack) -> u32 {
-        let Some(hook) = self.hook.extract() else {
+        let Some(mut hook) = self.hook.extract() else {
             return 0;
         };
         let (id, join) = (hook.id, hook.join);
-        let damage = self.retrieve_hook_extracted(rod, hook);
+        let damage = self.retrieve_hook_extracted(rod, &mut hook);
         self.hook.retire_extracted(id, join);
         damage
     }
-    fn retrieve_hook_extracted(&mut self, rod: &ItemStack, mut hook: Hook) -> u32 {
+    fn retrieve_hook_extracted(&mut self, rod: &ItemStack, hook: &mut Hook) -> u32 {
         let Some(p) = self.player.as_ref() else {
             return 0;
         };
@@ -658,7 +657,7 @@ impl Game<'_> {
                 biome.as_deref(),
                 hook.open_water,
             );
-            let caught: Vec<ItemStack> = items
+            let mut caught: Vec<ItemStack> = items
                 .into_iter()
                 .map(|stack| {
                     let mut item = ItemStack {
@@ -684,36 +683,45 @@ impl Game<'_> {
                     item
                 })
                 .collect();
-            // ItemFishedEvent, on the rolled catch: the mods may set the
-            // rod's damage, or cancel the catch.
+            // ItemFishedEvent may change the catch, rod damage, or cancel rewards.
             let mut rod_damage = if hook.on_ground { 2 } else { 1 };
             if let Some(player) = self.lan_acting_uuid
                 && mod_api::__private::listened(mod_api::HookId::ItemFished)
-                && let Ok(drops) = caught.try_into_api()
             {
                 let fished = mod_api::ItemFished::from(mod_api::__private::built::ItemFished {
                     hook: hook.id,
                     position: [hook.position.x, hook.position.y, hook.position.z],
-                    drops: &drops,
                 });
                 let mut cancel = false;
                 let entity_id = self.own_entity_id();
-                self.native_item_fished(player, entity_id, &fished, &mut rod_damage, &mut cancel);
+                self.native_item_fished(
+                    player,
+                    entity_id,
+                    &fished,
+                    &mut caught,
+                    &mut rod_damage,
+                    &mut cancel,
+                );
                 if cancel {
                     return rod_damage.max(0) as u32;
                 }
             }
+            // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
+            let bobber = EntityView {
+                kind: "minecraft:fishing_bobber".into(),
+                position: [hook.position.x, hook.position.y, hook.position.z],
+                on_ground: hook.on_ground,
+                fishing_open_water: Some(hook.open_water),
+                ..Default::default()
+            };
+            self.trigger_fishing_rod_hooked(rod, &bobber, &caught);
             for item in caught.iter().cloned() {
-                // FishingHook.retrieve: fish_caught for each catch in #minecraft:fishes.
-                if self
+                let fish = self
                     .res
                     .items()
                     .item_tags
                     .get("minecraft:fishes")
-                    .is_some_and(|t| t.contains(&*item.item))
-                {
-                    self.award_custom_stat("fish_caught", 1);
-                }
+                    .is_some_and(|tags| tags.contains(&*item.item));
                 let (dx, dy, dz) = (
                     owner.x - hook.position.x,
                     owner.y - hook.position.y,
@@ -734,16 +742,10 @@ impl Game<'_> {
                 // Vanilla constructs a single orb directly; ExperienceOrb.award
                 // would split it and draw a merge id from the level random.
                 self.add_orb([owner.x, owner.y + 0.5, owner.z + 0.5], xp);
+                if fish {
+                    self.award_custom_stat("fish_caught", 1);
+                }
             }
-            // CriteriaTriggers.FISHING_ROD_HOOKED: the hook itself is the entity.
-            let bobber = EntityView {
-                kind: "minecraft:fishing_bobber".into(),
-                position: [hook.position.x, hook.position.y, hook.position.z],
-                on_ground: hook.on_ground,
-                fishing_open_water: Some(hook.open_water),
-                ..Default::default()
-            };
-            self.trigger_fishing_rod_hooked(rod, &bobber, &caught);
             return rod_damage.max(0) as u32;
         }
         if hook.on_ground {
@@ -771,8 +773,10 @@ impl Game<'_> {
     }
     /// getOpenWaterTypeForBlock: 0 above water, 1 inside water, 2 invalid.
     fn open_water_type(&self, x: i32, y: i32, z: i32) -> u8 {
-        let f = self.res.facts().get(self.world.block(x, y, z));
-        if self.world.is_air(self.world.block(x, y, z)) || &*f.name == "minecraft:lily_pad" {
+        let state = self.world.block(x, y, z);
+        let f = self.res.facts().get(state);
+        // `!state.isAir()`: cave_air and void_air are air too.
+        if self.res.facts().is_air(state) || &*f.name == "minecraft:lily_pad" {
             return 0;
         }
         if f.fluid == Fluid::Water
@@ -964,9 +968,12 @@ impl Game<'_> {
             return;
         };
         let (id, join) = (hook.id, hook.join);
+        let from = hook.position;
         match self.tick_fishing_extracted(hook) {
             Some(hook) => {
+                let to = hook.position;
                 self.hook.put_back(hook);
+                self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
             }
             None => self.hook.retire_extracted(id, join),
         }
@@ -1222,10 +1229,27 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        if let Ok(moved) = scene.resolve(bounds(h.position), h.velocity, 0.0, h.on_ground) {
+        // The bobber's Entity.move goes through the move gate (#2414); PR 1a
+        // records the movement unchanged.
+        let mut gate = horizon_client::move_gate::armed(
+            &self.loop_context,
+            h.id,
+            "minecraft:fishing_bobber",
+            horizon_world::entity_move::MoverType::SelfMovement,
+            h.velocity,
+        );
+        let wanted = gate.delta();
+        if let Ok(moved) = horizon_client::move_gate::scene_resolve(
+            &mut gate,
+            &mut scene,
+            bounds(h.position),
+            wanted,
+            0.0,
+            h.on_ground,
+        ) {
             let horizontal =
-                (moved.x - h.velocity.x).abs() > 1.0e-7 || (moved.z - h.velocity.z).abs() > 1.0e-7;
-            h.on_ground = h.velocity.y < 0.0 && moved.y > h.velocity.y;
+                (moved.x - wanted.x).abs() > 1.0e-7 || (moved.z - wanted.z).abs() > 1.0e-7;
+            h.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
             h.position = Vec3::new(
                 h.position.x + moved.x,
                 h.position.y + moved.y,
@@ -1568,7 +1592,8 @@ impl Game<'_> {
 pub(super) struct RemoteHook {
     id: u32,
     uuid: [i32; 4],
-    owner: u32,
+    pub(super) owner: u32,
+    pub(super) owner_fishing: bool,
     pub(super) position: Vec3,
     pub(super) previous: Vec3,
     velocity: Vec3,
@@ -1576,6 +1601,42 @@ pub(super) struct RemoteHook {
     on_ground: bool,
     lerp: HookLerp,
     pub(super) random: LegacyRandom,
+}
+
+fn push_remote_hook(
+    hooks: &mut Vec<RemoteHook>,
+    id: u32,
+    owner: u32,
+    at: Vec3,
+    velocity: Vec3,
+    uuid: [i32; 4],
+) {
+    for h in hooks.iter_mut().filter(|h| h.owner == owner) {
+        h.owner_fishing = false;
+    }
+    hooks.push(RemoteHook {
+        id,
+        uuid,
+        owner,
+        owner_fishing: true,
+        position: at,
+        previous: at,
+        velocity,
+        state: State::Flying,
+        on_ground: false,
+        lerp: HookLerp::default(),
+        random: random_source::entity(),
+    });
+}
+
+fn remove_remote_hook_from(hooks: &mut Vec<RemoteHook>, id: u32) {
+    let owner = hooks.iter().find(|h| h.id == id).map(|h| h.owner);
+    hooks.retain(|h| h.id != id);
+    if let Some(owner) = owner {
+        for h in hooks.iter_mut().filter(|h| h.owner == owner) {
+            h.owner_fishing = false;
+        }
+    }
 }
 
 /// The `onGround` of a server's update (`handleMoveEntity`), except that a
@@ -1753,18 +1814,7 @@ impl Game<'_> {
             hook.velocity = velocity;
             self.install_fishing_hook(hook);
         } else {
-            self.remote_hooks.push(RemoteHook {
-                id,
-                uuid,
-                owner: owner as u32,
-                position: at,
-                previous: at,
-                velocity,
-                state: State::Flying,
-                on_ground: false,
-                lerp: HookLerp::default(),
-                random: random_source::entity(),
-            });
+            push_remote_hook(&mut self.remote_hooks, id, owner as u32, at, velocity, uuid);
         }
     }
 
@@ -1870,7 +1920,7 @@ impl Game<'_> {
     }
 
     /// The fishing medium a mod says the hook at `position` floats in
-    /// (`native_fishing_medium`), when it is in it. API @API:fishing_medium@.
+    /// (`native_fishing_medium`), when it is in it. API 578.
     fn hook_medium(
         &mut self,
         id: u32,
@@ -2008,10 +2058,27 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        if let Ok(moved) = scene.resolve(bounds(position), velocity, 0.0, on_ground) {
+        // The bobber's Entity.move goes through the move gate (#2414); PR 1a
+        // records the movement unchanged.
+        let mut gate = horizon_client::move_gate::armed(
+            &self.loop_context,
+            id,
+            "minecraft:fishing_bobber",
+            horizon_world::entity_move::MoverType::SelfMovement,
+            velocity,
+        );
+        let wanted = gate.delta();
+        if let Ok(moved) = horizon_client::move_gate::scene_resolve(
+            &mut gate,
+            &mut scene,
+            bounds(position),
+            wanted,
+            0.0,
+            on_ground,
+        ) {
             let horizontal =
-                (moved.x - velocity.x).abs() > 1.0e-7 || (moved.z - velocity.z).abs() > 1.0e-7;
-            on_ground = velocity.y < 0.0 && moved.y > velocity.y;
+                (moved.x - wanted.x).abs() > 1.0e-7 || (moved.z - wanted.z).abs() > 1.0e-7;
+            on_ground = wanted.y < 0.0 && moved.y > wanted.y;
             position = Vec3::new(
                 position.x + moved.x,
                 position.y + moved.y,
@@ -2029,7 +2096,7 @@ impl Game<'_> {
         if self.remote.is_some() && self.hook.as_ref().is_some_and(|h| h.id == id) {
             self.hook.discard();
         }
-        self.remote_hooks.retain(|h| h.id != id);
+        remove_remote_hook_from(&mut self.remote_hooks, id);
     }
 
     pub(super) fn clear_remote_hooks(&mut self) {
@@ -2422,8 +2489,31 @@ mod tests {
         );
         assert_eq!(pulled, Vec3::new(1.5, 0.2, 0.0));
     }
+
+    #[test]
+    fn removing_one_of_two_remote_hooks_clears_owner_fishing() {
+        let mut hooks = Vec::new();
+        super::push_remote_hook(&mut hooks, 10, 7, Vec3::ZERO, Vec3::ZERO, [0; 4]);
+        super::push_remote_hook(&mut hooks, 11, 7, Vec3::ZERO, Vec3::ZERO, [0; 4]);
+        super::push_remote_hook(&mut hooks, 20, 12, Vec3::ZERO, Vec3::ZERO, [0; 4]);
+        assert!(!hooks[0].owner_fishing);
+        assert!(hooks[1].owner_fishing);
+        assert!(hooks[2].owner_fishing);
+        super::remove_remote_hook_from(&mut hooks, 10);
+        assert_eq!(hooks.len(), 2);
+        assert!(!hooks.iter().any(|h| h.owner == 7 && h.owner_fishing));
+        assert!(hooks.iter().any(|h| h.owner == 12 && h.owner_fishing));
+    }
 }
 
 #[cfg(test)]
 #[path = "fishing_tests/block_hit.rs"]
 mod incoming_block_hit_tests;
+
+#[cfg(test)]
+#[path = "fishing_tests/fishing_air_tests.rs"]
+mod fishing_air_tests;
+
+#[cfg(test)]
+#[path = "fishing_tests/fishing_catch_tests.rs"]
+mod fishing_catch_tests;

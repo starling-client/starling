@@ -34,9 +34,9 @@ CreditsAndAttributionScreen.openCreditsScreen	port	crates/horizon-client/src/gam
 DatapackLoadFailureScreen.init	missing		gap: minor: no datapack failure screen; a pack that fails to install is logged (game.rs:12109-12111) and the world opens with the packs it has
 DatapackLoadFailureScreen.extractRenderState	missing		gap: minor: same as init, there is no failure screen to draw; a failed pack install only reaches the log
 DeathScreen.exitToTitleScreen	port	crates/horizon-client/src/game/interface/screens.rs::Game::death_confirm_answer	Yes leaves the world; gap: minor: the leave and title hand-off is one close_world call
-DeathScreen.extractRenderState	port	crates/horizon-client/src/game/interface/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service)
+DeathScreen.extractRenderState	port	crates/horizon-client/src/game/interface/screens.rs::Game::draw_death_screen	gap: minor: no draft-report badge on the title button (reporting service); the cause line is visited with hover tooltips and a link cursor
 DeathScreen.visitText	port	crates/horizon-client/src/game/interface/screens.rs::Game::draw_death_screen	title at double size, cause and score lines
-DeathScreen.mouseClicked	port	crates/horizon-client/src/game/interface/screens.rs::Game::death_click	buttons and the title confirm; gap: minor: a click on a link in the death text does nothing
+DeathScreen.mouseClicked	port	crates/horizon-client/src/game/interface/screens.rs::Game::death_click	buttons, the title confirm and the cause line's open_url links (ClickableStyleFinder, Game::click_url)
 DeathScreen.tick	inline	crates/horizon-client/src/game/interface/screens.rs::Game::draw_death_screen	the 20-tick delay is checked as 1000 ms since death, on draw and on click
 DeathScreen.setButtonsActive	inline	crates/horizon-client/src/game/interface/screens.rs::Game::draw_death_screen	buttons are active once the 1000 ms delay has passed
 DirectJoinServerScreen.keyPressed	port	crates/horizon-client/src/game/interface/startup_menu.rs::StartupMenu::title_key	gap: player: Enter in the Direct Connection field does not join; title_key only confirms a rename
@@ -48,8 +48,8 @@ DirectJoinServerScreen.extractRenderState	port	crates/horizon-client/src/multipl
 DisconnectedScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	reason text and the disconnected buttons; gap: minor: no Report to Server or open-report-folder button
 DisconnectedScreen.getNarrationMessage	port	crates/horizon-client/src/multiplayer.rs::Screen::narration	disconnect.lost and the reason, joined
 ErrorScreen.init	port	crates/horizon-client/src/title.rs::Title::buttons	Cancel button of the error mode (Mode::Error arm)
-ErrorScreen.extractRenderState	port	crates/horizon-client/src/title.rs::Title::draw	the error title and message (Mode::Error arm)
-ErrorScreen.extractBackground	port	crates/horizon-client/src/title.rs::Title::draw	gap: minor: the flat gradient is replaced by the title background
+ErrorScreen.extractRenderState	port	crates/horizon-client/src/title/draw.rs::Title::draw_with_items	the error title and message (Mode::Error arm)
+ErrorScreen.extractBackground	port	crates/horizon-client/src/title/draw.rs::Title::draw_with_items	gap: minor: the flat gradient is replaced by the title background
 FaviconTexture.forWorld	port	crates/horizon-client/src/title.rs::Title::icon	the world row's icon texture
 FaviconTexture.forServer	port	crates/horizon-client/src/multiplayer.rs::ping_all	server icon keyed by address, from the ping
 FaviconTexture.clear	inline	crates/horizon-client/src/multiplayer.rs::ping_all	icon dropped when the ping has no favicon
@@ -65,7 +65,7 @@ GenericWaitingScreen.createWaiting	skip:service		waiting screen while a report i
 GenericWaitingScreen.createCompleted	skip:service		result screen after a report (reporting)
 GenericWaitingScreen.init	skip:service		layout of the report waiting screen (reporting)
 GenericWaitingScreen.tick	skip:service		the report button's delay (reporting)
-GenericWaitingScreen.extractRenderState	port	crates/horizon-client/src/title.rs::Title::draw_with_items	Mode::Backup draws the waiting title, the message and the animated dots while the backup runs; the Created/Failed toast follows when it finishes
+GenericWaitingScreen.extractRenderState	port	crates/horizon-client/src/title/draw.rs::Title::draw_with_items	Mode::Backup draws the waiting title, the message and the animated dots while the backup runs; the Created/Failed toast follows when it finishes
 GenericWaitingScreen.shouldCloseOnEsc	skip:service		Escape on the report waiting screen (reporting)
 GenericWaitingScreen.getNarrationMessage	port	crates/horizon-client/src/title.rs::Title::narration	Mode::Backup: selectWorld.waitingForBackup.title and its message, joined
 InBedChatScreen.init	port	crates/horizon-client/src/game/interface/chat.rs::Game::draw_chat_screen	Leave Bed button over the chat; its click is in chat_click
@@ -145,6 +145,8 @@ TitleScreen.createNormalMenuOptions	port	crates/horizon-client/src/title.rs::Tit
 TitleScreen.getMultiplayerDisabledReason	port	crates/horizon-client/src/title.rs::Title::buttons	the decision is the button's enabled flag from Title.allows_multiplayer (AccountStatus::allows_multiplayer: servers-allowed, a multiplayer ban, a forced name change); the reason component vanilla shows for it is not built
 TitleScreen.createDemoMenuOptions	skip:other		demo build only (isDemo); Horizon has no demo mode
 TitleScreen.checkDemoWorldPresence	skip:other		demo world only
-TitleScreen.extractRenderState	port	crates/horizon-client/src/title.rs::Title::draw	version line and buttons
+TitleScreen.extractRenderState	port	crates/horizon-client/src/title/draw.rs::Title::draw_with_items	version line and buttons
 TitleScreen.mouseClicked	port	crates/horizon-client/src/title.rs::Title::click	gap: minor: no Realms notification popup to click
 TitleScreen.confirmDemo	skip:other		demo world reset only
+DirectJoinServerScreen.updateSelectButtonStatus	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	the Join Server button is active only while servers::parse_address accepts the typed address (Screen::Direct)
+DirectJoinServerScreen.setInitialFocus	skip:ui		the address field is drawn focused (focused_at); it is the Direct screen's only text field

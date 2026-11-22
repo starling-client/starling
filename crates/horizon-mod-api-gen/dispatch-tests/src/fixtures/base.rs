@@ -204,6 +204,25 @@ fn menu_button_mutates_entity_and_cursor_once() {
 }
 
 #[test]
+fn general_entity_tick_tells_each_part_of_the_row_in_order() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    install_parts(Parts {
+        entities: vec![part(1, &calls), part(2, &calls)],
+        ..Parts::default()
+    });
+    dispatch_general_entity_tick(&mut TestHost, "mymod:robot", generated::mod_api::EntityRef);
+    assert_eq!(*calls.lock().unwrap(), [1, 2]);
+}
+
+#[test]
+fn general_entity_tick_without_parts_names_no_table() {
+    let calls: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    install_parts(Parts::default());
+    dispatch_general_entity_tick(&mut TestHost, "mymod:robot", generated::mod_api::EntityRef);
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[test]
 fn block_entity_submit_dispatches_in_order_with_shared_draw() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     install_parts(Parts {
@@ -240,12 +259,20 @@ fn slot_rules_mutate_and_item_tick_can_cancel() {
     });
     let (mut may_place, mut max_stack) = (true, 64);
     dispatch_menu_slot_rules(
-        &Loop("loop"),
-        "test:menu",
-        0,
-        &ItemStack::default(),
-        &mut may_place,
-        &mut max_stack,
+        &TestHost,
+        calls::MenuSlotRulesCall {
+            menu: "test:menu",
+            slot: 0,
+            container: MenuContainer::Grid,
+            stack: &ItemStack::default(),
+            context: &MenuSlotContext {
+                player: Some(7),
+                pos: Some([1, 2, 3]),
+                slots: vec![vec![None], vec![None, Some(ItemStack::default())]],
+            },
+            may_place: &mut may_place,
+            max_stack: &mut max_stack,
+        },
     );
     assert_eq!((may_place, max_stack), (false, 1));
     let (mut duration, mut canceled) = (10, false);
@@ -271,16 +298,25 @@ fn item_finish_can_clear_vanilla_result() {
     )];
     let mods: Arc<[ModEntry]> = mods.into();
     install(mods.clone());
-    let mut result = Some(ItemStack::default());
-    dispatch_living_entity_use_item_finish(
-        &mut TestHost,
-        &ItemStack::default(),
-        None,
-        Hand::Main,
-        0,
-        &mut result,
-    );
-    assert!(result.is_none());
+    // Both sides reach the listener, which clears the result.
+    for client in [false, true] {
+        let mut host = TestHost;
+        let side = if client {
+            HostSide::Client(&mut host)
+        } else {
+            HostSide::Server(&mut host)
+        };
+        let mut result = Some(ItemStack::default());
+        dispatch_living_entity_use_item_finish(
+            side,
+            &ItemStack::default(),
+            None,
+            Hand::Main,
+            0,
+            &mut result,
+        );
+        assert!(result.is_none(), "client={client}");
+    }
 }
 
 #[test]
@@ -521,6 +557,7 @@ fn dispatch_contracts() {
             );
             assert_eq!(event.source.damage_type, "minecraft:player_attack");
             assert!(event.attacker_main.is_none() && event.attacker_off.is_none());
+            assert_eq!(event.entry, KnockbackEntry::Full);
             assert_eq!(event.strength, 0.4);
             event.strength *= 2.0;
             event.x = -event.x;
@@ -544,6 +581,7 @@ fn dispatch_contracts() {
             attacker: 7,
             attacker_main: None,
             attacker_off: None,
+            entry: KnockbackEntry::Full,
             strength: &mut strength,
             x: &mut x,
             z: &mut z,
@@ -651,9 +689,9 @@ fn dispatch_contracts() {
     assert!(!canceled);
     install(mods.clone());
     calls.lock().unwrap().clear();
-    let mut claimed = false;
+    let mut result = None;
     dispatch_use_on(
-        &mut host,
+        HostSide::Server(&mut host),
         calls::UseOnCall {
             stack: &ItemStack::default(),
             pos: [0; 3],
@@ -662,14 +700,14 @@ fn dispatch_contracts() {
             hit: BlockHit,
             player: 0,
             player_entity_id: 0,
-            claimed: &mut claimed,
+            result: &mut result,
         },
     );
-    assert!(claimed);
+    assert_eq!(result, Some(InteractionResult::SuccessServer));
     assert_eq!(*calls.lock().unwrap(), [1]);
     calls.lock().unwrap().clear();
     dispatch_use_on(
-        &mut host,
+        HostSide::Server(&mut host),
         calls::UseOnCall {
             stack: &ItemStack::default(),
             pos: [0; 3],
@@ -678,7 +716,7 @@ fn dispatch_contracts() {
             hit: BlockHit,
             player: 0,
             player_entity_id: 0,
-            claimed: &mut claimed,
+            result: &mut result,
         },
     );
     assert!(calls.lock().unwrap().is_empty());
@@ -691,6 +729,7 @@ mod stubs {
     #[derive(Clone, Copy)]
     pub(super) struct BlockId;
     pub(super) struct Ticks;
+    pub(super) struct ClockAdjustment;
     pub(super) struct Compound;
     pub(super) type Dispensed = (Option<super::ItemStack>, i32);
     pub(super) struct LootDrops<'a>(pub &'a ());

@@ -4,7 +4,7 @@
 pub trait Hooks {
     /// A block broke or a mob died, and `drops` are the items about to drop, in
     /// the order they drop: what the loot tables rolled (after
-    /// `native_loot_table_load`'s changes), and for a mob what it wore, held or
+    /// `loot_table_load`'s changes), and for a mob what it wore, held or
     /// carried (a fox's mouth item, an allay's, piglin's or horse's inventory),
     /// but not an enderman's carried block or a copper golem's preserved
     /// equipment, which drop after. A charged creeper's head and a fox's mouth
@@ -25,6 +25,8 @@ pub trait Hooks {
     /// `context.tool` is None (the entity context has no TOOL). Resolve the causing
     /// ID through `host.entity` and `host.living` to read its main hand live with
     /// `living.hand_item(host, Hand::Main)`, including earlier listeners' changes.
+    /// `context.weapon_item(host)` reads the recorded projectile weapon or the
+    /// live melee weapon, including a player's active auto-spin stack.
     /// Block and use drops retain their tool meaning.
     /// Server-side, for every player.
     #[hook(

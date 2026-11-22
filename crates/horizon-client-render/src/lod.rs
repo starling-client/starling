@@ -9,6 +9,7 @@ use crate::{
 };
 pub mod bake;
 pub mod cache;
+mod detail;
 mod kept;
 mod mesh;
 pub mod packed;
@@ -2388,15 +2389,6 @@ impl Lod {
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
             self.shared.mesh_wake.notify_all();
         }
-    }
-    /// Far detail coarser than Full (`graphics::FarDetail::coarseness`: 1
-    /// Reduced, 2 Mobile): the next update replans when it changes, and tiles
-    /// sampled from then on approximate wide cells (`GeneratorWorker::lod_grid`).
-    pub fn set_far_coarseness(&mut self, coarseness: u8) {
-        self.far_coarseness = coarseness;
-        self.shared
-            .approximate
-            .store(coarseness > 0, Ordering::Relaxed);
     }
     fn held(&self) -> bool {
         self.small && self.near_loading
@@ -4854,147 +4846,6 @@ mod tests {
             }
         }
     }
-    /// Loads a render distance 12 view one sample job at a time, in
-    /// `wanted_tiles`' order. Counts the jobs, and their density lattice
-    /// points (each job's cost), before every far column within two chunks
-    /// of the near terrain is drawn as finely as the plan wants it (one
-    /// block wide in Full): until then nothing is drawn there. And before
-    /// every far column is drawn, by its tile or a coarse stand-in: until
-    /// then the far terrain ends short of the horizon. Checks that no coarse
-    /// tile is ever drawn at the seam.
-    fn jobs_until_fine_seam(camera: [i32; 2], reduced: bool) -> ([(usize, i32); 2], usize) {
-        let (detail, distance) = (12, 128);
-        let center = (camera[0].div_euclid(16), camera[1].div_euclid(16));
-        let mut covered = FxHashSet::default();
-        for z in center.1 - detail..=center.1 + detail {
-            for x in center.0 - detail..=center.0 + detail {
-                if crate::streaming::in_view_distance(center, detail, x, z) {
-                    covered.insert((x, z));
-                }
-            }
-        }
-        let plan = Plan::with_previous(
-            camera,
-            detail,
-            distance,
-            &Plan::default(),
-            0,
-            u8::from(reduced),
-            None,
-        );
-        let leaf = |x: i32, z: i32| {
-            (0..=MAX_LEVEL)
-                .map(|level| TileKey {
-                    x: x.div_euclid(16 << level),
-                    z: z.div_euclid(16 << level),
-                    level,
-                })
-                .find(|key| plan.nodes.contains(key) && !plan.split.contains(key))
-        };
-        let mut seam = Vec::new();
-        for z in (camera[1] - 256..camera[1] + 256).step_by(2) {
-            for x in (camera[0] - 256..camera[0] + 256).step_by(2) {
-                let chunk = (x.div_euclid(16), z.div_euclid(16));
-                let near = (-2..=2)
-                    .any(|dz| (-2..=2).any(|dx| covered.contains(&(chunk.0 + dx, chunk.1 + dz))));
-                if !covered.contains(&chunk) && near {
-                    seam.push((x, z, leaf(x, z).unwrap()));
-                }
-            }
-        }
-        let mut horizon = Vec::new();
-        for z in (camera[1] - 2048..camera[1] + 2048).step_by(64) {
-            for x in (camera[0] - 2048..camera[0] + 2048).step_by(64) {
-                if !covered.contains(&(x.div_euclid(16), z.div_euclid(16))) && leaf(x, z).is_some()
-                {
-                    horizon.push((x, z));
-                }
-            }
-        }
-        let mut ready: FxHashMap<TileKey, ()> = FxHashMap::default();
-        for key in &plan.nodes {
-            if key.level == 0 && covered.contains(&(key.x, key.z)) {
-                ready.insert(*key, ());
-            }
-        }
-        let leaves = plan
-            .nodes
-            .iter()
-            .filter(|k| !plan.split.contains(k))
-            .count();
-        let (mut cost, mut fine, mut reached) = (0, None, None);
-        for jobs in 0.. {
-            let mut selected = Vec::new();
-            for &root in &plan.roots {
-                plan.select(root, &ready, &mut selected);
-            }
-            let active: FxHashSet<_> = selected.into_iter().collect();
-            let drawn = |x: i32, z: i32, levels: u8| {
-                (0..=levels).any(|level| {
-                    active.contains(&TileKey {
-                        x: x.div_euclid(16 << level),
-                        z: z.div_euclid(16 << level),
-                        level,
-                    })
-                })
-            };
-            for &(x, z, leaf) in &seam {
-                assert!(drawn(x, z, leaf.level) || !drawn(x, z, MAX_LEVEL));
-            }
-            if fine.is_none() && seam.iter().all(|&(x, z, leaf)| drawn(x, z, leaf.level)) {
-                fine = Some((jobs, cost));
-            }
-            if reached.is_none() && horizon.iter().all(|&(x, z)| drawn(x, z, MAX_LEVEL)) {
-                reached = Some((jobs, cost));
-            }
-            if let (Some(fine), Some(reached)) = (fine, reached) {
-                return ([fine, reached], leaves);
-            }
-            let next = wanted_tiles(&plan, &ready, &FxHashSet::default(), camera)
-                .min()
-                .unwrap();
-            let next = TileKey {
-                x: next.x,
-                z: next.z,
-                level: next.level,
-            };
-            // `lod_grid`'s density lattice: one point per max(stride, 4) blocks.
-            let stride = next.size() / 16;
-            let lattice = 16 * stride / stride.max(4) + 1;
-            cost += lattice * lattice;
-            ready.insert(next, ());
-        }
-        unreachable!()
-    }
-    #[test]
-    fn the_far_terrain_next_to_the_near_chunks_loads_first() {
-        // Measured: 270 to 301 jobs, all of them fine tiles (7500 to 8500
-        // lattice points). A coarse tile first costs up to 289 points; the
-        // order that filled a ring ahead first and refined broad tiles every
-        // other job took 54000 to 119000 for the seam in view alone.
-        for camera in [[8, 8], [40, -9], [-300, 517]] {
-            for reduced in [false, true] {
-                let ([(jobs, cost), _], _) = jobs_until_fine_seam(camera, reduced);
-                assert!(jobs < 320, "{jobs} jobs");
-                assert!(cost < 9000, "{cost} lattice points");
-            }
-        }
-    }
-    #[test]
-    fn a_coarse_backdrop_reaches_the_horizon_early() {
-        // Sampling only planned tiles, nearest first, reached the horizon
-        // with the last of ~3000 jobs in Full (500000 lattice points), ~1050
-        // in Reduced (200000): for minutes on a slow machine the far terrain
-        // ended in a hard edge. The backdrop adds ~230 coarse tiles (~80 in
-        // Reduced), about a tenth more work in all.
-        for camera in [[8, 8], [40, -9], [-300, 517]] {
-            for reduced in [false, true] {
-                let ([_, (jobs, cost)], leaves) = jobs_until_fine_seam(camera, reduced);
-                assert!(jobs < 1000 && jobs < leaves, "{jobs} jobs of {leaves}");
-                assert!(cost < 100_000, "{cost} lattice points");
-            }
-        }
-    }
     #[test]
     fn extra_sampling_threads_only_on_large_machines() {
         // Small machines are unchanged: a quarter of their cores, never more
@@ -6165,5 +6016,35 @@ mod tests {
         lod.finish_observed((1, 1), ReducedColumns::new(columns));
         assert!(lod.stale.contains(&key));
         assert_eq!(queued(&mut lod), [key]);
+    }
+
+    #[test]
+    fn changing_far_detail_samples_tiles_again() {
+        for level in [0, 1, 2, 3, 5] {
+            let mut lod = Lod::scheduler_for_test();
+            let key = TileKey { x: 0, z: 0, level };
+            lod.plan.nodes.insert(key);
+            lod.active.insert(key);
+            lod.ready.insert(key, Arc::new(samples(70)));
+            assert!(
+                queued(&mut lod).is_empty(),
+                "level {level}: sampled tile is not asked again"
+            );
+            lod.set_far_coarseness(1);
+            assert!(
+                lod.ready.contains_key(&key),
+                "level {level}: old samples stay"
+            );
+            assert_eq!(queued(&mut lod), [key], "level {level}: not sampled again");
+            lod.finish_sample(key, samples(70));
+            lod.set_far_coarseness(1);
+            assert!(queued(&mut lod).is_empty(), "level {level}: same value");
+            lod.set_far_coarseness(0);
+            assert_eq!(
+                queued(&mut lod),
+                [key],
+                "level {level}: not sampled again on the way back"
+            );
+        }
     }
 }

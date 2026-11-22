@@ -108,6 +108,17 @@ fn acquire_standalone(
     }))
 }
 
+/// Only the launcher's macOS game bundle relocates the image below its installation.
+/// Snapshot capture requires the returned installation's `.installed` marker.
+#[cfg(target_os = "macos")]
+fn installation(folder: &Path) -> &Path {
+    if folder.ends_with("Horizon.app/Contents/MacOS") {
+        folder.ancestors().nth(3).unwrap_or(folder)
+    } else {
+        folder
+    }
+}
+
 /// Canonical managed units and their enclosing units, shared by launcher and game.
 /// Cleanup locks unit identities, so a child must also protect deletable ancestors.
 pub fn lease_paths(
@@ -119,11 +130,14 @@ pub fn lease_paths(
     // Normalize both sides, including Windows' extended-path prefix and macOS /tmp aliases.
     let data = data.canonicalize()?;
     let data = data.as_path();
-    let install = executable
+    let program = executable
         .parent()
         .ok_or(io::ErrorKind::InvalidInput)?
         .canonicalize()?;
-    let install = install.as_path();
+    #[cfg(target_os = "macos")]
+    let install = installation(&program);
+    #[cfg(not(target_os = "macos"))]
+    let install = program.as_path();
     if install.ancestors().any(|path| {
         path.file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with(".trash-"))
@@ -137,6 +151,10 @@ pub fn lease_paths(
                 .any(|part| part.as_os_str() == "target")
     });
     let mut paths = vec![(install.to_path_buf(), complete)];
+    // The holder checks that the program's own folder is leased (`Entry::check_image`).
+    if program != install {
+        paths.push((program.clone(), false));
+    }
     let mut candidates = vec![
         selection.context.game_dir.clone(),
         selection.context.home.clone(),
@@ -196,6 +214,96 @@ mod tests {
     use crate::locks::Release;
 
     #[test]
+    #[ignore = "fixture writer subprocess only"]
+    fn write_missing_registration_actor() {
+        if let Some(destination) = std::env::var_os("HORIZON_MISSING_LEASE_COPY") {
+            let destination = std::path::PathBuf::from(destination);
+            std::fs::copy(std::env::current_exe().unwrap(), &destination).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(destination)
+                .unwrap()
+                .sync_all()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn missing_registration_is_displayed_and_information_does_not_register() {
+        const ACTOR: &str = "HORIZON_MISSING_LEASE_ACTOR";
+        if let Some(mode) = std::env::var_os(ACTOR) {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            if mode == "help" {
+                command.arg("--help");
+            }
+            let selection = LaunchArguments::for_command(&command).unwrap();
+            acquire(&selection);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let install = data.join("target/fast");
+        std::fs::create_dir_all(&install).unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        drop(Registry::with_release(&data, Release::Close).unwrap());
+        let executable = install.join(format!("actor{}", std::env::consts::EXE_SUFFIX));
+        // Isolate the writable image from unrelated test threads' fork/exec windows.
+        // CLOEXEC alone only closes inherited writable descriptors at exec, not fork.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "holder::game_entry::tests::write_missing_registration_actor",
+                "--ignored",
+            ])
+            .env("HORIZON_MISSING_LEASE_COPY", &executable)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .any(|line| {
+                    line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ")
+                })
+        );
+        let run = |mode| {
+            Command::new(&executable)
+                .args([
+                    "--include-ignored",
+                    "--exact",
+                    "holder::game_entry::tests::missing_registration_is_displayed_and_information_does_not_register",
+                    "--nocapture",
+                ])
+                .env(ACTOR, mode)
+                .env("HORIZON_HOME", &home)
+                .env_remove(ENTRY)
+                .current_dir(root.path())
+                .output()
+                .unwrap()
+        };
+        assert!(run("help").status.success());
+        let registry = Registry::existing(&data).unwrap();
+        assert!(matches!(
+            registry.lock(&open_directory(&install).unwrap(), LockMode::Shared),
+            Err(crate::runtime_leases::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        drop(registry);
+        let output = run("game");
+        assert_eq!(output.status.code(), Some(78));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("unregistered"), "{stderr}");
+        assert!(
+            stderr.contains("this managed installation has unregistered cache directories; use Horizon Launcher Play from the same launcher data directory with the intended instance and installed version (horizon-launcher play --instance <instance> --version <tag>)"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("start the launcher once"), "{stderr}");
+    }
+
+    #[test]
     fn managed_launch_binds_external_instance_and_log_roots() {
         for separate in [false, true] {
             let root = tempfile::tempdir().unwrap();
@@ -246,7 +354,90 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
+    fn managed_launch_from_a_macos_app_bundle_leases_the_installation() {
+        // The launcher starts the game on macOS from <version>/Horizon.app/Contents/MacOS, whose
+        // programs are hard links to the version's: the marker stays in the version folder (#3812).
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let data = root_path.join("launcher");
+        let install = data.join("versions/game");
+        let programs = install.join("Horizon.app/Contents/MacOS");
+        let game = root_path.join("instance");
+        for directory in [&programs, &game] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(install.join(".installed"), "").unwrap();
+        let executable = programs.join("game");
+        std::fs::write(&executable, "test image").unwrap();
+        let mut command = Command::new(&executable);
+        command.current_dir(&game).env("HORIZON_HOME", &game);
+        let selection = LaunchArguments::for_command(&command).unwrap();
+        let trees = managed_lease_paths(&executable, &selection, &data, &game).unwrap();
+        let complete: Vec<_> = trees.iter().filter(|(_, complete)| *complete).collect();
+        assert_eq!(complete, [&(install.clone(), true)]);
+        // The holder's image check asks for the program's own folder.
+        assert!(trees.contains(&(programs.clone(), false)));
+        let program = Program {
+            executable: executable.into_os_string(),
+            arguments: vec![],
+            environment: vec![],
+            directory: game,
+            raw_windows: None,
+        };
+        let _prepared = Prepared::new(data, trees, program, &selection.context).unwrap();
+    }
+
+    #[test]
+    fn flat_and_lookalike_layouts_require_completion_beside_the_image() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().canonicalize().unwrap();
+        let mut layouts = vec![
+            "flat",
+            "Other.app/Contents/MacOS",
+            "Horizon.app/Contents/extra/MacOS",
+        ];
+        if !cfg!(target_os = "macos") {
+            layouts.push("Horizon.app/Contents/MacOS");
+        }
+        for layout in layouts {
+            let version = data.join("versions").join(layout.replace('/', "-"));
+            let folder = version.join(layout);
+            let game = data.join("instance");
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::create_dir_all(&game).unwrap();
+            // An unrelated enclosing marker must not make this image complete.
+            std::fs::write(version.join(".installed"), "").unwrap();
+            let executable = folder.join("game");
+            std::fs::write(&executable, "test image").unwrap();
+            let mut command = Command::new(&executable);
+            command.current_dir(&game).env("HORIZON_HOME", &game);
+            let selection = LaunchArguments::for_command(&command).unwrap();
+            let trees = managed_lease_paths(&executable, &selection, &data, &game).unwrap();
+            assert_eq!(trees[0], (folder.clone(), true), "{layout}");
+            let program = || Program {
+                executable: executable.clone().into_os_string(),
+                arguments: vec![],
+                environment: vec![],
+                directory: game.clone(),
+                raw_windows: None,
+            };
+            let error = Prepared::new(data.clone(), trees.clone(), program(), &selection.context)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound, "{layout}");
+            std::fs::write(folder.join(".installed"), "").unwrap();
+            assert_eq!(
+                managed_lease_paths(&executable, &selection, &data, &game).unwrap(),
+                trees
+            );
+            Prepared::new(data.clone(), trees, program(), &selection.context).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn direct_entry_blocks_cleanup_and_refuses_busy_or_deleted_install() {
         if crate::runtime_leases::isolated_test() {
             return;
@@ -295,6 +486,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn unpublished_enclosing_unit_refuses_and_target_build_needs_no_install_marker() {
         if crate::runtime_leases::isolated_test() {
             return;
@@ -335,6 +527,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "daily"]
     fn symlinked_resources_are_leased_by_canonical_identity() {
         if crate::runtime_leases::isolated_test() {
             return;
@@ -370,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn acquired_snapshot_rechecks_completion_and_directory_identity() {
         if crate::runtime_leases::isolated_test() {
             return;

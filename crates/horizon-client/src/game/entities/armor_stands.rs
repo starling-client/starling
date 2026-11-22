@@ -22,7 +22,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use std::{collections::HashMap, sync::Arc};
-
+pub(super) const TYPE_ID: &str = "minecraft:armor_stand";
 /// Build the living-drops input at the loot-source boundary, before equipment pops.
 fn armor_stand_dying_drops<'a>(
     stand: &ArmorStand,
@@ -629,7 +629,8 @@ impl Game<'_> {
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, a) in self.armor_stands.iter().enumerate() {
-            if a.marker {
+            // Minecraft.pick never hits the camera entity it looks from.
+            if a.marker || self.remote_camera_id() == Some(a.id) {
                 continue;
             }
             let b = a.bounds();
@@ -826,10 +827,18 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, _, crit, magic) =
-            self.melee_damage("minecraft:armor_stand", true, Some(self.armor_stands[i].id));
+        let ((_, scale, crit, magic), admitted) = self.melee_damage_with_admission(
+            "minecraft:armor_stand",
+            true,
+            Some(self.armor_stands[i].id),
+        );
         let sweep = self.sweep_before_hit("minecraft:armor_stand", crit);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
+            let knockback = if admitted {
+                g.extra_knockback("minecraft:armor_stand", scale).0
+            } else {
+                0.0
+            };
             g.attack_effects(
                 area,
                 sweep,
@@ -838,11 +847,15 @@ impl Game<'_> {
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
+            g.special_attack_slowdown(knockback);
         });
         // Player.onAttack: the hit starts the attack strength again, hurt or
         // not (skipAttackInteraction only asks mayInteract).
         self.attack_ticks = 0;
         if hurt {
+            if admitted {
+                self.special_attack_exhaustion();
+            }
             self.swing_arm();
         }
         hurt
@@ -992,6 +1005,7 @@ impl Game<'_> {
             self.spawn_item(stack, center, v, 10);
         }
         self.show_breaking_particles(at, f64::from(width), f64::from(height));
+        self.stand_game_event("minecraft:entity_die", at, by);
         true
     }
     /// `Entity.gameEvent(event, attributedTo)` for a stand at `at`: the
@@ -1039,22 +1053,13 @@ impl Game<'_> {
             // aiStep's freezing step (removeFrost) makes the speed instance.
             a.speed_instance = true;
             // LivingEntity.aiStep -> EntityEquipment.tick, before movement.
-            // Inspect in slot order, then mutate only each actual owned compass.
-            for slot in 0..horizon_items::equipment::SLOT_NAMES.len() {
-                let Some(mut stack) = self.armor_stands[i].equipment.get(slot).cloned() else {
-                    continue;
-                };
-                if stack.item.as_ref() == "minecraft:compass"
-                    && super::maps::lodestone_target_gone(self, &stack, self.dim.id())
-                {
-                    stack.data_mut().set_other(
-                        "minecraft:lodestone_tracker",
-                        Some(horizon_core::nbt::Tag::Compound(Default::default())),
-                    );
-                    self.armor_stands[i].equipment.set(slot, Some(stack));
-                }
-            }
             let a = &mut self.armor_stands[i];
+            super::inventory_tick::equipment_inventory_tick(
+                &self.world,
+                self.res.facts(),
+                self.dim.id(),
+                &mut a.equipment,
+            );
             let (water_height, lava_height) =
                 a.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
             let in_water = water_height > 0.0;
@@ -1087,6 +1092,7 @@ impl Game<'_> {
                 in_water,
                 Some(self.border.geometry()),
                 &nearby,
+                &self.loop_context,
             ) {
                 // LivingEntity.aiStep: `travel` first, then the blocks' push.
                 a.tick_settle(medium, step);
@@ -1094,6 +1100,7 @@ impl Game<'_> {
                     tops.push(pos)
                 });
             }
+            let section_step = (a.id, a.previous, a.position);
             for pos in tops {
                 self.bubble_column_particles(pos);
             }
@@ -1173,65 +1180,55 @@ impl Game<'_> {
             ) {
                 dead.push((i, damage_type));
             }
+            let (id, from, to) = section_step;
+            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
         }
         for (i, damage_type) in dead.into_iter().rev() {
             self.break_armor_stand_by_anything(i, damage_type, 0);
         }
         Ok(())
     }
-    /// The armor stands' share of `Shulker.onPeekAmountChange`: the opening
-    /// lid of mob `shulker` moves every stand with physics (vanilla's
-    /// `!noPhysics`: not a marker, not `NoGravity`) whose box meets `area` by
-    /// `delta`, through the stand's `shove`. The stand the shulker
-    /// rides is left out (`isPassengerOfSameVehicle`). Stands tick before mobs
-    /// here, while vanilla ticks a stand that joined after the shulker (one
-    /// placed on it) after the shulker: `shove` makes up for the order.
-    pub(super) fn lid_pushes_armor_stands(&mut self, shulker: u32, area: Aabb, delta: [f64; 3]) {
-        if self.armor_stands.is_empty() {
-            return;
-        }
-        let delta = Vec3::new(delta[0], delta[1], delta[2]);
-        let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
-        // (the stand the shulker rides, when it joined), worked out at the first stand it meets.
-        let mut shell: Option<(Option<u32>, horizon_client::join_seq::JoinSeq)> = None;
+    /// A lid's `Entity.move` for armor stand `i`, one with physics (vanilla's
+    /// `!noPhysics`: not a marker, not `NoGravity`), from the game's one lid
+    /// push: the stand's own `shove` by `delta`. Stands tick
+    /// before mobs here, while vanilla ticks a stand that joined after the
+    /// pushing `shulker` (one placed on it) after the shulker: `shove` makes
+    /// up for the order. A shulker box's lid moves it after every entity's tick.
+    /// `grid` holds the stands' obstacles, built once per lid at its first stand.
+    pub(super) fn lid_shoves_armor_stand(
+        &mut self,
+        i: usize,
+        shulker: Option<u32>,
+        delta: Vec3,
+        grid: &mut Option<horizon_client::entities::ObstacleGrid>,
+    ) {
+        let joined = shulker.and_then(|id| self.mobs.iter().find(|m| m.id == id).map(|m| m.join));
+        let grid = grid.get_or_insert_with(|| self.stand_entity_collisions());
         let mut nearby = Vec::new();
-        for i in 0..self.armor_stands.len() {
-            let a = &self.armor_stands[i];
-            if a.marker || a.no_gravity || a.health <= 0.0 || !a.bounds().intersects(area) {
-                continue;
-            }
-            let (ridden, joined) = *shell.get_or_insert_with(|| {
-                let j = self.mobs.iter().position(|m| m.id == shulker);
-                (
-                    j.and_then(|j| self.mob_root_vehicle(j)),
-                    j.map_or(horizon_client::join_seq::JoinSeq::UNJOINED, |j| {
-                        self.mobs[j].join
-                    }),
-                )
-            });
-            if Some(a.id) == ridden {
-                continue;
-            }
-            let grid = obstacles.get_or_insert_with(|| self.stand_entity_collisions());
-            let a = &mut self.armor_stands[i];
-            // Entity.collide: the entities meeting the box stretched by the push.
-            let reach = a.bounds().expand_towards(delta);
-            let reach = reach.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
-            grid.near_except(reach, Some(a.id), &mut nearby);
-            let scene = horizon_client::collisions::SceneCollisions {
-                world: &self.world,
-                binding: self.collision,
-                subject: None,
-            };
-            let travels_after = a.join > joined;
-            a.shove(
-                scene,
-                delta,
-                Some(self.border.geometry()),
-                &nearby,
-                travels_after,
-            );
-        }
+        let a = &mut self.armor_stands[i];
+        // Entity.collide: the entities meeting the box stretched by the push.
+        let reach = a.bounds().expand_towards(delta);
+        let reach = reach.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+        grid.near_except(reach, Some(a.id), &mut nearby);
+        let scene = horizon_client::collisions::SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        let travels_after = joined.is_some_and(|joined| a.join > joined);
+        a.shove(
+            scene,
+            delta,
+            Some(self.border.geometry()),
+            &nearby,
+            travels_after,
+            if shulker.is_some() {
+                horizon_world::entity_move::MoverType::Shulker
+            } else {
+                horizon_world::entity_move::MoverType::ShulkerBox
+            },
+            &self.loop_context,
+        );
     }
     /// `Ravager.roar` with `mob_griefing` on: every armor stand in `area` (the
     /// ravager's box grown by 4) takes `strongKnockback` from the ravager at
@@ -1391,7 +1388,15 @@ impl Game<'_> {
                 }
             },
         );
-        self.drop_death_items(&dying, stacks, 10, |_| None);
+        self.drop_death_items(
+            &dying,
+            stacks
+                .into_iter()
+                .map(|(stack, at)| (stack, at, 0))
+                .collect(),
+            10,
+            |_| None,
+        );
     }
     /// `ArmorStand.brokenByAnything`, then `kill`, as burning out or a blast
     /// breaks a stand: its equipment pops above its block, the stand item does
@@ -1620,7 +1625,11 @@ impl Game<'_> {
     ) {
         // The stands' models posed on the GPU path (`mobs::skin`), when it runs this frame.
         let skinning = self.skinning();
-        for a in &self.armor_stands {
+        for a in self
+            .armor_stands
+            .iter()
+            .filter(|a| !self.hides_as_camera(a.id))
+        {
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
             // edge (4 for a marker's empty box), whatever the entity distance.
             // LivingEntityRenderer grows the culling box by 0.5 for a dragon head.
@@ -2153,8 +2162,7 @@ impl Game<'_> {
         mut skin: Option<&mut horizon_client::mobs::skin::Skin>,
         out: &mut Vec<Vertex>,
     ) {
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         let mut submit = |state: &horizon_client::item_render::ItemRenderState,
                           pose: glam::Mat4,
                           out: &mut Vec<Vertex>| {
@@ -2227,7 +2235,7 @@ impl Game<'_> {
                 out,
                 light,
                 lights: Some(horizon_client::block_entity_render::diffuse_lights(
-                    self.dim == super::Dim::Nether,
+                    self.nether_lighting(),
                 )),
                 glint: self.glint(),
                 tier: 0,
@@ -2930,6 +2938,7 @@ mod postbaseline_lodestone_controls {
         game.block_ticks
             .add_empty_chunk(BlockPos::new(64, 0, 64).chunk())
             .unwrap();
+        game.load_ticking_neighbourhood(0, 0);
         assert!(game.run_command("fill 64 199 64 79 199 79 stone"));
         assert!(game.run_command(&format!("summon armor_stand 65.5 200.0 65.5 {{UUID:[I;42321,0,0,102],Health:20f,NoGravity:1b,equipment:{{mainhand:{}}}}}",item("minecraft:compass",tracked,100,1))));
         let id = |n| {

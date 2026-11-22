@@ -110,6 +110,7 @@ impl StartupMenu {
         source: Option<horizon_assets::resource_source::ResourceSource>,
         settings: &Settings,
         additional_data: Arc<[Arc<horizon_client::datapack::DataPack>]>,
+        splashes: &str,
     ) {
         let source = source.unwrap_or_else(|| {
             horizon_assets::resource_source::ResourceSource::directory(root.clone())
@@ -124,6 +125,7 @@ impl StartupMenu {
             let mut title = Title::new(
                 std::env::current_dir().unwrap_or_default().join("saves"),
                 &self.root,
+                splashes,
             );
             title.last_server = settings.file.string("lastServer");
             title.skip_multiplayer_warning = settings.file.bool("skipMultiplayerWarning");
@@ -332,6 +334,7 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
+            PhysicalKey::Code(key) if title.page_missing_mods(key, viewport) => {}
             PhysicalKey::Code(KeyCode::Tab) => {
                 title.tab_dir(self.modifiers.shift_key(), viewport);
             }
@@ -436,7 +439,7 @@ pub(super) fn spawn_loader(
     let world = launch_world(options).map(str::to_owned);
     let role = options.execution_role;
     let progress = progress.clone();
-    let handle = std::thread::Builder::new()
+    let handle = horizon_guest_stack::builder()
         .name("resource-loader".into())
         .spawn(move || {
             let mut pack_error = None;
@@ -711,11 +714,15 @@ impl Loading {
     /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
     fn drive_menu_mod_browser(&mut self) {
         let menu = &mut self.menu;
-        if menu.mod_jobs.poll(
+        let (installed, changed) = menu.mod_jobs.poll(
             &mut menu.options.mod_browser,
             &mut self.settings.mods,
             false,
-        ) {
+        );
+        if changed {
+            menu.options.layout_changed();
+        }
+        if installed {
             self.settings.save(&Game::options_path());
         }
     }
@@ -829,7 +836,7 @@ impl Loading {
                     &horizon_client::logging::private_home(),
                 ),
                 // No world debug list exists before Game construction, nor a renderer to test.
-                Event::DebugEntriesChanged | Event::PerfLab(_) => {}
+                Event::DebugEntriesChanged | Event::PerfLab(_) | Event::Calibrate(_) => {}
                 Event::Changed => {
                     self.save_menu_settings();
                     // Starling: the touch options (vibration, ...) live in horizon-touch.json,
@@ -872,6 +879,21 @@ impl Loading {
                     let dir = packs::packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
+                }
+                Event::ImportPacks(paths) => {
+                    let additional = self.options.as_ref().map_or_else(Vec::new, |options| {
+                        super::pack_finders::discover(
+                            mod_api::PackType::ClientResources,
+                            &options.mods,
+                        )
+                    });
+                    packs::import_resource_packs(
+                        &mut self.menu.options,
+                        &self.vanilla_root,
+                        &[],
+                        &paths,
+                        &additional,
+                    );
                 }
                 Event::DownloadPack(i) => {
                     let dir = packs::packs_dir();
@@ -974,6 +996,13 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::ImportGpuDriver => {
+                    horizon_client::platform::pick_file();
+                }
+                Event::RestartGame => {
+                    #[cfg(target_os = "android")]
+                    crate::android::restart_app();
+                }
                 Event::Credits => {
                     if let Some(gui) = &self.gui {
                         let name = self.options.as_ref().map_or_else(
@@ -1071,6 +1100,7 @@ impl Loading {
             return;
         }
         let was_disabled = super::narrator::cycle_status(&mut self.settings);
+        self.menu.options.layout_changed();
         super::narrator::update_status(
             self.settings.narrator(),
             &mut self.menu.pending_narrator_toast,
@@ -1115,6 +1145,11 @@ impl Loading {
     fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
+            Action::Launcher => {
+                #[cfg(target_os = "android")]
+                crate::ha_launcher::back_to_launcher();
+                event_loop.exit();
+            }
             Action::Options => self.open_menu_options(Page::Main),
             Action::Accessibility => self.open_menu_options(Page::Accessibility),
             Action::Language => self.open_menu_options(Page::Language),
@@ -1198,6 +1233,16 @@ impl Loading {
     /// pointer sits on the focus; a step past a list's visible rows doesn't
     /// scroll it here). Whether the key was used.
     fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
+        // This safety prompt owns its default and spatial navigation in Title.
+        if !self.menu.options_open
+            && self
+                .menu
+                .title
+                .as_ref()
+                .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::MissingMods { .. }))
+        {
+            return false;
+        }
         let Some(nav) = key_focus::nav_of(key, self.menu.modifiers.shift_key()) else {
             return false;
         };
@@ -1420,7 +1465,16 @@ impl Loading {
             // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
             // joins the Create New World screen's data packs.
             WindowEvent::DroppedFile(path) => {
-                if let Some(title) = &mut self.menu.title {
+                let batch = HudBatch::new(self.menu_size(), self.settings.gui_scale_inputs());
+                let handled = self.menu.options_open
+                    && self.gui.as_ref().is_some_and(|gui| {
+                        self.menu.options.drop_resource_pack(
+                            path.clone(),
+                            &gui.atlas,
+                            (batch.width, batch.height),
+                        )
+                    });
+                if !handled && let Some(title) = &mut self.menu.title {
                     title.drop_file(path);
                 }
             }
@@ -1575,7 +1629,12 @@ impl Loading {
                     );
                     self.menu_option_events(events);
                 } else if let Some(title) = &mut self.menu.title {
-                    title.scroll_worlds(amount, self.menu.cursor, (batch.width, batch.height));
+                    // Starling: a finger's drag scrolls and never cycles a button.
+                    if finger {
+                        title.finger_scroll(amount, self.menu.cursor, (batch.width, batch.height));
+                    } else {
+                        title.scroll_worlds(amount, self.menu.cursor, (batch.width, batch.height));
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -1646,7 +1705,9 @@ impl Loading {
         let screen = self.menu.key_screen();
         if super::pad_menu::another_screen_is_front(&mut self.menu.focus_screen, screen) {
             self.menu.options.clear_click_focus();
-            if let Some(title) = self.menu.title.as_mut() {
+            if let Some(title) = self.menu.title.as_mut()
+                && !matches!(title.mode, horizon_client::title::Mode::MissingMods { .. })
+            {
                 title.focused_button = None;
             }
         }
@@ -1659,13 +1720,16 @@ impl Loading {
                 self.progress.fraction(),
                 self.settings.file.bool("darkMojangStudiosBackground"),
             );
+            let (bars, lines) = super::startup_progress::shown();
+            horizon_client::level_loading::draw_mod_progress(batch, &gui.atlas, &bars, &lines);
         } else if let Some((win, frame)) = &mut self.menu.win {
             let now = Instant::now();
             // 20 ticks a second: the startup menu runs no tick rate.
             let delta_ticks = now.duration_since(*frame).as_secs_f32() * 20.0;
             *frame = now;
             horizon_client::widgets::begin_screen(|| win.screen_info());
-            win.draw(batch, &gui.atlas, delta_ticks, Default::default());
+            win.draw_background(batch, &gui.atlas, Default::default());
+            win.draw_contents(batch, &gui.atlas, delta_ticks);
             if win.finished(batch.height) {
                 self.menu.win = None;
             }
@@ -1676,7 +1740,13 @@ impl Loading {
                 .map_or(Default::default(), |r| r.output());
             self.menu
                 .options
-                .draw(&self.settings, output, batch, &gui.atlas, self.menu.cursor);
+                .draw_background(&self.settings, output, batch, &gui.atlas);
+            self.menu
+                .options
+                .draw_contents(&self.settings, batch, &gui.atlas, self.menu.cursor);
+            self.menu
+                .options
+                .draw_overlays(batch, &gui.atlas, self.menu.cursor);
         } else if let Some(title) = &mut self.menu.title {
             title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {
@@ -1701,6 +1771,7 @@ impl Loading {
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
                 self.settings.file.bool("hideServerAddress"),
+                &mut |_, _| {},
             );
         }
         if let Some(focus) = self.menu.key_focus
@@ -1798,6 +1869,7 @@ mod tests {
                 96, 110, 111, 255,
             ])),
             source: None,
+            splashes: Arc::from(""),
         }
     }
 
@@ -1885,12 +1957,12 @@ mod tests {
             }
         }
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("example", Box::new(Mod))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_client_game(|game| {
                 let saves = std::env::temp_dir()
                     .join(format!("horizon-startup-rules-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&saves);
-                let mut title = Title::new(saves, &game.options.resources);
+                let mut title = game.new_title(saves);
                 title.enter_singleplayer();
                 let Action::Create { mut options, .. } = title.create_action() else {
                     panic!("creation")
@@ -1964,6 +2036,125 @@ mod tests {
         first.apply_menu_settings();
         assert_eq!(view(&first), (4.0, 240.0, 180.0));
         assert_eq!(first.menu.cursor, (100.0, 50.0));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn resource_pack_drops_import_from_startup_and_game_options() {
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::resource_pack_drops_import_from_startup_and_game_options",
+            "HORIZON_RESOURCE_PACK_DROP_CHILD",
+            &["import"],
+        ) {
+            return;
+        }
+        // Only this exact test runs in the child. Keep the game directory empty,
+        // separate from the isolated homes created by run_fresh_cases.
+        let previous_dir = std::env::current_dir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(scratch.path()).unwrap();
+        struct Loop;
+        impl EventLoopCtl for Loop {
+            fn exit(&self) {}
+            fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {}
+        }
+        let root =
+            PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources"));
+        let game_dir = std::env::current_dir().unwrap();
+        assert!(
+            std::fs::read_dir(&game_dir).unwrap().next().is_none(),
+            "run the built test executable directly from an empty scratch game directory"
+        );
+        let source = game_dir.join("drop-fixtures");
+        std::fs::create_dir(&source).unwrap();
+        for name in ["Startup pack", "Game pack"] {
+            let path = source.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("pack.mcmeta"),
+                br#"{"pack":{"pack_format":1,"description":"Drop test"}}"#,
+            )
+            .unwrap();
+        }
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        loading.gui = Some(gui(&root));
+        loading.vanilla_root = root.clone();
+        loading.open_menu_options(Page::Packs);
+        loading
+            .menu_event(&Loop, WindowEvent::DroppedFile(source.join("Startup pack")))
+            .unwrap();
+        assert!(
+            loading
+                .menu
+                .options
+                .pack_screen
+                .as_ref()
+                .unwrap()
+                .confirming()
+        );
+        assert!(!packs::packs_dir().join("Startup pack").exists());
+        let batch = HudBatch::new(loading.menu_size(), loading.settings.gui_scale_inputs());
+        let events = loading.menu.options.click(
+            &mut loading.settings,
+            &loading.gui.as_ref().unwrap().atlas,
+            batch.width / 2.0 - 150.0,
+            batch.height / 2.0 + 20.0,
+            (batch.width, batch.height),
+            [1280, 720],
+            false,
+            false,
+        );
+        assert!(events.iter().any(|e| matches!(e, Event::ImportPacks(_))));
+        loading.menu_option_events(events);
+        assert!(
+            packs::packs_dir()
+                .join("Startup pack/pack.mcmeta")
+                .is_file()
+        );
+        assert!(
+            loading
+                .menu
+                .options
+                .pack_infos
+                .iter()
+                .any(|p| p.id == "file/Startup pack")
+        );
+        assert!(loading.settings.resource_packs.is_empty());
+
+        super::super::native_entity_refs::tests::with_client_game(|game| {
+            game.title = Some(game.new_title(PathBuf::from("saves")));
+            game.open_options_at(true, Page::Packs);
+            game.handle_window_event_inner(
+                &Loop,
+                WindowEvent::DroppedFile(source.join("Game pack")),
+            );
+            assert!(game.ui.options.pack_screen.as_ref().unwrap().confirming());
+            assert!(!packs::packs_dir().join("Game pack").exists());
+            let size = game.gui_size();
+            let events = game.ui.options.click(
+                &mut game.settings,
+                &game.gui.atlas,
+                size.0 / 2.0 - 150.0,
+                size.1 / 2.0 + 20.0,
+                size,
+                [1280, 720],
+                false,
+                false,
+            );
+            assert!(events.iter().any(|e| matches!(e, Event::ImportPacks(_))));
+            game.handle_option_events(events).unwrap();
+            assert!(packs::packs_dir().join("Game pack/pack.mcmeta").is_file());
+            assert!(
+                game.ui
+                    .options
+                    .pack_infos
+                    .iter()
+                    .any(|p| p.id == "file/Game pack")
+            );
+            assert!(game.settings.resource_packs.is_empty());
+        });
+        std::env::set_current_dir(previous_dir).unwrap();
     }
 
     #[test]

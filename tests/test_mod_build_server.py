@@ -94,5 +94,36 @@ class AskedAgain(unittest.TestCase):
             self.assertEqual(server.line, [self.key], error)
 
 
+def body(count, each=b"mod"):
+    return b"".join(len(each).to_bytes(4, "big") + each for _ in range(count))
+
+
+class HowManyMods(unittest.TestCase):
+    """The service's own machine counts the mods; a runner that lives for one build does not."""
+
+    def test_the_service_takes_its_own_count(self):
+        self.assertEqual(len(server.split_body(body(server.MAX_MODS))), server.MAX_MODS)
+
+    def test_over_the_count_the_service_points_at_github(self):
+        with self.assertRaises(server.Refused) as refused:
+            server.split_body(body(server.MAX_MODS + 1))
+        self.assertIn("GitHub", str(refused.exception))
+        self.assertIn(str(server.MAX_MODS), str(refused.exception))
+
+    def test_a_runner_of_its_own_takes_as_many_as_the_body_holds(self):
+        self.assertEqual(len(server.split_body(body(server.MAX_MODS * 4), most=None)), server.MAX_MODS * 4)
+
+    def test_no_mods_is_refused_either_way(self):
+        for most in (server.MAX_MODS, None):
+            with self.assertRaises(server.Refused) as refused:
+                server.split_body(b"", most=most)
+            self.assertIn("at least one", str(refused.exception))
+
+    def test_a_cut_request_is_still_a_cut_request(self):
+        with self.assertRaises(server.Refused) as refused:
+            server.split_body(b"\x00\x00\x00\x09mod", most=None)
+        self.assertIn("cut short", str(refused.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

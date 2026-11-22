@@ -26,6 +26,20 @@ pub fn set_shared_folder(folder: PathBuf) {
     let _ = SHARED_FOLDER.set(folder);
 }
 
+/// The native mods this start opened from their own libraries (Compile v2's folder, android_lib.rs),
+/// by id: the Mods page's top says them.
+static NATIVE_LIBS_OPENED: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+/// android_lib.rs's start, once the libraries and their packages are in.
+pub fn set_native_libs_opened(ids: Vec<&'static str>) {
+    let _ = NATIVE_LIBS_OPENED.set(ids);
+}
+
+/// The native mods this start opened from their own libraries, none before or without them.
+pub fn native_libs_opened() -> &'static [&'static str] {
+    NATIVE_LIBS_OPENED.get().map_or(&[], Vec::as_slice)
+}
+
 /// NativeActivity's entry point (the manifest's `android.app.func_name`, through the cdylib's
 /// `starling_on_create`): the game of this library, or of the build with native mods
 /// StarlingActivity loaded in its place (`STARLING_GAME_LIBRARY`, NativeMods.java). The activity
@@ -96,6 +110,31 @@ pub(crate) fn with_activity<R>(
     result.ok()
 }
 
+pub(crate) fn apply_display_settings(settings: &horizon_client::settings::Settings) {
+    use horizon_client::android_display::DisplayOption as D;
+    let (width, height, _) = D::ASPECTS[D::Aspect.value(settings) as usize];
+    let display = [
+        D::Cutout.value(settings),
+        D::Orientation.value(settings),
+        D::Rotation.value(settings),
+        width,
+        height,
+    ];
+    static LAST: std::sync::Mutex<Option<[i32; 5]>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == Some(display) {
+        return;
+    }
+    let ok = with_activity(|env, activity| {
+        let args = display.map(jni::objects::JValue::Int);
+        env.call_method(activity, "setDisplayPreferences", "(IIIII)V", &args)
+            .map(drop)
+    });
+    if ok.is_some() {
+        *last = Some(display);
+    }
+}
+
 /// The platform hooks (horizon_client::platform): StarlingActivity's public methods.
 fn open_folder(dir: &Path) -> bool {
     with_activity(|env, activity| {
@@ -155,6 +194,151 @@ fn asset(name: &str) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut asset, &mut bytes).ok()?;
     Some(bytes)
+}
+
+/// The device's Android API level (`android.os.Build.VERSION.SDK_INT`), for a custom GPU
+/// driver's `minApi`.
+fn device_api() -> Option<i32> {
+    with_activity(|env, _| {
+        let version = env.find_class("android/os/Build$VERSION")?;
+        env.get_static_field(version, "SDK_INT", "I")?.i()
+    })
+}
+
+/// libadrenotools' driver flags (`include/adrenotools/priv.h`, third_party/libadrenotools).
+const ADRENOTOOLS_DRIVER_CUSTOM: std::ffi::c_int = 1;
+const ADRENOTOOLS_DRIVER_FILE_REDIRECT: std::ffi::c_int = 2;
+
+/// A path with the trailing `/` adrenotools' directories need, as a C string.
+fn cstring_dir(path: &Path) -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
+    if bytes.contains(&0) {
+        return None;
+    }
+    bytes.push(b'/');
+    std::ffi::CString::new(bytes).ok()
+}
+
+/// What the custom GPU driver loader says: no logger runs yet when it loads (logging
+/// starts in `entry::start`), so `main` replays these once it does, into the file and logcat.
+static GPU_DRIVER_NOTES: std::sync::OnceLock<Vec<(log::Level, String)>> =
+    std::sync::OnceLock::new();
+
+/// Load the chosen custom GPU driver, if any: adrenotools hooks libvulkan so the renderer
+/// opens the driver's Vulkan instead of the system's. Falls back to the system driver when
+/// nothing is chosen, the phone cannot run it, or it was set aside or failed to load.
+fn load_custom_driver() -> Vec<(log::Level, String)> {
+    let mut notes = Vec::new();
+    let mut warn = |message: String| notes.push((log::Level::Warn, message));
+    let Some(id) = crate::gpu_drivers::selected() else {
+        return notes;
+    };
+    let Some(driver) = crate::gpu_drivers::list().into_iter().find(|d| d.id == id) else {
+        return notes;
+    };
+    let Some(api) = device_api() else {
+        warn("Horizon: cannot ask Android's API level; the system GPU driver plays".into());
+        return notes;
+    };
+    if !crate::gpu_drivers::compatible(&driver.meta, api) {
+        warn(format!(
+            "Horizon: the {} driver needs Android {} (this phone: {api}); the system GPU driver plays",
+            driver.label(),
+            driver.meta.min_api,
+        ));
+        return notes;
+    }
+    if !crate::gpu_drivers::note_start() {
+        if let Some(notice) = crate::gpu_drivers::take_notice() {
+            warn(format!("Horizon: {notice}"));
+        }
+        return notes;
+    }
+    // SAFETY: NUL-terminated names; RTLD_NOW (2), RTLD_LOCAL (0).
+    let adrenotools = unsafe { dlopen(c"libadrenotools.so".as_ptr(), 2) };
+    if adrenotools.is_null() {
+        warn("Horizon: libadrenotools is missing; the system GPU driver plays".into());
+        return notes;
+    }
+    type OpenLibVulkan = unsafe extern "C" fn(
+        std::ffi::c_int,
+        std::ffi::c_int,
+        *const std::ffi::c_char,
+        *const std::ffi::c_char,
+        *const std::ffi::c_char,
+        *const std::ffi::c_char,
+        *const std::ffi::c_char,
+        *mut *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    // SAFETY: as above; the symbol has the signature declared here when found.
+    let open = unsafe {
+        let open = dlsym(adrenotools, c"adrenotools_open_libvulkan".as_ptr());
+        if open.is_null() {
+            warn("Horizon: libadrenotools has no driver hook; the system GPU driver plays".into());
+            return notes;
+        }
+        std::mem::transmute::<*mut std::ffi::c_void, OpenLibVulkan>(open)
+    };
+    let (Some(hook), Some(custom), Some(name)) = (
+        library_dir().and_then(|dir| cstring_dir(&dir)),
+        cstring_dir(&driver.dir()),
+        std::ffi::CString::new(driver.meta.library_name.as_str()).ok(),
+    ) else {
+        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
+        return notes;
+    };
+    let redirect_dir = driver.dir().join(crate::gpu_drivers::REDIRECT);
+    let Some(redirect) = std::fs::create_dir_all(&redirect_dir)
+        .ok()
+        .and(cstring_dir(&redirect_dir))
+    else {
+        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
+        return notes;
+    };
+    // SAFETY: NUL-terminated directories (each ends in `/`, as adrenotools requires) and
+    // library name; null for the tmp dir (memfd on Android 9+) and the unused mapping
+    // handle. Both handles stay loaded for the process; nothing closes them.
+    let handle = unsafe {
+        open(
+            2, // RTLD_NOW | RTLD_LOCAL
+            ADRENOTOOLS_DRIVER_CUSTOM | ADRENOTOOLS_DRIVER_FILE_REDIRECT,
+            std::ptr::null(),
+            hook.as_ptr(),
+            custom.as_ptr(),
+            name.as_ptr(),
+            redirect.as_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    if handle.is_null() {
+        warn(format!(
+            "Horizon: the {} driver did not load; the system GPU driver plays",
+            driver.label(),
+        ));
+        return notes;
+    }
+    // SAFETY: as above.
+    let get = unsafe { dlsym(handle, c"vkGetInstanceProcAddr".as_ptr()) };
+    if get.is_null() {
+        warn(format!(
+            "Horizon: the {} driver gave no Vulkan; the system GPU driver plays",
+            driver.label(),
+        ));
+        return notes;
+    }
+    let addr = get as usize;
+    wgpu::hal::vulkan::set_custom_get_instance_proc_addr(addr);
+    crate::gpu_drivers::set_active(&id, addr);
+    notes.push((
+        log::Level::Info,
+        format!(
+            "Horizon: custom GPU driver {} from {}",
+            driver.label(),
+            driver.dir().display()
+        ),
+    ));
+    notes
 }
 
 /// `data` sealed by StarlingActivity.sealSecret (the Android Keystore's key).
@@ -298,6 +482,18 @@ pub fn open_file_access_settings() {
 /// The game drew its first frame: the activity lets its window show, and the system's
 /// starting window (the app icon) goes.
 pub fn first_frame_shown() {
+    static SHOWN_GAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if IN_GAME.load(Ordering::Relaxed) && !SHOWN_GAME.swap(true, Ordering::Relaxed) {
+        // Use the same directory as `main` did when selecting the startup route,
+        // even when a test overrides HORIZON_PRIVATE for its resources and logs.
+        let private = APP
+            .get()
+            .and_then(AndroidApp::internal_data_path)
+            .unwrap_or_else(|| PathBuf::from("/data/local/tmp/horizon"));
+        crate::ha_launcher::acknowledge_play(&private);
+    }
+    crate::gpu_drivers::note_first_frame();
     with_activity(|env, activity| {
         env.call_method(activity, "firstFrame", "()V", &[])
             .map(drop)
@@ -327,10 +523,64 @@ pub fn hide_keyboard() {
     });
 }
 
-/// Start the game again in a new process (the game folder is chosen at start).
+/// Start the game again in a new process (the game folder is chosen at start). A restart the game
+/// asks for comes back to the game, not to the launcher (ha_launcher).
 pub fn restart_app() {
-    with_activity(|env, activity| env.call_method(activity, "restart", "()V", &[]).map(drop));
+    restart_app_saying(&horizon_client::lang::get_or(
+        "starling.restart.again",
+        "Starting Starling again…",
+    ));
 }
+
+/// `restart_app`, with what the restart screen says meanwhile: why the game starts again.
+pub fn restart_app_saying(message: &str) {
+    if IN_GAME.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::ha_launcher::restart_into_game();
+    }
+    let _ = call_restart(message);
+}
+
+/// `StarlingActivity.restart(String)`: the restart screen shows `message`.
+pub(crate) fn call_restart(message: &str) -> bool {
+    keep_restart_look();
+    with_activity(|env, activity| {
+        let text = env.new_string(message)?;
+        env.call_method(
+            activity,
+            "restart",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&text)],
+        )
+        .map(drop)
+    })
+    .is_some()
+}
+
+/// The launcher's colours for the restart screen, which draws its intro as it ends
+/// (LauncherActivity's `RestartView`): the active theme's background, plate, plate border,
+/// accent, text, muted text and bar track, ARGB, in `restart-look` in the private files.
+fn keep_restart_look() {
+    let theme = horizon_client::android_control_theme::active_theme();
+    // The theme keeps ABGR (`color::hex`); Java's colours are ARGB.
+    let argb = |c: u32| (c & 0xff00_ff00) | (c & 0xff) << 16 | (c >> 16 & 0xff);
+    let look = [
+        theme.bg_solid,
+        theme.surface,
+        theme.border_strong,
+        theme.accent,
+        theme.text_primary,
+        theme.text_muted,
+        theme.surface_bright,
+    ]
+    .map(|c| format!("{:08x}", argb(c)))
+    .join(" ");
+    if let Err(e) = std::fs::write(logging::private_home().join("restart-look"), look) {
+        log::warn!("Starling: the restart screen's colours were not kept: {e}");
+    }
+}
+
+/// Whether this process runs the game, not Horizon Android's launcher (ha_launcher).
+static IN_GAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// This APK's version (versionName), and whether it is a release, which only can install the
 /// next release over itself (game/update_offer.rs).
@@ -387,8 +637,8 @@ const PLAYER_FILES: &[&str] = &[
     "options.txt",
 ];
 
-/// Folders whose images are the game's own (world icons, skins, pack art), kept out of the
-/// gallery; screenshots are not.
+/// Folders whose images are the game's own (world icons, skins, pack art), made ahead with a
+/// `.nomedia` so the gallery never lists what lands in them; screenshots are not.
 const NO_MEDIA: &[&str] = &[
     "saves",
     "backups",
@@ -396,8 +646,43 @@ const NO_MEDIA: &[&str] = &[
     "datapacks",
     "shaderpacks",
     "horizon-mods",
+    "horizon-native-mods",
     "assets",
+    "downloads",
+    "skins",
 ];
+
+/// Keeps a game folder's images out of the phone's gallery (and the photo pickers that read
+/// it): a `.nomedia` in each of its folders but `screenshots`, the ones in `NO_MEDIA` made
+/// first, and the same in each of the launcher's profiles (`profiles/profile-N`, a game folder
+/// of its own). Pack icons, mod art and the catalog's pictures showed among the player's photos.
+fn hide_from_gallery(home: &Path) {
+    for name in NO_MEDIA {
+        let _ = std::fs::create_dir_all(home.join(name));
+    }
+    for entry in std::fs::read_dir(home).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match entry.file_name().to_str() {
+            Some("screenshots") => {}
+            Some("profiles") => {
+                for profile in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                    if profile.path().is_dir() {
+                        hide_from_gallery(&profile.path());
+                    }
+                }
+            }
+            _ => {
+                let marker = path.join(".nomedia");
+                if !marker.exists() {
+                    let _ = std::fs::write(marker, b"");
+                }
+            }
+        }
+    }
+}
 
 /// The game folder: shared storage's once allowed (and what the player made in the app's own
 /// files moved there the first time), else the app's own files. Notes for the log, which
@@ -444,12 +729,7 @@ fn game_folder(private: &Path, notes: &mut Vec<String>) -> PathBuf {
             }
         }
     }
-    for name in NO_MEDIA {
-        let dir = shared.join(name);
-        if std::fs::create_dir_all(&dir).is_ok() && !dir.join(".nomedia").exists() {
-            let _ = std::fs::write(dir.join(".nomedia"), b"");
-        }
-    }
+    hide_from_gallery(shared);
     shared.clone()
 }
 
@@ -980,6 +1260,12 @@ fn command_line(home: &Path) -> (Vec<String>, Vec<(String, String)>) {
     (args, env)
 }
 
+/// A warning in logcat, for the library's entry points (android_lib.rs), which run before the
+/// game's logger.
+pub fn warn(message: &str) {
+    logcat(log::Level::Warn, message);
+}
+
 /// The game's console lines in logcat, under the tag `starling`.
 fn logcat(level: log::Level, message: &str) {
     use std::ffi::CString;
@@ -1238,7 +1524,13 @@ static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// The process's start-up, from the cdylib's `android_main`: the game folder, the environment
 /// (`HORIZON_HOME`, `HORIZON_PRIVATE`, `horizon-args.txt`'s), the platform hooks, then the game as
 /// the desktop binary starts it (`entry::start`), and the activity's end.
-pub fn main(app: AndroidApp) {
+/// `platform` installs what the engine needs from the platform before it starts, and `start` starts
+/// it with the code mods the phone loads (android_lib.rs).
+pub fn main(
+    app: AndroidApp,
+    platform: fn() -> Result<(), String>,
+    start: fn(crate::entry::Startup),
+) {
     // winit's event loop is made once a process. Android can start a new activity in a process
     // the game is ending (a restart into a world with other mods did: "EventLoop can't be
     // recreated", reported as a crash): end it at once, and the activity's next start is fresh.
@@ -1257,7 +1549,24 @@ pub fn main(app: AndroidApp) {
         .unwrap_or_else(|| PathBuf::from("/data/local/tmp/horizon"));
     let _ = std::fs::create_dir_all(&private);
     let mut notes = Vec::new();
-    let home = game_folder(&private, &mut notes);
+    let folder = game_folder(&private, &mut notes);
+    // Horizon Android's launcher, or the game in the instance it chose: one of them a process.
+    let chosen = crate::ha_launcher::start(&private, &folder);
+    let home = match &chosen {
+        crate::ha_launcher::Start::Game(instance) => instance.clone(),
+        crate::ha_launcher::Start::Launcher => folder.clone(),
+    };
+    let in_game = matches!(chosen, crate::ha_launcher::Start::Game(_));
+    IN_GAME.store(in_game, std::sync::atomic::Ordering::Relaxed);
+    // A profile made since `game_folder` looked (the launcher makes its folder): its own folders
+    // stay out of the gallery from this start.
+    if home != folder
+        && SHARED_FOLDER
+            .get()
+            .is_some_and(|shared| home.starts_with(shared))
+    {
+        hide_from_gallery(&home);
+    }
     let (args, env) = command_line(&private);
     // SAFETY: no other thread of ours runs yet; the game reads these from its threads afterwards.
     unsafe {
@@ -1304,13 +1613,37 @@ pub fn main(app: AndroidApp) {
     horizon_protocol::set_name_servers(dns_servers);
     let _ = ARGS.set(args.clone());
     let _ = APP.set(app);
+    if !in_game {
+        // The launcher's log is its own, so the game's last one stays for the diagnostics.
+        logging::init(&private.join("launcher"), "Launcher");
+        log::info!(
+            "Starling's launcher: game folder {}, private files {}",
+            folder.display(),
+            private.display()
+        );
+        for note in notes {
+            log::info!("{note}");
+        }
+        winit::platform::android::set_input_hook(input::hook);
+        crate::ha_launcher::run(android_app(), folder);
+        finish_and_exit()
+    }
+    crate::ha_launcher::game_started(&folder, &home);
     if let Err(error) =
         crate::diagnostics::initialize(&private, serde_json::json!({"abi":std::env::consts::ARCH}))
     {
         log::warn!("Could not initialize diagnostics: {error}");
     }
     crate::diagnostics::collect_exits(&private);
+    // A chosen custom GPU driver replaces the system's libvulkan before anything loads Vulkan
+    // (#470). Its report waits for the log: none runs yet.
+    let _ = GPU_DRIVER_NOTES.set(load_custom_driver());
     crate::entry::set_after_log(move || {
+        if let Some(driver_notes) = GPU_DRIVER_NOTES.get() {
+            for (level, message) in driver_notes {
+                log::log!(*level, "{message}");
+            }
+        }
         log::info!(
             "Horizon: Android, game folder {}, private files {}, arguments {args:?}, environment {env:?}",
             home.display(),
@@ -1325,18 +1658,12 @@ pub fn main(app: AndroidApp) {
         crate::accounts::resume();
         winit::platform::android::set_input_hook(input::hook);
     });
-    // No code mods on a phone: the native set is empty and nothing registers.
-    crate::entry::start(
-        Default::default(),
-        |_, _| (Vec::new(), ()),
-        crate::entry::CodeRuntime {
-            initialize: |_| {},
-            refusal: |_| None,
-            startup_refused: |_| false,
-        },
-        &[],
-        crate::entry::prepare(),
-    );
+    // The engine's seal, the mods' instrumentation and platform socket, before anything registers.
+    if let Err(error) = platform() {
+        panic!("Horizon: {error}");
+    }
+    crate::preparer::remove_wasm_std();
+    start(crate::entry::prepare());
     finish_and_exit()
 }
 
@@ -1346,7 +1673,15 @@ pub fn main(app: AndroidApp) {
 pub fn finish_and_exit() -> ! {
     crate::performance::stop();
     crate::diagnostics::finish();
-    with_activity(|env, activity| env.call_method(activity, "finish", "()V", &[]).map(drop));
+    // The Launcher button: the app starts again into the launcher once this process is gone.
+    if crate::ha_launcher::launcher_next() {
+        let _ = call_restart(&horizon_client::lang::get_or(
+            "starling.restart.launcher",
+            "Opening the launcher…",
+        ));
+    } else {
+        with_activity(|env, activity| env.call_method(activity, "finish", "()V", &[]).map(drop));
+    }
     std::thread::sleep(std::time::Duration::from_secs(3));
     // Else, or once the activity is gone: Android may keep the process and start a new activity
     // in it, but winit's event loop cannot be made twice in one process, so end it and the next

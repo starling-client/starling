@@ -17,6 +17,9 @@ impl Game<'_> {
         power: f32,
         inaccuracy: f32,
     ) -> Option<ProjectileRef> {
+        if self.entity_ids_exhausted() {
+            return None;
+        }
         if self.remote.is_some() || ![offset, power, inaccuracy].into_iter().all(f32::is_finite) {
             return None;
         }
@@ -60,20 +63,7 @@ impl Game<'_> {
         };
         let mut shot = Projectile::new(kind, Vec3::new(x, start_y, z), who);
         (shot.owner_uuid, shot.guest, shot.owner_vehicle) = (uuid, guest, vehicle);
-        // Splitting the random from the record avoids borrowing it and the shot
-        // simultaneously; cloning an RNG draws nothing and the advanced copy is restored.
-        let mut random = shot.random.0.clone();
-        shot.shoot_from_rotation(
-            &mut random,
-            pitch,
-            yaw,
-            offset,
-            power,
-            inaccuracy,
-            motion,
-            on_ground,
-        );
-        shot.random.0 = random;
+        shot.shoot_from_rotation(pitch, yaw, offset, power, inaccuracy, motion, on_ground);
         shot.item = Some(carried);
         self.next_entity += 1;
         shot.id = self.next_entity;

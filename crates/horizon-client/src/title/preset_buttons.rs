@@ -88,7 +88,7 @@ impl Title {
                         y + 72.0,
                         20.0,
                         &lang::get_or(key, plain),
-                        true,
+                        id != 5 || crate::net::joins_friends(),
                         id,
                     );
                     button.icon = Some((icon, 15.0));
@@ -99,6 +99,8 @@ impl Title {
                 if crate::accounts::in_game() {
                     buttons.push(b(4.0, 4.0, 120.0, &account::main_label(), true, 80));
                 }
+                // Starling on Android: the way back to the launcher is the control hub's "H"
+                // (android_control_ui's Launcher), from any screen.
                 buttons
             }
             Mode::Select { worlds, selected } => {
@@ -190,10 +192,15 @@ impl Title {
                 )
                 .does(crate::widgets::Action::Back),
             ],
-            Mode::Edit { world, name, .. } => {
+            Mode::Edit {
+                world,
+                name,
+                adopt_regions,
+                ..
+            } => {
                 let x = (w / 2.0).floor() - 100.0;
                 let top = edit_top(h);
-                vec![
+                let mut buttons = vec![
                     b(
                         x,
                         top + 64.0,
@@ -251,6 +258,42 @@ impl Title {
                         36,
                     )
                     .does(crate::widgets::Action::Cancel),
+                ];
+                // Horizon's opt-in (#2554), in the row vanilla leaves empty above Save.
+                if *adopt_regions {
+                    buttons.push(b(
+                        x,
+                        top + 189.0,
+                        200.0,
+                        &lang::get("horizon.biome_regions.adopt.button"),
+                        true,
+                        98,
+                    ));
+                }
+                buttons
+            }
+            Mode::AdoptBiomeRegions { .. } => {
+                let y = confirm_top(h, self.message_lines.get())
+                    + 41.0
+                    + self.message_lines.get() as f32 * 9.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 152.0,
+                        y,
+                        150.0,
+                        &lang::get("horizon.biome_regions.adopt.confirm"),
+                        true,
+                        99,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 2.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.cancel", "Cancel"),
+                        true,
+                        100,
+                    )
+                    .does(crate::widgets::Action::Back),
                 ]
             }
             Mode::Delete { .. } => {
@@ -297,6 +340,72 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         95,
+                    )
+                    .does(crate::widgets::Action::Back),
+                ]
+            }
+            Mode::MissingMods { .. } => {
+                let (_, _, narrow) = missing_mods::layout(w, h);
+                let button_width = if narrow { (w - 20.0).min(300.0) } else { 150.0 };
+                let center = (w - button_width) / 2.0;
+                let y = h - if narrow { 76.0 } else { 52.0 };
+                vec![
+                    // Don't Open is the default: first, and what Escape does.
+                    b(
+                        center,
+                        y + if narrow { 48.0 } else { 24.0 },
+                        button_width,
+                        &lang::get("horizon.missing_mods.dont_open"),
+                        true,
+                        101,
+                    )
+                    .does(crate::widgets::Action::Cancel),
+                    b(
+                        if narrow {
+                            center
+                        } else {
+                            (w / 2.0).floor() - 152.0
+                        },
+                        y,
+                        button_width,
+                        &lang::get("horizon.missing_mods.backup_open"),
+                        true,
+                        102,
+                    ),
+                    b(
+                        if narrow {
+                            center
+                        } else {
+                            (w / 2.0).floor() + 2.0
+                        },
+                        y + if narrow { 24.0 } else { 0.0 },
+                        button_width,
+                        &lang::get("horizon.missing_mods.open"),
+                        true,
+                        103,
+                    ),
+                ]
+            }
+            Mode::MissingBiomeRegions { .. } => {
+                let y = confirm_top(h, self.message_lines.get())
+                    + 41.0
+                    + self.message_lines.get() as f32 * 9.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 152.0,
+                        y,
+                        150.0,
+                        &lang::get("horizon.biome_regions.missing.open_vanilla"),
+                        true,
+                        96,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 2.0,
+                        y,
+                        150.0,
+                        &lang::get("horizon.biome_regions.missing.dont_open"),
+                        true,
+                        97,
                     )
                     .does(crate::widgets::Action::Back),
                 ]

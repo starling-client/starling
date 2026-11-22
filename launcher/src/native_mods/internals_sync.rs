@@ -1,6 +1,7 @@
 //! Compiler-driven discovery uses an isolated, per-pin source and metadata cache.
 use super::{api, dependencies, internals, rust_toolchain};
 use crate::i18n::trf;
+use horizon_mod_package::build_data;
 use horizon_mod_package::internals::{self as catalog, ListedInternal};
 use serde::Deserialize;
 use std::{
@@ -14,7 +15,6 @@ use std::{
 #[derive(Debug)]
 pub(crate) enum Error {
     SourceUnavailable { revision: String, reason: String },
-    SourceInjection,
     Check(String),
 }
 
@@ -30,7 +30,6 @@ impl std::fmt::Display for Error {
                 "E_INTERNAL_SOURCE_UNAVAILABLE: internals sync needs the source for {revision}. It is not cached and could not be downloaded: {error}",
                 &[("revision", revision), ("error", reason)],
             )),
-            Self::SourceInjection => f.write_str(crate::i18n::tr("E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, raw listeners and the mod's own modules, not source listeners or helpers. Use cargo horizon-mod internals add for this mod.")),
             Self::Check(reason) => f.write_str(reason),
         }
     }
@@ -38,16 +37,10 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// No normal build reads this directory or its target. In particular, neither the attributes
-/// nor the warning-bearing metadata can reach the prebuilt or source build caches.
+/// nor the warning-bearing metadata can reach the normal build caches.
 pub(crate) fn check(folder: &Path) -> Result<Vec<ListedInternal>, Error> {
     let catalog = pinned_catalog_with_modules(folder)?;
     discover_catalog(folder, &catalog.directory)
-}
-
-#[cfg(test)]
-fn discover(folder: &Path, cache_root: &Path) -> Result<Vec<ListedInternal>, Error> {
-    let game = catalog_for_mod(folder, cache_root)?;
-    discover_catalog(folder, &game)
 }
 
 fn discover_catalog(folder: &Path, game: &Path) -> Result<Vec<ListedInternal>, Error> {
@@ -58,26 +51,26 @@ fn discover_catalog(folder: &Path, game: &Path) -> Result<Vec<ListedInternal>, E
         )
     })?;
     let projects = [api::Project::read(&bundle).map_err(|e| e.to_string())?];
-    let declared = [dependencies::from_manifest(&bundle.manifest.dependencies)];
+    let declared = [dependencies::from_manifest(
+        &bundle.manifest.dependencies,
+        horizon_mod_package::manifest::Side::Both,
+    )];
     let inputs = [dependencies::Mod {
         id: &bundle.manifest.id,
         version: &bundle.manifest.version,
         dependencies: &declared[0],
         has_api: true,
+        code: true,
     }];
-    let resolution = dependencies::resolve(&inputs).map_err(|e| e.to_string())?;
+    let resolution = dependencies::resolve_links(&inputs).map_err(|e| e.to_string())?;
     let cache = game
         .parent()
         .ok_or_else(|| "invalid discovery cache".to_owned())?
         .to_path_buf();
-    if super::prebuilt::source_refusal(game, &projects)?.is_some() {
-        return Err(Error::SourceInjection);
-    }
     crate::storage::mark_used(&cache).map_err(super::cache_error)?;
     let stage = cache.join("stage");
     prepare_stage(game, &stage)?;
-    let mut listed = internals::Catalog::read(&stage)?
-        .with_mods(projects.iter().map(|project| project.bundle))?;
+    let mut listed = internals::Catalog::read(&stage)?;
     listed.discovery = true;
     api::stage(&stage, &projects, &declared, &resolution, &listed)?;
     let rust = rust_toolchain::install(|_| {})?;
@@ -130,10 +123,11 @@ pub struct DiscoveryCatalog {
 }
 
 impl DiscoveryCatalog {
-    /// Copy both files while the discovery lease is held; refuse a reused destination.
+    /// Copy both build-data files the discovery wrote while its lease is held; refuse a reused
+    /// destination.
     pub fn snapshot(&self, destination: &Path) -> Result<PathBuf, String> {
         fs::create_dir(destination).map_err(|e| e.to_string())?;
-        for name in ["internals.json", "points.json"] {
+        for name in [build_data::INTERNALS, build_data::POINTS] {
             fs::copy(self.directory.join(name), destination.join(name))
                 .map_err(|e| e.to_string())?;
         }
@@ -222,10 +216,12 @@ fn catalog_for_mod_with(
     }
     horizon_platform::mod_build::api_gen::staging::stage(
         &fresh,
-        &fresh.join(super::inject::POINTS),
+        &fresh.join("points.json"),
         &fresh.join(internals::INTERNALS),
         horizon_platform::mod_build::api_gen::staging::Mode::Discovery,
-        horizon_mod_package::manifest::API,
+        &horizon_platform::mod_build::api_gen::staging::Build {
+            commit: native.horizon.clone(),
+        },
     )?;
     fs::write(fresh.join(".discovery-ready"), "").map_err(|e| e.to_string())?;
     if game.exists() {
@@ -367,41 +363,6 @@ fn parse(line: &str, mod_dir: &Path, stage: &Path) -> Option<Message> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn discovery_refuses_private_source_listeners_before_facade_assembly() {
-        for kind in ["before_call", "after_call", "modify_value"] {
-            let root = super::super::tests::dir("discovery-source-listener");
-            let folder = root.join("mod");
-            super::super::tests::write_bundle(&folder, "example", "");
-            fs::write(
-                folder.join("Cargo.toml"),
-                "[package]\nname='example'\nversion='0.1.0'\n[dependencies]\nmod_api={package='horizon-mod-api',version='0.1'}\n",
-            )
-            .unwrap();
-            let manifest = folder.join(horizon_mod_package::manifest::MANIFEST);
-            let text = fs::read_to_string(&manifest).unwrap();
-            fs::write(manifest, format!("{text}\n[[inject]]\nid='value'\nat='game::run'\nkind='{kind}'\nwith='listen'\naccess='internals'\nhash='signature'\ncall='game::other'\nnth=0\nctx='statement'\n")).unwrap();
-            let bundle = super::super::bundle_in(&folder).unwrap().unwrap();
-            let game = root
-                .join(&bundle.manifest.native.as_ref().unwrap().horizon)
-                .join("game");
-            fs::create_dir_all(&game).unwrap();
-            fs::write(game.join(".discovery-ready"), "").unwrap();
-            fs::write(game.join("Cargo.toml"), "[workspace]\nmembers=[]\n").unwrap();
-            fs::write(game.join("points.json"), r#"{"points":[],"sites":[]}"#).unwrap();
-            fs::write(game.join("internals.json"), json!([{
-                "path":"game::run", "kind":"fn", "signature":"fn run()", "hash":"signature", "cfg":"", "shape_only":false
-            }]).to_string()).unwrap();
-            let result = std::panic::catch_unwind(|| discover(&folder, &root));
-            assert!(
-                matches!(result, Ok(Err(Error::SourceInjection))),
-                "discovery must return the typed source refusal, not panic: {result:?}"
-            );
-            assert_eq!(result.unwrap().unwrap_err().to_string(), "E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, raw listeners and the mod's own modules, not source listeners or helpers. Use cargo horizon-mod internals add for this mod.");
-            fs::remove_dir_all(root).unwrap();
-        }
-    }
 
     #[test]
     fn discovery_cache_keeps_the_resolved_lock_and_game_sources_but_replaces_mods() {

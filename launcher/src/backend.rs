@@ -55,6 +55,7 @@ pub struct Release {
     pub nightly: Option<String>,
 }
 
+mod play_log;
 mod release_assets;
 pub use release_assets::PLATFORMS;
 
@@ -505,7 +506,7 @@ pub(crate) fn get_unless_missing(url: &str) -> Result<Option<ureq::Response>, St
             request = request.set("Authorization", &format!("Bearer {token}"));
         }
     }
-    match request.call() {
+    match crate::download_retry::get(&request).map_err(|e| *e) {
         Ok(response) => Ok(Some(response)),
         Err(ureq::Error::Status(404, _)) => Ok(None),
         Err(e) => Err(match e {
@@ -1167,7 +1168,7 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
         // served under its own GitHub tag. A title that doesn't parse strictly is refused: nothing
         // signs GitHub's publication time.
         Some(github_tag) => {
-            let version = horizon_release_sign::nightly_title_version(&release.name)
+            let version = crate::signed::title_version(github_tag, &release.name)
                 .filter(|v| *v == release.tag)
                 .ok_or_else(|| {
                     crate::i18n::trf(
@@ -1176,7 +1177,7 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
                         &[("title", &format!("{:?}", release.name))],
                     )
                 })?;
-            crate::signed::nightly_digest(
+            crate::signed::build_digest(
                 github_tag,
                 &version,
                 asset,
@@ -1995,7 +1996,7 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    if let Err(e) = accounts.save() {
+    if let Err(e) = accounts.save_renewed() {
         log(format!("Horizon: the accounts are not saved: {e}"));
     }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
@@ -3283,7 +3284,7 @@ pub use update_selection::select_after_update;
 /// Installs `tag` (or with "latest" the newest release, pre-releases left out), then updates the selection as
 /// `select_after_update` says when `as_update`, or always selects it otherwise.
 pub fn install_tag(tag: &str, as_update: bool, progress: impl Fn(f32)) -> Result<String, String> {
-    let releases = releases()?;
+    let releases = [releases()?, release_selection::snapshot(tag)?].concat();
     let release = if tag == "latest" {
         releases
             .iter()
@@ -3683,7 +3684,7 @@ fn remove_abandoned_stages(work: &Path, now: std::time::SystemTime, alive: impl 
 
 /// Whether process `pid` is running. One this user may not look at counts as running.
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
@@ -3695,7 +3696,7 @@ fn process_alive(pid: u32) -> bool {
 
 /// Whether process `pid` is running. One this user may not look at counts as running.
 #[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
     };
@@ -4106,8 +4107,7 @@ pub fn spawn(job: Job, cmd: Command, tx: Sender<Msg>) -> Result<Running, String>
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = crate::run_leases::spawn(&mut cmd, true)
-        .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
+    let mut child = play_log::spawn(&mut cmd)?;
     let stdin = child.stdin.take();
     let mut readers = Vec::new();
     let out = child
@@ -4892,6 +4892,43 @@ pub fn {f}("
         assert_eq!(game_fallback_for("macos", "aarch64"), None);
     }
 
+    /// A snapshot is never listed, so no update or version list offers it, even once one is
+    /// installed (`release_selection::snapshot` finds one by its tag alone).
+    #[test]
+    fn a_snapshot_is_never_offered_or_picked_as_an_update() {
+        const SNAPSHOT: &str = "snapshot-2026-11-13-bbbbbbb";
+        let zip = "horizon-windows-x64.zip";
+        let asset = |tag: &str| serde_json::json!([{"name": zip, "browser_download_url": format!("https://example.test/{tag}/{zip}"), "size": 1}]);
+        let list = serde_json::json!([
+            {"tag_name": SNAPSHOT, "name": "Snapshot 2026-11-13 · bbbbbbb", "prerelease": true,
+             "published_at": "2026-11-13T10:00:00Z", "assets": asset(SNAPSHOT)},
+            {"tag_name": "nightly", "name": "Nightly 2026-11-12 · aaaaaaa", "prerelease": true,
+             "published_at": "2026-11-12T10:00:00Z", "assets": asset("nightly")},
+            {"tag_name": "v0.2.81", "name": "v0.2.81", "published_at": "2026-10-01T10:00:00Z",
+             "assets": asset("v0.2.81")},
+        ]);
+        let releases = game_releases_with(&list, Some(zip), None);
+        assert_eq!(
+            releases.iter().map(|r| r.tag.as_str()).collect::<Vec<_>>(),
+            ["nightly-2026-11-12-aaaaaaa", "v0.2.81"]
+        );
+        for installed in [vec![], vec![SNAPSHOT.to_owned()]] {
+            let update = horizon_update(&releases, &installed).unwrap();
+            assert_eq!(update.tag, "nightly-2026-11-12-aaaaaaa", "{installed:?}");
+        }
+        // A snapshot the developer selected stays selected when that Nightly installs as an
+        // update, whether it is the only version installed or beside a release.
+        for installed in [
+            vec![SNAPSHOT.to_owned()],
+            vec![SNAPSHOT.to_owned(), "v0.2.81".into()],
+        ] {
+            assert!(
+                !select_after_update(Some(SNAPSHOT), &installed),
+                "{installed:?}"
+            );
+        }
+    }
+
     /// The ARM64 Windows launcher installs the ARM64 build where a release has one, and the x64
     /// build (under emulation) from the releases that have only that, checked against that file's
     /// signed checksum.
@@ -5195,10 +5232,10 @@ pub fn {f}("
                 build.contains(&format!("asset: {game}")),
                 "game-build.yml builds no {game}"
             );
-            // Signed (SHA256SUMS), then published. Windows ARM64's build may fail without holding the
-            // Nightly, so both steps name it again where they check that it was built.
+            // Signed (SHA256SUMS), then published. Windows ARM64's and, for a snapshot, Intel
+            // macOS's build may fail without holding the release, so both steps name them again.
             let named = nightly.matches(&format!("dist/{game}")).count();
-            let optional = (os, arch) == ("windows", "aarch64");
+            let optional = matches!((os, arch), ("windows", "aarch64") | ("macos", "x86_64"));
             assert!(
                 named == 2 || (optional && named > 2),
                 "nightly-build.yml must sign and publish {game} ({os} {arch})"
@@ -6809,7 +6846,7 @@ pub fn {f}("
             let app = dir.join("Horizon.app");
             fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
             fs::create_dir_all(app.join("Contents/Resources")).unwrap();
-            let bin = app.join("Contents/MacOS/horizon-launcher");
+            let bin = app.join("Contents/MacOS").join(crate::identity::EXECUTABLE);
             fs::copy("/usr/bin/true", &bin).unwrap();
             fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
             fs::write(app.join("Contents/Resources/version"), version).unwrap();
@@ -6818,7 +6855,8 @@ pub fn {f}("
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
                  <key>CFBundleExecutable</key><string>horizon-launcher</string>\
                  <key>CFBundleIdentifier</key><string>dev.horizon.test</string>\
-                 <key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n",
+                 <key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n"
+                    .replace("horizon-launcher", crate::identity::EXECUTABLE),
             )
             .unwrap();
             let signed = Command::new("codesign")
@@ -6844,7 +6882,9 @@ pub fn {f}("
         replace_bundle(&new, &installed).unwrap();
         let version = fs::read_to_string(installed.join("Contents/Resources/version")).unwrap();
         assert_eq!(version, "2.0.0");
-        let bin = installed.join("Contents/MacOS/horizon-launcher");
+        let bin = installed
+            .join("Contents/MacOS")
+            .join(crate::identity::EXECUTABLE);
         assert!(
             Command::new(&bin).status().unwrap().success(),
             "still executable"

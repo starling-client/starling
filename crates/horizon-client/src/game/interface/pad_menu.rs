@@ -351,13 +351,10 @@ impl Game<'_> {
         key_focus::tab_step(&rest, None, true).map(|i| rest[i])
     }
 
-    pub(super) fn gui_scale(&self) -> Option<HudBatch> {
-        self.renderer.as_ref().map(|r| {
-            HudBatch::new(
-                [r.config.width, r.config.height],
-                self.settings.gui_scale_inputs(),
-            )
-        })
+    pub(super) fn gui_batch(&self) -> Option<HudBatch> {
+        self.renderer
+            .as_ref()
+            .map(|r| self.interface_batch([r.config.width, r.config.height]))
     }
 
     /// Focus drives the open screen: every menu but inventories and
@@ -411,7 +408,7 @@ impl Game<'_> {
 
     fn pad_visible_targets(&self) -> Vec<Target> {
         let targets = self.pad_all_targets();
-        match self.gui_scale() {
+        match self.gui_batch() {
             Some(batch) => key_focus::on_screen(targets, (batch.width, batch.height)),
             None => targets,
         }
@@ -426,7 +423,7 @@ impl Game<'_> {
         {
             return targets;
         }
-        let Some(batch) = self.gui_scale() else {
+        let Some(batch) = self.gui_batch() else {
             return targets;
         };
         let slot = |x: f32, y: f32| Target {
@@ -516,7 +513,7 @@ impl Game<'_> {
         {
             return Some(targets[i]);
         }
-        let batch = self.gui_scale()?;
+        let batch = self.gui_batch()?;
         let at = |x: f32, y: f32| {
             targets
                 .iter()
@@ -571,7 +568,7 @@ impl Game<'_> {
 
     /// Send the window a pointer move to `at` (GUI pixels), as the mouse would.
     fn pad_pointer_to(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
-        let (Some(window), Some(batch)) = (self.window.as_ref(), self.gui_scale()) else {
+        let (Some(window), Some(batch)) = (self.window.as_ref(), self.gui_batch()) else {
             return;
         };
         let id = window.id();
@@ -579,8 +576,7 @@ impl Game<'_> {
             at.0.clamp(0.0, batch.width - 1.0),
             at.1.clamp(0.0, batch.height - 1.0),
         );
-        let position =
-            PhysicalPosition::new(f64::from(at.0 * batch.scale), f64::from(at.1 * batch.scale));
+        let position = self.interface_window_point(at, batch.scale);
         self.pad_synthetic_event(
             event_loop,
             id,
@@ -1332,7 +1328,9 @@ impl Game<'_> {
     /// the one in front (a screen that just opened leaves the old focus
     /// behind it), so every menu's click focus goes.
     pub(super) fn clear_screen_click_focus(&mut self) {
-        if let Some(title) = self.title.as_mut() {
+        if let Some(title) = self.title.as_mut()
+            && !matches!(title.mode, horizon_client::title::Mode::MissingMods { .. })
+        {
             title.focused_button = None;
         }
         self.pause_focus = None;
@@ -1589,8 +1587,12 @@ impl Game<'_> {
                 self.pad_follow_targets();
             }
         }
-        // Nothing scrolls under the on-screen keyboard.
-        let scroll = if self.pad.menu.osk.is_some() {
+        // Nothing scrolls under the on-screen keyboard; over chat its right stick picks a
+        // suggestion.
+        let scroll = if let Some(keyboard) = self.pad.menu.osk.as_mut() {
+            if let Some(out) = keyboard.stick(state.right[1]) {
+                self.pad_osk_output(out);
+            }
             [0.0, 0.0]
         } else {
             gamepad::radial(state.right, look_deadzone)
@@ -1684,7 +1686,7 @@ impl Game<'_> {
     /// same widget. Too far for `pad_follow_focus` and `snap::follow`, which it
     /// holds off (true) until then.
     fn pad_follow_resize(&mut self, event_loop: &dyn EventLoopCtl) -> bool {
-        let Some(batch) = self.gui_scale() else {
+        let Some(batch) = self.gui_batch() else {
             return false;
         };
         let (screen, size) = (self.key_screen(), (batch.width, batch.height));
@@ -1931,6 +1933,13 @@ impl Game<'_> {
         let Some(focus) = self.pad.menu.focus else {
             return;
         };
+        // Includes focus restored or followed directly above, not only explicit
+        // pad_focus_on landings. The pad now owns the screen's focus mark.
+        if !self.pad.menu.keyboard
+            && let Some(title) = self.title.as_mut()
+        {
+            title.missing_mods_pad_focus();
+        }
         if self.pad.menu.pos.is_none() || self.pad.menu.held.iter().any(|h| *h) {
             return;
         }
@@ -2070,6 +2079,13 @@ impl Game<'_> {
     /// value). Whether the key was used; when not, the screen has it (a
     /// container also has Tab and the arrows once they moved the focus).
     pub(super) fn key_focus_key(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
+        if self
+            .title
+            .as_ref()
+            .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::MissingMods { .. }))
+        {
+            return false;
+        }
         let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
             return false;
         };
@@ -2408,7 +2424,8 @@ impl Game<'_> {
         {
             return;
         }
-        self.pad.menu.osk = Some(Keyboard::default());
+        let suggests = self.screen == Screen::Chat && self.title.is_none() && !self.dialog_open();
+        self.pad.menu.osk = Some(Keyboard::new(self.pad_enter_keeps_typing(), suggests));
     }
 
     /// Chat or a sign opened by the pad (either menu mode): the keyboard
@@ -2439,6 +2456,23 @@ impl Game<'_> {
             Output::Text(t) => (None, Some(t.as_str())),
             Output::Backspace => (Some(KeyCode::Backspace), None),
             Output::Enter => (Some(KeyCode::Enter), None),
+            Output::Done if self.pad_enter_keeps_typing() => {
+                self.pad_osk_done_lines();
+                return;
+            }
+            Output::Done => (Some(KeyCode::Enter), None),
+            // Chat's suggestions (CommandSuggestions.keyPressed): Tab, Up and Down.
+            Output::Complete | Output::Previous | Output::Next => {
+                if self.screen == Screen::Chat && !self.dialog_open() {
+                    let key = match out {
+                        Output::Complete => KeyCode::Tab,
+                        Output::Previous => KeyCode::ArrowUp,
+                        _ => KeyCode::ArrowDown,
+                    };
+                    self.chat_key_code(key, None);
+                }
+                return;
+            }
             Output::Close => {
                 self.pad.menu.osk = None;
                 self.pad.menu.osk_dismissed = true;
@@ -2543,6 +2577,24 @@ impl Game<'_> {
             || !self.pad_has_typing_screen()
         {
             self.pad.menu.osk = None;
+        }
+    }
+
+    /// Done over a field of many lines: what the screen's own Done button does (a book and
+    /// quill saves and closes, a sign closes and sends its text); a dialog's input has none, so
+    /// the keyboard closes. Never a new line: that's the New Line key.
+    fn pad_osk_done_lines(&mut self) {
+        self.pad.menu.osk = None;
+        self.pad.menu.osk_dismissed = true;
+        if self.dialog_typing_lines() {
+            return;
+        }
+        if self.sign_edit.is_some() {
+            self.close_sign_editor();
+        } else if self.book.is_some()
+            && let Err(e) = self.book_control(Some("done"))
+        {
+            log::warn!("Horizon: on-screen keyboard: {e}");
         }
     }
 

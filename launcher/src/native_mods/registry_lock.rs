@@ -185,55 +185,89 @@ impl RegistryLock {
         Ok(())
     }
 
-    /// A closed, inert fetch workspace: no mod manifest, source, SDK path or Cargo config.
-    pub fn fetch_workspace(&self, roots: &Self, dir: &std::path::Path) -> Result<(), String> {
-        std::fs::create_dir_all(dir.join("src")).map_err(|e| e.to_string())?;
-        let mut dependencies = toml::Table::new();
-        let mut refs = Vec::new();
-        for (index, identity) in roots.packages.keys().enumerate() {
-            let mut dep = toml::Table::new();
-            dep.insert("package".into(), identity.name.clone().into());
-            dep.insert("version".into(), format!("={}", identity.version).into());
-            dep.insert("default-features".into(), false.into());
-            dependencies.insert(format!("pin-{index}"), dep.into());
-            refs.push(toml::Value::String(format!(
-                "{} {} ({})",
-                identity.name, identity.version, identity.source
-            )));
+    /// Authorize only same-version registry-to-SDK substitutions in mod-owned records.
+    /// Game records keep their original edges, and the registry identity being replaced
+    /// is removed so it cannot authorize a second, non-SDK copy of the patched crate.
+    pub fn allow_game_patch_edges(
+        &mut self,
+        game: &Self,
+        names: &std::collections::BTreeSet<String>,
+    ) {
+        let replacements: BTreeMap<_, _> = game
+            .local
+            .keys()
+            .filter(|id| names.contains(&id.name))
+            .map(|id| {
+                (
+                    Identity {
+                        source: CRATES_IO.into(),
+                        ..id.clone()
+                    },
+                    id.clone(),
+                )
+            })
+            .collect();
+        self.packages.retain(|id, _| !replacements.contains_key(id));
+        for (id, record) in &mut self.packages {
+            if game.packages.contains_key(id) {
+                continue;
+            }
+            record.edges = record
+                .edges
+                .iter()
+                .map(|edge| replacements.get(edge).unwrap_or(edge).clone())
+                .collect();
         }
-        let manifest = toml::toml! {
-            [package]
-            name = "horizon-registry-fetch"
-            version = "0.0.0"
-            edition = "2021"
-            [workspace]
-        };
-        let mut manifest = manifest;
-        manifest.insert("dependencies".into(), dependencies.into());
-        let mut root = toml::toml! { name = "horizon-registry-fetch" version = "0.0.0" };
-        root.insert("dependencies".into(), refs.into());
-        let mut records = vec![toml::Value::Table(root)];
-        records.extend(
-            self.packages
-                .values()
-                .map(|record| toml::Value::Table(record.raw.clone())),
-        );
-        let mut lock = toml::Table::new();
-        lock.insert("version".into(), 4.into());
-        lock.insert("package".into(), records.into());
-        for (file, text) in [
-            ("Cargo.toml", manifest.to_string()),
-            ("Cargo.lock", lock.to_string()),
-            ("src/lib.rs", String::new()),
-        ] {
-            std::fs::write(dir.join(file), text).map_err(|e| e.to_string())?;
-        }
-        Ok(())
     }
 
     /// Compare resolved identities and checksums, and normalize Cargo's optional dependency
     /// qualifiers before comparing edges. Adding a second version qualifies existing edges.
+    #[cfg(test)]
     pub fn check_resolution(&self, resolved: &Self, game: &Self) -> Result<(), String> {
+        self.check_resolved(resolved, game, true)
+    }
+
+    /// A mod-only workspace may omit game packages and their inactive optional edges.
+    pub fn check_partial_resolution(&self, resolved: &Self, game: &Self) -> Result<(), String> {
+        self.check_resolved(resolved, game, false)
+    }
+
+    fn check_resolved(
+        &self,
+        resolved: &Self,
+        game: &Self,
+        require_game: bool,
+    ) -> Result<(), String> {
+        // The prebuilt game retains its features. A narrower Cargo workspace may
+        // drop game-owned edges, but must never add edges or change identities.
+        for (id, record) in resolved.packages.iter().chain(resolved.local.iter()) {
+            let owners: Vec<_> = self
+                .packages
+                .iter()
+                .chain(self.local.iter())
+                .filter(|(old, _)| old.name == id.name)
+                .collect();
+            if owners.is_empty() {
+                continue;
+            }
+            if !owners.iter().any(|(old, pin)| {
+                *old == id
+                    && if let Some(owner) = game.packages.get(id).or_else(|| game.local.get(id)) {
+                        record.edges.is_subset(&owner.edges)
+                    } else {
+                        pin.edges == record.edges
+                    }
+            }) {
+                let labels = |edges: &std::collections::BTreeSet<Identity>| {
+                    edges
+                        .iter()
+                        .map(|edge| format!("{} {}", edge.name, edge.version))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return Err(format!("Cargo.lock: game or pinned package {} moved or changed its dependency graph: [{}] -> [{}]", id.name, owners.iter().map(|(old, pin)| format!("{} {}: {}", old.name, old.version, labels(&pin.edges))).collect::<Vec<_>>().join("; "), labels(&record.edges)));
+            }
+        }
         for (id, record) in &resolved.packages {
             let Some(pin) = self.packages.get(id) else {
                 let versions = game
@@ -255,6 +289,9 @@ impl RegistryLock {
                 ));
             }
         }
+        if !require_game {
+            return Ok(());
+        }
         for id in game.packages.keys().chain(game.local.keys()) {
             let Some(record) = resolved.packages.get(id).or_else(|| resolved.local.get(id)) else {
                 let versions = resolved
@@ -274,7 +311,7 @@ impl RegistryLock {
                 .get(id)
                 .or_else(|| game.local.get(id))
                 .expect("game identity");
-            if original.edges != record.edges {
+            if !record.edges.is_subset(&original.edges) {
                 let labels = |edges: &std::collections::BTreeSet<Identity>| {
                     edges
                         .iter()
@@ -367,6 +404,55 @@ mod tests {
     fn lock(source: &str, checksum: &str) -> String {
         format!("version = 4\n[[package]]\nname = 'itoa'\nversion = '1.0.15'\nsource = '{source}'\nchecksum = '{checksum}'\n")
     }
+    fn patched_graph(version: &str, registry: bool) -> String {
+        let source = if registry {
+            "source='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
+        } else {
+            ""
+        };
+        format!("version=4\n[[package]]\nname='allocator'\nversion='1.0.0'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\ndependencies=['allocator-sys']\n[[package]]\nname='allocator-sys'\nversion='{version}'\n{source}\n")
+    }
+
+    #[test]
+    fn isolated_game_patch_version_movement_is_refused() {
+        let game =
+            RegistryLock::parse("version=4\n[[package]]\nname='allocator-sys'\nversion='0.1.49'\n")
+                .unwrap();
+        let moved =
+            RegistryLock::parse("version=4\n[[package]]\nname='allocator-sys'\nversion='0.1.50'\n")
+                .unwrap();
+        let error = game
+            .check_resolution(&moved, &RegistryLock::default())
+            .unwrap_err();
+        assert!(error.contains("allocator-sys"), "{error}");
+    }
+
+    #[test]
+    fn isolated_game_patch_registry_source_movement_is_refused() {
+        let game =
+            RegistryLock::parse("version=4\n[[package]]\nname='allocator-sys'\nversion='0.1.49'\n")
+                .unwrap();
+        let moved = RegistryLock::parse(&format!("version=4\n[[package]]\nname='allocator-sys'\nversion='0.1.49'\nsource='{CRATES_IO}'\nchecksum='{}'\n", "a".repeat(64))).unwrap();
+        let error = game
+            .check_resolution(&moved, &RegistryLock::default())
+            .unwrap_err();
+        assert!(error.contains("allocator-sys"), "{error}");
+    }
+
+    #[test]
+    fn registry_to_game_owned_local_patch_is_pinned_and_movement_refuses_by_name() {
+        let game = RegistryLock::parse(&patched_graph("0.1.49", false)).unwrap();
+        game.check_resolution(&game, &RegistryLock::default())
+            .unwrap();
+        for (version, registry) in [("0.1.50", false), ("0.1.49", true)] {
+            let moved = RegistryLock::parse(&patched_graph(version, registry)).unwrap();
+            let error = game
+                .check_resolution(&moved, &RegistryLock::default())
+                .unwrap_err();
+            assert!(error.contains("allocator-sys"), "{error}");
+        }
+    }
+
     #[test]
     fn game_version_movement_is_named_and_added_versions_are_allowed() {
         let game = RegistryLock::parse(&lock(CRATES_IO, &"a".repeat(64))).unwrap();
@@ -381,25 +467,6 @@ mod tests {
             error.contains("itoa") && error.contains("1.0.15") && error.contains("0.4.8"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn fetch_workspace_disables_default_features_and_excludes_local_packages() {
-        let pins = RegistryLock::parse(&lock(CRATES_IO, &"a".repeat(64))).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        pins.fetch_workspace(&pins, dir.path()).unwrap();
-        let manifest: toml::Table = std::fs::read_to_string(dir.path().join("Cargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        let dep = &manifest["dependencies"]["pin-0"];
-        assert_eq!(dep["version"].as_str(), Some("=1.0.15"));
-        assert_eq!(dep["default-features"].as_bool(), Some(false));
-        assert!(!dir.path().join(".cargo").exists());
-        assert!(pins
-            .seed("version = 4\n[[package]]\nname = 'local-game'\nversion = '0.1.0'\n")
-            .unwrap()
-            .contains("local-game"));
     }
 
     #[test]

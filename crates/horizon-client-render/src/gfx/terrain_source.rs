@@ -30,7 +30,7 @@ pub(super) fn gles_uniforms(source: &str) -> String {
 
 fn gles_source(source: &str) -> String {
     let source = gles_uniforms(source).replace("\r\n", "\n");
-    let source = unroll_emissive_lookup(source);
+    let source = lower_emissive_lookup(source);
     let start = source
         .find("fn sprite_grad(")
         .expect("terrain sprite function");
@@ -57,10 +57,9 @@ fn gles_source(source: &str) -> String {
     output
 }
 
-// Adreno 710's compiler fails to link this dynamic uniform-array search in a
-// robust EGL context. Preserve the first match, every entry and the no-match
-// sentinel; constant-index branches also keep robust access enabled.
-fn unroll_emissive_lookup(mut source: String) -> String {
+// GLES drivers can take tens of seconds to link the unrolled uniform search.
+// Use a sprite-indexed texture with the same first-match and sentinel values.
+fn lower_emissive_lookup(mut source: String) -> String {
     let start = source
         .find("    for (var i = 0u; i < min(globals.emissive_count.x, 128u); i++) {")
         .expect("terrain emissive lookup");
@@ -77,19 +76,16 @@ fn unroll_emissive_lookup(mut source: String) -> String {
     }
     source.replace_range(
         start..end,
-        "    out.emissive_layer = legacy_emissive_layer(sprite_layer);",
+        "    if globals.emissive_count.x > 0u {
+        let index = vec2<i32>(i32(sprite_layer & 255u), i32(sprite_layer >> 8u));
+        out.emissive_layer = textureLoad(emissive_overlays, index, 0).r;
+    }",
     );
-    // Flat early-return branches preserve the first match without a deeply nested
-    // else-if tree, which exhausted small parser/validator thread stacks at 128 entries.
-    let mut helper = String::from("fn legacy_emissive_layer(layer: u32) -> u32 {\n");
-    for i in 0..128 {
-        helper.push_str(&format!(
-            "    if globals.emissive_count.x <= {i}u {{ return 0xffffffffu; }}\n    if globals.emissive_layers[{i}].x == layer {{ return globals.emissive_layers[{i}].y; }}\n"
-        ));
-    }
-    helper.push_str("    return 0xffffffffu;\n}\n");
     let at = source.find("fn sprite_grad(").expect("sprite function");
-    source.insert_str(at, &helper);
+    source.insert_str(
+        at,
+        "@group(0) @binding(13) var emissive_overlays: texture_2d<u32>;\n",
+    );
     source
 }
 
@@ -116,7 +112,6 @@ mod tests {
         }
         assert!(source.contains("fn rotated_grid("));
         assert!(!source.contains("emissive_layers[i]"));
-        assert!(source.contains("out.emissive_layer = legacy_emissive_layer(sprite_layer);"));
         // The renderer puts the HDR prelude (`HDR_WRITE_LIGHT`) in front, as gfx.rs does.
         let module =
             naga::front::wgsl::parse_str(&(include_str!("../hdr_light.wgsl").to_owned() + &source))

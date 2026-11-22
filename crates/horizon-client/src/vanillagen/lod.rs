@@ -88,7 +88,7 @@ impl Builder {
         tx: mpsc::Sender<LodDetail>,
         background: bool,
     ) -> thread::JoinHandle<()> {
-        thread::Builder::new()
+        horizon_guest_stack::builder()
             .name("Far decoration".into())
             .spawn(move || {
                 if background {
@@ -96,7 +96,7 @@ impl Builder {
                 }
                 // A superflat world's far ring is its flat ground (`FlatTerrain::lod_surface`);
                 // a normal overworld rebuilt here would draw hills, oceans and trees.
-                if terrain.is_flat() {
+                if !terrain.noise_ground() {
                     worker.stop.store(true, Ordering::Relaxed);
                     return;
                 }

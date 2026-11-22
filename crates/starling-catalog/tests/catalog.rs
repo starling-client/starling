@@ -185,3 +185,32 @@ fn removing_deletes_the_file_and_the_row_goes_back_to_installable() {
     assert!(!home.join("resourcepacks/pack.zip").exists());
     assert!(installed_projects(&home).is_empty());
 }
+
+#[test]
+fn a_registry_mod_already_there_under_another_name_is_installed() {
+    let home = folder("present");
+    std::fs::create_dir_all(home.join("horizon-mods")).unwrap();
+    // The launcher's catalog names a download `<id>-<version>.hmod`; this one's install was
+    // `horizon-mods/<id>.hmod` beside it, the same mod twice (2026-11-20).
+    let hmod = home.join("horizon-mods/betterwitchhuts-0.2.0.hmod");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&hmod).unwrap());
+    zip.start_file("horizon-mod.toml", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"id = \"betterwitchhuts\"\nname = \"YUNG's Better Witch Huts\"\n\n[native]\nid = \"other\"\n")
+        .unwrap();
+    zip.finish().unwrap();
+    assert!(installed_projects(&home).contains("betterwitchhuts"));
+    let mut project = project(Kind::Mod, SourceId::Horizon, &[], &[]);
+    project.id = "betterwitchhuts".into();
+    let refused = starling_catalog::install(&project, false, &home, &|_, _| {}).unwrap_err();
+    assert!(refused.contains("already in the game folder"), "{refused}");
+    let entry = starling_catalog::remove(&home, &project).unwrap();
+    assert_eq!(entry.file, "horizon-mods/betterwitchhuts-0.2.0.hmod");
+    assert_eq!(
+        starling_catalog::mod_id(&entry).as_deref(),
+        Some("betterwitchhuts")
+    );
+    assert!(!hmod.exists());
+    assert!(installed_projects(&home).is_empty());
+    std::fs::remove_dir_all(home).unwrap();
+}

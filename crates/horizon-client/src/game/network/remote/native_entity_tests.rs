@@ -26,7 +26,7 @@ fn spawn(dimension: &str) -> play::SpawnInfo {
 }
 
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_client_reads_the_entities_and_menu_the_server_shows_it() {
     let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
@@ -57,6 +57,13 @@ fn a_client_reads_the_entities_and_menu_the_server_shows_it() {
         None,
     )
     .unwrap();
+    {
+        let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Setup);
+        assert_eq!(
+            mod_api::prelude::ClientViewClientHost::local_item_use(&game),
+            None
+        );
+    }
     let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
     game.connect_local(pipe, "Steve").unwrap();
     let builtin = game.remote.as_ref().unwrap().builtin.clone();
@@ -104,7 +111,10 @@ fn a_client_reads_the_entities_and_menu_the_server_shows_it() {
     }))
     .unwrap();
     let me = game.entity(7).expect("the own player");
-    assert_eq!(game.entity_kind(me).as_deref(), Some("minecraft:player"));
+    assert_eq!(
+        game.entity_kind(me).map(|kind| kind.id(&game)).as_deref(),
+        Some("minecraft:player")
+    );
     assert_eq!(game.entity_position(me), Some([0.5, 65.0, 0.5]));
     assert_eq!(game.entity_rotation(me), Some([45.0, 10.0]));
     // The profile the login named (the net thread's `Joined`).
@@ -130,7 +140,9 @@ fn a_client_reads_the_entities_and_menu_the_server_shows_it() {
     .unwrap();
     let stand = game.entity(20).expect("the stand is tracked");
     assert_eq!(
-        game.entity_kind(stand).as_deref(),
+        game.entity_kind(stand)
+            .map(|kind| kind.id(&game))
+            .as_deref(),
         Some("minecraft:armor_stand")
     );
     assert_eq!(game.entity_position(stand), Some([1.5, 64.0, 2.5]));
@@ -166,7 +178,9 @@ fn a_client_reads_the_entities_and_menu_the_server_shows_it() {
         .unwrap();
     let display = game.entity(21).expect("the display is tracked");
     assert_eq!(
-        game.entity_kind(display).as_deref(),
+        game.entity_kind(display)
+            .map(|kind| kind.id(&game))
+            .as_deref(),
         Some("minecraft:text_display")
     );
     assert_eq!(game.entity_position(display), Some([4.0, 70.0, -3.0]));
@@ -361,4 +375,13 @@ fn a_villager_raid_sweat_event_draws_particles() {
     game.handle_packet(C::EntityEvent(play::EntityEvent { id: 21, event: 42 }))
         .unwrap();
     assert!(made(&game) > before, "event 42 draws the sweat");
+}
+
+impl super::Remote {
+    /// Lists this client's own player with `latency`, as the server's player info update does.
+    pub(in crate::game) fn list_self(&mut self, latency: i32) {
+        let mut me = horizon_client::tab_list::TabPlayer::new(self.profile, "SessionReadTest");
+        me.latency = latency;
+        self.tab_players.insert(self.profile, me);
+    }
 }

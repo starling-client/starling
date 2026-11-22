@@ -22,6 +22,31 @@ pub struct ClientServer {
     pub save_folder: Option<String>,
 }
 
+/// The local player's item use as the client sees it (`LivingEntity.isUsingItem`,
+/// `getUsedItemHand`, `getTicksUsingItem`, `getUseItemRemainingTicks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ItemUse {
+    /// The hand holding the item in use.
+    pub hand: crate::Hand,
+    /// Ticks the item has been used so far.
+    pub ticks_used: i32,
+    /// Ticks left until the use completes; with `ticks_used`, the item's use duration.
+    pub ticks_remaining: i32,
+}
+
+impl ItemUse {
+    /// An item use of `hand`, `ticks_used` ticks old with `ticks_remaining` left.
+    pub fn new(hand: crate::Hand, ticks_used: i32, ticks_remaining: i32) -> Self {
+        Self {
+            hand,
+            ticks_used,
+            ticks_remaining,
+        }
+    }
+}
+
 /// Existing local frame counters, sampled only when requested by a mod.
 #[derive(Clone, Copy, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
@@ -35,6 +60,75 @@ pub struct ClientFrameStats {
     /// The most recent completed frame's wall interval in nanoseconds, including
     /// waits. `None` before a frame sample exists or after the chart was reset.
     pub frame_time_ns: Option<u64>,
+}
+
+/// The player list as the Tab overlay draws it (`PlayerTabOverlay`), read with
+/// `ClientSession::client_tab_list`: what this client has been sent, changing as the server
+/// updates the list.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientTabList {
+    /// The listed players in the order drawn (`getPlayerInfos`: higher list order first,
+    /// spectators last, then team name and profile name), at most the 80 the overlay draws.
+    pub entries: Vec<ClientTabListEntry>,
+    /// The header above the names, when the server sent one.
+    pub header: Option<crate::Text>,
+    /// The footer below them, when the server sent one.
+    pub footer: Option<crate::Text>,
+}
+
+impl ClientTabList {
+    /// A list of `entries` with `header` and `footer`.
+    pub fn new(
+        entries: Vec<ClientTabListEntry>,
+        header: Option<crate::Text>,
+        footer: Option<crate::Text>,
+    ) -> Self {
+        Self {
+            entries,
+            header,
+            footer,
+        }
+    }
+}
+
+/// One listed player (`PlayerInfo`) of a [`ClientTabList`].
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientTabListEntry {
+    /// The profile name (`GameProfile.name`).
+    pub name: String,
+    /// The profile UUID.
+    pub uuid: u128,
+    /// The game mode the server lists them in.
+    pub game_mode: crate::GameMode,
+    /// The latency in milliseconds the ping bars show; negative while unknown.
+    pub latency: i32,
+    /// The name as the list draws it (`getNameForDisplay`): the server's list name, else the
+    /// profile name in the team's prefix, suffix and colour, italic for a spectator.
+    pub display: crate::Text,
+}
+
+impl ClientTabListEntry {
+    /// An entry of `name` and `uuid` in `game_mode`, `latency` milliseconds away, drawn as
+    /// `display`.
+    pub fn new(
+        name: String,
+        uuid: u128,
+        game_mode: crate::GameMode,
+        latency: i32,
+        display: crate::Text,
+    ) -> Self {
+        Self {
+            name,
+            uuid,
+            game_mode,
+            latency,
+            display,
+        }
+    }
 }
 
 /// The local player's current block-breaking operation. An unavailable player

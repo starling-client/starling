@@ -15,7 +15,7 @@ use crate::{
     font::{Font, Glyph},
     gfx::mark_oit,
     hud::Rect,
-    mesher::{CULL_BACK, Vertex},
+    mesher::{CULL_BACK, Vertex, cull_back},
     models::load_visibility,
     signs::{self, SignData, SignText},
     text::{Style, Text},
@@ -764,7 +764,7 @@ fn sign_text_animated(data: &SignData) -> bool {
 
 /// How far the text of an outlined call sits in front of its outline, in
 /// text units (`Font.DisplayMode.POLYGON_OFFSET`, see `draw_text`).
-const TEXT_OVER_OUTLINE: f32 = 0.05;
+pub const TEXT_OVER_OUTLINE: f32 = 0.05;
 
 /// Draws a text call with the font atlas: 8x8 glyph cells, the outline as
 /// eight one-pixel offsets under the text.
@@ -3111,9 +3111,9 @@ impl BlockEntityRenderer {
                     }
                 }
                 // `DecoratedPotRenderer` submits every part with `entitySolid`, which culls
-                // back faces: the flat `top` and `bottom` planes show one side each.
+                // back faces: the flat `top` and `bottom` planes show one side each (#15322).
                 for vertex in &mut out[first..] {
-                    vertex.normal = CULL_BACK;
+                    vertex.normal = cull_back(vertex.normal);
                 }
             }
             Kind::EndPortal => {
@@ -4793,9 +4793,12 @@ mod tests {
             28,
             "the pot submits all of vanilla's quads"
         );
+        // A part the shader shades keeps its normal (#15322): `w` alone says cull.
         assert!(
-            verts.iter().all(|v| v.normal == CULL_BACK),
-            "entitySolid culls the pot's back faces"
+            verts
+                .iter()
+                .all(|v| v.normal[3] == crate::mesher::SHADED_CULL_W && v.normal[..3] != [0; 3]),
+            "entitySolid culls the pot's back faces and shades it by its normals"
         );
     }
 

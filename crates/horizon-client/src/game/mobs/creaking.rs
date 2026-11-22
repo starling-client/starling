@@ -1,7 +1,7 @@
 //! The creaking heart block entity in the game: `mobs::creaking_heart`
 //! ticks each heart (spawning, letting go of and bleeding for its creaking)
 //! and this applies what it reports to the world, the mobs and the speakers.
-use super::{Game, creatures::seen};
+use super::{Game, creatures::seen, persist::EntityUuids};
 use horizon_client::{
     Result,
     chunk_map::{ChunkMap, ChunkMembershipDelta},
@@ -18,7 +18,7 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 use horizon_world::registry::BlockStateId;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 type Pos = (i32, i32, i32);
 
@@ -34,7 +34,7 @@ pub(super) fn heart_signal(world: &horizon_client::world::World, pos: BlockPos) 
 struct Host<'a> {
     mobs: &'a mut horizon_client::join_seq::JoinList<Mob>,
     added: Vec<Mob>,
-    uuids: &'a mut HashMap<u32, [i32; 4]>,
+    uuids: &'a mut EntityUuids,
     creaking: Option<Arc<MobType>>,
     next_entity: &'a mut u32,
     spawning: bool,
@@ -72,10 +72,8 @@ impl HeartHost for Host<'_> {
             .map(|(id, _)| *id)
     }
     fn uuid_for(&mut self, id: u32) -> [i32; 4] {
-        *self
-            .uuids
-            .entry(id)
-            .or_insert_with(horizon_client::save::random_uuid)
+        self.uuids
+            .get_or_insert_with(id, horizon_client::save::random_uuid)
     }
     fn creaking_type(&self) -> Option<Arc<MobType>> {
         self.creaking.clone()
@@ -133,7 +131,9 @@ impl Game<'_> {
         let creaking = self.res.mob_types().get("minecraft:creaking").cloned();
         let player_uuid = self.level.player_uuid;
         let snapshot: Vec<_> = if others {
-            mobs.iter().map(|m| seen(m, player_uuid)).collect()
+            mobs.iter()
+                .map(|m| seen(m, player_uuid, world_items!(self)))
+                .collect()
         } else {
             Vec::new()
         };
@@ -180,6 +180,9 @@ impl Game<'_> {
                     [0.0; 3],
                 ),
                 HeartEvent::OutputChanged(at) => self.container_changed((at[0], at[1], at[2])),
+                HeartEvent::BlockGameEvent(event, at, state) => {
+                    self.post_block_game_event(event, at, None, Some(state))
+                }
                 HeartEvent::Mob(event) => mob_events.push(event),
             }
         }
@@ -251,8 +254,16 @@ impl Game<'_> {
     }
     /// `CreakingHeartBlock.playerWillDestroy`: the heart's creaking twitches to
     /// death and a natural heart drops experience. `onExplosionHit` does the
-    /// same for the creaking (`by_player` false), without the experience.
+    /// same for the creaking, and awards the experience only when its
+    /// blast's indirect source is a player (`creaking_heart_broken_by`).
     pub(super) fn creaking_heart_broken(&mut self, pos: [i32; 3], by_player: bool) {
+        let award = by_player && !self.creative && !self.spectator();
+        self.creaking_heart_broken_by(pos, award);
+    }
+    /// `creaking_heart_broken` once the breaker is known: `award` is
+    /// `tryAwardExperience`'s player check (a player who neither builds
+    /// instantly, `preventsBlockDrops`, nor spectates).
+    pub(super) fn creaking_heart_broken_by(&mut self, pos: [i32; 3], award: bool) {
         let key = (pos[0], pos[1], pos[2]);
         if !matches!(
             self.world.block_entities.get(&key),
@@ -276,16 +287,24 @@ impl Game<'_> {
             .state(state)
             .and_then(|s| s.properties.get("natural").cloned())
             .is_some_and(|v| v == "true");
-        if by_player && natural && !self.creative && !self.spectator() {
+        if award && natural {
             let xp = 20 + self.world.random.next_int_bound(5).unwrap_or(0) as u32;
-            self.spawn_orbs(
-                [
-                    f64::from(pos[0]) + 0.5,
-                    f64::from(pos[1]) + 0.5,
-                    f64::from(pos[2]) + 0.5,
-                ],
-                xp,
-            );
+            // Block.popExperience: the amount is drawn, then nothing pops
+            // with `block_drops` off.
+            if self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::BLOCK_DROPS)
+            {
+                self.spawn_orbs(
+                    [
+                        f64::from(pos[0]) + 0.5,
+                        f64::from(pos[1]) + 0.5,
+                        f64::from(pos[2]) + 0.5,
+                    ],
+                    xp,
+                );
+            }
         }
         self.world
             .block_entities
@@ -469,6 +488,10 @@ impl CreakingState {
         self.revision = Some(revision);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/creaking_heart_events_tests.rs"]
+mod creaking_heart_events_tests;
 
 #[cfg(test)]
 mod tests {

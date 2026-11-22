@@ -19,7 +19,7 @@ use horizon_client::{
 use horizon_core::nbt::Tag;
 use horizon_core::{
     geometry::Vec3,
-    random::{LegacyRandom, RandomSource},
+    random::{LegacyRandom, LevelRandom, RandomSource},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -142,7 +142,7 @@ impl Game<'_> {
         let pos = [key.0, key.1, key.2];
         let mut random = std::mem::replace(
             &mut self.world.random,
-            horizon_core::random::LegacyRandom::new(0),
+            LevelRandom::for_level(LegacyRandom::new(0)),
         );
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
@@ -158,7 +158,7 @@ impl Game<'_> {
             });
             let mut spawn = |l: &super::natural_spawning::GameLevel,
                              r: &SpawnerSpawn,
-                             rng: &mut LegacyRandom| {
+                             rng: &mut LevelRandom| {
                 l.game.plan_spawner_mob(l, r, source, &mut planned, rng)
             };
             spawner.server_tick(&level, &mut random, pos, &mut spawn, &mut events);
@@ -374,6 +374,8 @@ impl Game<'_> {
     /// `sendBlockUpdated`: the clients load the new update tag (the client
     /// copy's delay follows it, its display mob is made again).
     fn spawner_block_updated(&mut self, key: Pos) {
+        self.world
+            .path_type_block_updated(horizon_core::position::BlockPos::new(key.0, key.1, key.2));
         if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
             s.client_loaded();
         }
@@ -534,7 +536,7 @@ impl Game<'_> {
             let mut events = Vec::new();
             let mut random = std::mem::replace(
                 &mut self.world.random,
-                horizon_core::random::LegacyRandom::new(0),
+                LevelRandom::for_level(LegacyRandom::new(0)),
             );
             if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
                 match data {
@@ -557,6 +559,37 @@ impl Game<'_> {
         self.lan_acting_permission
             .unwrap_or(self.ui.registries.permission)
             > 0
+    }
+    /// `EntityType.createDefaultStackConfig` on an entity an item made (a
+    /// vehicle, a hanging entity, an armor stand): the item's custom name and
+    /// custom data (`applyComponentsFromItemStack`:
+    /// `Entity.applyImplicitComponent`'s two, saved as `CustomName` and
+    /// `data`), then its `minecraft:entity_data` merged over the entity's own
+    /// compound and loaded (`updateCustomEntityTag`) when it names this type.
+    /// An op-only type (command block and spawner minecarts) takes it from an
+    /// op player only, never from a dispenser (`by_player` false).
+    pub(super) fn apply_item_stack_config(
+        &mut self,
+        target: super::commands::Target,
+        kind: &str,
+        stack: &horizon_client::items::ItemStack,
+        by_player: bool,
+    ) {
+        let op = by_player && self.acting_player_is_op();
+        let configures = stack
+            .data()
+            .is_some_and(|d| d.custom_name.is_some() || d.other("minecraft:custom_data").is_some())
+            || horizon_client::block_entity_item::spawn_egg_entity_data(stack, kind, op).is_some();
+        if !configures {
+            return;
+        }
+        let Some(own) = self.command_target_nbt(target) else {
+            return;
+        };
+        let tag =
+            horizon_client::block_entity_item::stack_configured_entity_by(stack, kind, &own, op);
+        // The entity's own compound, its name and data merged in: it loads back.
+        let _ = self.apply_entity_nbt(target, tag);
     }
     /// Ticks spawners, trial spawners and vaults near the player on a remote
     /// client (`tick_remote`).
@@ -586,7 +619,7 @@ impl Game<'_> {
         &self,
         camera: glam::DVec3,
         alpha: f64,
-        out: &mut Vec<mod_render::render::Vertex>,
+        out: &mut Vec<horizon_client_render::render_geometry::Vertex>,
     ) {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);

@@ -8,7 +8,8 @@
 //!
 //! A crate and not an example of horizon-client: an example builds with the dev-dependencies, whose
 //! `testing` feature keeps the mods per thread, and the server thread would see none.
-use horizon_mod_package::{Side, runtime::BuiltMod};
+use mod_api::__private::native::BuiltMod;
+use mod_api::Side;
 use mod_api::{
     BlockKey, ChunkAccess, ChunkGenerator, CommandArgumentValue, CommandSource, DimensionSettings,
     Flow, Hooks, ModEntry, RegisterCommandsEvent, Registrar, RegistrationContext,
@@ -129,6 +130,7 @@ impl Hooks for DimProbe {
 }
 
 fn main() {
+    horizon_mod_host::exit_if_compile_child();
     let startup = horizon_client::entry::prepare();
     horizon_mod_host::main_with(
         vec![ModEntry::new("dimprobe", Box::<DimProbe>::default())],

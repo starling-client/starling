@@ -34,7 +34,6 @@ import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
-import android.view.DisplayCutout;
 import android.view.InputDevice;
 import android.view.View;
 import android.view.WindowInsets;
@@ -74,11 +73,14 @@ import javax.crypto.spec.GCMParameterSpec;
  * mouse's capture and the controllers' makers and motors.
  */
 public class StarlingActivity extends NativeActivity {
+    private DisplayPreferences displayPreferences;
     private static final int PICK_FILE = 1;
     /** Horizon Android's folder picked: its worlds and packs come over (HorizonImport). */
     private static final int PICK_HORIZON = 2;
     /** Android's answer to the permissions the running build's mods need. */
     private static final int MOD_PERMISSIONS = 3;
+    /** The launcher's file picker (Horizon Android's): its answer goes to nativeDocumentResult. */
+    private static final int PICK_DOCUMENT = 4101;
 
     /** The build with native mods this game runs (loadGame), or null for the APK's own. */
     private File modBuild;
@@ -147,6 +149,9 @@ public class StarlingActivity extends NativeActivity {
     /** Android took back the pointer the game had captured (android_lib.rs). */
     private static native void onPointerCaptureLost();
 
+    /** The launcher's picker answered: its request, its result code and the document (android_lib.rs). */
+    private native void nativeDocumentResult(int request, int result, String uri);
+
     /** The game holds the pointer (capturePointer); on the UI thread only. */
     private boolean pointerWanted;
 
@@ -200,6 +205,7 @@ public class StarlingActivity extends NativeActivity {
         // Before super.onCreate starts the game's thread, which reads it first thing.
         onStorage(sharedFolder(this));
         super.onCreate(savedInstanceState);
+        displayPreferences = new DisplayPreferences(this);
         // Made here, on the UI thread: the game reads and writes it from its own.
         clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         // As games do: watching, a controller or a benchmark can go minutes without a touch.
@@ -235,7 +241,7 @@ public class StarlingActivity extends NativeActivity {
                     new View.OnApplyWindowInsetsListener() {
                         @Override
                         public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
-                            sendSafeInsets(insets);
+                            view.post(() -> displayPreferences.layout());
                             if (Build.VERSION.SDK_INT >= 30) {
                                 onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
                                 // The keyboard brings the navigation bar back, and it stayed
@@ -261,21 +267,35 @@ public class StarlingActivity extends NativeActivity {
      * Tells the game where the camera cutout reaches into the window (in landscape, along the
      * short edge it sits on), so the touch controls and the chat keep clear of it (#166).
      */
-    private static void sendSafeInsets(WindowInsets insets) {
-        if (Build.VERSION.SDK_INT < 28) {
-            return;
-        }
-        DisplayCutout cutout = insets.getDisplayCutout();
+    void reportCutout(int left, int top, int right, int bottom) {
         try {
-            if (cutout == null) {
-                onSafeInsets(0, 0, 0, 0);
-            } else {
-                onSafeInsets(cutout.getSafeInsetLeft(), cutout.getSafeInsetTop(),
-                        cutout.getSafeInsetRight(), cutout.getSafeInsetBottom());
-            }
+            onSafeInsets(left, top, right, bottom);
         } catch (UnsatisfiedLinkError e) {
             // A build of the game from before the insets: it draws as it always did.
         }
+    }
+
+    public void setDisplayPreferences(int cutout, int orientations, int rotation, int width, int height) {
+        runOnUiThread(() -> displayPreferences.set(cutout, orientations, rotation, width, height));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        displayPreferences.listen(true);
+        displayPreferences.layout();
+    }
+
+    @Override
+    protected void onPause() {
+        displayPreferences.listen(false);
+        super.onPause();
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        getWindow().getDecorView().post(() -> displayPreferences.layout());
     }
 
     @Override
@@ -464,6 +484,9 @@ public class StarlingActivity extends NativeActivity {
         } else if (requestCode == PICK_HORIZON && resultCode == RESULT_OK && data != null
                 && data.getData() != null) {
             HorizonImport.start(this, data.getData());
+        } else if (requestCode == PICK_DOCUMENT) {
+            nativeDocumentResult(requestCode, resultCode,
+                    data == null || data.getData() == null ? null : data.getData().toString());
         }
     }
 
@@ -742,8 +765,19 @@ public class StarlingActivity extends NativeActivity {
      * in a process of its own, waits for this one to end.
      */
     public void restart() {
+        restart(null);
+    }
+
+    /**
+     * As {@link #restart()}, with what the restart screen says meanwhile (the reason, in the
+     * player's language: the world's mods, the launcher, the files moving); null for the default.
+     */
+    public void restart(String message) {
         Intent again = new Intent(this, LauncherActivity.class);
         again.putExtra(LauncherActivity.AFTER, android.os.Process.myPid());
+        if (message != null && !message.isEmpty()) {
+            again.putExtra(LauncherActivity.MESSAGE, message);
+        }
         again.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(again);
         runOnUiThread(new Runnable() {
@@ -752,6 +786,26 @@ public class StarlingActivity extends NativeActivity {
                 finish();
                 // Straight to the launcher's restart screen, no window animation between.
                 overridePendingTransition(0, 0);
+            }
+        });
+    }
+
+    /**
+     * The launcher's file picker (Horizon Android's): the document chosen goes to the launcher,
+     * which reads it through the content resolver and puts it where it belongs.
+     */
+    public void pickDocument() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                try {
+                    startActivityForResult(intent, PICK_DOCUMENT);
+                } catch (ActivityNotFoundException e) {
+                    nativeDocumentResult(PICK_DOCUMENT, RESULT_CANCELED, null);
+                }
             }
         });
     }

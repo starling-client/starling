@@ -1,21 +1,73 @@
 name: sync-check
-# Temporary, for the sync with Horizon (sync-horizon-6): a pushed commit of this branch gets `cargo check` of the
-# workspace on one runner, and the step summary lists the errors, cut short. The PC has no build and the VM is out
-# of reach. Delete before the branch merges.
+# Temporary, for the sync with Ari's fork of Horizon (sync-horizon-7): a pushed commit of this branch gets the Python
+# tests, `cargo check` of the workspace and of horizon-android for arm64-v8a, each on its runner, and each step
+# summary lists the errors, cut short. With workflow_dispatch `full`, also clippy (warnings denied, as ci.yml) and the
+# Rust tests. The PC has no build and there is no VM. Delete before the branch merges.
 
 on:
   push:
-    branches: [sync-horizon-6]
+    branches: [sync-horizon-7]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Also clippy and the Rust tests
+        type: boolean
+        default: true
+      compat:
+        description: Only the website mods' build check (hnmod-compat.yml), nothing else
+        type: boolean
+        default: false
+      tests:
+        description: Only the Rust tests, on a runner of their own (they outlast ci.yml's 45 minutes cold)
+        type: boolean
+        default: false
 
 concurrency:
-  group: sync-check
+  group: sync-check-${{ github.event_name }}-${{ inputs.compat }}-${{ inputs.tests }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  HORIZON_TELEMETRY_URL: "off"
+  CARGO_TERM_COLOR: never
+
 jobs:
+  python:
+    if: ${{ !inputs.compat && !inputs.tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python tests
+        run: |
+          set +e
+          python -m unittest discover -s tests > py.log 2>&1
+          code=$?
+          {
+            echo "## Python tests: exit $code"
+            echo '```'
+            grep -E '^(FAIL|ERROR):' py.log | cut -c1-250 | head -200
+            tail -n 3 py.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 40 py.log
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: py-log
+          path: py.log
+          retention-days: 7
+
   check:
+    if: ${{ !inputs.compat && !inputs.tests }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -23,7 +75,8 @@ jobs:
       - name: Rust and the ALSA and udev headers the client links against
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
-          rustup toolchain install stable --profile minimal
+          # The fork's pinned Rust (tools/ci/rust-version), as its CI builds with.
+          bash tools/ci/rustup_install.sh --profile minimal --component clippy
       # Starling's own CI cache, read only: the dependencies are mostly the same crates.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -31,11 +84,10 @@ jobs:
           save-if: false
       - name: cargo check
         env:
-          CARGO_TERM_COLOR: never
           CARGO_PROFILE_DEV_DEBUG: 0
         run: |
           set +e
-          cargo +stable check --workspace --all-targets --keep-going --message-format=short > check.log 2>&1
+          cargo check --workspace --all-targets --keep-going --message-format=short > check.log 2>&1
           code=$?
           {
             echo "## cargo check: exit $code"
@@ -46,9 +98,142 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           tail -n 60 check.log
           exit $code
+      - name: clippy (warnings denied)
+        if: github.event_name == 'workflow_dispatch' && inputs.full
+        env:
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: |
+          set +e
+          {
+            cargo clippy --workspace --all-targets --keep-going --message-format=short -- -D warnings
+            cargo clippy -p horizon-client -p horizon-game -p horizon-mod-host --all-targets --no-default-features --keep-going --message-format=short -- -D warnings
+          } > clippy.log 2>&1
+          code=$?
+          {
+            echo "## clippy: exit $code"
+            echo '```'
+            grep -E '^[^ ]+: *(error|warning)' clippy.log | sort -u | cut -c1-300 | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+      - name: Rust tests
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.full
+        env:
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          set +e
+          cargo build -p horizon-mod-package --features runtime-process --example holder_actor > test.log 2>&1
+          # A test that hangs ends here, not at the job's timeout, so the log still uploads.
+          timeout 200m cargo test --workspace --lib --bins --tests --no-fail-fast >> test.log 2>&1
+          code=$?
+          timeout 30m cargo test --workspace --doc --no-fail-fast >> test.log 2>&1 || code=1
+          {
+            echo "## Rust tests: exit $code"
+            echo '```'
+            grep -E '^test .* FAILED$|^error(\[|:)|^test result: FAILED' test.log | cut -c1-250 | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: check-log
-          path: check.log
+          path: |
+            check.log
+            clippy.log
+            test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  android:
+    if: ${{ !inputs.compat && !inputs.tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust for Android, cargo-ndk and the NDK build_apk.py pins
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          bash tools/ci/rustup_install.sh --profile minimal --target aarch64-linux-android --target armv7-linux-androideabi --component clippy
+          cargo install cargo-ndk --version 3.5.4 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-arm64-v8a
+          save-if: false
+      - name: cargo ndk check (horizon-android, arm64-v8a)
+        env:
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: |
+          set +e
+          cargo ndk -t arm64-v8a check -p horizon-android --keep-going --message-format=short > android.log 2>&1
+          code=$?
+          # The 32-bit APKs (armeabi-v7a, x86): code that assumes a 64-bit usize shows here.
+          cargo ndk -t armeabi-v7a check -p horizon-android --keep-going --message-format=short >> android.log 2>&1 || code=1
+          if [ $code = 0 ] && [ "${{ github.event_name == 'workflow_dispatch' && inputs.full }}" = true ]; then
+            cargo ndk -t arm64-v8a clippy -p horizon-android --message-format=short -- -D warnings >> android.log 2>&1
+            code=$?
+          fi
+          {
+            echo "## Android check: exit $code"
+            echo '```'
+            grep -E '^[^ ]+: *(error|warning)|^error(\[|:)|could not compile|Finished' android.log | sort -u | cut -c1-300 | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 android.log
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-log
+          path: android.log
+          retention-days: 7
+
+  hnmod-compat:
+    if: ${{ inputs.compat }}
+    uses: ./.github/workflows/hnmod-compat.yml
+    with:
+      shards: '8'
+
+  tests:
+    if: ${{ inputs.tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust and the ALSA and udev headers the client links against
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          bash tools/ci/rustup_install.sh --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sync7-tests
+          cache-on-failure: true
+      - name: Rust tests
+        env:
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          set +e
+          cargo build -p horizon-mod-package --features runtime-process --example holder_actor > test.log 2>&1
+          # A test that hangs ends here, not at the job's timeout, so the log still uploads.
+          timeout 200m cargo test --workspace --lib --bins --tests --no-fail-fast >> test.log 2>&1
+          code=$?
+          timeout 30m cargo test --workspace --doc --no-fail-fast >> test.log 2>&1 || code=1
+          {
+            echo "## Rust tests: exit $code"
+            echo '```'
+            grep -E '^test .* FAILED$|^error(\[|:)|^test result: FAILED' test.log | cut -c1-250 | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+      # As ci.yml's `checks` does after its tests, which there run out of time first: the audit reads
+      # horizon-mod-vocab's generated signatures from the build the tests made.
+      - name: Check generated mod API signatures
+        if: always()
+        run: python3 tools/ci/check_api_boundary.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-log
+          path: test.log
           retention-days: 7

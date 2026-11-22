@@ -47,6 +47,9 @@ if [ ! -x "$tools/bin/horizon-mixins" ]; then
 fi
 
 commit=$(git -C "$source" rev-parse HEAD)
+# horizon-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
+# the build folder below is a copy without the repository.
+export HORIZON_GAME_BUILD_ID=$commit
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -82,6 +85,10 @@ cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
 CARGO_TARGET_DIR=$cache/materialize-target cargo run --quiet --locked --offline \
   --manifest-path "$work/source/Cargo.toml" -p horizon-mod-api-gen --bin horizon-materialize \
   -- "$work/source"
+# What horizon-mixins refuses in the fork's source, made readable in this copy (native_mixins_source.py): modules
+# named through a parent folder (`#[path = "../x.rs"]`) move next to their module, and the prebuilt game's
+# `#[replaceable]` markers (an attribute macro that changes nothing) go.
+python3 "$source/packaging/android/native_mixins_source.py" "$work/source"
 
 # The bundles, each pinned to the commit built here when it pins one (Starling's commits are not
 # Horizon's; a mod that calls what Starling changed fails in the compiler).

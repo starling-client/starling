@@ -8,7 +8,6 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
-    sync::{Arc, Mutex},
 };
 
 /// RecipeManager.RECIPE_PROPERTY_SETS: each set and the ingredients it takes
@@ -61,36 +60,42 @@ fn registration_order<V>(all: &BTreeMap<String, V>) -> Vec<&V> {
     ordered.into_iter().map(|(_, v)| v).collect()
 }
 
-/// The network copy's recipes: every recipe file and overlay recipe, each
-/// ingredient object — NeoForge's shapes, a brewing slot's item predicate —
-/// replaced by the flat item list the crafting copy resolves it to. The
-/// crafting copy resolves these shapes where it loads them; this copy reads
-/// the files again, and `holder_set` writes any object it meets as an empty
-/// list. A recipe that keeps an object the loader cannot parse (a mod's own
-/// ingredient kind) is left out: the server does not load it, and an empty
-/// ingredient in its place misleads the client.
+/// The network copy of the already-resolved load cohort. Only recipes accepted
+/// by the canonical loader participate in display numbering, keeping client
+/// display ids aligned with the server's recipe index. Accepted ingredients
+/// become flat holder sets, including empty sets, without interpreting custom metadata.
 pub(super) fn network_recipes(
     resources: &Path,
     overlay: &horizon_world::loot::PackOverlay,
     defaults: &horizon_world::item_defaults::ItemDefaults,
     sources: &horizon_client::crafting::ResolvedSources,
-) -> (BTreeMap<String, Box<str>>, HashMap<String, i32>) {
+) -> crate::Result<(BTreeMap<String, Box<str>>, HashMap<String, i32>)> {
     // The resolved copy: the load's `ingredient` answers are in place, and
     // none of them leaves it (`forget_answers` below).
+    let items = horizon_client::items::Items::catalog(resources, overlay, defaults)?;
+    let accepted =
+        horizon_client::crafting::Recipes::from_resolved(resources, &items, overlay, sources)?;
+    let accepted: std::collections::HashSet<&str> = accepted
+        .by_type
+        .values()
+        .flat_map(|recipes| {
+            recipes
+                .iter()
+                .filter(|recipe| recipe.has_placement_candidates())
+                .map(|recipe| recipe.id.as_str())
+        })
+        .collect();
     let mut all: BTreeMap<_, _> = sources
         .recipes
         .iter()
-        .map(|r| {
-            (
-                horizon_client::crafting::qualified(&r.name),
-                (*r.resolved).clone(),
-            )
+        .filter_map(|recipe| {
+            let id = horizon_client::crafting::qualified(&recipe.name);
+            accepted
+                .contains(id.as_str())
+                .then(|| (id, (*recipe.resolved).clone()))
         })
         .collect();
-    match horizon_client::items::Items::catalog(resources, overlay, defaults) {
-        Ok(items) => all.retain(|_, r| normalize_ingredients(r, &items)),
-        Err(e) => log::warn!("recipes: NeoForge's ingredient shapes stay unresolved: {e}"),
-    }
+    all.retain(|_, recipe| normalize_ingredients(recipe, &items));
     all.values_mut().for_each(|r| {
         horizon_client::crafting::Ingredient::forget_answers(r);
     });
@@ -110,7 +115,7 @@ pub(super) fn network_recipes(
         .into_iter()
         .map(|(id, r)| (id, r.to_string().into_boxed_str()))
         .collect();
-    (all, groups)
+    Ok((all, groups))
 }
 
 /// An ingredient object's flat item list: the shape NeoForge's standard
@@ -120,12 +125,17 @@ fn flat(ing: &Value, items: &horizon_client::items::Items) -> Option<Value> {
     if !ing.is_object() {
         return None;
     }
-    let parsed = horizon_client::crafting::Ingredient::parse(ing, items).or_else(|| {
-        // A brewing slot's item predicate: its `ingredient`, as the
-        // property sets have always read it.
-        ing.get("item")
-            .and_then(|v| horizon_client::crafting::Ingredient::parse(v, items))
-    })?;
+    let value = if ing
+        .get("type")
+        .or_else(|| ing.get("neoforge:ingredient_type"))
+        .is_some()
+    {
+        ing
+    } else {
+        // Only an untyped brewing wrapper gives `item` a structural meaning.
+        ing.get("item").unwrap_or(ing)
+    };
+    let parsed = horizon_client::crafting::Ingredient::parse(value, items)?;
     Some(Value::Array(
         parsed
             .order
@@ -146,42 +156,42 @@ fn normalize_ingredients(r: &mut Value, items: &horizon_client::items::Items) ->
         return true;
     }
     let mut parsed = true;
-    // The shaped recipe's key: a map of symbols to ingredients.
-    if let Some(map) = r.get_mut("key").and_then(|k| k.as_object_mut()) {
+    // Both ingredient maps use the canonical load's role list.
+    for key in crate::crafting::INGREDIENT_MAPS {
+        let Some(map) = r.get_mut(key).and_then(Value::as_object_mut) else {
+            continue;
+        };
         for ing in map.values_mut() {
             if let Some(replacement) = flat(ing, items) {
                 *ing = replacement;
-            } else if ing.is_object() {
+            } else if horizon_client::crafting::Ingredient::parse(ing, items).is_none() {
                 parsed = false;
             }
         }
     }
     // The list and single-ingredient keys, the smithing trio, the brewing
     // pair.
-    for key in [
-        "ingredients",
-        "ingredient",
-        "base",
-        "addition",
-        "template",
-        "input",
-        "reagent",
-    ] {
+    for key in crate::crafting::INGREDIENT_KEYS {
         let Some(ing) = r.get_mut(key) else { continue };
         if let Some(replacement) = flat(ing, items) {
             *ing = replacement;
             continue;
         }
-        if let Value::Array(a) = ing {
-            for entry in a.iter_mut() {
+        if key == "ingredients" {
+            let Some(entries) = ing.as_array_mut() else {
+                parsed = false;
+                continue;
+            };
+            for entry in entries {
                 if let Some(replacement) = flat(entry, items) {
                     *entry = replacement;
-                } else if entry.is_object() {
+                } else if horizon_client::crafting::Ingredient::parse(entry, items).is_none() {
                     parsed = false;
                 }
             }
-        } else if ing.is_object() {
-            parsed = false;
+        } else {
+            let value = ing.get("item").unwrap_or(ing);
+            parsed &= horizon_client::crafting::Ingredient::parse(value, items).is_some();
         }
     }
     parsed
@@ -219,6 +229,21 @@ pub fn update_recipes(
             Ingredient::Items(list) => list.iter().filter_map(|n| item(n)).collect(),
         }
     };
+    // A recipe with any required empty ingredient contributes to no property
+    // set and never appears in the selectable stonecutter list.
+    let placeable = |recipe: &Value| {
+        [
+            "ingredient",
+            "template",
+            "base",
+            "addition",
+            "input",
+            "reagent",
+        ]
+        .into_iter()
+        .filter_map(|key| recipe.get(key))
+        .all(|value| ingredient(value).is_some_and(|i| !items(&i).is_empty()))
+    };
     let mut w = Writer::new();
     let custom: BTreeMap<_, _> = additions.custom().collect();
     w.varint((PROPERTY_SETS.len() + custom.len()) as i32);
@@ -231,7 +256,7 @@ pub fn update_recipes(
             } else {
                 t == *kind
             };
-            if matches {
+            if matches && placeable(recipe) {
                 for field in *fields {
                     if let Some(i) = ingredient(&recipe[*field]) {
                         set.extend(items(&i));
@@ -265,7 +290,7 @@ pub fn update_recipes(
     // its result as an ItemStackSlotDisplay.
     let stonecutting: Vec<&Value> = chosen
         .iter()
-        .filter(|r| r["type"] == "minecraft:stonecutting")
+        .filter(|r| r["type"] == "minecraft:stonecutting" && placeable(r))
         .collect();
     let item_stack = sync
         .id("minecraft:slot_display", "minecraft:item_stack")
@@ -343,7 +368,7 @@ pub fn encode_content(types: &[String], sources: &[(String, Value)], reset: bool
     let mut part: Vec<(String, Value)> = Vec::new();
     let mut size = 0;
     for (name, v) in sources {
-        if !types.iter().any(|t| v["type"].as_str() == Some(t)) {
+        if !crate::crafting::mod_kinds::file_has_type(v, types) {
             continue;
         }
         let id = if name.contains(':') {
@@ -388,33 +413,26 @@ pub fn encode_content(types: &[String], sources: &[(String, Value)], reset: bool
     out
 }
 
-/// What the server sends its Horizon clients now (`set_content`).
-static CONTENT: Mutex<Option<Arc<Vec<Vec<u8>>>>> = Mutex::new(None);
+/// One connection's selected recipe types and encoded response. Dropped on disconnect.
+#[derive(Default)]
+pub struct PlayerRecipeSync {
+    pub types: Vec<String>,
+    pub payloads: Vec<Vec<u8>>,
+    sent: bool,
+}
 
-/// The recipe content the server sends from now on, at a join and after a
-/// `/reload` (one server per process, as `lan::sync_data`).
-pub fn set_content(payloads: Vec<Vec<u8>>) {
-    if !payloads.is_empty() {
-        SENT.store(true, std::sync::atomic::Ordering::Relaxed);
+impl PlayerRecipeSync {
+    pub fn replace(&mut self, horizon: bool, mut types: Vec<String>, sources: &[(String, Value)]) {
+        types.sort();
+        types.dedup();
+        self.payloads = if horizon {
+            encode_content(&types, sources, self.sent)
+        } else {
+            Vec::new()
+        };
+        self.sent |= !self.payloads.is_empty();
+        self.types = types;
     }
-    *CONTENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(payloads));
-}
-
-/// Whether this server sent its clients recipes before: a later load that
-/// asks for none must put them back on their own (`encode_content`'s reset).
-static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn sent_before() -> bool {
-    SENT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// The payloads to send a Horizon client; none when no mod asked.
-pub fn content() -> Arc<Vec<Vec<u8>>> {
-    CONTENT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_default()
 }
 
 /// Horizon recipe viewer transfer channel.
@@ -452,6 +470,90 @@ pub fn decode_transfer_reply(data: &[u8]) -> horizon_protocol::Result<Option<(i3
     Ok(Some(reply))
 }
 
+/// Horizon's check of a viewer transfer, worked out without moving anything
+/// (`Menu::check_transfer`); like `TRANSFER_CHANNEL`, an empty clientbound
+/// payload advertises it. A request is the menu id, a tag the client picks and
+/// the recipe's id; the reply is the menu id, the tag, the result as
+/// `TRANSFER_CHANNEL` sends it (`result_byte`) and, for `Missing`, the count
+/// of the recipe's cells nothing fills then each cell as a byte.
+pub const CHECK_CHANNEL: &str = "horizon:recipe_check";
+
+/// Whether `channel` is one of the recipe viewer's (`TRANSFER_CHANNEL`,
+/// `CHECK_CHANNEL`).
+pub fn viewer_channel(channel: &str) -> bool {
+    channel == TRANSFER_CHANNEL || channel == CHECK_CHANNEL
+}
+
+/// Tells a Horizon client the server answers both viewer channels: an empty
+/// payload on each.
+pub fn advertise_viewer_channels(g: &super::guest::Guest) {
+    for channel in [TRANSFER_CHANNEL, CHECK_CHANNEL] {
+        g.send(
+            &horizon_protocol::packets::play::Clientbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: channel.into(),
+                    data: Vec::new(),
+                },
+            ),
+        );
+    }
+}
+
+/// A viewer transfer's result as the engine's menu gives it.
+pub fn transfer_result(
+    result: Result<(), crate::menu::place::TransferError>,
+) -> mod_api::RecipeTransferResult {
+    use crate::menu::place::TransferError;
+    use mod_api::RecipeTransferResult as R;
+    match result {
+        Ok(()) => R::Moves,
+        Err(TransferError::Missing) => R::Missing,
+        Err(TransferError::NoRoom) => R::NoRoom,
+        Err(TransferError::Unavailable) => R::NotIntoMenu,
+    }
+}
+
+/// The byte both transfer channels carry a result as.
+pub fn result_byte(result: mod_api::RecipeTransferResult) -> u8 {
+    use mod_api::RecipeTransferResult as R;
+    match result {
+        R::Moves => 0,
+        R::Missing => 1,
+        R::NoRoom => 2,
+        R::NotIntoMenu => 3,
+    }
+}
+
+/// The result a transfer channel's byte names; None for any other byte.
+pub fn byte_result(byte: u8) -> Option<mod_api::RecipeTransferResult> {
+    use mod_api::RecipeTransferResult as R;
+    Some(match byte {
+        0 => R::Moves,
+        1 => R::Missing,
+        2 => R::NoRoom,
+        3 => R::NotIntoMenu,
+        _ => return None,
+    })
+}
+
+/// The recipe content the native mods asked for (stored on this guest),
+/// to one Horizon client: none when no mod asked.
+pub fn send_content(g: &super::guest::Guest) {
+    if g.brand != "horizon" {
+        return;
+    }
+    for data in &g.recipe_sync.payloads {
+        g.send(
+            &horizon_protocol::packets::play::Clientbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: CONTENT_CHANNEL.into(),
+                    data: data.clone(),
+                },
+            ),
+        );
+    }
+}
+
 #[cfg(test)]
 mod content_tests {
     use super::*;
@@ -462,6 +564,26 @@ mod content_tests {
         DataLoadOrigin as EngineDataLoadOrigin, LoadContext, LoadInputs,
     };
     use mod_api::DataLoadOrigin;
+
+    #[test]
+    fn built_in_ingredient_network_lists_use_membership_not_display() {
+        let mut recipe = json!({
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": [
+                {"type":"neoforge:components","items":"minecraft:diamond_sword","components":{"minecraft:damage":5}},
+                {"type":"neoforge:custom_display","base":"minecraft:apple","display":{"type":"minecraft:item","item":"minecraft:diamond"}}
+            ],
+            "result": {"id":"minecraft:emerald"}
+        });
+        assert!(normalize_ingredients(
+            &mut recipe,
+            &horizon_client::items::Items::empty()
+        ));
+        assert_eq!(
+            recipe["ingredients"],
+            json!([["minecraft:diamond_sword"], ["minecraft:apple"]])
+        );
+    }
 
     struct AspectListener(std::sync::Arc<std::sync::Mutex<Vec<(DataLoadOrigin, String)>>>);
     #[mod_api::__subscriptions]
@@ -519,10 +641,11 @@ mod content_tests {
             "result": {"id": "minecraft:stick", "count": 1}
         });
         let sources = || vec![("aspects_test".to_owned(), recipe.clone())];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             let server_origin = DataLoadOrigin::ServerDataLoad;
             let resolved =
-                ResolvedSources::resolve(sources(), &load(EngineDataLoadOrigin::ServerDataLoad));
+                ResolvedSources::resolve(sources(), &load(EngineDataLoadOrigin::ServerDataLoad))
+                    .unwrap();
             let once = heard.lock().unwrap().clone();
             assert_eq!(
                 once,
@@ -552,7 +675,8 @@ mod content_tests {
 
             heard.lock().unwrap().clear();
             let client =
-                ResolvedSources::resolve(sources(), &load(EngineDataLoadOrigin::ClientPreload));
+                ResolvedSources::resolve(sources(), &load(EngineDataLoadOrigin::ClientPreload))
+                    .unwrap();
             assert!(
                 heard
                     .lock()
@@ -604,9 +728,10 @@ mod content_tests {
             "props",
             Box::new(PropertyListener(heard.clone())),
         )];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             let resolved =
-                ResolvedSources::resolve(Vec::new(), &load(EngineDataLoadOrigin::ServerDataLoad));
+                ResolvedSources::resolve(Vec::new(), &load(EngineDataLoadOrigin::ServerDataLoad))
+                    .unwrap();
             assert_eq!(*heard.lock().unwrap(), [DataLoadOrigin::ServerDataLoad]);
             let added = &resolved.property_additions;
             assert!(added.adds("furnace_input", "minecraft:emerald"));
@@ -660,11 +785,12 @@ mod content_tests {
         }
         recipe["key"] = json!({"a": {"type": "mymod:aspect", "aspect": "key"}});
         recipe["shapes"] = json!({"star": {"type": "mymod:aspect", "aspect": "shapes"}});
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             let resolved = ResolvedSources::resolve(
                 vec![("slots".to_owned(), recipe.clone())],
                 &load(EngineDataLoadOrigin::ServerDataLoad),
-            );
+            )
+            .unwrap();
             assert_eq!(heard.lock().unwrap().len(), slots.len() + 2);
             let file = &resolved.recipes[0].resolved;
             let parse = |ingredient: &Value| {
@@ -690,67 +816,168 @@ mod content_tests {
 
     #[test]
     fn content_keeps_the_asked_types_and_ends_with_them() {
-        let sources = vec![
-            ("furnace".to_owned(), json!({"type": "minecraft:smelting"})),
-            (
-                "stick".to_owned(),
-                json!({"type": "minecraft:crafting_shaped"}),
-            ),
-            ("mymod:crush".to_owned(), json!({"type": "mymod:crusher"})),
-        ];
-        assert!(encode_content(&[], &sources, false).is_empty());
-        // After a sync that sent recipes, asking for none sends an empty last part.
-        let reset = encode_content(&[], &sources, true);
-        assert_eq!(reset.len(), 1);
-        let part: ContentPart = serde_json::from_slice(&reset[0]).unwrap();
-        assert!(part.recipes.is_empty());
-        assert_eq!(part.last.as_deref(), Some(&[][..]));
-        let types = vec![
-            "minecraft:smelting".to_owned(),
-            "mymod:crusher".to_owned(),
-            "x:none".to_owned(),
-        ];
-        let parts = encode_content(&types, &sources, false);
-        assert_eq!(parts.len(), 1);
-        let part: ContentPart = serde_json::from_slice(&parts[0]).unwrap();
-        let ids: Vec<&str> = part.recipes.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["minecraft:furnace", "mymod:crush"]);
-        assert_eq!(part.last.as_deref(), Some(types.as_slice()));
+        mod_platform::testing::with_recipe_types(&["mymod:crusher"], || {
+            let sources = vec![
+                ("furnace".to_owned(), json!({"type": "minecraft:smelting"})),
+                (
+                    "stick".to_owned(),
+                    json!({"type": "minecraft:crafting_shaped"}),
+                ),
+                ("mymod:crush".to_owned(), json!({"type": "mymod:crusher"})),
+            ];
+            assert!(encode_content(&[], &sources, false).is_empty());
+            // After a sync that sent recipes, asking for none sends an empty last part.
+            let reset = encode_content(&[], &sources, true);
+            assert_eq!(reset.len(), 1);
+            let part: ContentPart = serde_json::from_slice(&reset[0]).unwrap();
+            assert!(part.recipes.is_empty());
+            assert_eq!(part.last.as_deref(), Some(&[][..]));
+            let types = vec![
+                "minecraft:smelting".to_owned(),
+                "mymod:crusher".to_owned(),
+                "x:none".to_owned(),
+            ];
+            let parts = encode_content(&types, &sources, false);
+            assert_eq!(parts.len(), 1);
+            let part: ContentPart = serde_json::from_slice(&parts[0]).unwrap();
+            let ids: Vec<&str> = part.recipes.iter().map(|(id, _)| id.as_str()).collect();
+            assert_eq!(ids, ["minecraft:furnace", "mymod:crush"]);
+            assert_eq!(part.last.as_deref(), Some(types.as_slice()));
+        });
     }
 
     #[test]
     fn content_splits_under_the_payload_cap() {
-        let big = "x".repeat(300_000);
-        let sources: Vec<_> = (0..10)
-            .map(|i| (format!("m:r{i}"), json!({"type": "m:t", "pad": big})))
-            .collect();
-        let parts = encode_content(&["m:t".to_owned()], &sources, false);
-        assert!(parts.len() >= 3);
-        let mut n = 0;
-        for (i, p) in parts.iter().enumerate() {
-            assert!(p.len() <= 1_048_576);
-            let part: ContentPart = serde_json::from_slice(p).unwrap();
-            assert_eq!(part.last.is_some(), i + 1 == parts.len());
-            n += part.recipes.len();
-        }
-        assert_eq!(n, 10);
+        mod_platform::testing::with_recipe_types(&["m:t"], || {
+            let big = "x".repeat(300_000);
+            let sources: Vec<_> = (0..10)
+                .map(|i| (format!("m:r{i}"), json!({"type": "m:t", "pad": big})))
+                .collect();
+            let parts = encode_content(&["m:t".to_owned()], &sources, false);
+            assert!(parts.len() >= 3);
+            let mut n = 0;
+            for (i, p) in parts.iter().enumerate() {
+                assert!(p.len() <= 1_048_576);
+                let part: ContentPart = serde_json::from_slice(p).unwrap();
+                assert_eq!(part.last.is_some(), i + 1 == parts.len());
+                n += part.recipes.len();
+            }
+            assert_eq!(n, 10);
+        });
     }
 
     #[test]
     fn a_long_type_list_keeps_the_last_part_under_the_cap() {
-        let types: Vec<String> = (0..5000)
-            .map(|i| format!("mod{i}:type_with_a_long_name"))
-            .collect();
-        let big = "x".repeat(1_000_000);
-        let sources = vec![(
-            "m:r".to_owned(),
-            json!({"type": "mod0:type_with_a_long_name", "pad": big}),
-        )];
-        let parts = encode_content(&types, &sources, false);
-        assert_eq!(parts.len(), 2);
-        assert!(parts.iter().all(|p| p.len() <= 1_048_576));
-        let last: ContentPart = serde_json::from_slice(&parts[1]).unwrap();
-        assert!(last.recipes.is_empty());
-        assert_eq!(last.last.map(|t| t.len()), Some(5000));
+        mod_platform::testing::with_recipe_types(&["mod0:type_with_a_long_name"], || {
+            let types: Vec<String> = (0..5000)
+                .map(|i| format!("mod{i}:type_with_a_long_name"))
+                .collect();
+            let big = "x".repeat(1_000_000);
+            let sources = vec![(
+                "m:r".to_owned(),
+                json!({"type": "mod0:type_with_a_long_name", "pad": big}),
+            )];
+            let parts = encode_content(&types, &sources, false);
+            assert_eq!(parts.len(), 2);
+            assert!(parts.iter().all(|p| p.len() <= 1_048_576));
+            let last: ContentPart = serde_json::from_slice(&parts[1]).unwrap();
+            assert!(last.recipes.is_empty());
+            assert_eq!(last.last.map(|t| t.len()), Some(5000));
+        });
+    }
+}
+
+#[cfg(test)]
+mod per_player_tests {
+    use super::*;
+
+    #[test]
+    fn per_player_content_keeps_grinding_private_and_resets_only_its_owner() {
+        mod_platform::testing::with_recipe_types(&["testmod:grinding"], || {
+            let sources = vec![(
+                "testmod:ore".into(),
+                serde_json::json!({"type":"testmod:grinding", "result":"minecraft:iron_ingot"}),
+            )];
+            let mut a = PlayerRecipeSync::default();
+            let mut b = PlayerRecipeSync::default();
+            let mut vanilla = PlayerRecipeSync::default();
+            a.replace(true, vec!["testmod:grinding".into()], &sources);
+            b.replace(true, vec![], &sources);
+            vanilla.replace(false, vec!["testmod:grinding".into()], &sources);
+            let part = ContentPart::decode(&a.payloads[0]).unwrap();
+            assert_eq!(part.recipes, sources);
+            assert_eq!(part.last, Some(vec!["testmod:grinding".into()]));
+            assert!(b.payloads.is_empty());
+            assert!(vanilla.payloads.is_empty());
+            a.replace(true, vec![], &sources);
+            b.replace(true, vec!["testmod:grinding".into()], &sources);
+            vanilla.replace(false, vec!["testmod:grinding".into()], &sources);
+            assert_eq!(
+                ContentPart::decode(&a.payloads[0]).unwrap().last,
+                Some(vec![])
+            );
+            assert_eq!(
+                ContentPart::decode(&b.payloads[0]).unwrap().recipes,
+                sources
+            );
+            assert!(vanilla.payloads.is_empty());
+        });
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn empty_ingredient_network_consumers_exclude_whole_unplaceable_recipes() {
+    use horizon_protocol::{
+        buf::{Codec, Reader},
+        packets::recipes::UpdateRecipes,
+        registry::Ids,
+    };
+    use serde_json::json;
+    let mut catalog = horizon_client::items::Items::for_tests(Default::default());
+    catalog
+        .item_tag_order
+        .insert("fixture:empty".into(), vec![]);
+    let mut sync = SyncData::empty();
+    sync.builtin.registries.insert(
+        "minecraft:item".into(),
+        Ids::from_names(vec![
+            "minecraft:air".into(),
+            "minecraft:stone".into(),
+            "minecraft:stick".into(),
+        ]),
+    );
+    for (source, retained) in [
+        (json!([]), false),
+        (json!("#fixture:missing"), false),
+        (json!("#fixture:empty"), true),
+        (
+            json!({"type":"fixture:predicate", "item":"minecraft:stone", "horizon:resolved_items":[]}),
+            true,
+        ),
+    ] {
+        let mut all = BTreeMap::new();
+        for kind in [
+            "minecraft:stonecutting",
+            "minecraft:smelting",
+            "minecraft:smithing_transform",
+        ] {
+            let mut recipe = json!({"type":kind, "ingredient":source,
+                "base":"minecraft:stone", "addition":source, "result":{"id":"minecraft:stick"}});
+            assert_eq!(normalize_ingredients(&mut recipe, &catalog), retained);
+            if retained {
+                // This copy is only a network HolderSet. The canonical recipe
+                // map retains predicates; metadata must not become candidates.
+                if source.is_object() {
+                    assert_eq!(recipe["ingredient"], json!([]));
+                }
+                horizon_client::crafting::Ingredient::forget_answers(&mut recipe);
+                all.insert(kind.into(), recipe.to_string().into_boxed_str());
+            }
+        }
+        let bytes = update_recipes(&all, &sync, &Default::default());
+        let packet = UpdateRecipes::read(&mut Reader::new(&bytes)).unwrap();
+        assert!(packet.stonecutter.is_empty());
+        assert!(packet.properties.iter().all(|(_, ids)| ids.is_empty()));
     }
 }

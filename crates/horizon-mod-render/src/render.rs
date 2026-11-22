@@ -1,8 +1,9 @@
-//! Render hook points for native mods (docs/modding/src/how-to/native-mods.md): empty functions the renderer calls at
-//! fixed places of a frame, which a mod's mixins hook like those of
-//! `horizon-client/src/game/native_hooks.rs`, and declared with them in `hooks/`.
+//! Render functions for native mods (docs/modding/src/how-to/native-mods.md): empty functions the
+//! renderer calls at fixed places of a frame, which a mod's mixins replace, declared with the
+//! hooks in `hooks/`.
 
 use glam::{DVec3, Mat4};
+use mod_api::LevelRef;
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
@@ -11,13 +12,18 @@ pub use generated::{
 };
 pub use wgpu;
 
-/// Whether the raw world draw place has an installed listener.
+/// Whether a mixin build installed a patched copy of the free function `$function` of this
+/// module. The prebuilt game's staging pass answers it from the function's replacement slot; a
+/// build without replacement slots has no patched functions.
+macro_rules! replaced {
+    ($function:ident) => {
+        false
+    };
+}
+
+/// Whether a mixin replaced the raw world draw function.
 pub fn world_drawn_hooked() -> bool {
-    mod_points::__private::POINTS[mod_points::PointId::ModRenderRenderWorldDrawn as usize]
-        .load(std::sync::atomic::Ordering::Relaxed)
-        || mod_points::__private::POINTS
-            [mod_points::PointId::ModRenderRenderWorldDrawnReturn as usize]
-            .load(std::sync::atomic::Ordering::Relaxed)
+    replaced!(world_drawn)
 }
 
 /// What a mod can draw with once the world is drawn: after the sky, terrain, entities,
@@ -128,6 +134,7 @@ pub struct RenderNeeds {
 
 /// The world is drawn (see [`WorldDrawn`]). Not called on the title screen's panorama.
 #[inline(never)]
+#[horizon_mod_api_macros::replaceable]
 pub fn world_drawn(world: &mut WorldDrawn<'_>) {
     let _ = world;
 }
@@ -135,12 +142,14 @@ pub fn world_drawn(world: &mut WorldDrawn<'_>) {
 /// The first-person hand is drawn (see [`HandDrawn`]), on every frame [`world_drawn`]
 /// runs, with no hand too.
 #[inline(never)]
+#[horizon_mod_api_macros::replaceable]
 pub fn hand_drawn(hand: &mut HandDrawn<'_>) {
     let _ = hand;
 }
 
 /// Asked as a frame is built and drawn: set what your mod needs.
 #[inline(never)]
+#[horizon_mod_api_macros::replaceable]
 pub fn render_needs(needs: &mut RenderNeeds) {
     let _ = needs;
 }
@@ -152,10 +161,11 @@ pub fn needs() -> RenderNeeds {
     needs
 }
 
-/// The most world views ([`world_views`]) one frame draws.
-pub const MAX_WORLD_VIEWS: usize = 4;
-/// The largest side of a world view's target, in pixels.
-pub const MAX_WORLD_VIEW_SIDE: u32 = 4096;
+/// The limits of [`world_views`] (the engine's own constants) and why a view is refused.
+pub use horizon_client_render::render_views::{
+    MAX_WORLD_VIEW_DEPTH, MAX_WORLD_VIEW_SIDE, MAX_WORLD_VIEWS, WORLD_VIEW_PIXEL_BUDGET,
+    WorldViewRefusal, WorldViewRefusalReason,
+};
 
 /// A view of the world a mod asks for ([`world_views`]): the same world, drawn again from a
 /// camera of its own into a target of its own (a camera monitor, a second camera's preview, a
@@ -177,6 +187,14 @@ pub struct WorldView {
     pub fov_degrees: f32,
     /// The target's width and height, in pixels (1 to [`MAX_WORLD_VIEW_SIDE`]).
     pub size: [u32; 2],
+    /// The plane behind which nothing is drawn ([`WorldView::with_clip_plane`]).
+    pub clip_plane: Option<[f64; 4]>,
+    /// The picture is mirrored left to right ([`WorldView::with_mirror`]).
+    pub mirror: bool,
+    /// The view this one is seen in ([`WorldView::with_parent`]).
+    pub parent: Option<u64>,
+    /// The level the view draws ([`WorldView::with_level`]); `None` is the player's own.
+    pub level: Option<LevelRef>,
 }
 
 impl WorldView {
@@ -196,6 +214,10 @@ impl WorldView {
             roll: 0.0,
             fov_degrees,
             size,
+            clip_plane: None,
+            mirror: false,
+            parent: None,
+            level: None,
         }
     }
 
@@ -203,17 +225,88 @@ impl WorldView {
         Self { roll, ..self }
     }
 
-    /// Whether it can be drawn: every value finite and in range, no side over `max_side`.
-    fn valid(&self, max_side: u32) -> bool {
-        self.camera.is_finite()
-            && [self.yaw, self.pitch, self.roll]
-                .iter()
-                .all(|v| v.is_finite())
-            && (1.0..=170.0).contains(&self.fov_degrees)
-            && self
-                .size
-                .iter()
-                .all(|&s| (1..=max_side.min(MAX_WORLD_VIEW_SIDE)).contains(&s))
+    /// Draws only what lies in front of a world-space plane `[x, y, z, d]`: the points `p` with
+    /// `x * p.x + y * p.y + z * p.z + d >= 0`. Terrain, entities and block entities behind it are
+    /// left out, as a wall behind a portal's far side is. The camera must be behind the plane
+    /// (where `x * camera.x + y * camera.y + z * camera.z + d < 0`): the plane becomes the
+    /// view's near plane, which every backend draws. A view whose camera is not behind it, or
+    /// whose plane has a normal `[x, y, z]` of zero, a value that is not finite, or a scaled form
+    /// or distance from the camera that is not (as f32 too), is out of range and left out.
+    pub fn with_clip_plane(self, plane: [f64; 4]) -> Self {
+        Self {
+            clip_plane: Some(plane),
+            ..self
+        }
+    }
+
+    /// The camera's picture mirrored left to right, as a mirror shows it: give the camera
+    /// reflected through the mirror. A mirrored picture turns every triangle's winding round,
+    /// so the view draws with face culling flipped to make up for it: the faces culled are the
+    /// ones an unmirrored view culls, and back faces stay hidden.
+    pub fn with_mirror(self) -> Self {
+        Self {
+            mirror: true,
+            ..self
+        }
+    }
+
+    /// Seen in the view `parent` (a portal's far side seen through another portal): push it
+    /// after its parent. It is drawn before its parent, so that in the parent's
+    /// [`world_view_drawn`] its `color` and `depth` hold this frame's picture, to draw into the
+    /// parent's target there. A view with no parent is at depth 1, one seen in it at 2; up to
+    /// [`MAX_WORLD_VIEW_DEPTH`].
+    pub fn with_parent(self, parent: u64) -> Self {
+        Self {
+            parent: Some(parent),
+            ..self
+        }
+    }
+
+    /// Draws the level `level`, a handle from `host.level(dimension)`: `None` is the player's
+    /// own level, and so is a handle naming it. Viewed levels are not drawn yet: a view of any
+    /// other level, an open viewed one, one whose handle is stale (its epoch changed) or one
+    /// closed or never open, is refused as [`WorldViewRefusalReason::Level`]. The handle is
+    /// resolved once a frame, so a handle that goes stale is refused from the next frame on.
+    pub fn with_level(self, level: Option<LevelRef>) -> Self {
+        Self { level, ..self }
+    }
+}
+
+/// The views asked for this frame ([`world_views`]): push each one.
+pub struct WorldViews<'a> {
+    views: &'a mut horizon_client_render::render_views::WorldViews,
+}
+
+impl WorldViews<'_> {
+    /// Asks for `view` this frame, or refuses it, naming it and why
+    /// ([`WorldViewRefusalReason`]): a value out of range, an id already pushed this frame, a
+    /// parent not pushed before it, deeper than [`MAX_WORLD_VIEW_DEPTH`], past
+    /// [`MAX_WORLD_VIEWS`] views, or past [`WORLD_VIEW_PIXEL_BUDGET`] pixels with the views
+    /// pushed before it. Each refusal is logged once.
+    pub fn push(&mut self, view: WorldView) -> Result<(), WorldViewRefusal> {
+        let mut engine = horizon_client_render::render_views::WorldView::new(
+            view.id,
+            view.camera,
+            view.yaw,
+            view.pitch,
+            view.fov_degrees,
+            view.size,
+        )
+        .with_roll(view.roll);
+        engine.clip_plane = view.clip_plane;
+        engine.mirror = view.mirror;
+        engine.parent = view.parent;
+        engine.level = view.level;
+        self.views.push(engine)
+    }
+
+    /// How many views were taken this frame so far.
+    pub fn len(&self) -> usize {
+        self.views.views().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -224,6 +317,11 @@ impl WorldView {
 pub struct WorldViewDrawn<'a> {
     /// The [`WorldView::id`] it was asked with.
     pub id: u64,
+    /// The view it is seen in ([`WorldView::with_parent`]), drawn after it.
+    pub parent: Option<u64>,
+    /// How deep it is seen in views: 1 for a view with no parent, its parent's and 1 for one
+    /// with ([`MAX_WORLD_VIEW_DEPTH`]). (`depth` is its depth texture.)
+    pub nesting_depth: u32,
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
@@ -237,350 +335,116 @@ pub struct WorldViewDrawn<'a> {
     pub size: [u32; 2],
     /// Its depth (Depth32Float, reversed: 0 is the sky), sampleable.
     pub depth: &'a wgpu::TextureView,
-    /// World relative to [`WorldViewDrawn::camera`] to clip space.
+    /// World relative to [`WorldViewDrawn::camera`] to clip space, as the picture and `depth`
+    /// were drawn: its near plane is the view's clip plane when it has one, and its x is
+    /// flipped when the view is mirrored.
     pub view_proj: Mat4,
     /// The view's camera.
     pub camera: DVec3,
 }
 
-/// Asked as each frame is built and drawn (not on the title screen's panorama), more than once:
-/// push the world views your mod wants drawn this frame, the same each time. The first
-/// [`MAX_WORLD_VIEWS`] valid ones draw; one with a value out of range, or an `id` already asked
-/// for, is left out. Keep it cheap.
+/// Asked once as each frame is built (not on the title screen's panorama): push the world views
+/// your mod wants drawn this frame, each parent before the views seen in it.
+/// [`WorldViews::push`] takes each or refuses it by name ([`WorldViewRefusal`]), and logs each
+/// refusal once. Keep it cheap.
 #[inline(never)]
-pub fn world_views(views: &mut Vec<WorldView>) {
+#[horizon_mod_api_macros::replaceable]
+pub fn world_views(views: &mut WorldViews<'_>) {
     let _ = views;
 }
 
-/// A world view is drawn (see [`WorldViewDrawn`]): once per view asked for this frame.
+/// A world view is drawn (see [`WorldViewDrawn`]): once per view taken this frame, the views
+/// seen in a view before it.
 #[inline(never)]
+#[horizon_mod_api_macros::replaceable]
 pub fn world_view_drawn(view: &mut WorldViewDrawn<'_>) {
     let _ = view;
 }
 
-/// Whether the world views place has an installed listener: while none has, the renderer does
-/// not ask.
+/// Whether a mixin replaced the world views function: while none has, the renderer does not
+/// ask.
 pub fn world_views_hooked() -> bool {
-    mod_points::__private::POINTS[mod_points::PointId::ModRenderRenderWorldViews as usize]
-        .load(std::sync::atomic::Ordering::Relaxed)
-        || mod_points::__private::POINTS
-            [mod_points::PointId::ModRenderRenderWorldViewsReturn as usize]
-            .load(std::sync::atomic::Ordering::Relaxed)
+    replaced!(world_views)
 }
 
-/// The views of those asked for ([`world_views`]) that can be drawn on a device whose textures
-/// are at most `max_side` pixels a side (`max_texture_dimension_2d`; never above
-/// [`MAX_WORLD_VIEW_SIDE`]).
-pub fn drawable_world_views(mut views: Vec<WorldView>, max_side: u32) -> Vec<WorldView> {
-    let mut ids = Vec::new();
-    views.retain(|v| {
-        v.valid(max_side) && !ids.contains(&v.id) && {
-            ids.push(v.id);
-            true
-        }
-    });
-    views.truncate(MAX_WORLD_VIEWS);
-    views
-}
+pub use horizon_client_render::render_geometry::{EntitySpan, Vertex};
 
-/// An entity, item and effect vertex (the entity pipelines), with a face
-/// normal for `entity.wgsl`'s directional light.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-// exhaustive: the game builds it with a literal; mods only read it
-pub struct Vertex {
-    pub pos: [f32; 3],
-    pub uv: [f32; 2],
-    pub layer: u32,
-    /// RGBA8: tint multiplied by directional shade and ambient occlusion.
-    pub color: u32,
-    /// Smooth light, 16x fixed point: sky in bits 0..8, block in bits 8..16.
-    pub light: u32,
-    /// RGBA8_SNORM face normal; w = -127 for two-sided lighting, 0 to keep baked/unlit colour,
-    /// `CULL_BACK` to keep it and also drop back-facing pixels.
-    pub normal: [i8; 4],
-    /// The `GLINT_TEXTURING` atlas UV for a foil item quad; zero elsewhere.
-    pub glint_uv: [f32; 2],
-}
-/// Where a run of `Frame::entities` begins, and what it is (slice 7): the run lasts until the
-/// next span. Recorded only while a shader pack draws entities, so Horizon's own frames carry
-/// none; Horizon itself still draws the whole list at once.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-// exhaustive: the game builds it with a literal; mods only read it
-pub struct EntitySpan {
-    /// The first vertex.
-    pub start: u32,
-    /// The render stage (5.4: `ENTITIES`, `BLOCK_ENTITIES`, `PARTICLES`, `DESTROY`), which picks
-    /// the program.
-    pub stage: u32,
-    /// `entityId` for entities, `blockEntityId` for block entities (5.3), else 0.
-    pub id: i32,
-    /// An entity part that blends (a name tag, a shadow): `gbuffers_entities_translucent`.
-    pub translucent: bool,
-    /// Hidden from the camera (Horizon's entity culling, the player in first person): only the
-    /// shadow pass draws it.
-    pub hidden: bool,
-    /// The local player (`shadowPlayer`).
-    pub player: bool,
-    /// A block entity whose block emits light (`shadowLightBlockEntities`).
-    pub emissive: bool,
-}
-impl EntitySpan {
-    /// Marks vertices `start..end` of `spans`' list (one entity) as hidden: the span covering
-    /// `start` is split there, the spans inside are hidden, and the geometry after `end` goes
-    /// on in the last span's kind. False when no span covers `start`.
-    pub fn hide(spans: &mut Vec<EntitySpan>, start: usize, end: usize) -> bool {
-        let Some(i) = spans.iter().rposition(|s| s.start as usize <= start) else {
-            return false;
-        };
-        let after = spans[spans.len() - 1];
-        if spans[i].start as usize != start {
-            let split = EntitySpan {
-                start: start as u32,
-                ..spans[i]
+/// Install the native render adapters before engine startup.
+pub fn install() {
+    use horizon_client_render::render_slots as engine;
+    engine::install(engine::Slots {
+        world_drawn: |v| {
+            world_drawn(&mut WorldDrawn {
+                device: v.device,
+                queue: v.queue,
+                encoder: &mut *v.encoder,
+                color: v.color,
+                color_view: v.color_view,
+                color_format: v.color_format,
+                size: v.size,
+                depth: v.depth,
+                depth_size: v.depth_size,
+                view_proj: v.view_proj,
+                jittered: v.jittered,
+                camera: v.camera,
+                entities: v.entities,
+                spans: v.spans,
+                motion: v.motion,
+                atlas: v.atlas,
+                quad_indices: v.quad_indices,
+                block_sprites: BlockSpriteArrays {
+                    views: v.block_sprites.views,
+                    split: v.block_sprites.split,
+                    size: v.block_sprites.size,
+                    nearest: v.block_sprites.nearest,
+                    filtered: v.block_sprites.filtered,
+                },
+            })
+        },
+        hand_drawn: |v| {
+            hand_drawn(&mut HandDrawn {
+                device: v.device,
+                queue: v.queue,
+                encoder: &mut *v.encoder,
+                color: v.color,
+                color_view: v.color_view,
+                color_format: v.color_format,
+                size: v.size,
+                hand: v.hand,
+                view_proj: v.view_proj,
+                camera: v.camera,
+                atlas: v.atlas,
+                quad_indices: v.quad_indices,
+            })
+        },
+        render_needs: |v| {
+            let mut needs = RenderNeeds {
+                entity_spans: v.entity_spans,
+                world_depth: v.world_depth,
             };
-            spans.insert(i + 1, split);
-        }
-        for s in spans.iter_mut().skip(i) {
-            if s.start as usize >= start {
-                s.hidden = true;
-            }
-        }
-        if end > start {
-            spans.push(EntitySpan {
-                start: end as u32,
-                ..after
-            });
-        }
-        true
-    }
-}
-
-#[doc(hidden)]
-pub mod built {
-    #[allow(unused_imports)]
-    use super::*;
-    // exhaustive: the game builds it with a literal; mods only read it
-    pub struct WorldDrawn<'a> {
-        pub device: &'a wgpu::Device,
-        pub queue: &'a wgpu::Queue,
-        pub encoder: &'a mut wgpu::CommandEncoder,
-        pub color: &'a wgpu::Texture,
-        pub color_view: &'a wgpu::TextureView,
-        pub color_format: wgpu::TextureFormat,
-        pub size: [u32; 2],
-        pub depth: &'a wgpu::TextureView,
-        pub depth_size: [u32; 2],
-        pub view_proj: Mat4,
-        pub jittered: Mat4,
-        pub camera: DVec3,
-        pub entities: &'a [super::Vertex],
-        pub spans: &'a [super::EntitySpan],
-        pub motion: &'a [(u32, u64)],
-        pub atlas: Option<&'a wgpu::Texture>,
-        pub quad_indices: &'a wgpu::Buffer,
-        pub block_sprites: super::BlockSpriteArrays<'a>,
-    }
-    impl<'a> From<WorldDrawn<'a>> for super::WorldDrawn<'a> {
-        fn from(v: WorldDrawn<'a>) -> Self {
-            let WorldDrawn {
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                depth,
-                depth_size,
-                view_proj,
-                jittered,
-                camera,
-                entities,
-                spans,
-                motion,
-                atlas,
-                quad_indices,
-                block_sprites,
-            } = v;
-            Self {
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                depth,
-                depth_size,
-                view_proj,
-                jittered,
-                camera,
-                entities,
-                spans,
-                motion,
-                atlas,
-                quad_indices,
-                block_sprites,
-            }
-        }
-    }
-    // exhaustive: the game builds it with a literal; mods only read it
-    pub struct BlockSpriteArrays<'a> {
-        pub views: &'a [wgpu::TextureView],
-        pub split: u32,
-        pub size: u32,
-        pub nearest: &'a wgpu::Sampler,
-        pub filtered: &'a wgpu::Sampler,
-    }
-    impl<'a> From<BlockSpriteArrays<'a>> for super::BlockSpriteArrays<'a> {
-        fn from(v: BlockSpriteArrays<'a>) -> Self {
-            let BlockSpriteArrays {
-                views,
-                split,
-                size,
-                nearest,
-                filtered,
-            } = v;
-            Self {
-                views,
-                split,
-                size,
-                nearest,
-                filtered,
-            }
-        }
-    }
-    // exhaustive: the game builds it with a literal; mods only read it
-    pub struct WorldViewDrawn<'a> {
-        pub id: u64,
-        pub device: &'a wgpu::Device,
-        pub queue: &'a wgpu::Queue,
-        pub encoder: &'a mut wgpu::CommandEncoder,
-        pub color: &'a wgpu::Texture,
-        pub color_view: &'a wgpu::TextureView,
-        pub color_format: wgpu::TextureFormat,
-        pub size: [u32; 2],
-        pub depth: &'a wgpu::TextureView,
-        pub view_proj: Mat4,
-        pub camera: DVec3,
-    }
-    impl<'a> From<WorldViewDrawn<'a>> for super::WorldViewDrawn<'a> {
-        fn from(v: WorldViewDrawn<'a>) -> Self {
-            let WorldViewDrawn {
-                id,
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                depth,
-                view_proj,
-                camera,
-            } = v;
-            Self {
-                id,
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                depth,
-                view_proj,
-                camera,
-            }
-        }
-    }
-    // exhaustive: the game builds it with a literal; mods only read it
-    pub struct HandDrawn<'a> {
-        pub device: &'a wgpu::Device,
-        pub queue: &'a wgpu::Queue,
-        pub encoder: &'a mut wgpu::CommandEncoder,
-        pub color: &'a wgpu::Texture,
-        pub color_view: &'a wgpu::TextureView,
-        pub color_format: wgpu::TextureFormat,
-        pub size: [u32; 2],
-        pub hand: &'a [super::Vertex],
-        pub view_proj: Mat4,
-        pub camera: DVec3,
-        pub atlas: Option<&'a wgpu::Texture>,
-        pub quad_indices: &'a wgpu::Buffer,
-    }
-    impl<'a> From<HandDrawn<'a>> for super::HandDrawn<'a> {
-        fn from(v: HandDrawn<'a>) -> Self {
-            let HandDrawn {
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                hand,
-                view_proj,
-                camera,
-                atlas,
-                quad_indices,
-            } = v;
-            Self {
-                device,
-                queue,
-                encoder,
-                color,
-                color_view,
-                color_format,
-                size,
-                hand,
-                view_proj,
-                camera,
-                atlas,
-                quad_indices,
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_drawable_views_draw() {
-        let view =
-            |id, fov, size| WorldView::new(id, DVec3::new(1.0, 70.0, -3.0), 30.0, 10.0, fov, size);
-        let mut asked = vec![
-            view(1, 70.0, [320, 180]),
-            view(1, 70.0, [64, 64]),
-            view(2, 0.5, [64, 64]),
-            view(3, 70.0, [0, 64]),
-            view(4, 70.0, [MAX_WORLD_VIEW_SIDE + 1, 64]),
-            view(5, 70.0, [64, 64]).with_roll(f32::NAN),
-            WorldView::new(
-                6,
-                DVec3::new(f64::INFINITY, 0.0, 0.0),
-                0.0,
-                0.0,
-                70.0,
-                [64, 64],
-            ),
-        ];
-        asked.extend((10..20).map(|id| view(id, 170.0, [1, MAX_WORLD_VIEW_SIDE])));
-        let drawn: Vec<u64> = drawable_world_views(asked, MAX_WORLD_VIEW_SIDE)
-            .iter()
-            .map(|v| v.id)
-            .collect();
-        // the first id 1 only; the out-of-range ones left out; at most four in all
-        assert_eq!(drawn, [1, 10, 11, 12]);
-        // A device with smaller textures (downlevel, GL: 2048) leaves out what it cannot hold.
-        let small = vec![view(20, 70.0, [2049, 64]), view(21, 70.0, [2048, 2048])];
-        let drawn: Vec<u64> = drawable_world_views(small, 2048)
-            .iter()
-            .map(|v| v.id)
-            .collect();
-        assert_eq!(drawn, [21]);
-    }
+            render_needs(&mut needs);
+            v.entity_spans = needs.entity_spans;
+            v.world_depth = needs.world_depth;
+        },
+        world_views: |views| world_views(&mut WorldViews { views }),
+        world_views_hooked,
+        world_view_drawn: |v| {
+            world_view_drawn(&mut WorldViewDrawn {
+                id: v.id,
+                parent: v.parent,
+                nesting_depth: v.nesting_depth,
+                device: v.device,
+                queue: v.queue,
+                encoder: &mut *v.encoder,
+                color: v.color,
+                color_view: v.color_view,
+                color_format: v.color_format,
+                size: v.size,
+                depth: v.depth,
+                view_proj: v.view_proj,
+                camera: v.camera,
+            })
+        },
+        world_drawn_hooked,
+    });
 }

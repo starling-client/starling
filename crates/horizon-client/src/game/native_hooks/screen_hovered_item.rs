@@ -11,7 +11,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])?;
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let batch = self.interface_batch(size);
         let slot = self.slot_at(&batch, self.cursor.0, self.cursor.1)?;
         mod_api::__private::item_key(&self.slot_view(slot)?.item)
     }

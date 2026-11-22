@@ -469,7 +469,11 @@ fn main() {
         capture = method(source, "capture").replace(
             "horizon_client::mouse::mouse_position_after_grab_change",
             "mouse_position_after_grab_change")
-        fixture = fixture.replace("HELPER", function(mouse, "mouse_position_after_grab_change"))
+        # The free check `settle_after_run` asks whether to grab again (#467, #499).
+        regrab = source[source.index("fn regrab_after_run("):]
+        regrab = regrab[:regrab.index("\n}\n") + 3]
+        fixture = fixture.replace("HELPER", function(mouse, "mouse_position_after_grab_change")
+                                  + "\n" + regrab)
         fixture = fixture.replace("METHODS", capture + "\n" +
                                   method(source, "capture_loaded_world") + "\n" +
                                   method(source, "regrab_on_refocus") + "\n" +

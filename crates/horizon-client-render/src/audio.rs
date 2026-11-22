@@ -1466,6 +1466,8 @@ impl Audio {
         } else {
             Err("no output on a dedicated server".into())
         };
+        // Without `audio` a stream can't exist (`Infallible`), so the `Ok` arm never runs.
+        #[cfg_attr(not(feature = "audio"), allow(unreachable_code))]
         let (stream, live) = match opened {
             // Without the `audio` feature there is no `Stream` to hold (`Infallible`), so this arm
             // is unreachable there and `-D warnings` refuses it. The other one matches the empty type.

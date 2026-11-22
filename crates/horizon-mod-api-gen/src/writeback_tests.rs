@@ -3,6 +3,7 @@ use super::*;
 // Compile the generated crossing and the actual handwritten adapter bodies against
 // an isolated strict stack boundary, so refusal and atomic writeback are observable.
 #[test]
+#[ignore = "daily"]
 fn untouched_writeback_runtime_and_mutants() {
     let ty: Type = syn::parse_quote!(&mut ItemStack);
     let sibling: Type = syn::parse_quote!(&mut bool);
@@ -14,6 +15,11 @@ fn untouched_writeback_runtime_and_mutants() {
         &Default::default(),
     )
     .unwrap();
+    assert!(
+        crossing
+            .after
+            .contains("mod proof write refused: {error:?}")
+    );
     let generated = format!(
         "{} self.native_generated(&mut __api_stack, &mut __api_handled); {}",
         crossing.before, crossing.after
@@ -48,6 +54,8 @@ fn untouched_writeback_runtime_and_mutants() {
     }
     let fixture = r#"
 #![allow(unused)]
+extern crate self as log;
+#[macro_export] macro_rules! warn { ($($arg:tt)*) => { eprintln!($($arg)*); } }
 #[derive(Clone, Debug, PartialEq)] struct Stack(u32);
 struct Game { change: bool }
 static VALIDATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -161,6 +169,14 @@ fn main() {
             String::from_utf8_lossy(&output.stderr)
         );
         let output = std::process::Command::new(binary).output().unwrap();
+        if name == "baseline" {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .matches("mod proof write refused: Unavailable")
+                    .count(),
+                1
+            );
+        }
         assert_eq!(
             output.status.success(),
             success,

@@ -1,8 +1,7 @@
 //! Tool-written internal declarations and the old/new pin's signature diff.
 use horizon_mod_package::{
     Manifest,
-    index::native,
-    internals::{self, ListedInternal, cache_catalogs},
+    internals::{self, ListedInternal},
     manifest::MANIFEST,
 };
 use std::{
@@ -138,9 +137,7 @@ pub(crate) fn catalog_directory(dir: &Path, manifest: &Manifest) -> Result<PathB
         .as_ref()
         .ok_or("catalog needs a native mod")?;
     if native.module.is_empty() {
-        return Ok(dir
-            .join("target/horizon-mod/prebuilt")
-            .join(&native.horizon));
+        return crate::sdk_fetch::build_data(dir, &native.horizon);
     }
     let launcher =
         std::env::var_os("HORIZON_LAUNCHER").unwrap_or_else(|| "horizon-launcher".into());
@@ -430,50 +427,11 @@ pub fn set_string(value: &mut Value, text: &str) {
     *value.decor_mut() = decor;
 }
 
-/// The same release tags and archive layout the launcher reads. Keep each pin's catalog in
-/// the mod's build folder, so updating can still show the old signature after a release expires.
+/// The internals of the game build `revision`, from its signed SDK's build data.
 pub fn load(dir: &Path, revision: &str) -> Result<Vec<ListedInternal>, String> {
-    let cache = dir.join("target/horizon-mod/prebuilt").join(revision);
-    let path = cache.join(CATALOG);
-    if path
-        .try_exists()
-        .map_err(|e| format!("{}: {e}", path.display()))?
-    {
-        let text = crate::bounded::read(&path, crate::bounded::MAX_CATALOG)?;
-        return serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()));
-    }
-    let host = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("windows", "x86_64") => "x86_64-pc-windows-gnu",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        _ => return Err("no prebuilt game for this computer".into()),
-    };
-    let name = native::prebuilt_archive(host, false);
-    let release = format!(
-        "https://github.com/{}/releases/download/{}{revision}",
-        native::PREBUILT_REPO,
-        native::PREBUILT_TAG
-    );
-    let get = |file: &str| {
-        let url = format!("{release}/{file}");
-        ureq::get(&url).call().map_err(|e| format!("{url}: {e}"))
-    };
-    let sums = get("SHA256SUMS")?
-        .into_string()
-        .map_err(|e| e.to_string())?;
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let (hash, file) = line.split_once(char::is_whitespace)?;
-            (file.trim().trim_start_matches('*') == name).then_some(hash)
-        })
-        .ok_or_else(|| format!("{release}/SHA256SUMS: no checksum for {name}"))?;
-    println!("Reading internals from the prebuilt game at {revision}");
-    fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
-    let directory = cap_std::fs::Dir::open_ambient_dir(&cache, cap_std::ambient_authority())
-        .map_err(|e| format!("{}: {e}", cache.display()))?;
-    cache_catalogs(&directory, &name, get(&name)?.into_reader(), expected)
-        .map_err(|e| e.to_string())
+    let path = crate::sdk_fetch::build_data(dir, revision)?.join(CATALOG);
+    let text = crate::bounded::read(&path, crate::bounded::MAX_CATALOG)?;
+    internals::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -641,8 +599,10 @@ mod tests {
 
     #[test]
     fn tools_and_launcher_share_the_freshness_check() {
-        let entries: Vec<ListedInternal> =
-            serde_json::from_str(include_str!("../tests/fixtures/internals-new.json")).unwrap();
+        let entries: Vec<ListedInternal> = horizon_mod_package::internals::parse(include_str!(
+            "../tests/fixtures/internals-new.json"
+        ))
+        .unwrap();
         let mut declared = horizon_mod_package::manifest::Internal {
             path: "horizon_client::game::Game<'_>::reach".into(),
             kind: None,

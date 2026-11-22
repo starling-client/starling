@@ -74,6 +74,7 @@ pub fn search(
                 .into_iter()
                 .filter(|p| p.support().installable())
                 .filter(|p| NATIVE_MODS_BUILD || !is_native_mod(p))
+                .filter(|p| !hidden_native_mod(p))
                 .skip(offset)
                 .take(limit)
                 .collect())
@@ -186,6 +187,22 @@ pub fn caution(project: &Project) -> Option<String> {
     }
 }
 
+/// The native mods this game can't play, which the Mods shelf leaves out: the game says which
+/// (`horizon_client::starling_store::catalog_hidden`), once, before its first search.
+static HIDDEN_NATIVE_MODS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+
+/// Leaves the native mods `ids` off the Mods shelf. Only the first call counts.
+pub fn hide_native_mods(ids: impl IntoIterator<Item = String>) {
+    let _ = HIDDEN_NATIVE_MODS.set(ids.into_iter().collect());
+}
+
+fn hidden_native_mod(project: &Project) -> bool {
+    HIDDEN_NATIVE_MODS
+        .get()
+        .is_some_and(|ids| ids.contains(&project.id))
+        && is_native_mod(project)
+}
+
 /// Whether `project` is a native mod, which only runs once compiled into the game. The registry
 /// says so: a search of it has its index at hand.
 pub fn is_native_mod(project: &Project) -> bool {
@@ -196,15 +213,127 @@ fn is_modrinth_shader_pack(project: &Project) -> bool {
     project.kind == Kind::Shader && project.source == SourceId::Modrinth
 }
 
-/// The ids of the projects the catalog has installed in the game folder `home`: those whose file
-/// is still there. One the player deleted by hand is not installed any more.
+/// The ids of the projects installed in the game folder `home`: those the catalog installed whose
+/// file is still there (one the player deleted by hand is not installed any more), and the
+/// registry's mods already there some other way ([`mods_present`]), which an install would only
+/// put there twice.
 pub fn installed_projects(home: &Path) -> HashSet<String> {
-    Installed::load(home)
+    let mut ids: HashSet<String> = Installed::load(home)
         .entries
         .into_iter()
         .filter(|entry| home.join(&entry.file).exists())
         .map(|entry| entry.project)
-        .collect()
+        .collect();
+    ids.extend(mods_present(home).into_keys());
+    ids
+}
+
+/// The folders mods are in: content mods, and native ones waiting for a compile.
+const MOD_FOLDERS: [&str; 2] = [browser::java::MODS_DIR, native_mods::INSTALLED];
+
+/// The mods in the game folder `home`, by id, with their files (relative to `home`), however they
+/// got there: this catalog (`horizon-mods/<id>.hmod`), the launcher's (`<id>-<version>.hmod`), or
+/// a file opened with Starling under its own name. A registry project's id is its mod's id.
+pub fn mods_present(home: &Path) -> std::collections::HashMap<String, Vec<String>> {
+    let mut found = std::collections::HashMap::<String, Vec<String>>::new();
+    for folder in MOD_FOLDERS {
+        let Ok(read) = fs::read_dir(home.join(folder)) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if !(name.ends_with(".hmod") || name.ends_with(".hnmod") || path.is_dir()) {
+                continue;
+            }
+            if let Some(id) = package_id(&path, &name) {
+                found
+                    .entry(id)
+                    .or_default()
+                    .push(format!("{folder}/{name}"));
+            }
+        }
+    }
+    found
+}
+
+/// A package's mod id, kept by its path, size and time: the screen looks every two seconds, and
+/// opening each package again on the phone's shared storage would hold it up.
+fn package_id(path: &Path, name: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Seen = HashMap<std::path::PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
+    let meta = fs::metadata(path).ok()?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some((len, time, id)) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if (*len, *time) == stamp {
+            return Some(id.clone());
+        }
+    }
+    let id = read_package_id(path, name)?;
+    seen.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_owned(), (stamp.0, stamp.1, id.clone()));
+    Some(id)
+}
+
+/// The `id` of a package's `horizon-mod.toml` (a top-level `id = "..."`), a `.hnmod` bundle's own
+/// id, or else the file's name without its extension.
+fn read_package_id(path: &Path, name: &str) -> Option<String> {
+    let manifest = || -> Option<String> {
+        let text = if path.is_dir() {
+            fs::read_to_string(path.join("horizon-mod.toml")).ok()?
+        } else {
+            let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+            let mut text = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("horizon-mod.toml").ok()?,
+                &mut text,
+            )
+            .ok()?;
+            text
+        };
+        manifest_id(&text)
+    };
+    manifest()
+        .or_else(|| {
+            name.ends_with(".hnmod")
+                .then(|| horizon_mod_package::index::native::Any::read(path).ok())
+                .flatten()
+                .map(|bundle| bundle.id().to_owned())
+        })
+        .or_else(|| {
+            let stem = name
+                .strip_suffix(".hmod")
+                .or_else(|| name.strip_suffix(".hnmod"))
+                .unwrap_or(name);
+            Some(stem.to_owned())
+        })
+}
+
+/// A manifest's top-level `id`, before its first table.
+fn manifest_id(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "id" {
+            let id = value.trim().strip_prefix('"')?.split('"').next()?;
+            let plain = !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            return plain.then(|| id.to_owned());
+        }
+    }
+    None
 }
 
 /// Takes off the list what the player deleted by hand, so an install puts it back instead of
@@ -221,12 +350,55 @@ pub fn forget_missing(home: &Path) {
 /// Removes what the catalog installed for `project`: its file (a mod's folder) and its entry.
 /// Gives the entry, which says what was removed and where it was.
 pub fn remove(home: &Path, project: &Project) -> Result<Entry, String> {
-    installed::remove(home, &project.id)
+    let ours = Installed::load(home)
+        .entries
+        .iter()
+        .any(|e| e.source == project.source && e.project == project.id);
+    if ours || project.source != SourceId::Horizon || project.kind != Kind::Mod {
+        return installed::remove(home, &project.id);
+    }
+    // A registry mod that came some other way ([`mods_present`]): its files go, and it goes off.
+    let files = mods_present(home)
+        .remove(&project.id)
+        .ok_or_else(|| format!("{} isn't in the game folder.", project.title))?;
+    for file in &files {
+        let path = home.join(file);
+        let gone = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        match gone {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{file}: {e}")),
+        }
+    }
+    browser::java::set_enabled(home, &project.id, false)?;
+    Ok(Entry {
+        source: project.source,
+        project: project.id.clone(),
+        slug: project.slug.clone(),
+        title: project.title.clone(),
+        kind: project.kind,
+        version: String::new(),
+        number: String::new(),
+        file: files.into_iter().next().unwrap_or_default(),
+        checksum: String::new(),
+        page: project.page.clone(),
+        dependency: false,
+        verdict: None,
+        skipped: Vec::new(),
+        namespaces: Vec::new(),
+    })
 }
 
-/// The mod id of an installed mod's entry (its file's name in `horizon-mods/` or
-/// `horizon-native-mods/`), which the Mods page and `horizon-mods.txt` know it by.
+/// The mod id of an installed mod's entry, which the Mods page and `horizon-mods.txt` know it by:
+/// a registry mod's project id, else its file's name in `horizon-mods/` or `horizon-native-mods/`.
 pub fn mod_id(entry: &Entry) -> Option<String> {
+    if entry.source == SourceId::Horizon && entry.kind == Kind::Mod {
+        return Some(entry.project.clone());
+    }
     browser::horizon::mod_id(entry).map(str::to_owned)
 }
 
@@ -239,6 +411,19 @@ pub fn install(
     progress: &dyn Fn(&str, f32),
 ) -> Result<Done, String> {
     forget_missing(home);
+    if project.source == SourceId::Horizon && project.kind == Kind::Mod {
+        let ours = Installed::load(home)
+            .entries
+            .iter()
+            .any(|e| e.source == project.source && e.project == project.id);
+        if let Some(files) = mods_present(home).get(&project.id).filter(|_| !ours) {
+            return Err(format!(
+                "{} is already in the game folder ({}).",
+                project.title,
+                files.join(", ")
+            ));
+        }
+    }
     if is_modrinth_shader_pack(project) {
         install_modrinth_shader_pack(project, home, progress)?;
         return Ok(Done::ShaderPack);
@@ -418,7 +603,7 @@ mod instances {
 
 /// How a native mod fits an instance's build: no instance, nothing to say.
 mod native_fit {
-    pub fn line(_instance: &super::instances::Instance, _id: &str, _pin: &str) -> Option<String> {
+    pub fn line(_instance: &super::instances::Instance, _pin: &str) -> Option<String> {
         None
     }
 }

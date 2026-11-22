@@ -2,6 +2,19 @@
 use super::{Catalog, Target, free_function_source, host, native_hook_files, sources};
 use quote::ToTokens;
 use std::{fs, path::Path};
+mod vocab_boundary;
+
+fn write_vocab_output(
+    out_dir: &Path,
+    name: &str,
+    code: &str,
+    inventory: &vocab_boundary::Inventory,
+    sources: &std::collections::BTreeSet<std::path::PathBuf>,
+) -> Result<(), String> {
+    vocab_boundary::validate_with_modules(name, code, inventory, sources)
+        .map_err(|e| format!("{name}: {e}"))?;
+    write_if_changed(out_dir.join(name), code).map_err(|e| e.to_string())
+}
 
 /// Preserve output timestamps when generation produces identical bytes.
 pub fn write_if_changed(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
@@ -20,6 +33,21 @@ pub fn write_if_changed(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std:
 /// `root` is supplied at run time by the consuming crate's build script.
 pub fn generate(root: &Path, out_dir: &Path, target: Target) -> Result<(), String> {
     track(root, !matches!(&target, Target::Vocab))?;
+    let inventory = if matches!(target, Target::Vocab) {
+        let path = root.join("tools/layering/mod_vocab_state.json");
+        crate::rerun_if_changed(&path.display());
+        vocab_boundary::inventory(root)?
+    } else {
+        vocab_boundary::Inventory::new()
+    };
+    let vocab_sources = if matches!(target, Target::Vocab) {
+        vocab_boundary::modules::sources(root)?
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    if matches!(&target, Target::Client) {
+        crate::rerun_if_staged(root);
+    }
     let generated = sources(root, super::FillMode::Require)?;
     let outputs = match target {
         Target::Client => vec![
@@ -37,14 +65,23 @@ pub fn generate(root: &Path, out_dir: &Path, target: Target) -> Result<(), Strin
             ("mod_api_goal_view_generated.rs", generated.goal_view),
         ],
         Target::Api | Target::Vocab => {
-            if matches!(target, Target::Vocab) {
+            if matches!(target, Target::Api) {
                 write_if_changed(
-                    out_dir.join(super::parts::OUTPUT),
-                    super::parts::source(root)?,
+                    out_dir.join("parts_registration_modules.rs"),
+                    super::parts::registration_source(root)?,
                 )
                 .map_err(|e| e.to_string())?;
+            }
+            if matches!(target, Target::Vocab) {
+                write_vocab_output(
+                    out_dir,
+                    super::parts::OUTPUT,
+                    &super::parts::source(root)?,
+                    &inventory,
+                    &vocab_sources,
+                )?;
                 for (name, code) in super::exports::sources(root)? {
-                    write_if_changed(out_dir.join(name), code).map_err(|e| e.to_string())?;
+                    write_vocab_output(out_dir, &name, &code, &inventory, &vocab_sources)?;
                 }
             }
             let hooks = generated.hooks;
@@ -85,10 +122,71 @@ pub fn generate(root: &Path, out_dir: &Path, target: Target) -> Result<(), Strin
         }
     };
     for (name, code) in outputs {
-        write_if_changed(out_dir.join(name), &code).map_err(|e| e.to_string())?;
+        let code = generated_source(root, &target, name, code)?;
+        if matches!(target, Target::Vocab) {
+            write_vocab_output(out_dir, name, &code, &inventory, &vocab_sources)?;
+        } else {
+            write_if_changed(out_dir.join(name), &code).map_err(|e| e.to_string())?;
+        }
         syn::parse_file(&code).map_err(|e| format!("generated Rust: {name}: {e}"))?;
     }
     Ok(())
+}
+
+fn generated_source(
+    root: &Path,
+    target: &Target,
+    name: &str,
+    code: String,
+) -> Result<String, String> {
+    if matches!(target, Target::Client)
+        && matches!(
+            name,
+            "mod_api_fire_generated.rs" | "mod_api_goal_view_generated.rs"
+        )
+        && root.join(".horizon-source-staged").is_file()
+    {
+        super::internals::widen_generated(Path::new(name), code)
+    } else {
+        Ok(code)
+    }
+}
+
+#[cfg(test)]
+mod generated_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn staged_game_helpers_are_widened_but_source_helpers_are_unchanged() {
+        let root =
+            std::env::temp_dir().join(format!("fnr-generated-visibility-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let input = "impl Game<'_> { pub(super) fn fire(&mut self) {} }";
+        for name in [
+            "mod_api_fire_generated.rs",
+            "mod_api_goal_view_generated.rs",
+        ] {
+            assert_eq!(
+                generated_source(&root, &Target::Client, name, input.into()).unwrap(),
+                input
+            );
+        }
+        fs::write(root.join(".horizon-source-staged"), "").unwrap();
+        for name in [
+            "mod_api_fire_generated.rs",
+            "mod_api_goal_view_generated.rs",
+        ] {
+            assert_eq!(
+                generated_source(&root, &Target::Client, name, input.into()).unwrap(),
+                "impl Game<'_> { pub fn fire(&mut self) {} }"
+            );
+            assert_eq!(
+                generated_source(&root, &Target::Vocab, name, input.into()).unwrap(),
+                input
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 pub(crate) fn native_hook_modules(root: &Path) -> Result<String, String> {
@@ -190,6 +288,7 @@ fn render_records_need_no_game_sources() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn listed_render_slots_have_eligible_points() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     super::points::game_points(&root).unwrap();
@@ -202,6 +301,15 @@ pub(crate) fn wire_types(root: &Path) -> Result<std::collections::BTreeSet<Strin
         return Ok(Default::default());
     }
     let generated = sources(root, super::FillMode::Require)?;
+    wire_types_from_sources(root, &generated)
+}
+
+/// Resolve Wire layouts from already validated, immutable API sources.
+/// The caller has established that the mod API directory exists.
+pub(super) fn wire_types_from_sources(
+    root: &Path,
+    generated: &super::Sources,
+) -> Result<std::collections::BTreeSet<String>, String> {
     let included = [
         (host::AREAS_OUTPUT, generated.areas.as_str()),
         ("mod_api_generated.rs", generated.hooks.as_str()),
@@ -221,20 +329,54 @@ pub(crate) fn wire_types(root: &Path) -> Result<std::collections::BTreeSet<Strin
 /// `horizon-mod-points`' generated file: each point's record, `PointId` and typed function constructors,
 /// from the game's source, tracking the game module's files.
 pub fn generate_points(root: &Path, out_dir: &Path) -> Result<(), String> {
-    crate::interface_cache::with_cache(out_dir, || generate_points_inner(root, out_dir))
+    crate::interface_cache::with_cache(out_dir, || {
+        crate::source::with_walk_cache(|| generate_points_inner(root, out_dir))
+    })
+}
+
+/// Generate the engine-owned point vocabulary and typed dispatch.
+pub fn generate_engine_points(root: &Path, out_dir: &Path) -> Result<(), String> {
+    crate::interface_cache::with_cache(out_dir, || {
+        crate::source::with_walk_cache(|| {
+            for path in super::points::tracked(root)? {
+                crate::rerun_if_changed(&path.display());
+            }
+            crate::rerun_if_staged(root);
+            let points = super::points::game_points(root)?;
+            println!("cargo:rerun-if-env-changed=HORIZON_POINT_NAMES");
+            let selected = std::env::var("HORIZON_POINT_NAMES")
+                .ok()
+                .map(|json| {
+                    serde_json::from_str::<std::collections::BTreeSet<String>>(&json)
+                        .map_err(|error| format!("HORIZON_POINT_NAMES: {error}"))
+                })
+                .transpose()?;
+            let code = super::points::engine_records(&points, selected.as_ref());
+            let generated = syn::parse_file(&code).map_err(|e| format!("engine points: {e}"))?;
+            let mut code = String::new();
+            for item in generated.items {
+                code.push_str(&item.to_token_stream().to_string());
+                code.push('\n');
+            }
+            write_if_changed(out_dir.join("engine_points.rs"), code).map_err(|e| e.to_string())
+        })
+    })
 }
 
 pub(super) fn generate_points_inner(root: &Path, out_dir: &Path) -> Result<(), String> {
+    // Phase durations for CI's build report (points-timing.txt beside the output); never read back.
+    let started = std::time::Instant::now();
+    let mut timing = String::new();
+    let mut phase = |name: &str| {
+        timing.push_str(&format!("{name} {:.2}s\n", started.elapsed().as_secs_f64()));
+    };
     let src = root.join("crates/horizon-client/src");
     crate::rerun_if_changed(&src.join("game.rs").display());
     crate::rerun_if_changed(&src.join("game").display());
-    for path in super::points::tracked(root)?
-        .into_iter()
-        .chain(super::sites::tracked(root).map_err(|e| e.to_string())?)
-    {
+    for path in super::points::tracked(root)? {
         crate::rerun_if_changed(&path.display());
     }
-    let private = super::points::source::build_input(root)?;
+    phase("tracked");
     println!("cargo:rerun-if-env-changed=HORIZON_POINT_NAMES");
     let selected = std::env::var("HORIZON_POINT_NAMES")
         .ok()
@@ -243,11 +385,18 @@ pub(super) fn generate_points_inner(root: &Path, out_dir: &Path) -> Result<(), S
                 .map_err(|error| format!("HORIZON_POINT_NAMES: {error}"))
         })
         .transpose()?;
-    let code = super::points::records_selected(
-        &super::points::game_points(root)?,
-        &private,
-        selected.as_ref(),
-    ) + &super::sites::ids(root).map_err(|e| e.to_string())?;
+    // Only a staged copy compiles the points' sites into the game; the wasm host's listener
+    // fixture brings its own.
+    crate::rerun_if_staged(root);
+    let staged =
+        root.join(".horizon-source-staged").is_file() || cfg!(feature = "listener-fixture");
+    let points = super::points::game_points(root)?;
+    phase("game_points");
+    let code = super::points::records_selected(&points, selected.as_ref())
+        + &format!(
+            "/// Whether this build compiled the points' sites into the game: only the prebuilt game, built from a staged copy of the source, has them. A build without them refuses every listener at load.\npub const STAGED: bool = {staged};\n"
+        );
+    phase("records");
     let generated = syn::parse_file(&code).map_err(|e| format!("generated Rust: points: {e}"))?;
     // A single multi-megabyte line makes Clippy's source lookups prohibitively slow.
     let mut code = String::new();
@@ -255,7 +404,10 @@ pub(super) fn generate_points_inner(root: &Path, out_dir: &Path) -> Result<(), S
         code.push_str(&item.to_token_stream().to_string());
         code.push('\n');
     }
-    write_if_changed(out_dir.join("points_generated.rs"), code).map_err(|e| e.to_string())
+    phase("format");
+    write_if_changed(out_dir.join("points_generated.rs"), code).map_err(|e| e.to_string())?;
+    phase("written");
+    fs::write(out_dir.join("points-timing.txt"), timing).map_err(|e| e.to_string())
 }
 
 pub(super) fn track(root: &Path, all_game: bool) -> Result<(), String> {
@@ -272,7 +424,7 @@ pub(super) fn track(root: &Path, all_game: bool) -> Result<(), String> {
         }
         Ok(())
     }
-    crate::rerun_if_changed(&root.join("crates/horizon-mod-vocab/src/lib.rs").display());
+    crate::rerun_if_changed(&root.join("crates/horizon-mod-vocab/src").display());
     for retired in super::catalog::RETIRED {
         // Only while present: Cargo reruns a build script on every build for a path that doesn't
         // exist. One that appears fails the next generation, and every fresh build, such as CI's.

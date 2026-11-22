@@ -118,7 +118,7 @@ fn build_with(tool: Tool, root: &Path) -> Result<(), String> {
     );
     if declaration.dependencies.is_empty()
         && lib.is_file()
-        && horizon_mod_api_gen::wire_types::public_types("probe", &lib)?.is_empty()
+        && mod_source::wire_types::public_types("probe", &lib)?.is_empty()
     {
         let destination = root.join("layouts.json");
         if destination.exists() {
@@ -164,10 +164,8 @@ fn build_with(tool: Tool, root: &Path) -> Result<(), String> {
         }) else {
             continue;
         };
-        let types = horizon_mod_api_gen::wire_types::public_types(
-            &target.name.replace('-', "_"),
-            &target.src_path,
-        )?;
+        let types =
+            mod_source::wire_types::public_types(&target.name.replace('-', "_"), &target.src_path)?;
         if !types.is_empty() {
             declarations.push((package, manifest.id, types));
         }
@@ -307,6 +305,7 @@ mod tests {
     /// every other cargo command runs for real.
     #[cfg(unix)]
     #[test]
+    #[ignore = "daily"]
     fn the_probe_builds_dependencies_with_their_resolved_features() {
         use std::os::unix::fs::PermissionsExt;
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(

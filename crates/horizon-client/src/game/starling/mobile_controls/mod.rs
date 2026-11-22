@@ -31,6 +31,12 @@ pub(super) struct MobileControls {
     touch_unsaved: bool,
 }
 
+/// Whether the touch controls draw: their menu state `drawn` is this frame's `now` (not one
+/// from before the screen changed), and they are either the menu's or a world's (`in_world`).
+fn controls_drawn(now: bool, drawn: bool, in_world: bool) -> bool {
+    now == drawn && (now || in_world)
+}
+
 impl Game<'_> {
     pub(in crate::game) fn mobile_keypad_key(
         &mut self,
@@ -219,6 +225,7 @@ impl Game<'_> {
     pub(in crate::game) fn mobile_frame(&mut self, events: &dyn super::event_loop::EventLoopCtl) {
         self.mobile_init();
         self.mobile.ui.hub_visible = self.mobile.controls.settings.show_control_hub;
+        self.mobile.ui.pause_in_background = self.settings.file.bool("pauseOnLostFocus");
         self.mobile.ui.utility_offset_y = if self.screen == Screen::Playing
             && horizon_client::accounts::in_game()
             && self
@@ -378,7 +385,16 @@ impl Game<'_> {
         // would add Horizon's own editor (Done, Grid, Add buttons...) under its canvas, seen
         // through it but never reached by a touch.
         if tc.editor.is_none() {
-            tc.draw(b, &self.gui.atlas);
+            // Not before `mobile_frame` has set the controls' menu state for this screen, and
+            // not off a world: the handoff from the loading screen to the title has no screen
+            // and no player for a few frames, and drew the in-world controls over it.
+            if controls_drawn(
+                self.pad_in_menu(),
+                tc.in_menu,
+                self.screen == Screen::Playing && self.player.is_some(),
+            ) {
+                tc.draw(b, &self.gui.atlas);
+            }
             ui::draw_goy_hud(
                 tc,
                 b,
@@ -386,22 +402,29 @@ impl Game<'_> {
                 self.pad_in_menu(),
                 self.mobile.ui.virtual_mouse,
             );
-            // Out of the camera cutout's strips with the controls (#166), the hub with the keys
-            // beside it; `android_aux_touch` and `floating_menu_touch` read them there.
-            self.draw_clear_of_cutout(b, |b, _| {
-                self.mobile.ui.draw(b, &self.gui.atlas, self.pad_in_menu());
-                self.mobile
-                    .ui
-                    .draw_floating_menu(b, &self.gui.atlas, &tc.settings);
-            });
+            let insets = self.button_safe_insets(b);
+            let area = hud_room::HudArea::begin(b, insets);
+            note_hub_layout(
+                "draw",
+                b.scale,
+                insets,
+                b.width,
+                self.mobile.ui.utility_offset_y,
+            );
+            self.mobile.ui.draw(b, &self.gui.atlas, self.pad_in_menu());
+            self.mobile
+                .ui
+                .draw_floating_menu(b, &self.gui.atlas, &tc.settings);
+            area.finish(b);
         }
         ui::draw_hud_editor(tc, b, &self.gui.atlas, &tc.settings.preset_id, None);
         self.mobile.ui.draw_keyboard(b, &self.gui.atlas);
         if self.mobile.ui.virtual_mouse {
+            let [x, y] = self.interface_origin();
             ui::draw_pointer(
                 b,
                 &self.gui.atlas,
-                self.cursor,
+                (self.cursor.0 + x, self.cursor.1 + y),
                 tc.settings.virtual_mouse_pointer_scale,
             );
         }
@@ -526,14 +549,22 @@ impl Game<'_> {
                 && !self.has_shift_down()
                 && self.slot_touch_event(events, id, t)
             {
+                // A tap on a slot decides the keyboard as a tap beside the text field does: an
+                // item tapped after typing in a search puts it away.
+                self.keyboard_after_tap(t, [t.location.x as f32, t.location.y as f32]);
                 return;
             }
             self.android_menu_touch(t, events, id);
             return;
         }
+        let [left, top, right, bottom] = self.hud_safe_insets(&b);
         if t.phase == TouchPhase::Started
             && !self.mobile.controls.control_at_point(n)
-            && let Some(slot) = horizon_client::android_controls::hotbar_slot(b.width, b.height, p)
+            && let Some(slot) = horizon_client::android_controls::hotbar_slot(
+                b.width - left - right,
+                b.height - top - bottom,
+                [p[0] - left, p[1] - top],
+            )
         {
             self.selected = slot;
             self.mobile.controls.ignore(t.id);
@@ -606,8 +637,61 @@ impl Game<'_> {
         ))
     }
 
+    fn android_label_typing(&mut self, out: &Output) -> bool {
+        let controls = &mut self.mobile.controls;
+        let Some(ed) = controls.editor.as_mut() else {
+            return false;
+        };
+        if !ed.editing_label {
+            return false;
+        }
+        let Some(idx) = ed.selected_custom else {
+            ed.editing_label = false;
+            return false;
+        };
+        if ed.key_picker {
+            ed.editing_label = false;
+            return false;
+        }
+        let Some(btn) = controls.settings.custom_buttons.get_mut(idx) else {
+            ed.editing_label = false;
+            return false;
+        };
+        let mut done = false;
+        match out {
+            Output::Text(t) => {
+                for ch in t.chars() {
+                    let ok = ch.is_alphanumeric() || ch.is_ascii_graphic() || ch == ' ';
+                    if ok && btn.custom_label.chars().count() < 12 {
+                        btn.custom_label.push(ch);
+                    }
+                }
+            }
+            Output::Backspace | Output::Key(KeyCode::Backspace) => {
+                btn.custom_label.pop();
+            }
+            Output::Enter | Output::Close | Output::Key(KeyCode::Enter | KeyCode::Escape) => {
+                done = true;
+            }
+            _ => {}
+        }
+        if done {
+            ed.editing_label = false;
+            let _ = controls.settings.save();
+        }
+        true
+    }
     fn android_show_keyboard(&mut self) {
-        if let Some(ed) = &self.mobile.controls.editor {
+        if self
+            .mobile
+            .controls
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.editing_label)
+        {
+            let empty = String::new();
+            mobile_platform::show(&empty);
+        } else if let Some(ed) = &self.mobile.controls.editor {
             mobile_platform::show(if ed.editing_save_desc {
                 &ed.save_desc_input
             } else {
@@ -1081,7 +1165,7 @@ impl Game<'_> {
             return;
         }
         self.mobile.ui.virtual_mouse = true;
-        if let Some(b) = self.gui_scale() {
+        if let Some(b) = self.gui_batch() {
             self.mobile
                 .ui
                 .sync_viewport_cursor(&mut self.cursor, [b.width, b.height]);
@@ -1092,7 +1176,7 @@ impl Game<'_> {
     pub(super) fn android_sync_pointer(&mut self) {
         self.mobile.ui.pointer_off = !self.mobile.controls.settings.virtual_mouse_enabled;
         let in_menu = self.pad_in_menu();
-        if let Some(b) = self.gui_scale() {
+        if let Some(b) = self.gui_batch() {
             self.mobile
                 .ui
                 .sync_viewport_cursor(&mut self.cursor, [b.width, b.height]);
@@ -1287,14 +1371,17 @@ impl Game<'_> {
             return Ok(false);
         };
         let mut b = HudBatch::new([size.width, size.height], self.settings.gui_scale_inputs());
-        // The hub as `mobile_draw` lays it out: clear of the camera cutout's strips, beside the
-        // utility keys (#166).
-        let [left, _, right, _] = self.safe_gui_insets(b.scale);
-        b.width = (b.width - left - right).max(0.0);
-        let p = [
-            t.location.x as f32 / b.scale - left,
-            t.location.y as f32 / b.scale,
-        ];
+        let insets = self.button_safe_insets(&b);
+        let area = hud_room::HudArea::begin(&mut b, insets);
+        note_hub_layout(
+            "hit",
+            b.scale,
+            insets,
+            b.width,
+            self.mobile.ui.utility_offset_y,
+        );
+        let p = area.local_point([t.location.x as f32, t.location.y as f32], b.scale);
+        let hub_before = self.mobile.ui.hub_state();
         if !self.mobile.ui.owns_relative(t.id)
             && !self.mobile.ui.owns_gesture(t.id)
             && let Some(menu_act) = self.mobile.ui.floating_menu_touch(
@@ -1309,7 +1396,12 @@ impl Game<'_> {
             use horizon_client::android_control_ui::InGameMenuAction;
             self.mobile.controls.clear();
             self.mobile.controls.ignore(t.id);
-            if t.phase == TouchPhase::Started {
+            // The hub answers a finger on an empty part of it with `Close` too, to keep it from the
+            // game: only a tap that did something (an action, or a page, tab or dialog changed)
+            // clicks and buzzes.
+            let did = !matches!(menu_act, InGameMenuAction::Close)
+                || self.mobile.ui.hub_state() != hub_before;
+            if t.phase == TouchPhase::Started && did {
                 self.audio.play_button_click();
                 self.android_touch_haptic(12);
             }
@@ -1339,6 +1431,17 @@ impl Game<'_> {
                         cur_style,
                         &preset_id,
                     );
+                    self.mobile.ui.refresh_presets_cache(cur_style);
+                }
+                InGameMenuAction::DeletePreset(preset_id) => {
+                    let cur_style = self.mobile.controls.settings.control_style;
+                    if let Err(e) = self.mobile.controls.settings.delete_preset(
+                        std::path::Path::new("."),
+                        cur_style,
+                        &preset_id,
+                    ) {
+                        log::warn!("Horizon: control preset {preset_id} was not deleted: {e}");
+                    }
                     self.mobile.ui.refresh_presets_cache(cur_style);
                 }
                 InGameMenuAction::CopyPreset {
@@ -1573,6 +1676,17 @@ impl Game<'_> {
                     let _ = self.mobile.controls.settings.save();
                     std::process::exit(0);
                 }
+                // As the pause menu's Launcher row: a world saves and the game ends as Quit does,
+                // and the app starts again in the launcher (ha_launcher).
+                InGameMenuAction::OpenLauncher => {
+                    #[cfg(target_os = "android")]
+                    crate::ha_launcher::back_to_launcher();
+                    if self.title.is_some() || self.player.is_none() {
+                        events.exit();
+                    } else {
+                        self.begin_closing_save(true)?;
+                    }
+                }
                 InGameMenuAction::OpenLogs => {
                     // Logs are private to the app; the SAF provider shares the Reports
                     // folder the diagnostics exporter writes into.
@@ -1623,6 +1737,17 @@ impl Game<'_> {
                         r.animated_textures = self.settings.horizon.animated_textures && !next;
                     }
                 }
+                InGameMenuAction::TogglePauseInBackground => {
+                    // Vanilla's pauseOnLostFocus (F3+P), which `pause_if_inactive` and the sound
+                    // leaving with the focus (`save_when_focus_leaves`) both read.
+                    let next = !self.settings.file.bool("pauseOnLostFocus");
+                    self.settings.file.set(
+                        "pauseOnLostFocus",
+                        horizon_client::options_file::V::Bool(next),
+                    );
+                    self.settings.save(&Self::options_path());
+                    self.mobile.ui.pause_in_background = next;
+                }
                 InGameMenuAction::SendCustomInput(token) => {
                     self.android_sync_pointer();
                     self.android_custom_token_tap(&token);
@@ -1636,8 +1761,7 @@ impl Game<'_> {
         if t.phase == TouchPhase::Moved {
             return Ok(false);
         }
-        // The utility keys as `mobile_draw` lays them out, clear of the cutout's strips: `b` and
-        // `p` already have the strips taken off, at the scale the hub is drawn at.
+        // The button layout and pointer share the hub's safe-area coordinates.
         if t.phase == TouchPhase::Started
             && !self.mobile.ui.owns_relative(t.id)
             && !self.mobile.ui.owns_gesture(t.id)
@@ -1764,6 +1888,12 @@ impl Game<'_> {
     /// Both naming dialogs (the editor's save-as and the hub's copy) type here
     /// instead of showing a keyboard inside the dialog.
     fn android_preset_typing(&mut self, out: &Output) -> bool {
+        if self.android_label_typing(out) {
+            if horizon_client::android_control_ui::output_dismisses(out) {
+                mobile_platform::hide();
+            }
+            return true;
+        }
         let handled = horizon_client::android_control_ui::apply_editor_or_preset_output(
             self.mobile.controls.editor.as_mut(),
             self.mobile.ui.preset_dialog.as_mut(),
@@ -1836,10 +1966,12 @@ impl Game<'_> {
         id: WindowId,
     ) {
         self.android_sync_pointer();
+        let point = [t.location.x as f32, t.location.y as f32];
         if self.touch_menu_owns(t.id)
-            || (self.screen == Screen::Options && !self.mobile.ui.virtual_mouse)
+            || (self.screen == Screen::Options
+                && (!self.mobile.ui.virtual_mouse
+                    || t.phase == TouchPhase::Started && self.on_wardrobe_preview(point)))
         {
-            let point = [t.location.x as f32, t.location.y as f32];
             let [w, h] = self.touch_size();
             let slop = horizon_client::touch::slop(w as f32, h as f32);
             self.touch_menu_pointer(events, id, t, point, slop);
@@ -1850,12 +1982,40 @@ impl Game<'_> {
             self.android_virtual_touch(t, events, id);
             return;
         }
-        let Some(b) = self.gui_scale() else {
+        let Some(b) = self.gui_batch() else {
             return;
         };
-        let p = [t.location.x as f32 / b.scale, t.location.y as f32 / b.scale];
+        let (x, y) = self.interface_point([t.location.x as f32, t.location.y as f32], b.scale);
+        let p = [x, y];
         let track = self.on_scrollbar([t.location.x as f32, t.location.y as f32]);
+        // A list of sliders scrolls under a thumb: a slider takes the finger only moving clearly
+        // sideways (`TouchPointer::prefer_slider`'s rule).
+        // Every screen's: a finger that starts dragging scrolls, and changes nothing unless it goes
+        // clearly sideways on a slider.
+        self.mobile.ui.defer_sliders = true;
+        self.mobile.ui.slider_slop = 12.0 / b.scale;
         let direct = self.mobile.ui.direct_pointer(t.id, p, t.phase, track);
+        if let Some(start) = self.mobile.ui.take_slider_press() {
+            self.handle_window_event(
+                events,
+                id,
+                WindowEvent::CursorMoved {
+                    device_id: t.device_id,
+                    position: self.interface_window_point((start[0], start[1]), b.scale),
+                },
+                InputOrigin::User,
+            );
+            self.handle_window_event(
+                events,
+                id,
+                WindowEvent::MouseInput {
+                    device_id: t.device_id,
+                    button: MouseButton::Left,
+                    state: ElementState::Pressed,
+                },
+                InputOrigin::User,
+            );
+        }
         self.handle_window_event(
             events,
             id,
@@ -1911,8 +2071,9 @@ impl Game<'_> {
                         InputOrigin::User,
                     );
                 }
-                self.keyboard_after_tap(t, [t.location.x as f32, t.location.y as f32]);
-                if field || self.sign_edit.is_some() {
+                // A tap that opened a screen did not tap its focused box (Create New World's name).
+                let opened = self.keyboard_after_tap(t, [t.location.x as f32, t.location.y as f32]);
+                if (field && !opened) || self.sign_edit.is_some() {
                     self.android_show_keyboard();
                 }
             }
@@ -1944,7 +2105,7 @@ impl Game<'_> {
         events: &dyn super::event_loop::EventLoopCtl,
         id: WindowId,
     ) {
-        let Some(b) = self.gui_scale() else {
+        let Some(b) = self.gui_batch() else {
             return;
         };
         let position = self.mobile.ui.relative_touch(
@@ -1962,10 +2123,7 @@ impl Game<'_> {
             id,
             WindowEvent::CursorMoved {
                 device_id: t.device_id,
-                position: winit::dpi::PhysicalPosition::new(
-                    f64::from(position[0] * b.scale),
-                    f64::from(position[1] * b.scale),
-                ),
+                position: self.interface_window_point(self.cursor, b.scale),
             },
             InputOrigin::User,
         );
@@ -2127,5 +2285,42 @@ impl Game<'_> {
             | Class::Lectern => true,
             _ => false,
         })
+    }
+}
+
+#[cfg(test)]
+mod controls_drawn_tests {
+    use super::controls_drawn;
+
+    #[test]
+    fn the_in_world_controls_do_not_draw_outside_a_world() {
+        // The loading screen's handoff: no menu yet, no player.
+        assert!(!controls_drawn(false, false, false));
+        // A frame before the controls learned the title is a menu.
+        assert!(!controls_drawn(true, false, false));
+        assert!(!controls_drawn(false, true, true));
+    }
+
+    #[test]
+    fn the_controls_draw_in_a_world_and_in_a_menu() {
+        assert!(controls_drawn(false, false, true));
+        assert!(controls_drawn(true, true, false));
+    }
+}
+
+/// Logs the hub's layout inputs where it is drawn (`side` "draw") and where a touch is tested
+/// against it ("hit") when they change: the "H" and "..." buttons were drawn and hit apart on a
+/// phone with a camera cutout after sync 7, with no cause found in the code. Each side logs once
+/// per change, so the log shows what differs between the two.
+fn note_hub_layout(side: &'static str, scale: f32, insets: [f32; 4], width: f32, offset: f32) {
+    static LAST: std::sync::Mutex<[Option<String>; 2]> = std::sync::Mutex::new([None, None]);
+    let line = format!("scale {scale} insets {insets:?} width {width} utility offset {offset}");
+    let slot = usize::from(side == "hit");
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last[slot].as_deref() != Some(line.as_str()) {
+        log::info!("Horizon: touch hub {side}: {line}");
+        last[slot] = Some(line);
     }
 }

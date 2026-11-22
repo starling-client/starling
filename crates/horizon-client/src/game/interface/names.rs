@@ -1,7 +1,7 @@
 //! Custom names: `NameTagItem.interactLivingEntity` and the name tag
 //! (`EntityRenderer.submitNameTag`): above the head, facing the camera,
 //! on a translucent black background, shown when the name is visible or the
-//! mob is under the crosshair within 64 blocks, as its team's name tag
+//! mob is under the crosshair within its name-tag distance (64 by default), as its team's name tag
 //! visibility allows, in the team's colours, with its score in the
 //! objective displayed below names. Other players' names (on a LAN host
 //! or a server) show whenever `LivingEntityRenderer.shouldShowName` allows,
@@ -187,6 +187,7 @@ impl Game<'_> {
             || self.sleeping.is_some()
             || self.spectator()
             || self.own_invisible()
+            || self.own_render_canceled()
         {
             return None;
         }
@@ -202,7 +203,7 @@ impl Game<'_> {
         }
     }
     /// The names the name tags show this frame (the control socket's status).
-    pub(super) fn shown_name_tags(&self, camera: glam::DVec3) -> Vec<String> {
+    pub(in crate::game) fn shown_name_tags(&self, camera: glam::DVec3) -> Vec<String> {
         self.name_tags(camera, 1.0)
             .into_iter()
             .filter_map(|t| t.lines.last().map(|(t, _)| t.plain()))
@@ -220,17 +221,19 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         hooks: bool,
-        frustum: Option<&horizon_client::gfx::Frustum>,
+        frustum: Option<&horizon_client::gfx::JoinedFrusta>,
     ) -> Vec<NameTag> {
         let target = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
+        // Asked once a frame: a mod loaded without this hook costs the tags nothing.
+        let name_format = hooks && mod_api::__private::listened(mod_api::HookId::PlayerNameFormat);
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
         let player_ids = named_by_player_list(&players);
         let named = self.mobs.iter().filter_map(|m| {
             // Already named by the player list: a second tag would sit on the
-            // first (`named_by_player_list`).
-            if player_ids.contains(&m.id) {
+            // first (`named_by_player_list`). A mob a mod's pre hook canceled has none.
+            if player_ids.contains(&m.id) || self.render_canceled(m.id) {
                 return None;
             }
             // A mannequin with no name still shows its description.
@@ -241,15 +244,18 @@ impl Game<'_> {
                 }
                 None => return None,
             };
-            // The tag's 64 block distance is measured to the entity: copy the
-            // name only for a mob the frame can show it on.
+            // The tag's per-entity distance (vanilla's default is 64) is
+            // measured to the entity: copy the name only for a mob the frame
+            // can show it on.
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
-            (at.distance_squared(camera) < 64.0 * 64.0).then_some((m, name, false))
+            let max = m.name_tag_distance();
+            (at.distance_squared(camera) < max * max).then_some((m, name, false))
         });
         let own = self.own_name_tag();
         let own_id = own.as_ref().map(|(m, _)| m.id);
         let players = players
             .into_iter()
+            .filter(|(m, _)| !self.render_canceled(m.id))
             .chain(own)
             .map(|(m, name)| (m, name, true));
         // Who is riding whom: asked once per tag below, and rescanning every entity
@@ -267,7 +273,7 @@ impl Game<'_> {
             }
             // EntityAttachment.NAME_TAG: 0.5 above the box of the current pose.
             let p = name_tag_at(m, alpha);
-            // The name tag distance (64) is measured to the entity.
+            // The name tag distance is measured to the entity.
             let distance_sqr =
                 glam::DVec3::new(m.position.x, m.position.y, m.position.z).distance_squared(camera);
             // Match the model's renderer-specific box, not the tag anchor: the
@@ -279,6 +285,7 @@ impl Game<'_> {
                 distance_sqr,
                 (lo - camera - inflate).as_vec3(),
                 (hi - camera + inflate).as_vec3(),
+                m.name_tag_distance(),
             ) {
                 continue;
             }
@@ -314,12 +321,13 @@ impl Game<'_> {
             // MobRenderer.shouldShowName: a visible name, or the mob under the
             // crosshair; players (LivingEntityRenderer) need neither.
             // `ClientMannequin.belowNameDisplay`: the description is `scoreText`, drawn
-            // within the below-name distance (10) whether the name shows or not.
+            // within the below-name distance (10 by default) whether the name
+            // shows or not.
             let description = (m.species() == horizon_client::mobs::Species::Mannequin
-                && distance_sqr < 10.0 * 10.0)
-                .then(|| m.extra.description.component())
-                .flatten()
-                .map(|tag| horizon_client::entity_nbt::name_text(&tag).resolve_legacy());
+                && distance_sqr < m.below_name_distance().powi(2))
+            .then(|| m.extra.description.component())
+            .flatten()
+            .map(|tag| horizon_client::entity_nbt::name_text(&tag).resolve_legacy());
             let is_own = Some(m.id) == own_id;
             let name_shown = sb::name_shown(team, viewer, view)
                 && (!is_own || !view.is_vehicle)
@@ -371,9 +379,9 @@ impl Game<'_> {
                 Some(t) => t.formatted_name(member),
                 None => member,
             };
-            // Every frame: build the username only for a mod to read.
+            // Every frame: build the username only for a mod that listens.
             if player
-                && hooks
+                && name_format
                 && let Some(uuid) = self.remote_player_uuid(m.id)
             {
                 shown = self.player_text(&name, uuid);
@@ -384,14 +392,14 @@ impl Game<'_> {
                 .unwrap_or(shown);
             let mut lines = Vec::new();
             // EntityRenderer.extractNameTags: the score shows within the
-            // below-name distance (10), under the name.
+            // per-entity below-name distance (10 by default), under the name.
             let mut lift = 0.0;
             if m.species() == horizon_client::mobs::Species::Mannequin {
                 if let Some(text) = description {
                     lines.push((text, 0.0));
                     lift = f64::from(9.0f32 * 1.15 * 0.025);
                 }
-            } else if distance_sqr < 10.0 * 10.0
+            } else if distance_sqr < m.below_name_distance().powi(2)
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
                 lines.push((score.resolve_legacy(), 0.0));
@@ -450,6 +458,7 @@ impl Game<'_> {
                 distance_sqr,
                 (origin - half).as_vec3(),
                 (origin + glam::DVec3::new(half.x, height + grow, half.z)).as_vec3(),
+                a.name_tag_distance(),
             ) {
                 continue;
             }
@@ -491,7 +500,7 @@ impl Game<'_> {
             let mut lines = Vec::new();
             let mut lift = 0.0;
             let holder = self.persist.uuids.get(&a.id).map(|u| uuid_text(*u));
-            if distance_sqr < 10.0 * 10.0
+            if distance_sqr < a.below_name_distance().powi(2)
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
                 lines.push((score.resolve_legacy(), 0.0));
@@ -880,8 +889,10 @@ fn name_tag_in_view(
     distance_sqr: f64,
     min: glam::Vec3,
     max: glam::Vec3,
+    max_distance: f64,
 ) -> bool {
-    distance_sqr < 64.0 * 64.0 && frustum.is_none_or(|view| view.intersects(min, max))
+    distance_sqr < max_distance * max_distance
+        && frustum.is_none_or(|view| view.intersects(min, max))
 }
 
 fn first_mob_indices(mobs: &[Mob]) -> std::collections::HashMap<u32, usize> {
@@ -1196,7 +1207,8 @@ mod tests {
             Some(&View),
             181.0,
             glam::Vec3::new(-0.8, 8.5, -10.8),
-            glam::Vec3::new(0.8, 11.3, -9.2)
+            glam::Vec3::new(0.8, 11.3, -9.2),
+            64.0
         ));
         for (offset, distance, expected) in [
             ([0.0, 0.0, -10.0], 100.0, true),
@@ -1212,11 +1224,21 @@ mod tests {
                     Some(&View),
                     distance,
                     glam::Vec3::from_array(offset) - glam::Vec3::splat(0.5),
-                    glam::Vec3::from_array(offset) + glam::Vec3::splat(0.5)
+                    glam::Vec3::from_array(offset) + glam::Vec3::splat(0.5),
+                    64.0
                 ),
                 expected
             );
         }
+        // A server-synced `minecraft:name_tag_distance` of 5 hides a tag
+        // six blocks away even though the vanilla default reaches 64.
+        assert!(!name_tag_in_view(
+            Some(&View),
+            36.0,
+            glam::Vec3::splat(-0.5),
+            glam::Vec3::splat(0.5),
+            5.0
+        ));
     }
 
     #[test]
@@ -1250,6 +1272,7 @@ mod tests {
             children: Vec::new(),
         };
         let kind = MobType {
+            shadow: None,
             id: "minecraft:player".into(),
             species: Species::Zombie,
             width: 0.6,
@@ -1269,6 +1292,7 @@ mod tests {
             jump_strength: 0.42,
             attributes: Default::default(),
             item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -1291,7 +1315,7 @@ mod tests {
                 "entity.player.hurt",
                 "entity.player.death",
             ],
-            step_sound: None,
+            sound_overrides: Default::default(),
             food: Default::default(),
             tempt: Default::default(),
             passenger_attachments: Vec::new(),

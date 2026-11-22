@@ -23,8 +23,9 @@ impl InteractionResult {
 
     /// Whether the interaction swings the player's arm.
     ///
-    /// In vanilla, InteractionResult.SUCCESS swings (swing source CLIENT),
-    /// while CONSUME consumes the action without swinging (swing source SERVER).
+    /// In vanilla, `InteractionResult.SUCCESS` and `SUCCESS_SERVER` swing (swing
+    /// sources `PREDICTED` and `SERVER_ONLY`), while `CONSUME` consumes the action
+    /// without swinging (swing source `NONE`).
     pub fn should_swing(self) -> bool {
         matches!(self, Self::Success)
     }
@@ -88,6 +89,12 @@ pub struct PlayerContext {
     pub can_eat: bool,
     /// `Player.canUseGameMasterBlocks` (creative operator).
     pub game_master: bool,
+    /// `ServerPlayer.RespawnConfig.respawnData` when that point is in the level
+    /// being clicked and the level lets a respawn anchor set spawn
+    /// (`RespawnAnchorBlock.canSetSpawn`): `useWithoutItem` compares the clicked
+    /// anchor against it (`isSamePosition`) on that path, and explodes instead
+    /// anywhere else.
+    pub respawn_point: Option<BlockPos>,
 }
 
 /// Player-side effects of an interaction, reported through
@@ -386,7 +393,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         return Pass;
                     }
                     self.player_effect(pos, state, PlayerEffect::RespawnAnchor);
-                    Success
+                    // RespawnAnchorBlock.useWithoutItem: the anchor already set
+                    // as the player's respawn point is CONSUME (no swing); a new
+                    // one is SUCCESS_SERVER.
+                    if player.respawn_point == Some(pos) {
+                        Consume
+                    } else {
+                        Success
+                    }
                 }
                 Class::Light => {
                     if player.game_master {
@@ -537,13 +551,22 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `ComposterBlock.extractProduce`: the bone meal pops out, the composter
     /// empties and its sound plays.
     fn composter_extract_produce(&mut self, pos: BlockPos, state: BlockStateId) {
-        let b = self.b;
+        let next = self.b.composter_state_after_extract(state);
+        self.composter_extract_effects(pos, state, next);
+    }
+
+    fn composter_extract_effects(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        next: BlockStateId,
+    ) {
         self.player_effect(
             pos,
             state,
             PlayerEffect::DropItem("minecraft:bone_meal".into()),
         );
-        self.set_block_and_update(pos, b.table.set_int(state, b.props.level, 0));
+        self.set_block_and_update(pos, next);
         self.game_event(pos, "minecraft:block_change");
         self.emit(LevelEvent::Sound {
             pos,
@@ -556,20 +579,21 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `ComposterBlock.addLayer` once its `compostable` provider gave
     /// `layers`: the new state (the old one when no layer is added).
     fn composter_add_layer(&mut self, pos: BlockPos, layers: i32) -> BlockStateId {
-        let b = self.b;
         let state = self.state(pos);
-        if layers <= 0 {
-            return state;
-        }
-        let level = b.table.int(state, b.props.level);
-        let next_level = (level + layers).clamp(0, 7);
-        let next = b.table.set_int(state, b.props.level, next_level);
-        self.set_block_and_update(pos, next);
-        self.game_event_state(pos, "minecraft:block_change", next);
-        if next_level == 7 {
-            self.schedule_tick(pos, b.block(state), 20);
+        let next = self.b.composter_state_after_layers(state, layers);
+        if layers > 0 {
+            self.set_block_and_update(pos, next);
+            self.composter_layer_effects(pos, state, next);
         }
         next
+    }
+
+    fn composter_layer_effects(&mut self, pos: BlockPos, state: BlockStateId, next: BlockStateId) {
+        let b = self.b;
+        self.game_event_state(pos, "minecraft:block_change", next);
+        if b.table.int(next, b.props.level) == 7 {
+            self.schedule_tick(pos, b.block(state), 20);
+        }
     }
 
     /// `DragonEggBlock.teleport`.
@@ -585,6 +609,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let test = pos.offset(dx, dy, dz);
             if b.is_air(self.state(test))
                 && !b.is_air(self.below_state(test))
+                && self.level.within_world_border(test)
                 && self.is_inside_build_height(test.y)
             {
                 // BlockUtil.packDifferenceInPosition(pos, test, 16, 8, 16)
@@ -599,6 +624,21 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 }
 
 impl Behaviours {
+    /// Pure state portion of `ComposterBlock.addLayer`; no write or effects.
+    pub fn composter_state_after_layers(&self, state: BlockStateId, layers: i32) -> BlockStateId {
+        if layers <= 0 {
+            return state;
+        }
+        let level = self.table.int(state, self.props.level);
+        self.table
+            .set_int(state, self.props.level, (level + layers).clamp(0, 7))
+    }
+
+    /// Pure state portion of `ComposterBlock.empty`; no write or effects.
+    pub fn composter_state_after_extract(&self, state: BlockStateId) -> BlockStateId {
+        self.table.set_int(state, self.props.level, 0)
+    }
+
     /// `ComposterBlock.addLayer` at `pos` with the layers its item's
     /// `compostable` provider gave, followed by level event 1500 (fill
     /// particles and sound; data 1 when a layer was added) as every caller
@@ -615,6 +655,36 @@ impl Behaviours {
         let next = sim.composter_add_layer(pos, layers);
         sim.level_event(1500, pos, i32::from(next != state));
         next
+    }
+
+    /// `ComposterBlock.InputContainer.setChanged` feedback after its state was committed.
+    /// The input was below level 7; the state write itself belongs to the caller's journal.
+    pub fn composter_insert_effects<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        before: BlockStateId,
+        after: BlockStateId,
+    ) {
+        let mut sim = self.sim(level, ticks);
+        if after != before {
+            sim.composter_layer_effects(pos, before, after);
+        }
+        sim.level_event(1500, pos, i32::from(after != before));
+    }
+
+    /// `ComposterBlock.empty` feedback after its state was committed, without a write,
+    /// dropped bone meal or the hand-extraction sound.
+    pub fn composter_empty_effects<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        after: BlockStateId,
+    ) {
+        self.sim(level, ticks)
+            .game_event_state(pos, "minecraft:block_change", after);
     }
 
     /// `ComposterBlock.addLayer` without level event 1500, for a villager
@@ -664,7 +734,7 @@ impl Behaviours {
     ) {
         let mut sim = self.sim(level, ticks);
         let state = sim.state(pos);
-        let next = self.table.set_int(state, self.props.level, 0);
+        let next = self.composter_state_after_extract(state);
         sim.set_block_and_update(pos, next);
         sim.game_event_state(pos, "minecraft:block_change", next);
     }
@@ -941,18 +1011,6 @@ impl Behaviours {
         {
             return Some(InteractionResult::Pass);
         }
-        // WallHangingSignBlock.useItemOn: a hanging sign aimed at the sign's side
-        // (not its editable faces, `isHittingEditableSide`) chains onto it. Sign
-        // text has no click commands here, so `canExecuteClickCommands` is false.
-        if self.data(state).is(Class::WallHangingSign)
-            && item
-                .and_then(|i| self.item_binding(i))
-                .is_some_and(|binding| binding.kind == super::data::ItemKind::HangingSign)
-            && face != self.facing(state)
-            && face != self.facing(state).opposite()
-        {
-            return Some(InteractionResult::Pass);
-        }
         // CandleCakeBlock.useItemOn: flint and steel and fire charges pass, so
         // the item lights a fire by the cake instead of eating it.
         if self.data(state).chain.contains(&Class::CandleCake)
@@ -1037,7 +1095,7 @@ impl Behaviours {
         item: Option<&str>,
     ) -> InteractionResult {
         let item = item.unwrap_or("minecraft:air");
-        let waxed = self.table.name(state).starts_with("minecraft:waxed_");
+        let waxed = self.is_waxed(state);
         if item.ends_with("_axe") || (item == "minecraft:honeycomb" && !waxed) {
             return InteractionResult::Pass;
         }

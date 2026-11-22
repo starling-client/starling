@@ -1115,11 +1115,13 @@ mod tests {
             vk::ColorSpaceKHR::ADOBERGB_NONLINEAR_EXT,
         ] {
             assert!(map_vk_color_space(vk_color_space).is_none());
-            assert!(map_vk_surface_formats(vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk_color_space,
-            })
-            .is_none());
+            assert!(
+                map_vk_surface_formats(vk::SurfaceFormatKHR {
+                    format: vk::Format::B8G8R8A8_UNORM,
+                    color_space: vk_color_space,
+                })
+                .is_none()
+            );
         }
     }
 

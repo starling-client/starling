@@ -190,7 +190,7 @@ fn reload_command_uses_applied_listener_state_and_preserves_tables_on_refusal() 
         }
     }
     let state = Arc::new(AtomicUsize::new(0));
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![ModEntry::new(
             "reload_order",
             Box::new(Listener(state.clone())),
@@ -333,7 +333,7 @@ fn missing_original_at_reload_preserves_the_published_data_and_reports_its_owner
         &resources,
         &horizon_mod_package::enabled::EnabledMods::new([(
             "reload_test".into(),
-            horizon_mod_package::Side::Both,
+            mod_api::Side::Both,
         )]),
     );
     let world = root.join("world");
@@ -415,7 +415,7 @@ fn server_reload_delivers_mod_files_overrides_and_preserves_all_data_on_failure(
         &resources,
         &horizon_mod_package::enabled::EnabledMods::new([(
             "reload_test".into(),
-            horizon_mod_package::Side::Both,
+            mod_api::Side::Both,
         )]),
     );
     let world = root.join("world");
@@ -445,7 +445,7 @@ fn server_reload_delivers_mod_files_overrides_and_preserves_all_data_on_failure(
         }),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             install_mod_resources(game, &resources, &package);
             game.load_world(request(&world)).unwrap();
@@ -597,7 +597,7 @@ fn server_reload_skips_unparsable_files_and_delivers_the_rest() {
         &resources,
         &horizon_mod_package::enabled::EnabledMods::new([(
             "reload_test".into(),
-            horizon_mod_package::Side::Both,
+            mod_api::Side::Both,
         )]),
     );
     let world = root.join("world");
@@ -617,7 +617,7 @@ fn server_reload_skips_unparsable_files_and_delivers_the_rest() {
         r#"{"enabled":["file/test"],"disabled":[]}"#,
     );
     let live = Arc::new(Mutex::new(Vec::new()));
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![ModEntry::new(
             "reload_test",
             Box::new(SkipHooks(live.clone())),
@@ -683,7 +683,7 @@ fn server_reload_registration_failure_stops_world_open_and_quiet_mods_never_list
         .join("target")
         .join(format!("server-reload-open-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    mod_api::testing::with_mods(vec![ModEntry::new("quiet", Box::new(Quiet))].into(), || {
+    mod_platform::testing::with_mods(vec![ModEntry::new("quiet", Box::new(Quiet))].into(), || {
         with_game(|game| {
             // A mod that doesn't implement the hook is never subscribed, so
             // world open and `/reload` skip the registration graph.
@@ -701,7 +701,7 @@ fn server_reload_registration_failure_stops_world_open_and_quiet_mods_never_list
         })
     });
     std::fs::remove_dir_all(&root).unwrap();
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![ModEntry::new("broken_mod", Box::new(Broken))].into(),
         || {
             with_game(|game| {
@@ -801,7 +801,7 @@ fn server_reload_retains_listeners_for_other_hooks() {
         &resources,
         &horizon_mod_package::enabled::EnabledMods::new([(
             "reload_test".into(),
-            horizon_mod_package::Side::Both,
+            mod_api::Side::Both,
         )]),
     );
     let world = root.join("world");
@@ -829,7 +829,7 @@ fn server_reload_retains_listeners_for_other_hooks() {
     let key = ListenerKey::<RetainedData>::new(Identifier::parse("reload_test:kept").unwrap());
     let wrong_type =
         ListenerKey::<CheckListener>::new(Identifier::parse("reload_test:kept").unwrap());
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             assert!(game.reload_resources().listener(&key).is_none());
             install_mod_resources(game, &resources, &package);
@@ -897,7 +897,7 @@ fn server_completion_reads_published_data_without_world_access_on_first_open() {
         Box::new(Probe(seen.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.mod_phase = PhaseOwner::new(ModPhase::Setup);
             let root = std::env::current_dir().unwrap().join("published-world");
@@ -1028,14 +1028,15 @@ fn data_maps_updated_fires_for_each_registry_on_first_open_and_every_reload() {
         seen: seen.clone(),
         reads: reads.clone(),
     };
-    mod_api::testing::with_mods(vec![ModEntry::new("probe", Box::new(probe))].into(), || {
+    mod_platform::testing::with_mods(vec![ModEntry::new("probe", Box::new(probe))].into(), || {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             let root =
                 std::env::temp_dir().join(format!("data-maps-updated-{}", std::process::id()));
             game.load_world(request(&root)).unwrap();
             let both = |count: usize| -> Vec<(String, DataMapsUpdateCause)> {
-                ["minecraft:item", "minecraft:block"]
+                // In registry id order.
+                ["minecraft:block", "minecraft:item"]
                     .into_iter()
                     .cycle()
                     .take(count)
@@ -1057,9 +1058,8 @@ fn data_maps_updated_fires_for_each_registry_on_first_open_and_every_reload() {
             // A game that isn't a server holds no maps it may answer, even with
             // tables built.
             game.options.dedicated = None;
-            let coal = mod_api::__private::item_key("minecraft:coal").unwrap();
             assert_eq!(
-                game.item_data_map_value(coal, "probe:fuel"),
+                game.data_map_value("minecraft:item", "minecraft:coal", "probe:fuel"),
                 Err(DataMapError::Unavailable)
             );
             let _ = std::fs::remove_dir_all(root);

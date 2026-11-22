@@ -58,7 +58,13 @@ fn native_table_declarations_are_unknown_fields_not_an_alternate_reader() {
                 format!("{HEADER}{target}[native]\n{declarations}")
             };
             let error = Manifest::parse(&old).unwrap_err();
-            assert!(error.contains("unknown field `internals`"), "{error}");
+            // A wasm manifest is told it has no `[native]` at all before what the table held.
+            let expected = if index == 0 {
+                "unknown field `internals`"
+            } else {
+                "a mod is [native] or [wasm], not both"
+            };
+            assert!(error.contains(expected), "{error}");
         }
     }
 }
@@ -92,15 +98,8 @@ fn root_record_validation_is_identical_for_both_targets() {
 }
 
 #[test]
-fn wasm_listener_requires_root_declarations_and_native_modules_stay_native() {
-    let [native, wasm] = targets();
-    let injection = "[[inject]]\nid='tick'\nat='Game::tick'\nkind='head'\naccess='internals'\nhash='h'\nwith='tick'\n";
-    let error = Manifest::parse(&format!("{HEADER}{wasm}{injection}")).unwrap_err();
-    assert!(error.contains("needs declared internals"), "{error}");
-    Manifest::parse(&format!(
-        "{HEADER}internals=[{{path='Game',hash='h'}}]\n{wasm}{injection}"
-    ))
-    .unwrap();
+fn native_modules_stay_native() {
+    let [native, _wasm] = targets();
     let manifest = Manifest::parse(&format!("{HEADER}{native}[[native.module]]\nid='support'\nfile='src/game.rs'\nname='support'\nsource='src/support.rs'\n")).unwrap();
     assert_eq!(manifest.native.unwrap().module[0].id, "support");
 }

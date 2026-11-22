@@ -6,7 +6,7 @@ use horizon_client::{
     save::{LevelShape, SaveDir},
     server::user_lists::{BanList, IpBanList, OpList, WhiteList},
 };
-use mod_api::{Flow, Hooks, ItemPickedUpEvent, ServerHost};
+use mod_api::{Hooks, ItemPickedUpEvent, ServerHost};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -52,7 +52,7 @@ struct PanicPickup {
 }
 #[mod_api::horizon_mod]
 impl Hooks for PanicPickup {
-    fn item_picked_up(&self, _: &mut dyn ServerHost, _: &mut ItemPickedUpEvent<'_>) -> Flow {
+    fn item_picked_up(&self, _: &mut dyn ServerHost, _: &mut ItemPickedUpEvent<'_>) {
         assert!(
             !self.visibility.settled(),
             "actual callback must see the lifted owner"
@@ -62,8 +62,17 @@ impl Hooks for PanicPickup {
     }
 }
 #[test]
-#[ignore = "needs prepared resources and isolated homes"]
+#[ignore = "daily"]
 fn visibility_listener_unwind_does_not_block_an_outside_save() {
+    // Save admission is process-wide, even when this game's visibility is settled.
+    // Other fixtures may legitimately hold leases; isolate the real save proof.
+    crate::game::in_own_process(
+        "game::visibility_unwind_tests::visibility_listener_unwind_does_not_block_an_outside_save",
+        visibility_unwind_save,
+    );
+}
+
+fn visibility_unwind_save() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -89,7 +98,7 @@ fn visibility_listener_unwind_does_not_block_an_outside_save() {
             }),
         )]
         .into();
-        let panic = mod_api::testing::with_mods(mods, || {
+        let panic = mod_platform::testing::with_mods(mods, || {
             mod_api::__private::mark_game_thread();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| game.tick_items()))
                 .unwrap_err()

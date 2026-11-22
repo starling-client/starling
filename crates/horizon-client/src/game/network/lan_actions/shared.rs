@@ -10,13 +10,11 @@ pub(super) enum MenuOpen {
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
-    /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
-    pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
-    use_ticks_set: bool,
+    use_start: super::using_item::UseStart,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -27,6 +25,9 @@ pub(super) struct GuestPlay {
     pub(super) chat_spam: u32,
     /// `commandSpamThrottler`: 20 for each command, one less each tick.
     pub(super) command_spam: u32,
+    /// The recipe viewer's transfer checks (`horizon:recipe_check`): 20 for
+    /// each, one less each tick; one from 200 goes unanswered.
+    pub(super) recipe_checks: u32,
     /// `ServerCommandSuggestionsProvider`: the latest suggestion request not answered yet (a
     /// newer one replaces it, which then never gets an answer), and whether this tick's one
     /// answer is still free.
@@ -58,16 +59,10 @@ pub(super) struct GuestPlay {
     mount: super::mounts::MountState,
     /// The trading screen the guest has open.
     pub(super) merchant: Option<super::lan_trading::GuestMerchant>,
-    /// The inventory menu and the crafting table the guest crafts in.
-    pub(super) crafting: super::lan_crafting::GuestCrafting,
-    /// The workstation menu the guest has open (game/network/lan_stations.rs).
-    pub(super) station: Option<super::lan_stations::GuestStation>,
     /// The mount inventory the guest has open (game/network/lan_mount_menu.rs).
     pub(super) mount_window: Option<super::lan_mount_menu::GuestMount>,
     /// The lectern the guest reads (game/network/lan_stations.rs).
     pub(super) lectern: Option<super::lan_stations::GuestLectern>,
-    /// The menu the mods last heard this guest open (`tick_player_menus`).
-    pub(super) menu_heard: Option<super::native_menus::HeardMenu>,
     /// The equipment the mods last heard this guest wear (`native_players_equipment`), by
     /// `EquipmentSlot`: main hand, off hand, feet, legs, chest, head.
     pub(super) equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 6]>>,
@@ -176,7 +171,7 @@ pub(super) struct GuestSwap {
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
-    use_ticks_set: bool,
+    use_start: super::using_item::UseStart,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -284,6 +279,7 @@ impl GuestPlay {
 struct ItemRules<'a>(
     &'a horizon_client::items::Items,
     &'a horizon_client::enchant::Enchantments,
+    Option<&'a dyn horizon_client::menu::SlotRules>,
 );
 impl Rules for ItemRules<'_> {
     fn items(&self) -> &horizon_client::items::Items {
@@ -295,14 +291,8 @@ impl Rules for ItemRules<'_> {
     fn max_stack(&self, item: &str) -> u32 {
         self.0.get(item).map_or(64, |i| i.max_stack)
     }
-    fn armor_index(&self, item: &str) -> Option<usize> {
-        match self.0.get(item)?.equip_slot.as_deref()? {
-            "head" => Some(0),
-            "chest" => Some(1),
-            "legs" => Some(2),
-            "feet" => Some(3),
-            _ => None,
-        }
+    fn slot_rules(&self) -> Option<&dyn horizon_client::menu::SlotRules> {
+        self.2
     }
 }
 
@@ -493,6 +483,26 @@ mod tests {
     use crate::game::api_values::TryIntoApi;
     use horizon_client::pose::Pose;
     #[test]
+    fn a_block_break_suppresses_its_positional_duplicate_but_not_an_entity_sound() {
+        let mut sound = horizon_client::audio::CapturedSound {
+            event: "minecraft:block.stone.break".into(),
+            position: [1.5, 64.5, -2.5],
+            volume: 1.0,
+            pitch: 1.0,
+            source: 4,
+            entity: None,
+            except_entity: None,
+        };
+        let broken = [[1.0, 64.0, -3.0]];
+        assert!(super::captured_block_break(&sound, &broken));
+        sound.entity = Some(37);
+        assert!(!super::captured_block_break(&sound, &broken));
+        sound.entity = None;
+        sound.position[0] += 0.25;
+        assert!(!super::captured_block_break(&sound, &broken));
+    }
+
+    #[test]
     fn use_swing_resets_attack_charge_only_when_started() {
         let mut ticker = 20;
         reset_use_attack_strength(&mut ticker, 3, 4);
@@ -521,11 +531,7 @@ mod tests {
         struct Part;
         #[mod_api::horizon_part]
         impl MenuPart for Part {
-            fn menu_slot_rules(
-                &self,
-                _: &dyn mod_api::LoopContext,
-                event: &mut MenuSlotRulesEvent<'_>,
-            ) {
+            fn menu_slot_rules(&self, _: &dyn mod_api::Host, event: &mut MenuSlotRulesEvent<'_>) {
                 if mod_api::__private::item_key_id(event.stack.item()).unwrap()
                     == "minecraft:granite"
                     && event.stack.count() < 8
@@ -564,7 +570,7 @@ mod tests {
         let mods: Mods = vec![ModEntry::new("menu_rules", Box::new(Mod))].into();
         crate::game::api_values::install_parts(&mods).unwrap();
         crate::entry::install_client_hooks();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_guest_turn_tests::with_guests(|game| {
                 game.world
                     .chunks
@@ -924,7 +930,7 @@ mod tests {
                 .lan
                 .as_ref()
                 .unwrap()
-                .play
+                .menus
                 .get(&12)
                 .unwrap()
                 .crafting
@@ -1013,7 +1019,7 @@ mod tests {
                     mod_api::Flow::Cancel
                 }
             }
-            mod_api::testing::with_mods(
+            mod_platform::testing::with_mods(
                 vec![mod_api::ModEntry::new("stop_menu", Box::new(StopMenu))].into(),
                 || {
                     assert!(
@@ -1120,8 +1126,8 @@ mod tests {
         use horizon_protocol::packets::{configuration::ClientInformation, play};
         use mod_api::InteractionResult as Answer;
         use mod_api::{
-            self, BlockPart, CloneItemStackEvent, Flow, Hooks, Host, ItemPart, ItemStack,
-            Registrar, ServerHost, UseItemOnEvent, UseOnEvent, UseWithoutItemEvent,
+            self, BlockPart, CloneItemStackEvent, Hooks, Host, ItemPart, ItemStack, Registrar,
+            ServerHost, UseItemOnEvent, UseOnEvent, UseWithoutItemEvent,
         };
         use std::sync::{
             Arc, Mutex,
@@ -1203,10 +1209,10 @@ mod tests {
         // The held items' own `Item.useOn`, counted, taking the click.
         #[mod_api::horizon_part]
         impl ItemPart for User {
-            fn use_on(&self, _: &mut dyn ServerHost, _: &mut UseOnEvent<'_>) -> Flow {
+            fn use_on(&self, _: mod_api::HostSide<'_>, _: &mut UseOnEvent<'_>) -> Option<Answer> {
                 self.item_uses
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Flow::Cancel
+                Some(Answer::SuccessServer)
             }
         }
         struct Mod {
@@ -1263,7 +1269,7 @@ mod tests {
         )]
         .into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world
@@ -1435,6 +1441,7 @@ mod tests {
                             ticks: 0,
                             playing: false,
                             song_clock_present: false,
+                            loaded_clock: false,
                         },
                     ),
                 );
@@ -1831,7 +1838,7 @@ mod tests {
         )]
         .into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world
@@ -1898,7 +1905,7 @@ mod tests {
         )]
         .into();
         crate::game::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world
@@ -2145,7 +2152,7 @@ mod hotbar_tests {
     fn a_hotbar_switch_fires_pre_then_post_and_pre_can_keep_the_slot() {
         let heard = Heard::default();
         let mods = vec![ModEntry::new("hotbar", Box::new(Hotbar(heard.clone())))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 open_to_lan(game);
                 game.lan.as_mut().unwrap().hub.guests.push(guest(1));
@@ -2216,7 +2223,7 @@ mod respawn_position_tests {
     fn a_mod_moves_a_respawn_and_drops_the_point() {
         let heard = Heard::default();
         let mods = vec![ModEntry::new("east", Box::new(East(heard.clone())))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 open_to_lan(game);
                 game.options.dedicated = Some(Vec::new());
@@ -2270,7 +2277,7 @@ mod respawn_position_tests {
             Box::new(Listen(Arc::clone(&heard))),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 open_to_lan(game);
                 game.options.dedicated = Some(Vec::new());
@@ -2346,9 +2353,11 @@ mod pickup_xp_tests {
                 on_ground: true,
                 count: 1,
                 ticks: 0,
+                air: 300,
                 health: 5,
                 no_gravity: true,
                 following: None,
+                fall_distance: 0.0,
             });
             game.guest_orbs(0);
             let left = game.orbs.iter().any(|o| o.id == 40);
@@ -2365,9 +2374,9 @@ mod pickup_xp_tests {
         let none = take_orb();
         assert_eq!(none, (false, 7));
         let mods = vec![mod_api::ModEntry::new("listen", Box::new(Listen(false)))].into();
-        mod_api::testing::with_mods(mods, || assert_eq!(take_orb(), none));
+        mod_platform::testing::with_mods(mods, || assert_eq!(take_orb(), none));
         let mods = vec![mod_api::ModEntry::new("cancel", Box::new(Listen(true)))].into();
-        mod_api::testing::with_mods(mods, || assert_eq!(take_orb(), (true, 0)));
+        mod_platform::testing::with_mods(mods, || assert_eq!(take_orb(), (true, 0)));
     }
 }
 
@@ -3299,6 +3308,10 @@ mod bundle_slot_tests;
 #[cfg(test)]
 #[path = "tests/crack_feedback_tests.rs"]
 mod crack_feedback_tests;
+
+#[cfg(test)]
+#[path = "tests/menu_still_valid_tests.rs"]
+mod menu_still_valid_tests;
 
 #[cfg(test)]
 #[path = "tests/projectile_lifecycle_tests.rs"]

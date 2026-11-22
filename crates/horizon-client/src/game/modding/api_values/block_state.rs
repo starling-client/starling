@@ -24,6 +24,16 @@ pub(crate) fn block_listens(hook: mod_api::HookId, state: BlockStateId) -> bool 
         })
 }
 
+/// Whether every part on `state` that answers `explosion_resistance` declares the answer pure.
+pub(crate) fn explosion_resistance_pure(state: BlockStateId) -> bool {
+    INDEX.with_borrow(|index| {
+        index
+            .as_ref()
+            .and_then(|index| index.forward.get(state.0 as usize))
+            .is_some_and(|value| mod_api::__private::explosion_resistance_key_pure(value.block()))
+    })
+}
+
 pub(super) fn clear() {
     INDEX.with_borrow_mut(|index| *index = None);
 }
@@ -95,8 +105,8 @@ mod tests {
         }
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("routing", Box::new(Listener))].into();
-        mod_api::testing::with_mods(mods.clone(), || {
-            mod_api::__private::part_tests::install_parts_fixture(&mods).unwrap();
+        mod_platform::testing::with_mods(mods.clone(), || {
+            mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
             let facts = r#"{"defaults":{"minecraft:air":2,"minecraft:stone":0,"minecraft:dirt":1},"states":[["s",false,false,"","minecraft:stone"],["d",false,false,"","minecraft:dirt"],["a",true,false,"","minecraft:air"]]}"#;
             let registry = BlockRegistry::from_facts_json(facts.as_bytes()).unwrap();
             super::super::resolve_block_definitions(&registry).unwrap();
@@ -129,7 +139,7 @@ mod tests {
 
     #[test]
     fn numeric_block_index_prepared_token_activates_only_on_fresh_owner() {
-        mod_api::__private::part_tests::install_parts_fixture(&[]).unwrap();
+        mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
         let facts = r#"{"defaults":{"minecraft:air":0,"minecraft:stone":1},"states":[["a",true,false,"","minecraft:air"],["s",false,false,"","minecraft:stone"]]}"#;
         let registry = BlockRegistry::from_facts_json(facts.as_bytes()).unwrap();
         super::super::resolve_block_definitions(&registry).unwrap();
@@ -152,7 +162,7 @@ mod tests {
     }
     #[test]
     fn numeric_block_index_reorders_refuses_and_clears_failed_rebind() {
-        mod_api::__private::part_tests::install_parts_fixture(&[]).unwrap();
+        mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
         let facts = r#"{"defaults":{"minecraft:air":0,"minecraft:stairs":2},"states":[["a",true,false,"","minecraft:air"],["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"north"}}],["s",false,false,"",{"id":"minecraft:stairs","properties":{"facing":"east"}}]]}"#;
         let first = BlockRegistry::from_facts_json(facts.as_bytes()).unwrap();
         super::super::resolve_block_definitions(&first).unwrap();
@@ -199,6 +209,13 @@ pub(crate) fn current() -> Result<Arc<Index>, BlockStateError> {
     INDEX.with_borrow(|index| index.clone().ok_or(BlockStateError::Unavailable))
 }
 impl Index {
+    /// Route on workers using the feature-pinned published Parts table, without conversion.
+    pub(crate) fn worldgen_listens(&self, hook: mod_api::HookId, state: BlockStateId) -> bool {
+        self.forward.get(state.0 as usize).is_some_and(|value| {
+            mod_api::__private::worldgen_block_key_listens(hook, value.block())
+        })
+    }
+
     pub(crate) fn to_api(&self, state: BlockStateId) -> Result<BlockState, BlockStateError> {
         self.forward
             .get(state.0 as usize)

@@ -411,6 +411,7 @@ impl Game<'_> {
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         let (top, bottom) = (TAB_H, h - FOOTER);
         ui::separators(batch, atlas, top, bottom, true);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         // The tab bar.
         let mut tab_tip = false;
         let (x0, tw) = tabs(w);
@@ -538,7 +539,12 @@ impl Game<'_> {
             1 => {
                 let items = self.stat_items();
                 if items.is_empty() {
-                    return self.draw_stats_footer(batch, w, h);
+                    self.draw_stats_footer(batch, w, h);
+                    self.draw_screen_phase(
+                        batch,
+                        horizon_client::screen_draw::RenderPhase::Foreground,
+                    );
+                    return;
                 }
                 // ItemStatisticsList, a ContainerObjectSelectionList: the
                 // header's sort buttons and each row's item.
@@ -666,6 +672,7 @@ impl Game<'_> {
             self.stats_ui.scroll.amount,
         );
         self.draw_stats_footer(batch, w, h);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
         if let Some((stack, x, y)) = tip {
             self.draw_stack_tooltip(batch, &stack, x, y);
         }
@@ -713,7 +720,7 @@ impl Game<'_> {
         if self.stats_press_scrollbar(size) {
             return;
         }
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let b = self.interface_batch(size);
         let (w, h) = (b.width, b.height);
         let (x0, tw) = tabs(w);
         for i in 0..3 {
@@ -769,7 +776,7 @@ impl Game<'_> {
     /// A press on the statistics list's scrollbar holds it
     /// (`AbstractSelectionList.updateScrolling`).
     pub(super) fn stats_press_scrollbar(&mut self, size: [u32; 2]) -> bool {
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let b = self.interface_batch(size);
         let (w, h) = (b.width, b.height);
         let content = self.stats_content();
         self.stats_ui

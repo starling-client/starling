@@ -17,6 +17,7 @@ use super::{
 use crate::health::DamageLevel;
 use crate::projectiles::{Projectile, ProjectileKind};
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_world::move_gate::MoveGate;
 
 /// `ZombifiedPiglin.alertOthers` keeps the source's player identity.
 #[derive(Clone, Debug)]
@@ -270,7 +271,7 @@ pub fn drowned_travel(
         return false;
     }
     m.move_relative(0.01, input);
-    m.do_move(w, level, events);
+    m.do_move(w, level, events, &mut MoveGate::new());
     m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
     true
 }
@@ -306,8 +307,7 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     if let Some(a) = p.arrow.as_mut() {
         a.set_item(&trident);
     }
-    p.shoot(
-        &mut crate::random_source::entity(),
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         ranged_attack_uncertainty(cx.w.difficulty.id),
@@ -619,6 +619,7 @@ fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx) {
         from: Box::new(m.clone()),
         kind,
         params: super::conversion::Params::KEEP_ALL,
+        after: super::conversion::After::None,
     });
     m.removed = true;
 }
@@ -654,7 +655,7 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         } else if m.fluids.eye_in_water {
             m.extra.counter += 1;
             if m.extra.counter >= 600 {
-                m.extra.counter2 = 300;
+                m.extra.counter2 = 301;
             }
         } else {
             m.extra.counter = -1;
@@ -945,8 +946,6 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let dist = (xd * xd + zd * zd).sqrt();
     // AbstractArrow.setBaseDamageFromMob: power * 2 + triangle(difficulty * 0.11, 0.57425).
     let id = i32::from(cx.w.difficulty.id);
-    let mut arrow_random = crate::random_source::entity();
-    let base = f64::from(power) * 2.0 + arrow_random.triangle(f64::from(id) * 0.11, 0.574_25);
     let effect = match m.species() {
         Species::Stray => Some(("minecraft:slowness", 600)),
         Species::Bogged => Some(("minecraft:poison", 100)),
@@ -955,17 +954,22 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     };
     let mut p = Projectile::new(
         ProjectileKind::Arrow {
-            base_damage: base,
+            base_damage: 0.0,
             critical: false,
             effect,
         },
         start,
         Some(Who::Mob(m.id)),
     );
+    // From the arrow's own random, after its UUID.
+    let damage =
+        f64::from(power) * 2.0 + p.entity_random().triangle(f64::from(id) * 0.11, 0.574_25);
+    if let ProjectileKind::Arrow { base_damage, .. } = &mut p.kind {
+        *base_damage = damage;
+    }
     p.set_bonus(super::gear::arrow_bonus(m));
     ignite_for_wither_skeleton(m, &mut p);
-    p.shoot(
-        &mut arrow_random,
+    p.shoot_own(
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         (14 - id * 4) as f32,
@@ -1201,12 +1205,14 @@ impl Default for AttackTurtleEgg {
         }
     }
 }
-/// RemoveBlockGoal.isValidTarget: the block with two air blocks above, in a loaded chunk.
-fn turtle_egg_target(w: &super::MobWorld, p: [i32; 3]) -> bool {
+/// RemoveBlockGoal.isValidTarget: the block with two air blocks above, in a loaded chunk,
+/// that the mob `mob` may destroy (`canEntityDestroy`, no `LivingDestroyBlockEvent` here).
+fn turtle_egg_target(w: &super::MobWorld, mob: u32, p: [i32; 3]) -> bool {
     w.world.loaded(p[0], p[2])
         && w.block_name(p[0], p[1], p[2]) == "minecraft:turtle_egg"
         && w.facts.is_air(w.world.block(p[0], p[1] + 1, p[2]))
         && w.facts.is_air(w.world.block(p[0], p[1] + 2, p[2]))
+        && w.can_entity_destroy(mob, p, true)
 }
 impl Goal for AttackTurtleEgg {
     goal_clone!();
@@ -1228,7 +1234,12 @@ impl Goal for AttackTurtleEgg {
         // Most of the level holds no turtle egg: its sections' palettes say
         // so without the walk of every cell in reach.
         let egg = |s| &*cx.w.facts.get(s).name == "minecraft:turtle_egg";
-        if self.base.may_find(m, cx.w, egg) && self.base.find_nearest(m, cx.w, turtle_egg_target) {
+        let id = m.id;
+        if self.base.may_find(m, cx.w, egg)
+            && self
+                .base
+                .find_nearest(m, cx.w, |w, p| turtle_egg_target(w, id, p))
+        {
             self.base.next_start = super::goals::reduced(20);
             return true;
         }
@@ -1237,8 +1248,10 @@ impl Goal for AttackTurtleEgg {
             super::goals::reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         false
     }
-    fn can_continue(&mut self, _m: &mut Mob, cx: &mut Cx) -> bool {
-        self.base.can_continue(cx.w, turtle_egg_target)
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let id = m.id;
+        self.base
+            .can_continue(cx.w, |w, p| turtle_egg_target(w, id, p))
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.base.start(m, cx.w);
@@ -1327,7 +1340,9 @@ impl Goal for AttackTurtleEgg {
                     count: 1,
                 });
             }
-            // The break sound's pitch draws from the level random.
+            // `playBreakSound`: volume 0.7, pitch 0.9 + the level random's
+            // float * 0.2.
+            let pitch = 0.9 + cx.level.random().next_float() * 0.2;
             cx.events.push(MobEvent::Sound(
                 "entity.turtle.egg_break",
                 [
@@ -1336,7 +1351,7 @@ impl Goal for AttackTurtleEgg {
                     f64::from(eat[2]) + 0.5,
                 ],
                 0.7,
-                1.0,
+                pitch,
             ));
             super::after_break(cx.events, cx.w.asks_living_destroy_block, m.id, effects);
         }
@@ -1358,7 +1373,9 @@ mod conversion_tests {
             Mob::new(2, Arc::new(types.types[kind].clone()), at, yaw)
         };
         match event {
-            MobEvent::Convert { from, kind, params } => {
+            MobEvent::Convert {
+                from, kind, params, ..
+            } => {
                 let mut m = new(kind, from.position, from.yaw);
                 crate::mobs::conversion::single(from, &mut m, *params);
                 Some(m)
@@ -1568,6 +1585,75 @@ mod go_to_water_tests {
 }
 
 #[cfg(test)]
+mod turtle_egg_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use std::sync::Arc;
+
+    /// The pitch of the `entity.turtle.egg_break` sound the goal plays on the
+    /// tick it breaks the egg, and the level random's next draw afterwards,
+    /// with the level random seeded `level_seed`. `None` without the extracted
+    /// data.
+    fn break_tick(level_seed: i64) -> Option<(f32, f32)> {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            let egg = registry.default_state("minecraft:turtle_egg").unwrap();
+            world.set(0, 63, 0, egg).unwrap();
+        };
+        let mut out = None;
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut goal = AttackTurtleEgg::default();
+            goal.base.block = [0, 63, 0];
+            goal.base.reached = true;
+            // Past `RemoveBlockGoal`'s sixty ticks: the egg goes this tick.
+            goal.since_reached = 61;
+            let mut lr = crate::health::TestLevel::new(level_seed);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                level: &mut lr.level(),
+                events: &mut events,
+            };
+            goal.tick(&mut m, &mut cx);
+            out = events
+                .iter()
+                .find_map(|e| match e {
+                    MobEvent::Sound("entity.turtle.egg_break", _, volume, pitch) => {
+                        assert_eq!(*volume, 0.7);
+                        Some(*pitch)
+                    }
+                    _ => None,
+                })
+                .map(|pitch| (pitch, lr.random().next_float()));
+        });
+        ran.then_some(out).flatten()
+    }
+
+    /// `Zombie.ZombieAttackTurtleEggGoal.playBreakSound`:
+    /// `0.9F + level.getRandom().nextFloat() * 0.2F`. One draw of the level's
+    /// random, not the mob's, so the pitch varies with the level seed over
+    /// 0.9-1.1 rather than a fixed 1.0.
+    #[test]
+    fn the_egg_break_pitch_draws_from_the_level_random() {
+        // java.util.Random(seed)'s first nextFloat, from an independent
+        // implementation: 0.7306990027427673 for 7, 0.0978928804397583 for
+        // 4096, so the pitches are 0.9 + f * 0.2 in f32.
+        let Some((pitch, next)) = break_tick(7) else {
+            return;
+        };
+        assert_eq!(pitch, 1.046_139_7);
+        // Exactly one draw: the seed's second float is what comes next.
+        assert_eq!(next, 0.638_537_65);
+        assert_eq!(break_tick(4096), Some((0.919_578_55, 0.875_477_85)));
+    }
+}
+
+#[cfg(test)]
 mod wither_arrow_tests {
     use super::*;
     use crate::mobs::world::{test_player, with_test_world};
@@ -1741,5 +1827,104 @@ mod trident_continue_tests {
             Some((true, false)),
             "a trident attack starts for a drowned holding one and stops when it is gone"
         );
+    }
+
+    #[test]
+    fn drowned_and_husk_conversion_starts_at_301_ticks_and_converts_on_tick_301() {
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.fluids.eye_in_water = true;
+            m.extra.counter = 599;
+
+            let mut lr = crate::health::TestLevel::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                level: &mut lr.level(),
+                events: &mut events,
+            };
+
+            // Tick 600 of being in water starts conversion with counter2 = 301.
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter, 600);
+            assert_eq!(m.extra.counter2, 301);
+
+            // Conversion ticks down across 300 ticks without firing.
+            for i in (2..=301).rev() {
+                assert_eq!(m.extra.counter2, i);
+                cx.events.clear();
+                custom_server_ai_step(&mut m, &mut cx);
+                assert!(cx.events.is_empty(), "tick {i} should not convert yet");
+            }
+            assert_eq!(m.extra.counter2, 1);
+
+            // On the 301st tick of conversion, counter2 reaches 0 and converts.
+            cx.events.clear();
+            custom_server_ai_step(&mut m, &mut cx);
+            assert_eq!(m.extra.counter2, 0);
+            assert!(
+                cx.events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::Convert { .. })),
+                "conversion should trigger on tick 301"
+            );
+        });
+        let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod turtle_egg_target_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Refuses mob 1 the block at (2, 64, 0).
+    struct Keep;
+    impl crate::mobs::MobHooks for Keep {
+        fn enderman_anger_suppressed(&self, _: u32, _: &crate::mobs::PlayerView) -> bool {
+            false
+        }
+        fn can_grief(&self, _: u32, rule: bool) -> bool {
+            rule
+        }
+        fn grief_hooked(&self) -> bool {
+            false
+        }
+        fn living_visibility(&self, _: &crate::mobs::PlayerView, _: u32, v: f64) -> f64 {
+            v
+        }
+        fn can_entity_destroy(&self, mob: u32, pos: [i32; 3], vanilla: bool) -> bool {
+            vanilla && !(mob == 1 && pos == [2, 64, 0])
+        }
+    }
+
+    /// `RemoveBlockGoal.isValidTarget` asks the egg's `canEntityDestroy` for
+    /// the zombie: refused, the egg at (2, 64, 0) is no target; the one at
+    /// (4, 64, 0), and the same egg for another zombie, still are.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_refused_turtle_egg_is_no_target() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            let egg = registry.default_state("minecraft:turtle_egg").unwrap();
+            world.set(2, 64, 0, egg).unwrap();
+            world.set(4, 64, 0, egg).unwrap();
+        };
+        assert!(crate::mobs::world::with_built_test_world(
+            &[],
+            build,
+            |world, _| {
+                let mut world = world.clone();
+                assert!(turtle_egg_target(&world, 1, [2, 64, 0]));
+                world.mob_hooks = Some(&Keep);
+                assert!(!turtle_egg_target(&world, 1, [2, 64, 0]));
+                assert!(turtle_egg_target(&world, 2, [2, 64, 0]));
+                assert!(turtle_egg_target(&world, 1, [4, 64, 0]));
+            }
+        ));
     }
 }

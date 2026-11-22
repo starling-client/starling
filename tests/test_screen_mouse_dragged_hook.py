@@ -15,11 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 class ScreenMouseDraggedHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_drag_lifecycle_delta_and_cancelled_cursor(self):
-        source = (ROOT / "crates/horizon-client/src/game/runtime/window_handler.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
         hooks = native_hook_sources()
         hooks = hooks.replace("pub(super) fn", "fn").replace("super::glfw_", "glfw_")
         track = method(hooks, "track_drag_button")
         dispatch = method(hooks, "screen_mouse_dragged")
+        hud_room = (ROOT / "crates/horizon-client/src/game/interface/hud_room.rs").read_text(encoding="utf-8")
+        interface_point = method(hud_room.replace("pub(in crate::game) fn", "fn"), "interface_point")
         start = source.index("                        let previous = self.cursor;", source.index("WindowEvent::CursorMoved { position"))
         cursor_end = source.index("                        if self.dialog_open()", start)
         cursor = source[start:cursor_end]
@@ -60,12 +62,14 @@ struct Game { drag_button: Option<i32>, physical_buttons: HashSet<i32>, physical
 impl Game {
     fn pad_synthetic_input(&self) -> bool { self.synthetic }
     fn screen_view_now(&self) -> Option<View> { self.open.then_some(View { mouse: self.cursor }) }
+    fn interface_origin(&self) -> [f32; 2] { [0.0; 2] }
     fn native_screen_mouse_dragged_pre(&self, view: &View, button: i32, delta: [f32; 2], modifiers: u32, canceled: &mut bool) {
         assert_eq!(modifiers, 5);
         self.calls.borrow_mut().push((button, delta, view.mouse)); *canceled = self.cancel;
     }
     TRACK
     DISPATCH
+    INTERFACE_POINT
     fn pointer(&mut self, position: Point) -> Result<(), ()> {
         let b = Batch { scale: 2.0 };
         let mut mouse_post = None;
@@ -114,7 +118,7 @@ fn lifecycle_and_cancellation() {
         assert!(game.calls.borrow().is_empty());
     }
 }
-""".replace("TRACK", track).replace("DISPATCH", dispatch).replace("CURSOR", cursor).replace("FOCUS", focus)
+""".replace("TRACK", track).replace("DISPATCH", dispatch).replace("INTERFACE_POINT", interface_point).replace("CURSOR", cursor).replace("FOCUS", focus)
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "drag.rs", Path(folder) / "drag.exe"
             src.write_text(fixture, encoding="utf-8")

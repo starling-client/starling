@@ -45,12 +45,35 @@ pub enum AttributeRegistrationError {
 // exhaustive: its field is private, so only registration creates a key
 pub struct EffectKey(pub(crate) u32);
 
-/// A mob entity type (`minecraft:zombie`) in the built-in entity-type registry, in
-/// registration order. A key stays valid until the game exits.
-// no wire: decoding validates the u32 slot with EntityTypeKey::from_slot on the host; wasm carries the host-issued opaque token without consulting guest tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-// exhaustive: only the load-owned table creates keys
+/// An entity type (`minecraft:zombie`) in the built-in entity-type registry, in
+/// registration order. Returned by `EntityRef::kind`; Copy/Eq comparisons do not
+/// allocate. Request `key.id(host)` for its namespaced name (an owned diagnostic
+/// string). A key stays valid until the game exits.
+// The derived scalar codec validates host slots; wasm carries the host-issued token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, horizon_mod_api_macros::Wire)]
+#[wire(via = u32)]
+// exhaustive: incoming scalar slots are checked against the host's registry
 pub struct EntityTypeKey(pub(crate) u32);
+
+impl From<&EntityTypeKey> for u32 {
+    fn from(key: &EntityTypeKey) -> Self {
+        key.0
+    }
+}
+impl TryFrom<u32> for EntityTypeKey {
+    type Error = &'static str;
+    fn try_from(slot: u32) -> Result<Self, Self::Error> {
+        // A guest transports the host-issued identity; only the host can validate it.
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(Self(slot))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::from_slot(slot)
+        }
+    }
+}
 
 /// A playing sound's channel, for `play_sound_source` and
 /// `play_streaming_source`: an id only, to tell sounds apart across the two
@@ -97,6 +120,11 @@ pub struct ServerPlayer {
     /// known).
     pub address: String,
 }
+
+/// A persistent entity UUID in the same bit order as the value from `EntityRef::uuid`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, horizon_mod_api_macros::Wire)]
+// exhaustive: a UUID is exactly one public 128-bit value
+pub struct EntityUuid(pub u128);
 
 /// An entity of the open world, for the `Host` methods that read or change one
 /// (`entity.position(host)`). It holds the world's epoch and the entity's id: ids
@@ -890,6 +918,53 @@ impl NoBackend for PierceLevelError {
     }
 }
 
+/// Why a player's collision exclusions were not set (`EntityRef::set_collision_exclusions`,
+/// `ClientHost::set_collision_exclusions`). The boxes the player had stay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum CollisionExclusionsError {
+    /// The handle is stale, or a client has no player of its own.
+    Stale,
+    /// The entity is not a player: only players keep collision exclusions.
+    NotAPlayer,
+    /// More than 64 boxes.
+    TooMany,
+    /// A coordinate that is NaN or infinite.
+    NotFinite,
+    /// A box whose minimum is above its maximum on an axis.
+    Inverted,
+}
+
+impl NoBackend for CollisionExclusionsError {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
+/// Why a client's hotbar selection was not made (`ClientHost::select_hotbar_slot`). The
+/// selection the player had stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, horizon_mod_api_macros::Wire)]
+// exhaustive: the three refusals are the contract; a new reason is a breaking change
+pub enum HotbarSlotError {
+    /// The client shows no world, or has no player of its own.
+    NoWorld,
+    /// A slot above 8: vanilla's range is 0 to 8, and the server ignores others.
+    OutOfRange {
+        /// The slot the caller asked for.
+        slot: u8,
+    },
+    /// The number keys do nothing for the local player, as for a spectator (its keys open
+    /// the spectator menu instead).
+    Refused,
+}
+
+impl NoBackend for HotbarSlotError {
+    fn no_backend() -> Self {
+        Self::NoWorld
+    }
+}
+
 /// A vanilla `AbstractMinecart`, narrowed from an entity with `host.minecart(entity)`.
 #[derive(horizon_mod_api_macros::Wire)]
 #[wire(internal_field_layouts)]
@@ -1025,6 +1100,28 @@ impl From<PlayerRef> for EntityRef {
     }
 }
 
+/// The original player lent to `player_clone`. Every read expires when the hook returns;
+/// this is deliberately not a live player or entity handle.
+// exhaustive: its field is private, so mods cannot build or destructure it
+#[derive(horizon_mod_api_macros::Wire)]
+#[wire(internal_field_layouts)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OriginalPlayerRef {
+    pub(crate) token: u64,
+}
+
+impl OriginalPlayerRef {
+    /// Read the original's attachment, including nonpersistent and non-copy-on-death data.
+    /// A missing value answers its default without changing the replacement player.
+    pub fn attachment<T: Clone + Send + Sync + 'static>(
+        self,
+        host: &mut dyn crate::Host,
+        key: &crate::AttachmentType<T>,
+    ) -> Result<T, crate::AttachmentError> {
+        key.get(host, crate::Holder::OriginalPlayer(self.token))
+    }
+}
+
 /// A player's food data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -1036,6 +1133,83 @@ pub struct PlayerFood {
     pub saturation: f32,
     /// The exhaustion; the game takes a saturation or food point at 4.
     pub exhaustion: f32,
+}
+
+/// A player's game profile (authlib's `GameProfile`): the UUID, the name and the signed
+/// properties the server received at login, such as `textures` (the skin).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct GameProfile {
+    /// The player's UUID.
+    pub uuid: u128,
+    /// The player's name.
+    pub name: String,
+    /// The profile's properties in login order; empty for an offline-mode player.
+    pub properties: Vec<ProfileProperty>,
+}
+
+impl GameProfile {
+    /// A profile from its UUID, name and properties.
+    pub fn new(uuid: u128, name: String, properties: Vec<ProfileProperty>) -> Self {
+        Self {
+            uuid,
+            name,
+            properties,
+        }
+    }
+}
+
+/// One property of a [`GameProfile`] (authlib's `Property`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ProfileProperty {
+    /// The property's name, such as `textures`.
+    pub name: String,
+    /// Its value, as the session server sent it (base64 for `textures`).
+    pub value: String,
+    /// The session server's signature, when the value is signed.
+    pub signature: Option<String>,
+}
+
+impl ProfileProperty {
+    /// A property from its name, value and optional signature.
+    pub fn new(name: String, value: String, signature: Option<String>) -> Self {
+        Self {
+            name,
+            value,
+            signature,
+        }
+    }
+}
+
+/// Why [`PlayerRef::open_mod_menu`] opened nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum OpenMenuError {
+    /// The menu type is not a content mod's (`data/<id>/horizon/menu/`).
+    NotModMenu,
+    /// The player is stale, not connected (a fake player), or their client lacks Horizon's
+    /// menu types (a vanilla client); also a host without a game.
+    PlayerUnavailable,
+    /// The extra data is past the 32 KiB a menu may carry.
+    TooLarge,
+    /// The title could not cross to the game.
+    Title(crate::text::TextFormError),
+}
+
+impl From<crate::text::TextFormError> for OpenMenuError {
+    fn from(error: crate::text::TextFormError) -> Self {
+        Self::Title(error)
+    }
+}
+
+impl NoBackend for OpenMenuError {
+    fn no_backend() -> Self {
+        Self::PlayerUnavailable
+    }
 }
 
 /// A player's experience (`Player.experienceLevel`, `experienceProgress`,
@@ -1214,3 +1388,69 @@ pub enum Sentiment {
     /// Changes are neutral.
     Neutral,
 }
+
+/// Why an entity physically moves (`Entity.move`'s `MoverType`, the
+/// `entity_move` hook of #2308/#2414): itself, the player behind a position
+/// packet, a piston, a shulker box lid, a shulker mob's opening lid. Boats
+/// and minecarts pass `SelfMovement`, as vanilla's own kinds do; `Player` is
+/// the server packet sites only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum MoveCause {
+    /// `MoverType.SELF`: the body's own tick, travel or packet follow-up.
+    SelfMovement,
+    /// `MoverType.PLAYER`: the server applying a player's position or vehicle
+    /// packet.
+    Player,
+    /// `MoverType.PISTON`: a moving piston block pushes the body.
+    Piston,
+    /// `MoverType.SHULKER_BOX`: a shulker box's opening lid pushes it away.
+    ShulkerBox,
+    /// `MoverType.SHULKER`: a shulker mob's opening lid pushes it away.
+    Shulker,
+}
+
+impl MoveCause {
+    /// Every cause, in ordinal order.
+    pub const ALL: [Self; 5] = [
+        Self::SelfMovement,
+        Self::Player,
+        Self::Piston,
+        Self::ShulkerBox,
+        Self::Shulker,
+    ];
+}
+
+/// How a declared attribute's modifier lines read on item tooltips: NeoForge's
+/// `RangedAttribute`, `PercentageAttribute` and `BooleanAttribute`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// exhaustive: NeoForge's three display kinds, and the tooltip matches them all
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum AttributeDisplay {
+    /// Added values as numbers, multiplied ones as percentages: vanilla's.
+    #[default]
+    Ranged,
+    /// Added values as percentages too: `+0.05` reads `+5%`.
+    Percentage,
+    /// On or off: an added value above zero reads enabled, any other disabled.
+    Boolean,
+}
+
+/// How a declared attribute's tooltip lines read beyond their colour (NeoForge's
+/// `IAttributeExtension`). The default reads as vanilla's attributes do.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// exhaustive: mods build it with `..Default::default()`, and the game reads every field
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct AttributeTooltip {
+    /// How its modifier amounts read.
+    pub display: AttributeDisplay,
+    /// The namespaced id of the attribute's base modifier (`getBaseId`): a modifier with this
+    /// id reads as the green total of the player's base value and its amount, as
+    /// `minecraft:base_attack_damage` does for attack damage. Without a player (recipe search)
+    /// it reads as a plain line.
+    pub base_modifier: Option<String>,
+}
+#[cfg(test)]
+#[path = "entity_type_key_tests.rs"]
+mod entity_type_key_tests;

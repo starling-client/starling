@@ -209,7 +209,7 @@ fn jar_data_layers_merge_tags_and_replace_recipes_below_world_datapacks() {
     assert_eq!(
         store.function_tags["minecraft:ordered"]
             .iter()
-            .map(|(id, _)| id.as_str())
+            .map(|(id, _, _)| id.as_str())
             .collect::<Vec<_>>(),
         [
             "minecraft:layers/base",
@@ -336,7 +336,8 @@ fn accepted_jar_inputs_distinguish_unreadable_invalid_and_non_file_cache_entries
 
 #[test]
 fn code_only_inventory_changes_cache_roots_and_recipe_conditions_without_content_namespaces() {
-    use horizon_mod_package::{Side, enabled::EnabledMods};
+    use horizon_mod_package::enabled::EnabledMods;
+    use mod_api::Side;
     let fixture = Fixture::new("enabled-inventory");
     fixture.write(
         "base/data/minecraft/recipe/code_only.json",

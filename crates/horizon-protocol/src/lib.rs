@@ -10,6 +10,7 @@ pub mod buf;
 pub mod chunk;
 pub mod connection;
 pub mod crypto;
+pub mod custom_book;
 pub mod entity_data;
 pub mod frame;
 pub mod hash_ops;
@@ -17,8 +18,11 @@ pub mod ids;
 pub mod item;
 pub mod menu_extra;
 pub mod mod_list;
+// Starling: the old mod messages, for the website's mods made for them (game/starling/old_mod_net.rs).
 pub mod mod_net;
 pub mod packets;
+pub mod passage_sync;
+pub mod payload_negotiation;
 pub mod quiet;
 pub mod registry;
 mod resolver;
@@ -28,6 +32,7 @@ pub mod secure_chat;
 pub mod server_status;
 pub mod servers;
 pub mod text;
+pub mod viewed_levels;
 
 /// SharedConstants.getProtocolVersion().
 pub const PROTOCOL_VERSION: i32 = horizon_core::version::PROTOCOL_VERSION;
@@ -52,7 +57,12 @@ pub enum Direction {
 
 /// A malformed or unsupported packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error(pub String, Option<packets::custom_payload::PayloadTooLarge>);
+pub struct Error(pub String, Option<SizeRefusal>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SizeRefusal {
+    Payload(packets::custom_payload::PayloadTooLarge),
+    Frame(frame::FrameTooLarge),
+}
 impl Error {
     const TIMED_OUT: &str = "Timed out";
     const END_OF_STREAM: &str = "Connection closed by the server";
@@ -68,12 +78,29 @@ impl Error {
         };
         Self(
             format!("PayloadTooLarge {{ id: {id}, size: {size}, limit: {limit} }}"),
-            Some(detail),
+            Some(SizeRefusal::Payload(detail)),
         )
     }
     /// Structured size refusal, retained for callers that expose their own error vocabulary.
     pub fn payload_limit(&self) -> Option<&packets::custom_payload::PayloadTooLarge> {
-        self.1.as_ref()
+        match &self.1 {
+            Some(SizeRefusal::Payload(detail)) => Some(detail),
+            _ => None,
+        }
+    }
+    /// A packet cannot fit the connection's framing or compression pipeline.
+    pub fn frame_too_large(detail: frame::FrameTooLarge) -> Self {
+        Self(
+            format!("FrameTooLarge {detail:?}"),
+            Some(SizeRefusal::Frame(detail)),
+        )
+    }
+    /// Structured whole-packet refusal, before any bytes are written.
+    pub fn frame_limit(&self) -> Option<&frame::FrameTooLarge> {
+        match &self.1 {
+            Some(SizeRefusal::Frame(detail)) => Some(detail),
+            _ => None,
+        }
     }
     /// The read timeout passed with nothing received (netty's
     /// `ReadTimeoutException`, which `Connection.exceptionCaught` reports as
@@ -104,3 +131,6 @@ impl From<std::io::Error> for Error {
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Engine-owned packet allocation accounting.
+pub mod retained;

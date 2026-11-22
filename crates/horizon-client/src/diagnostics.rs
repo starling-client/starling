@@ -299,26 +299,34 @@ pub(crate) fn export_from(home: &Path, player: &Path) -> Result<PathBuf, String>
                                     | "previous-error.txt"
                             ))
                     {
-                        files.push(entry.path());
+                        files.push((entry.path(), name));
                     }
                 }
             }
         }
-        files.sort_by_key(|p| {
-            let name = p.file_name().unwrap().to_string_lossy();
-            let priority = match name.as_ref() {
+        let launcher_logs = home.join("launcher/logs");
+        for name in ["latest.log", "previous.log"] {
+            let file = launcher_logs.join(name);
+            if fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file()) {
+                files.push((file, format!("launcher-{name}")));
+            }
+        }
+        files.sort_by_key(|(_, name)| {
+            let priority = match name.as_str() {
                 "current-session.json"
                 | "previous-session.json"
                 | "android-exits.json"
                 | "perf-sessions.json" => 0,
-                "latest.log" | "previous.log" | "previous-run.log" | "previous-error.txt" => 1,
+                "latest.log"
+                | "previous.log"
+                | "previous-run.log"
+                | "previous-error.txt"
+                | "launcher-latest.log"
+                | "launcher-previous.log" => 1,
                 n if n.starts_with("horizon-performance-") => 2,
                 _ => 3,
             };
-            (
-                priority,
-                std::cmp::Reverse(p.file_name().map(|s| s.to_owned())),
-            )
+            (priority, std::cmp::Reverse(name.clone()))
         });
         let mut archive = zip::ZipWriter::new(File::create(&stage)?);
         let options = zip::write::SimpleFileOptions::default()
@@ -327,12 +335,11 @@ pub(crate) fn export_from(home: &Path, player: &Path) -> Result<PathBuf, String>
         let mut omitted = Vec::new();
         let mut details = Vec::new();
         let mut total = 0;
-        files.dedup_by(|a, b| a.file_name() == b.file_name());
+        files.dedup_by(|a, b| a.1 == b.1);
         if files.len() > 32 {
             omitted.push(json!({"count":files.len()-32,"reason":"file count limit"}));
         }
-        for file in files.into_iter().take(32) {
-            let mut name = file.file_name().unwrap().to_string_lossy().into_owned();
+        for (file, mut name) in files.into_iter().take(32) {
             let metadata = file.metadata()?;
             let source_size = metadata.len();
             let modified_ms = metadata
@@ -467,6 +474,14 @@ mod tests {
     fn export_allowlist_bounds_and_binary_trace_manifest() {
         let home = home();
         let dir = home.join("performance");
+        for (folder, text) in [
+            ("logs", "Game started"),
+            ("launcher/logs", "Launcher opened"),
+        ] {
+            let logs = home.join(folder);
+            fs::create_dir_all(&logs).unwrap();
+            fs::write(logs.join("latest.log"), text).unwrap();
+        }
         fs::write(home.join("account.json"), b"secret-account").unwrap();
         fs::write(dir.join("account.json"), b"secret-account").unwrap();
         fs::write(
@@ -486,6 +501,14 @@ mod tests {
         let mut zip = zip::ZipArchive::new(File::open(file).unwrap()).unwrap();
         assert!(zip.by_name("account.json").is_err());
         assert!(zip.by_name("exit-1.trace").is_err());
+        for (name, expected) in [
+            ("latest.log", "Game started"),
+            ("launcher-latest.log", "Launcher opened"),
+        ] {
+            let mut log = String::new();
+            zip.by_name(name).unwrap().read_to_string(&mut log).unwrap();
+            assert_eq!(log, expected);
+        }
         let mut manifest = String::new();
         zip.by_name("manifest.json")
             .unwrap()

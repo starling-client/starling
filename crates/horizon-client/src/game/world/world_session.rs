@@ -1,6 +1,7 @@
 //! Opening and closing a local world from the client: the title screen's actions, entering a
 //! world on the server thread, and saving and leaving it on exit.
 use super::*;
+use horizon_client::save::level_mods;
 
 impl Game<'_> {
     /// `onAbort`: the confirm screen's Back or Escape reopens the Data
@@ -26,6 +27,11 @@ impl Game<'_> {
             // A splitscreen player's title never ends the process (P1's does).
             Action::Quit if self.options.split_guest => {}
             Action::Quit => event_loop.exit(),
+            Action::Launcher => {
+                #[cfg(target_os = "android")]
+                crate::ha_launcher::back_to_launcher();
+                event_loop.exit();
+            }
             Action::Options => self.open_options(true),
             Action::Accessibility => {
                 self.open_options_at(true, horizon_client::options_ui::Page::Accessibility)
@@ -109,7 +115,16 @@ impl Game<'_> {
                         "Horizon: {folder} plays with mods {set:?}, not the {:?} running: starting again",
                         world_content::running()
                     );
-                    world_content::request_restart(folder, &set)?;
+                    world_content::request_restart(
+                        folder,
+                        &set,
+                        world_content::Created {
+                            name: name.unwrap_or(folder).to_owned(),
+                            seed,
+                            creative,
+                            options: Default::default(),
+                        },
+                    )?;
                     world_content::restart();
                     return Ok(());
                 }
@@ -122,9 +137,9 @@ impl Game<'_> {
                     );
                     log::warn!("Horizon: {folder}: {message}");
                     let saves = std::env::current_dir()?.join("saves");
-                    let title = self
-                        .title
-                        .get_or_insert_with(|| Title::new(saves, &self.options.resources));
+                    let title = self.title.get_or_insert_with(|| {
+                        Title::new(saves, &self.options.resources, &self.gui.splashes)
+                    });
                     title.mode = horizon_client::title::Mode::Error {
                         message,
                         alert: None,
@@ -169,9 +184,9 @@ impl Game<'_> {
                 );
                 log::warn!("Horizon: {folder}: {message}");
                 let saves = std::env::current_dir()?.join("saves");
-                let title = self
-                    .title
-                    .get_or_insert_with(|| Title::new(saves, &self.options.resources));
+                let title = self.title.get_or_insert_with(|| {
+                    Title::new(saves, &self.options.resources, &self.gui.splashes)
+                });
                 title.mode = horizon_client::title::Mode::Error {
                     message,
                     alert: None,
@@ -191,6 +206,23 @@ impl Game<'_> {
             create: create.cloned().map(Box::new),
         })? {
             return Ok(());
+        }
+        // A world saved with mods that are not loaded now asks first (#3856), unless the player
+        // already chose to open it anyway; the question reads the world and writes nothing.
+        if create.is_none() {
+            let dir = std::env::current_dir()?.join("saves").join(folder);
+            if !level_mods::is_confirmed(&dir) {
+                let missing = self.ask_missing_mods(&dir);
+                if !missing.is_empty() {
+                    if let Some(title) = self.title.as_mut() {
+                        title.ask_missing_mods(folder, missing);
+                        return Ok(());
+                    }
+                    for m in &missing {
+                        log::warn!("Horizon: {}", level_mods::describe(m));
+                    }
+                }
+            }
         }
         self.join_world_rest()?;
         // Create World's data packs, in the world before it opens.
@@ -246,17 +278,12 @@ impl Game<'_> {
     }
 
     /// Load authoritative world state synchronously, without client entry or
-    /// integrated-server selection. Server startup must use this entry point.
+    /// integrated-server selection: a test-only convenience over the same two
+    /// steps production startup calls separately (`prepare_world_and_rules`,
+    /// then `finish_open_world`).
+    #[cfg(test)]
     pub(super) fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
-        self.join_world_rest()?;
-        self.perf.world_opening();
-        let prepared = request.prepare(
-            &self.res,
-            &self.pack,
-            &self.options,
-            &self.settings,
-            &horizon_world::datafix::progress::UpgradeProgress::new(),
-        )?;
+        let prepared = self.prepare_world_and_rules(request)?;
         self.finish_open_world(prepared)
     }
 

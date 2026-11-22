@@ -41,14 +41,14 @@ class Targets(unittest.TestCase):
     def test_hooked_functions_have_no_cfg_inside(self):
         for path, signature in (
             ("crates/horizon-client/src/game/runtime/window_handler.rs", "fn handle_window_event("),
-            ("crates/horizon-client/src/game/runtime/window_handler.rs", "fn handle_window_event_inner("),
+            ("crates/horizon-client/src/game.rs", "fn handle_window_event_inner("),
             ("crates/horizon-client/src/game/interface/play_input.rs", "fn play_mouse("),
             ("crates/horizon-client/src/game/interface/play_input.rs", "fn mapped_key("),
             ("crates/horizon-client/src/game/interface/inventory_input.rs", "fn has_shift_down("),
             ("crates/horizon-client/src/game/interface/item_draw.rs", "fn has_shift_down("),
             ("crates/horizon-client/src/game/interface/inventory_input.rs", "fn has_control_down("),
 
-            ("crates/horizon-client-render/src/options_ui.rs", "fn layout("),
+            ("crates/horizon-client-render/src/options_ui/layout.rs", "fn layout("),
         ):
             self.assertNotRegex(body(path, signature), r"#\s*\[\s*cfg|\bcfg\s*!", signature)
 

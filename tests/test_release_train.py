@@ -18,6 +18,17 @@ def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src
             "author": author, "url": f"https://github.com/horizon-rust/horizon/pull/{number}", "merged_at": NOW - merged}
 
 
+def merged_node(number, commit):
+    return {"number": number, "mergeCommit": {"oid": commit}, "title": " Fix a thing ",
+            "url": f"https://github.com/arismoko/horizon/pull/{number}",
+            "mergedAt": (NOW - dt.timedelta(hours=9)).isoformat(), "author": {"login": "contributor"},
+            "labels": {"nodes": []}, "closingIssuesReferences": {"nodes": []}}
+
+
+def metadata_page(nodes):
+    return {"data": {"repository": {"pullRequests": {"nodes": nodes}}}}
+
+
 class ReleaseTrainTests(unittest.TestCase):
     def test_repository_merge_identity_before_metadata(self):
         for repository in ("arismoko/horizon", "horizon-rust/horizon"):
@@ -25,17 +36,17 @@ class ReleaseTrainTests(unittest.TestCase):
                     mock.patch.object(train, "run", return_value="root"), \
                     mock.patch.object(train, "merged_pull_requests", return_value=[
                         (27, "imported"), (28, "collision"), (28, "own")]), \
-                    mock.patch.object(train, "gh_json", return_value=[[], [
-                        {"number": 28, "merge_commit_sha": "own", "merged_at": "date"},
-                        {"number": 27, "merge_commit_sha": "imported", "merged_at": None}]]) as api, \
-                    mock.patch.object(train, "pull_request", return_value=pr(28)) as metadata, \
+                    mock.patch.object(train, "gh_json", return_value=[metadata_page([]),
+                        metadata_page([merged_node(28, "own")])]) as api, \
                     mock.patch.object(train, "changed_paths", return_value=["launcher/src/main.rs"]):
                 last, prs = train.gather("launcher", "head", releases=[])
                 self.assertIsNone(last)
                 self.assertEqual([p["number"] for p in prs], [28])
-                metadata.assert_called_once_with(28)
-                api.assert_called_once_with("api", f"repos/{repository}/pulls?state=closed&per_page=100",
-                                            "--paginate", "--slurp")
+                api.assert_called_once()
+                args = api.call_args.args
+                self.assertEqual(args[:4], ("api", "graphql", "--paginate", "--slurp"))
+                self.assertIn(f"owner={repository.split('/')[0]}", args)
+                self.assertIn("name=horizon", args)
                 release, _ = train.decision("launcher", prs, NOW)
                 self.assertTrue(release)
                 _, body = train.notes("launcher", "launcher@0.2.0", prs, [])
@@ -45,12 +56,10 @@ class ReleaseTrainTests(unittest.TestCase):
     def test_first_fork_release_with_only_imported_history(self):
         with mock.patch.object(train, "run", return_value="root"), \
                 mock.patch.object(train, "merged_pull_requests", return_value=[(27, "imported")]), \
-                mock.patch.object(train, "gh_json", return_value=[[]]), \
-                mock.patch.object(train, "pull_request") as metadata:
+                mock.patch.object(train, "gh_json", return_value=[metadata_page([])]):
             last, prs = train.gather("launcher", "head", releases=[])
             self.assertIsNone(last)
             self.assertEqual(prs, [])
-            metadata.assert_not_called()
             self.assertEqual(train.next_launcher_tag([], False, (0, 2)), "launcher@0.2.0")
             self.assertTrue(train.decision("launcher", prs, NOW, new_line="0.2")[0])
             self.assertFalse(train.decision("launcher", prs, NOW)[0])
@@ -58,15 +67,49 @@ class ReleaseTrainTests(unittest.TestCase):
             self.assertNotIn("#27", body)
 
     def test_release_metadata_errors_are_not_imports(self):
-        for failing in ("gh_json", "pull_request"):
-            with self.subTest(failing=failing), \
-                    mock.patch.object(train, "merged_pull_requests", return_value=[(28, "own")]), \
-                    mock.patch.object(train, "gh_json", return_value=[[{
-                        "number": 28, "merge_commit_sha": "own", "merged_at": "date"}]]) as api, \
-                    mock.patch.object(train, "pull_request") as metadata:
-                (api if failing == "gh_json" else metadata).side_effect = RuntimeError("API unavailable")
-                with self.assertRaisesRegex(RuntimeError, "API unavailable"):
-                    train.merged_between("launcher", "base", "head")
+        with mock.patch.object(train, "merged_pull_requests", return_value=[(28, "own")]), \
+                mock.patch.object(train, "gh_json", side_effect=RuntimeError("API unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "API unavailable"):
+                train.merged_between("launcher", "base", "head")
+        broken = merged_node(28, "own")
+        broken["mergedAt"] = "invalid date"
+        with mock.patch.object(train, "merged_pull_requests", return_value=[(28, "own")]), \
+                mock.patch.object(train, "gh_json", return_value=[metadata_page([broken])]):
+            with self.assertRaises(ValueError):
+                train.merged_between("launcher", "base", "head")
+
+    def test_large_history_uses_paginated_metadata_without_per_pr_requests(self):
+        nodes = [merged_node(n, f"sha-{n}") for n in range(1, 301)]
+        nodes[0]["author"] = None
+        nodes[0]["labels"]["nodes"] = [{"name": "bug"}]
+        nodes[0]["closingIssuesReferences"]["nodes"] = [{"number": 9}, {"number": 3}]
+        pages = [metadata_page(nodes[i:i + 100]) for i in range(0, 300, 100)]
+        # Support the old N+1 implementation too: it returns the same records but must
+        # fail the request-count assertion, rather than failing on a changed fixture shape.
+        def response(*args):
+            if args[1] == "graphql":
+                return pages
+            if args[0] == "api":
+                return [[{"number": n["number"], "merge_commit_sha": n["mergeCommit"]["oid"],
+                          "merged_at": n["mergedAt"]} for n in nodes]]
+            node = nodes[int(args[2]) - 1].copy()
+            node["labels"] = node["labels"]["nodes"]
+            node["closingIssuesReferences"] = node["closingIssuesReferences"]["nodes"]
+            return node
+        with mock.patch.object(train, "merged_pull_requests", return_value=[
+                (n["number"], n["mergeCommit"]["oid"]) for n in nodes]), \
+                mock.patch.object(train, "gh_json", side_effect=response) as api, \
+                mock.patch.object(train, "changed_paths", return_value=["launcher/src/main.rs"]):
+            prs = train.merged_between("launcher", "base", "head")
+        self.assertEqual(len(prs), 300)
+        self.assertEqual(prs[0]["title"], "Fix a thing")
+        self.assertEqual(prs[0]["issues"], [3, 9])
+        self.assertEqual(prs[0]["labels"], ["bug"])
+        self.assertEqual(prs[0]["author"], "")
+        self.assertEqual(prs[-1]["number"], 300)
+        self.assertEqual(prs[-1]["merged_at"], NOW - dt.timedelta(hours=9))
+        api.assert_called_once()
+        self.assertEqual(api.call_args.args[:4], ("api", "graphql", "--paginate", "--slurp"))
 
     def test_player_facing_paths(self):
         exporters = {"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobDataExporter.java"}
@@ -234,29 +277,114 @@ class ReleaseTrainTests(unittest.TestCase):
             self.assertIsNone(train.green_main_head(), "checks alone: main's newest finished checks must pass")
 
     @mock.patch.object(train, "REPO", "arismoko/horizon")
-    def test_fork_base_uses_its_green_main_pushes_without_disabled_workflows(self):
-        records = [
-            ("pr-head", "main", "pull_request", "completed", "success"),
-            ("topic-head", "topic", "push", "completed", "success"),
-            ("broken-main", "main", "push", "completed", "failure"),
-            ("good-main", "main", "push", "completed", "success"),
-            ("older-main", "main", "push", "completed", "success"),
-        ]
-        def runs(*arguments):
-            workflow = arguments[arguments.index("--workflow") + 1]
-            self.assertEqual(workflow, "dyna-checks", "the fork has no checks/parity-main runs")
-            table = records
-            for option, column in [("--branch", 1), ("--event", 2), ("--status", 4)]:
-                if option in arguments:
-                    wanted = arguments[arguments.index(option) + 1]
-                    table = [entry for entry in table if entry[column] == wanted]
-            return [{"headSha": sha, "status": status, "conclusion": conclusion}
-                    for sha, _, _, status, conclusion in table]
-        with mock.patch.object(train, "gh_json", side_effect=runs):
-            self.assertEqual(train.green_main_head(parity=True), "good-main")
-            self.assertEqual(train.green_main_head(), "good-main")
-            records[:] = [entry for entry in records if entry[0] not in ("good-main", "older-main")]
-            self.assertIsNone(train.green_main_head(parity=True), "no unchecked fallback to main")
+    def test_fork_base_requires_same_sha_main_push_gate_jobs(self):
+        def record(sha, ident, event="push", branch="main"):
+            return dict(head_sha=sha, id=ident, event=event, head_branch=branch,
+                        status="completed", conclusion="failure")
+        def job(name, status="completed", conclusion="success"):
+            return dict(name=name, status=status, conclusion=conclusion)
+        gates = [job(name) for name in ("lint", "verify", "verify-static", "launcher", "pool-watch")]
+        records = [record("pr", 1, "pull_request"), record("topic", 2, branch="topic"),
+                   record("new", 3), record("good", 4), record("old", 5)]
+        jobs = {3: gates[:-1], 4: gates + [job("client-data", conclusion="failure")]}
+        def api(*arguments):
+            self.assertEqual(arguments[:4], ("api", "--paginate", "--slurp", arguments[3]))
+            path = arguments[3]
+            self.assertNotIn("wasm-mods.yml", path, "the fixture runs in the daily run, not on main pushes")
+            if "dyna-ci.yml/runs?" in path:
+                self.assertIn("branch=main&event=push", path)
+                return [{"workflow_runs": records[:3]}, {"workflow_runs": records[3:]}]
+            ident = int(path.split("/runs/")[1].split("/")[0])
+            self.assertIn("filter=latest", path)
+            return [{"jobs": jobs[ident][:2]}, {"jobs": jobs[ident][2:]}]
+        with mock.patch.object(train, "REPO", "arismoko/horizon"), \
+                mock.patch.object(train, "gh_json", side_effect=api) as requests:
+            self.assertEqual(train.green_main_head(parity=True), "good", "missing gate is not success")
+            self.assertEqual(train.green_main_head(), "good", "non-gate failure must not reject a build")
+            jobs[3] = gates
+            self.assertEqual(train.green_main_head(), "new")
+            requests.reset_mock()
+            self.assertEqual(train.green_main_head(eligible=lambda sha: sha == "good"), "good")
+            paths = [call.args[3] for call in requests.call_args_list]
+            self.assertFalse(any("/runs/3/jobs" in path for path in paths))
+            self.assertTrue(any("/runs/4/jobs" in path for path in paths))
+            for name in ("verify", "verify-static", "pool-watch"):
+                for status, conclusion in [("queued", None), ("in_progress", "success"),
+                                           ("completed", "skipped"), ("completed", "cancelled"),
+                                           ("completed", "failure"), ("completed", "timed_out")]:
+                    with self.subTest(gate=name, status=status, conclusion=conclusion):
+                        jobs[3] = [entry for entry in gates if entry["name"] != name] + [job(name, status, conclusion)]
+                        self.assertEqual(train.green_main_head(), "good")
+            records.insert(3, record("new", 99))
+            jobs[99] = gates
+            self.assertEqual(train.green_main_head(), "good", "an older run cannot override the latest run")
+            records[:] = records[:2]
+            self.assertIsNone(train.green_main_head(), "PR checks cannot supply a release base")
+
+    def test_the_daily_nightly_skips_only_the_batch_rules(self):
+        fresh = [{"number": 7, "labels": [], "paths": ["crates/horizon-world/src/lib.rs"],
+                  "merged_at": NOW - dt.timedelta(minutes=1)}]
+        self.assertFalse(train.decision("game", fresh, NOW)[0], "the batch train waits for more")
+        release, reason = train.decision("game", fresh, NOW, daily=True)
+        self.assertTrue(release, "one fresh player-facing pull request publishes from a green daily")
+        self.assertIn("daily run", reason)
+        self.assertEqual(train.decision("game", fresh, NOW, paused=True, daily=True),
+                         (False, "RELEASES_PAUSED is set"))
+        self.assertEqual(train.decision("game", [], NOW, daily=True),
+                         (False, "no merged pull request changed what players run"),
+                         "the commit the published nightly was built on: nothing to publish")
+        self.assertFalse(train.decision("game", fresh, NOW, blockers=[4], daily=True)[0])
+
+    def test_fork_channels_check_daily_green_or_the_gate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=folder, text=True, stderr=subprocess.DEVNULL).strip()
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            commits = []
+            for n in range(3):
+                git("commit", "-q", "--allow-empty", "-m", str(n))
+                commits.append(git("rev-parse", "HEAD"))
+            git("tag", "daily-green", commits[1])
+            with mock.patch.object(train, "ROOT", Path(folder)):
+                self.assertEqual(train.channel_head("nightly", ""), commits[1], "the default is daily-green itself")
+                self.assertEqual(train.channel_head("nightly", "daily-green"), commits[1])
+                for other in (commits[0], commits[2]):
+                    with self.assertRaisesRegex(SystemExit, "is not the commit `daily-green` points to"):
+                        train.channel_head("nightly", other)
+                git("tag", "-d", "daily-green")
+                with self.assertRaisesRegex(SystemExit, "no `daily-green` tag yet"):
+                    train.channel_head("nightly", "")
+                # A snapshot: main's head by default, or any commit of main, with the gate green on it.
+                git("update-ref", "refs/remotes/origin/main", commits[1])
+                head = commits[1]
+                green = {"workflow_runs": [dict(head_sha=head, head_branch="main", event="push", id=7)]}
+                done = dict(status="completed", conclusion="success")
+                gates = [{"jobs": [dict(name=name, **done) for name in ("lint", "verify", "verify-static", "launcher")]}]
+                with mock.patch.object(train, "REPO", "arismoko/horizon"), \
+                        mock.patch.object(train, "gh_json", side_effect=[[green], gates]):
+                    self.assertEqual(train.channel_head("snapshot", ""), head, "a snapshot needs the gate only")
+                with mock.patch.object(train, "REPO", "arismoko/horizon"), \
+                        mock.patch.object(train, "gh_json", side_effect=[[green], [{"jobs": gates[0]["jobs"][:3]}]]):
+                    with self.assertRaisesRegex(SystemExit, "a snapshot needs the gate green"):
+                        train.channel_head("snapshot", head)
+                pending = [{"jobs": gates[0]["jobs"][:3] + [dict(name="launcher", status="in_progress", conclusion=None)]}]
+                with mock.patch.object(train, "REPO", "arismoko/horizon"), \
+                        mock.patch.object(train, "gh_json", side_effect=[[green], pending]):
+                    with self.assertRaisesRegex(SystemExit, "a snapshot needs the gate green"):
+                        train.channel_head("snapshot", head)
+                # Not on main (newer than main's head here), or not a commit: refused before any gate lookup.
+                with mock.patch.object(train, "gh_json", side_effect=AssertionError("no lookup")):
+                    with self.assertRaisesRegex(SystemExit, "is not on main"):
+                        train.channel_head("snapshot", commits[2])
+                    with self.assertRaisesRegex(SystemExit, "not a commit of this repository"):
+                        train.channel_head("snapshot", "f" * 40)
+
+    def test_a_snapshot_is_tagged_by_kind_date_and_commit(self):
+        sha = "0c02067" + "a" * 33
+        self.assertEqual(train.build_tag("snapshot", "2026-11-13", sha), "snapshot-2026-11-13-0c02067")
+        self.assertEqual(train.build_tag("nightly", "2026-11-13", sha), "nightly-2026-11-13-0c02067")
 
     def test_a_release_is_published_only_after_its_smoke_test_and_with_no_blocker(self):
         drew = {"error": None, "frames": 12710, "chunks": 81, "meshed_sections": 550, "player": [160.5, 71.0, 156.5]}
@@ -321,6 +449,27 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertNotIn(train.PLAYERS, body)
         self.assertNotIn(train.PLAYERS_FOOTER, body)
         self.assertIn("Your launcher updates itself.", body)
+
+    def test_fork_launcher_notes_use_supported_downloads_and_exact_verifier_tag(self):
+        import shlex
+        tag = "launcher@0.3.0"
+        title, body = train.notes("launcher", tag, [pr(3, "Fix launcher updates")], [],
+                                 previous="launcher-v0.17.0", repository="arismoko/horizon")
+        self.assertEqual(title, f"Horizon Fork Launcher (arismoko) {tag}")
+        self.assertTrue(body.startswith("# Horizon Fork Launcher (arismoko)\n"))
+        self.assertIn("### Fixed\n- Fix launcher updates (#3)", body)
+        self.assertNotIn(train.LAUNCHER_FOOTER, body)
+        self.assertNotIn("macOS", body)
+        self.assertNotIn("numbered with the game", body)
+        command = next(line for line in body.splitlines() if line.startswith("cargo run "))
+        self.assertEqual(shlex.split(command), [
+            "cargo", "run", "--locked", "-p", "horizon-release-sign", "--", "verify",
+            "--repository", "arismoko/horizon", "--tag", tag, "--publishing",
+            "/absolute/path/to/downloads",
+        ])
+        clone = next(line for line in body.splitlines() if line.startswith("git clone "))
+        self.assertEqual(shlex.split(clone)[3], tag)
+        self.assertNotIn("{tag}", body)
 
     def test_a_game_release_opens_with_the_way_to_the_launcher(self):
         # GitHub's latest is a game release: whoever lands on it is sent to the launcher first (#1647).
@@ -387,6 +536,18 @@ class NightlyTrainTests(unittest.TestCase):
         self.assertEqual(train.nightly_decision(True, "release-now: #2", urgent, None, 12), (True, "release-now: #2", True))
         self.assertTrue(train.nightly_decision(True, "forced", self.PRS, None, 30, force=True)[0])
         self.assertFalse(train.nightly_decision(True, "forced", self.PRS, 7, 0, force=True)[0])
+
+    def test_a_running_nightly_never_holds_a_snapshot_back(self):
+        sha = "a" * 40
+        argv = ["release_train.py", "decide", "--kind", "game", "--channel", "snapshot"]
+        with mock.patch("sys.argv", argv), mock.patch.object(train, "channel_head", return_value=sha), \
+                mock.patch.object(train, "run", return_value=sha + "\n"), \
+                mock.patch.object(train, "nightly_building", side_effect=AssertionError("asked")), \
+                mock.patch.object(train, "write_outputs") as outputs, mock.patch("sys.stdout"):
+            self.assertEqual(train.main(), 0)
+        values = outputs.call_args.args[0]
+        self.assertEqual(values["release"], "true")
+        self.assertTrue(values["tag"].startswith("snapshot-") and values["tag"].endswith("-aaaaaaa"))
 
     def test_the_cap_is_the_nightly_sets(self):
         from tools.ci import nightly_set

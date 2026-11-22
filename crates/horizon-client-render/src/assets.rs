@@ -105,6 +105,8 @@ pub struct RenderAssets {
     pub fusion: crate::fusion::FusionTextures,
     /// The keyframe animations mods and packs ship (`neoforge/animations/entity`), by id.
     pub mod_animations: crate::mod_animations::Animations,
+    /// The mods' registered render pipelines as this load built them.
+    pub mod_pipelines: crate::mod_pipelines::Pipelines,
     /// Counts up on every successful resource load, including model-only changes.
     /// Only publishing this store invalidates the previous store's model handles and sprites.
     pub generation: u64,
@@ -125,6 +127,14 @@ impl RenderAssets {
     /// (`assets/<namespace>/neoforge/animations/entity/<path>.json`).
     pub fn animation(&self, id: &mod_api::Identifier) -> Option<mod_api::AnimationHolder> {
         self.mod_animations.get(id).cloned()
+    }
+
+    /// The handle of the registered render pipeline `id` in this published store.
+    pub fn render_pipeline(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::RenderPipelineRef, mod_api::RenderPipelineError> {
+        self.mod_pipelines.resolve(id)
     }
 
     /// Validate a handle once at consumption, before appending any geometry.
@@ -333,6 +343,7 @@ impl RenderAssets {
     pub fn load(root: &crate::resource_source::ResourceRoot, assets: &Assets) -> Result<Self> {
         Self::load_with(root, assets, true)
     }
+    #[horizon_mod_api_macros::replaceable]
     fn load_with(
         root: &crate::resource_source::ResourceRoot,
         assets: &Assets,
@@ -368,6 +379,16 @@ impl RenderAssets {
             }
             None => crate::model_library::ParsedModels::default(),
         };
+        // Connected-texture rules find their faces by sprite layer: what they match by name keeps a
+        // layer of its own, decided before the models insert their textures.
+        let ctm_rules = if draws {
+            horizon_optifine::ctm::load(root.source())
+        } else {
+            Vec::new()
+        };
+        sprites.keep_apart(crate::connected::ConnectedTextures::matched_sprites(
+            &ctm_rules,
+        ));
         let mut models = if draws {
             let _step = crate::spans::startup::step("core.models_bake");
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
@@ -424,6 +445,7 @@ impl RenderAssets {
             let mut found = Vec::new();
             crate::connected::ConnectedTextures::load(
                 root.source(),
+                ctm_rules,
                 registry,
                 &mut sprites,
                 |state, face| {
@@ -458,6 +480,7 @@ impl RenderAssets {
         }
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         Ok(Self {
             sprite_size: sprites.size,
             sprite_minimum_size: sprites.minimum_size,
@@ -478,7 +501,9 @@ impl RenderAssets {
             connected,
             fusion,
             mod_animations: crate::mod_animations::Animations::load(root.source()),
-            generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+            // A required pipeline that doesn't build fails the load: nothing of it is published.
+            mod_pipelines: crate::mod_pipelines::Pipelines::load(root.source(), generation)?,
+            generation,
         })
     }
 }

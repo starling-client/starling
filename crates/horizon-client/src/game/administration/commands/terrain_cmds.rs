@@ -81,7 +81,7 @@ fn ticks_to_seconds(ticks: i64) -> String {
 /// double `5.9999968E7` (the value `setSize` compares against too), and a `%s`
 /// substitution prints a double with `Double.toString`.
 fn size_limit_text() -> String {
-    horizon_client::java_text::double_to_string(MAX_SIZE)
+    horizon_core::java_number::double_to_string(MAX_SIZE)
 }
 
 impl Game<'_> {
@@ -330,6 +330,9 @@ impl Game<'_> {
     /// (`minecraft:plains`), as `/fillbiome` does for one cell: the chunk is saved, re-meshed and
     /// resent. False for an unknown biome, an unloaded or out-of-height position, or a cell that
     /// already has it.
+    /// Tentative reads see the new cells inside a transaction. Abort restores the cells
+    /// without publishing. Saving, remeshing and resending wait for the outermost commit,
+    /// once per column. Outside a transaction they run immediately.
     pub(in crate::game) fn set_biome_at(&mut self, pos: [i32; 3], biome: &str) -> bool {
         let Some(target) = world_biomes!(self)
             .list
@@ -347,13 +350,15 @@ impl Game<'_> {
         {
             return false;
         }
+        let old = chunk.biome(pos[0], pos[1], pos[2]);
+        self.journal_biome(pos, old);
         let qy =
             ((pos[1] - self.world.bottom_y()) >> 2).clamp(0, self.world.layout().height() / 4 - 1);
         if let Some(chunk) = self.world.chunks.get_mut(&key) {
             let chunk = std::sync::Arc::make_mut(chunk);
             chunk.set_biome_cell((pos[0] & 15) >> 2, qy, (pos[2] & 15) >> 2, target as u16);
         }
-        self.commit_biome_columns(&std::collections::HashSet::from([key]), &[key]);
+        self.after_commit(super::super::transactions::After::Biome(key));
         true
     }
 
@@ -425,8 +430,8 @@ impl Game<'_> {
             _ => 0.0,
         };
         let time = match ctx.get("time") {
-            Some(Arg::Int(t)) => i64::from(*t),
-            _ => 0,
+            Some(Arg::Int(t)) => Some(i64::from(*t)),
+            _ => None,
         };
         match id {
             "worldborder.get" => {
@@ -439,10 +444,15 @@ impl Game<'_> {
             }
             "worldborder.set" | "worldborder.add" => {
                 let current = self.border.size();
-                let distance = if id == "worldborder.add" {
-                    current + double
-                } else {
-                    double
+                // `add` measures from the size the border has now and, given a
+                // time, keeps a change in flight going for its remaining ticks
+                // plus the argument (`getLerpTime() + time`); `set` replaces it.
+                let (distance, ticks) = match (id, time) {
+                    ("worldborder.add", Some(t)) => {
+                        (current + double, self.border.remaining_ticks() + t)
+                    }
+                    ("worldborder.add", None) => (current + double, 0),
+                    (_, t) => (double, t.unwrap_or(0)),
                 };
                 if current == distance {
                     return Err(err("commands.worldborder.set.failed.nochange", &[]));
@@ -457,8 +467,8 @@ impl Game<'_> {
                     ));
                 }
                 let shown = Text::literal(super::percent_f(distance, 1));
-                if time > 0 {
-                    self.border.lerp_to(distance, time);
+                if ticks > 0 {
+                    self.border.lerp_to(distance, ticks);
                     let key = if distance > current {
                         "commands.worldborder.set.grow"
                     } else {
@@ -466,7 +476,7 @@ impl Game<'_> {
                     };
                     self.feedback(Text::translate(
                         key,
-                        &[shown, Text::literal(ticks_to_seconds(time))],
+                        &[shown, Text::literal(ticks_to_seconds(ticks))],
                     ));
                 } else {
                     self.border.set_size(distance);
@@ -733,7 +743,13 @@ impl Game<'_> {
                 let mut pending = crate::game::spill::Pending::default();
                 let key = (p[0], p[1], p[2]);
                 let has_block_entity = if let Some(entity) = self.world.block_entities.get(&key) {
-                    pending.record(p, entity, &name, self.world.block_names.get(&key).cloned());
+                    pending.record(
+                        p,
+                        entity,
+                        &name,
+                        self.world.block_names.get(&key).cloned(),
+                        self.world.block_lock(key),
+                    );
                     true
                 } else if let Some(saved) = self.block_entity_nbt(p) {
                     pending.record_saved(p, &saved);
@@ -915,7 +931,9 @@ impl Game<'_> {
                     };
                     let Some(slot) = slot else { continue };
                     let item = drops.get(i).filter(|drop| drop.count > 0).cloned();
-                    if self.slot_set_by_command(&slot, item.clone()) {
+                    if self.slot_accepts(&slot, item.as_ref())
+                        && self.slot_set_by_command(&slot, item.clone())
+                    {
                         used.push(item.unwrap_or(ItemStack {
                             item: "minecraft:air".into(),
                             count: 0,
@@ -1596,12 +1614,7 @@ mod loot_mine_location_tests {
             .unwrap();
             let stack = game.reload_datapacks(false, &[]).unwrap();
             game.world_tables = game
-                .build_world_tables(
-                    &stack,
-                    false,
-                    &game.options.resources.clone(),
-                    game.mods.data_switched,
-                )
+                .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap()
                 .0;
             assert!(game.world_tables.is_some());
@@ -1750,3 +1763,7 @@ mod loot_location_shape_tests {
         assert_eq!(chunks.len(), count, "no chunk is loaded as a side effect");
     }
 }
+
+#[cfg(test)]
+#[path = "loot_slot_tests.rs"]
+mod loot_slot_tests;

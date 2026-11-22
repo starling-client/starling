@@ -1,8 +1,8 @@
 use super::*;
-use crate::Sentiment;
+use crate::{AttributeTooltip, Sentiment};
 
 /// An attribute type a mod declares, as the game reads it when it grows the
-/// attribute catalog (`Catalog::with_attributes`, #812).
+/// attribute catalog (`Catalog::with_attributes`, ).
 #[derive(Clone, Debug)]
 // exhaustive: only registration builds it; the game reads it
 #[derive(horizon_mod_api_macros::Wire)]
@@ -21,6 +21,8 @@ pub struct AttributeDeclaration {
     pub syncable: bool,
     /// The tooltip sentiment of a rising or falling value.
     pub sentiment: Sentiment,
+    /// How its tooltip lines read: display kind and base modifier.
+    pub tooltip: AttributeTooltip,
 }
 
 /// The attribute types mods declared.
@@ -28,7 +30,29 @@ pub fn attribute_declarations() -> &'static [AttributeDeclaration] {
     installed().map_or(&[], |installed| &installed.attributes)
 }
 
-/// Registration of new attribute types ([`Registrar::declare_attribute`](AttributesRegistrar::declare_attribute)).
+/// A mod's ask to widen an existing attribute's bounds, as the game reads it
+/// when it grows the attribute catalog (#3728).
+#[derive(Clone, Debug, Default, PartialEq)]
+// exhaustive: only registration builds it; the game reads it
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct AttributeBoundsWidening {
+    /// The asking mod's id, which a refusal names.
+    pub mod_id: String,
+    /// The attribute's namespaced id (`minecraft:max_health`).
+    pub id: String,
+    /// The lower bound the mod asks for.
+    pub min: f64,
+    /// The upper bound the mod asks for.
+    pub max: f64,
+}
+
+/// The attribute bounds mods asked to widen.
+pub fn attribute_bounds_widenings() -> &'static [AttributeBoundsWidening] {
+    installed().map_or(&[], |installed| &installed.attribute_widenings)
+}
+
+/// Registration of new attribute types ([`Registrar::declare_attribute`](AttributesRegistrar::declare_attribute))
+/// and wider bounds for existing ones ([`Registrar::widen_attribute_bounds`](AttributesRegistrar::widen_attribute_bounds)).
 pub trait AttributesRegistrar {
     /// Declare an attribute type of the mod's own (vanilla's
     /// `RangedAttribute` in `BuiltInRegistries.ATTRIBUTE`, NeoForge's
@@ -36,7 +60,9 @@ pub trait AttributesRegistrar {
     /// `mymod:mana`), its `default` and `[min, max]` bounds, whether it
     /// joins the attribute sync (`Attribute.setSyncable`), and the sentiment
     /// that colors its tooltip lines (`Attribute.setSentiment`, POSITIVE by
-    /// default; the translation key is `attribute.name.<ns>.<path>`).
+    /// default; the translation key is `attribute.name.<ns>.<path>`), and how its
+    /// tooltip lines read (`tooltip`: percentages, on/off, a base modifier; NeoForge's
+    /// `PercentageAttribute`, `BooleanAttribute` and `IAttributeExtension.getBaseId`).
     ///
     /// Only both-side packages may declare attributes; other sides refuse because
     /// declarations assign network registry IDs.
@@ -51,8 +77,8 @@ pub trait AttributesRegistrar {
     /// An id outside the mod's manifest-owned namespaces (a vanilla attribute's included),
     /// a malformed id, a duplicate — of this mod's or another's, caught
     /// where the declarations join the catalog — a non-finite default or
-    /// bound, or bounds the default is not inside (`min > max` included)
-    /// refuses, naming the mod.
+    /// bound, bounds the default is not inside (`min > max` included), or a
+    /// base modifier that is not a namespaced id refuses, naming the mod.
     fn declare_attribute(
         &mut self,
         path: &str,
@@ -61,156 +87,33 @@ pub trait AttributesRegistrar {
         max: f64,
         syncable: bool,
         sentiment: Sentiment,
+        tooltip: AttributeTooltip,
     ) -> Result<(), crate::AttributeRegistrationError>;
-}
 
-impl AttributesRegistrar for PartRegistrar {
-    fn declare_attribute(
+    /// Widen the `[min, max]` bounds of an attribute that already exists,
+    /// vanilla's or another mod's (`id` in full: `minecraft:max_health`), as
+    /// Java mods do with a mixin or an access transformer on
+    /// `RangedAttribute.minValue` / `maxValue`: every clamp of the attribute's
+    /// value, on both sides, then follows the wider bounds.
+    ///
+    /// The asks of every mod join the catalog once, at load, after the
+    /// declared attributes and before entity attribute rows resolve. The
+    /// result is their union, whatever the load order: the lowest `min` and
+    /// the highest `max` asked, and never narrower than the attribute's own
+    /// bounds, so an ask narrower than what another mod widened to changes
+    /// nothing. The default value never moves. An attribute without bounds
+    /// stays without them.
+    ///
+    /// Only both-side packages may widen bounds, so the client and the server
+    /// build the same catalog; the mod-set check at join is all a client
+    /// needs. A non-finite bound or `min > max` refuses here, naming the mod;
+    /// an attribute the catalog does not have, or one whose default is not
+    /// inside `[min, max]`, refuses the load where the asks join the catalog,
+    /// naming the mod.
+    fn widen_attribute_bounds(
         &mut self,
-        path: &str,
-        default: f64,
+        id: &str,
         min: f64,
         max: f64,
-        syncable: bool,
-        sentiment: Sentiment,
-    ) -> Result<(), crate::AttributeRegistrationError> {
-        let id = match self.owned_declaration_id(path) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.refused.push(reason);
-                return Err(crate::AttributeRegistrationError::InvalidId);
-            }
-        };
-        let result = (|| {
-            if crate::world::phase::LoadedMods::new()
-                .get(self.mod_id)
-                .is_some_and(|package| package.side() != crate::Side::Both)
-            {
-                return Err(crate::AttributeRegistrationError::WrongSide);
-            }
-            if self.attributes.iter().any(|declared| declared.id == id) {
-                return Err(crate::AttributeRegistrationError::Duplicate);
-            }
-            if ![default, min, max].into_iter().all(f64::is_finite) {
-                return Err(crate::AttributeRegistrationError::NotFinite);
-            }
-            if min > max || default < min || default > max {
-                return Err(crate::AttributeRegistrationError::InvalidBounds);
-            }
-            self.attributes.push(AttributeDeclaration {
-                mod_id: self.mod_id.to_owned(),
-                id,
-                default,
-                min,
-                max,
-                syncable,
-                sentiment,
-            });
-            Ok(())
-        })();
-        if let Err(error) = &result {
-            self.refused
-                .push(format!("mod {} attribute {path:?}: {error:?}", self.mod_id));
-        }
-        result
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::AttributeRegistrationError;
-
-    /// `RangedAttribute`'s own checks and the registration's: an id outside
-    /// the mod's namespace (a vanilla attribute's included), a duplicate
-    /// across mods, non-finite values and bounds the default is not inside
-    /// all refuse, naming the mod; the good declaration stands.
-    #[test]
-    pub(crate) fn attribute_declarations_validate() {
-        let mut registrar = PartRegistrar::new("mymod");
-        registrar
-            .declare_attribute("mana", 10.0, 0.0, 100.0, true, Sentiment::Neutral)
-            .unwrap();
-        // The path stays in the declaring mod's namespace.
-        assert_eq!(
-            registrar.declare_attribute("minecraft:armor", 0.0, 0.0, 30.0, true, positive()),
-            Err(AttributeRegistrationError::InvalidId)
-        );
-        assert_eq!(
-            registrar.declare_attribute("foreign:mana", 0.0, 0.0, 1.0, false, positive()),
-            Err(AttributeRegistrationError::InvalidId)
-        );
-        assert_eq!(
-            registrar.declare_attribute("Not An Id", 0.0, 0.0, 1.0, false, positive()),
-            Err(AttributeRegistrationError::InvalidId)
-        );
-        // The same attribute twice, whatever declared it, is a duplicate.
-        assert_eq!(
-            registrar.declare_attribute("mana", 1.0, 0.0, 1.0, false, positive()),
-            Err(AttributeRegistrationError::Duplicate)
-        );
-        // RangedAttribute's own bounds checks.
-        assert_eq!(
-            registrar.declare_attribute("rage", 5.0, 10.0, 0.0, false, positive()),
-            Err(AttributeRegistrationError::InvalidBounds)
-        );
-        assert_eq!(
-            registrar.declare_attribute("rage", 0.0, 1.0, 10.0, false, positive()),
-            Err(AttributeRegistrationError::InvalidBounds)
-        );
-        assert_eq!(
-            registrar.declare_attribute("rage", 20.0, 1.0, 10.0, false, positive()),
-            Err(AttributeRegistrationError::InvalidBounds)
-        );
-        // A non-finite default or bound.
-        assert_eq!(
-            registrar.declare_attribute("rage", f64::NAN, 0.0, 1.0, false, positive()),
-            Err(AttributeRegistrationError::NotFinite)
-        );
-        assert_eq!(
-            registrar.declare_attribute("rage", 0.5, f64::NEG_INFINITY, 1.0, false, positive()),
-            Err(AttributeRegistrationError::NotFinite)
-        );
-        assert_eq!(
-            registrar.declare_attribute("rage", 0.5, 0.0, f64::INFINITY, false, positive()),
-            Err(AttributeRegistrationError::NotFinite)
-        );
-        // The refusals name the mod; the good declaration stands.
-        assert_eq!(registrar.attributes.len(), 1);
-        let declared = &registrar.attributes[0];
-        assert_eq!(
-            (declared.mod_id.as_str(), declared.id.as_str()),
-            ("mymod", "mymod:mana")
-        );
-        assert_eq!(
-            (declared.default, declared.min, declared.max),
-            (10.0, 0.0, 100.0)
-        );
-        assert!(declared.syncable);
-        assert_eq!(declared.sentiment, Sentiment::Neutral);
-        assert!(
-            registrar
-                .refused
-                .iter()
-                .all(|refusal| refusal.contains("mod mymod"))
-        );
-    }
-
-    #[test]
-    fn attribute_sentiment_wire_round_trip() {
-        use crate::wire::{Reader, Wire, Writer};
-        for sentiment in [Sentiment::Positive, Sentiment::Negative, Sentiment::Neutral] {
-            let mut writer = Writer::new();
-            sentiment.put(&mut writer);
-            let bytes = writer.into_bytes();
-            assert_eq!(
-                Sentiment::take(&mut Reader::new(&bytes)).unwrap(),
-                sentiment
-            );
-        }
-    }
-
-    fn positive() -> Sentiment {
-        Sentiment::default()
-    }
+    ) -> Result<(), crate::AttributeRegistrationError>;
 }

@@ -1,30 +1,20 @@
 #!/usr/bin/env python3
-"""Compile an immutable machine sample revision against this checkout's API.
+"""Compile the machine sample at PIN against this checkout's API (the daily leg machine-sample.yml).
 
-API-breaking PRs may pair a sample update using a standalone body line:
-Sample commit: <40-character SHA>
-Update PIN in the same fork PR, and link the paired sample PR in its description.
-The body line is an optional consistency check, never a source of mutable pins.
+A pull request that changes the API the sample uses updates PIN to a sample commit that builds against it.
 """
-import json
 import os
 from pathlib import Path
-import re
 import subprocess
+import sys
 import time
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = "2c4100a3b4ace3f65e6622f1fe7ae39bcfa67cc6"
+PIN = "1b0e0008107562b407a46c134903cc0b9369674d"
 
 
 def main():
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    event = json.loads(Path(event_path).read_text()) if event_path else {}
-    body = event.get("pull_request", {}).get("body") or ""
-    match = re.search(r"^Sample commit: ([0-9a-f]{40})\s*$", body, re.MULTILINE)
-    if match and match[1] != PIN:
-        raise SystemExit("Sample commit must match the committed PIN; update it in this PR")
     revision = PIN
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="machine-sample-", dir=ROOT.parent) as directory:
@@ -42,11 +32,11 @@ def check(directory, revision):
     subprocess.run(["git", "clone", "--no-checkout", "https://github.com/arismoko/horizon-machine-sample", str(sample)], check=True)
     subprocess.run(["git", "fetch", "origin", revision], cwd=sample, check=True)
     subprocess.run(["git", "checkout", "--detach", revision], cwd=sample, check=True)
-    # Cargo source patches replace the pinned game dependency with this PR's API.
-    patch = sample / "api-patch.toml"
-    patch.write_text('[patch."https://github.com/arismoko/horizon"]\n'
-                     + 'horizon-mod-api = { path = ' + json.dumps(str(ROOT / "crates/horizon-mod-api")) + ' }\n')
-    subprocess.run(["cargo", "check", "--all-targets", "--config", str(patch)], cwd=sample, check=True)
+    # The sample names the API by the path `cargo horizon-mod` fetches the signed SDK to. This checkout's own API
+    # source goes there instead, so the check builds the sample against this PR's API with no SDK release.
+    subprocess.run([sys.executable, str(ROOT / "tools/sdk_api_source.py"), "build", str(sample / ".horizon/sdk/api")],
+                   cwd=ROOT, check=True)
+    subprocess.run(["cargo", "check", "--all-targets"], cwd=sample, check=True)
 
 
 if __name__ == "__main__":

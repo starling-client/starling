@@ -10,11 +10,30 @@ use std::{
 };
 
 pub const FILE: &str = "horizon-mods.txt";
+/// The `horizon-mods.txt` key of [`ModList::wasm_memory_cap_mib`].
+const WASM_MEMORY_CAP: &str = "wasm.memory_cap_mib";
 /// The folder holding `.hmod` files, beside `options.txt`.
 pub const DIR: &str = "horizon-mods";
 /// Where the launcher installs native mods (`<id>.hmod`), beside [`DIR`]. They run only in a
 /// game the launcher built with them.
 pub const NATIVE_DIR: &str = "horizon-native-mods";
+
+/// Whether a compiled native build (Starling's Compile) is the one for the native mods on now.
+/// A build that says the SHA-256 of the request it was compiled from (`sent`) is current only for
+/// that same request (`request`), so a mod replaced under the same id (a new voice chat of the
+/// same id, with buttons the old one lacked) makes it out of date and Compile is offered again.
+/// A build from before builds said it, or with no request to compare, goes by the mods' ids.
+pub fn native_build_current(
+    sent: Option<&str>,
+    built: &BTreeSet<String>,
+    wanted: &BTreeSet<String>,
+    request: Option<&str>,
+) -> bool {
+    match (sent, request) {
+        (Some(sent), Some(request)) => sent == request,
+        _ => built == wanted,
+    }
+}
 /// Why a native mod installed in [`NATIVE_DIR`] doesn't run in this game.
 #[cfg(not(target_os = "android"))]
 pub const NOT_BUILT: &str = "Installed, not built into this game: build the game with it in the launcher (Settings > Native mods), then play the instance that build is in.";
@@ -37,6 +56,10 @@ pub struct ModList {
     /// The keys the player chose for mods' keys, mod id → key name → key
     /// (`key.<id>.<name>:key.keyboard.x` lines).
     pub keys: BTreeMap<String, BTreeMap<String, String>>,
+    /// The player's cap on each wasm dependency group's memory, in MiB
+    /// (`wasm.memory_cap_mib:<1 to 4096>`); unset, wasm32's whole 4 GiB. A group whose mods
+    /// declare more (`wasm_memory_mib`) is refused at load, naming both numbers.
+    pub wasm_memory_cap_mib: Option<u32>,
     /// What the Mods page shows, filled by the game from the mods it found.
     pub installed: Vec<Installed>,
     /// What the Mods screen's panel shows of each installed mod, by id.
@@ -83,6 +106,8 @@ pub struct ModInfo {
     pub issues: Option<String>,
     /// The PNG bytes of `icon.png`.
     pub icon: Option<std::sync::Arc<[u8]>>,
+    /// Registration and dependency-policy warnings: translation key and literal arguments.
+    pub warnings: Vec<(String, Vec<String>)>,
 }
 impl ModInfo {
     pub fn of(manifest: &crate::Manifest, icon: Option<&crate::icon::Icon>) -> Self {
@@ -96,6 +121,7 @@ impl ModInfo {
             homepage: manifest.homepage.clone(),
             issues: manifest.issues.clone(),
             icon: icon.map(|icon| icon.bytes().into()),
+            warnings: Vec::new(),
         }
     }
 }
@@ -309,6 +335,59 @@ fn decode_binding(value: &str) -> (String, u32) {
 }
 
 impl ModList {
+    /// Retain every applied load notice on both affected installed rows, including
+    /// failed/off rows and code rows whose descriptive metadata is unavailable.
+    pub fn apply_dependency_notices(&mut self, notices: &[crate::dependencies::Notice]) {
+        let installed: BTreeMap<_, _> = self
+            .installed
+            .iter()
+            .map(|row| (row.id.as_str(), row))
+            .collect();
+        let names: BTreeMap<_, _> = self
+            .installed
+            .iter()
+            .map(|row| {
+                let name = self
+                    .info
+                    .get(&row.id)
+                    .map(|info| info.name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| (!row.title.is_empty()).then_some(row.title.as_str()))
+                    .unwrap_or(&row.id);
+                (row.id.clone(), name.to_owned())
+            })
+            .collect();
+        for notice in notices {
+            let (key, mut args) = notice.message();
+            args[0] = names.get(&notice.owner).unwrap_or(&notice.owner).clone();
+            args[1] = names.get(&notice.target).unwrap_or(&notice.target).clone();
+            // Line layout belongs only to the Mods page, never to refusal/log text.
+            let mut note = String::new();
+            for text in [notice.reason.as_deref(), notice.url.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                note.push('\n');
+                note.push_str(text.trim_end());
+            }
+            args.push(note);
+            let message = (key, args);
+            for (index, id) in [&notice.owner, &notice.target].into_iter().enumerate() {
+                if index == 1 && notice.owner == notice.target {
+                    continue;
+                }
+                let Some(row) = installed.get(id.as_str()) else {
+                    continue;
+                };
+                let info = self.info.entry(id.clone()).or_insert_with(|| ModInfo {
+                    name: row.title.clone(),
+                    ..ModInfo::default()
+                });
+                info.warnings.push(message.clone());
+            }
+        }
+    }
+
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
@@ -336,10 +415,17 @@ impl ModList {
                 entry.insert(name.to_owned(), v.trim().to_owned());
             }
         }
+        let wasm_memory_cap_mib = text
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .filter(|(k, _)| k.trim() == WASM_MEMORY_CAP)
+            .filter_map(|(_, v)| v.trim().parse().ok())
+            .rfind(|mib| (1..=crate::manifest::MAX_WASM_MEMORY_MIB).contains(mib));
         Self {
             enabled,
             disabled,
             keys,
+            wasm_memory_cap_mib,
             installed: Vec::new(),
             info: BTreeMap::new(),
             native_game: None,
@@ -352,7 +438,15 @@ impl ModList {
             keys.iter()
                 .map(move |(name, key)| format!("key.{id}.{name}:{key}\n"))
         });
-        on.chain(off).chain(keys).collect()
+        let cap = self
+            .wasm_memory_cap_mib
+            .map(|mib| format!("{WASM_MEMORY_CAP}:{mib}\n"));
+        on.chain(off).chain(keys).chain(cap).collect()
+    }
+    /// The cap on each wasm group's memory this instance allows, in MiB.
+    pub fn wasm_memory_cap(&self) -> u32 {
+        self.wasm_memory_cap_mib
+            .unwrap_or(crate::manifest::MAX_WASM_MEMORY_MIB)
     }
     /// Mod `id`'s chosen keys, for `Mods::set_bindings`.
     pub fn keys_of(&self, id: &str) -> Vec<(&str, &str)> {
@@ -386,6 +480,7 @@ impl ModList {
         if self.enabled.is_empty()
             && self.disabled.is_empty()
             && self.keys.is_empty()
+            && self.wasm_memory_cap_mib.is_none()
             && !path.exists()
         {
             return;
@@ -437,12 +532,64 @@ impl ModList {
 mod tests {
     use super::*;
 
+    /// A native mod replaced under the same id makes the build out of date; a build from before
+    /// builds said their request goes by the ids, as it always did.
+    #[test]
+    fn a_changed_native_mod_of_the_same_id_needs_a_new_compile() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let voice = ids(&["voicechat"]);
+        assert!(native_build_current(
+            Some("aaa"),
+            &voice,
+            &voice,
+            Some("aaa")
+        ));
+        assert!(!native_build_current(
+            Some("aaa"),
+            &voice,
+            &voice,
+            Some("bbb")
+        ));
+        assert!(native_build_current(None, &voice, &voice, Some("bbb")));
+        assert!(!native_build_current(
+            None,
+            &voice,
+            &ids(&["voicechat", "wrench"]),
+            Some("bbb")
+        ));
+        assert!(native_build_current(Some("aaa"), &voice, &voice, None));
+    }
+
     #[test]
     fn round_trips_and_ignores_the_rest() {
         let list = ModList::parse("mod.coords_hud:true\nmod.other:false\nzoom:true\n");
         assert_eq!(list.enabled.iter().collect::<Vec<_>>(), ["coords_hud"]);
         assert_eq!(ModList::parse(&list.serialize()), list);
         assert_eq!(ModList::default().serialize(), "");
+    }
+
+    #[test]
+    fn the_player_may_lower_the_wasm_memory_cap() {
+        assert_eq!(ModList::parse("").wasm_memory_cap(), 4096);
+        let list = ModList::parse("mod.a:true\nwasm.memory_cap_mib:512\n");
+        assert_eq!(list.wasm_memory_cap(), 512);
+        assert_eq!(ModList::parse(&list.serialize()), list);
+        // Outside 1 to 4096 MiB (wasm32's whole space) the line is ignored.
+        for text in [
+            "wasm.memory_cap_mib:0\n",
+            "wasm.memory_cap_mib:8192\n",
+            "wasm.memory_cap_mib:lots\n",
+        ] {
+            assert_eq!(ModList::parse(text).wasm_memory_cap(), 4096, "{text}");
+        }
+        // A cap alone is still saved, in a folder with no list yet.
+        let dir = tempfile::tempdir().unwrap();
+        let only_cap = ModList {
+            wasm_memory_cap_mib: Some(64),
+            ..ModList::default()
+        };
+        only_cap.save(dir.path());
+        assert_eq!(ModList::load(dir.path()).wasm_memory_cap(), 64);
     }
 
     #[test]
@@ -492,6 +639,84 @@ mod tests {
             ("key.keyboard.q".to_owned(), CONTROL)
         );
         assert_eq!(list.serialize(), "");
+    }
+
+    #[test]
+    fn every_dependency_notice_reaches_both_rows_and_self_pairs_are_not_duplicated() {
+        use crate::dependencies::{Notice, NoticeKind};
+        let mut list = ModList::default();
+        for (id, title, problem) in [
+            ("owner", "Owner", Some("refused")),
+            ("target", "Target fallback", None),
+        ] {
+            list.installed.push(Installed {
+                id: id.into(),
+                title: title.into(),
+                description: String::new(),
+                problem: problem.map(str::to_owned),
+                dev: false,
+                native: None,
+            });
+        }
+        list.info.insert(
+            "owner".into(),
+            ModInfo {
+                name: "Owner".into(),
+                warnings: vec![("registration.warning".into(), Vec::new())],
+                ..ModInfo::default()
+            },
+        );
+        list.apply_dependency_notices(&[
+            Notice {
+                owner: "owner".into(),
+                target: "target".into(),
+                version: Some("1".into()),
+                reason: Some("reason.".into()),
+                url: Some("https://example.test/details".into()),
+                kind: NoticeKind::Discouraged,
+            },
+            Notice {
+                owner: "owner".into(),
+                target: "target".into(),
+                version: Some("1".into()),
+                reason: Some("override.".into()),
+                url: None,
+                kind: NoticeKind::OverrideDropped,
+            },
+            Notice {
+                owner: "owner".into(),
+                target: "owner".into(),
+                version: Some("1".into()),
+                reason: None,
+                url: None,
+                kind: NoticeKind::OverrideDiscouraged,
+            },
+        ]);
+        assert_eq!(list.info["owner"].warnings.len(), 4);
+        assert_eq!(list.info["owner"].warnings[0].0, "registration.warning");
+        assert_eq!(list.info["target"].name, "Target fallback");
+        assert_eq!(list.info["target"].warnings.len(), 2);
+        assert_eq!(
+            list.info["target"].warnings[0].0,
+            "horizon.mods.warning.discouraged"
+        );
+        assert_eq!(
+            list.info["target"].warnings[0].1,
+            [
+                "Owner",
+                "Target fallback",
+                "1",
+                "\nreason.\nhttps://example.test/details"
+            ]
+        );
+        assert_eq!(
+            list.info["target"].warnings[1].0,
+            "horizon.mods.warning.override_dropped"
+        );
+        assert_eq!(
+            list.info["target"].warnings[1].1,
+            ["Owner", "Target fallback", "\noverride."]
+        );
     }
 
     #[test]

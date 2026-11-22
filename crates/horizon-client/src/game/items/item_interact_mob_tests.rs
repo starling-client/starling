@@ -6,8 +6,8 @@ use horizon_client::{
     mobs::Mob,
 };
 use mod_api::{
-    self, EntityInteractEvent, Flow, Hooks, ItemInteractMobEvent, ItemPart, Registrar,
-    RegistrationContext, ServerHost,
+    self, EntityInteractEvent, Hooks, HostSide, InteractionResult, ItemInteractMobEvent, ItemPart,
+    Registrar, RegistrationContext,
 };
 use std::sync::{
     Arc, Mutex,
@@ -30,12 +30,16 @@ impl Hooks for Probe {
             r.item_part(key, self.clone());
         }
     }
-    fn entity_interact(&self, _: &mut dyn ServerHost, event: &mut EntityInteractEvent<'_>) -> Flow {
+    fn entity_interact(
+        &self,
+        _: HostSide<'_>,
+        event: &mut EntityInteractEvent<'_>,
+    ) -> Option<InteractionResult> {
         self.hands.lock().unwrap().push(event.hand);
         if self.claim_entity.load(Ordering::Relaxed) {
-            Flow::Cancel
+            Some(InteractionResult::SuccessServer)
         } else {
-            Flow::Continue
+            None
         }
     }
 }
@@ -43,9 +47,12 @@ impl Hooks for Probe {
 impl ItemPart for Probe {
     fn item_interact_mob(
         &self,
-        host: &mut dyn ServerHost,
+        host: HostSide<'_>,
         event: &mut ItemInteractMobEvent<'_>,
-    ) -> Option<bool> {
+    ) -> Option<InteractionResult> {
+        let HostSide::Server(host) = host else {
+            return None;
+        };
         let stack = event.stack;
         assert!(stack.count() > 0);
         self.calls.lock().unwrap().push((
@@ -62,8 +69,8 @@ impl ItemPart for Probe {
         }
         match answer {
             0 => None,
-            1 => Some(false),
-            _ => Some(true),
+            1 => Some(InteractionResult::Consume),
+            _ => Some(InteractionResult::SuccessServer),
         }
     }
 }
@@ -106,7 +113,7 @@ fn actual_item_interact_mob_fallback_priority_and_filters_isolated() {
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let probe = Probe::default();
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new("item", Box::new(probe.clone()))].into();
-    mod_api::testing::with_mods(mods.clone(), || {
+    mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
         let settings = Settings::default();
         let loaded = load_resources(

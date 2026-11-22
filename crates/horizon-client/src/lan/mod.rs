@@ -7,10 +7,14 @@
 //! network pays nothing.
 pub mod abilities;
 mod advancements;
+pub mod announced_channels;
+pub mod config_payloads;
 pub use advancements::ServerAdvancements;
 pub mod anticheat;
 pub mod arrivals;
 pub mod attributes;
+mod biome_resend;
+mod body;
 pub mod border;
 pub mod chunk_watch;
 pub mod chunks;
@@ -22,7 +26,9 @@ pub mod conn;
 pub mod containers;
 pub mod data;
 pub mod discovery;
+mod effect_meta;
 pub mod entity;
+pub mod equipment_cache;
 pub mod far;
 pub mod forwarding;
 pub mod guest;
@@ -32,6 +38,7 @@ pub mod hub;
 pub mod import;
 mod io_pool;
 pub mod menu;
+pub mod menu_extra_rev;
 #[cfg(test)]
 mod payload_bounds_tests;
 pub mod playerdata;
@@ -41,8 +48,10 @@ mod registry_names;
 pub mod scoreboard;
 mod sound_order;
 pub mod tracking;
+pub mod viewed_levels;
 pub mod waypoints;
 
+pub use body::Body;
 pub use conn::{Holding, PlayerSender, flush_all};
 use horizon_protocol::packets::play;
 use horizon_protocol::{
@@ -56,7 +65,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, channel},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -67,6 +76,8 @@ pub const MAX_PLAYERS: usize = 8;
 
 /// Messages from the connection threads to the game thread.
 pub enum NetEvent {
+    /// Frozen receiver identity and credit, retained through its main root transaction.
+    RawPayload(Box<crate::raw_payloads::Delivery>),
     /// A client finished configuration and enters the play state.
     Joined(Box<Joined>),
     /// A packet and the bytes of its body on the wire.
@@ -92,6 +103,70 @@ pub struct Joined {
     /// The login used up an expectation of a proxy's (`player-expect`) when it
     /// started (`arrivals`).
     pub expected: bool,
+}
+pub(crate) fn event_channel() -> (
+    crate::net::ingress::Producer<NetEvent>,
+    crate::net::ingress::Consumer<NetEvent>,
+) {
+    crate::net::ingress::channel(96 << 20, NetEvent::ingress_charge)
+        .expect("positive incoming byte budget")
+}
+#[cfg(test)]
+pub(crate) fn event_channel_with_capacity(
+    capacity: usize,
+) -> (
+    crate::net::ingress::Producer<NetEvent>,
+    crate::net::ingress::Consumer<NetEvent>,
+) {
+    crate::net::ingress::channel(capacity, NetEvent::ingress_charge)
+        .expect("positive test incoming byte budget")
+}
+impl NetEvent {
+    fn ingress_charge(&self) -> usize {
+        use horizon_protocol::retained::OwnedHeap;
+        use std::mem::size_of;
+        let owned = match self {
+            Self::RawPayload(delivery) => size_of::<crate::raw_payloads::Delivery>()
+                .saturating_add(delivery.incoming.owned_heap_bytes()),
+            Self::Joined(joined) => {
+                let Joined {
+                    conn: _,
+                    uuid: _,
+                    name,
+                    properties,
+                    info,
+                    brand,
+                    sender: _,
+                    latency: _,
+                    address: _,
+                    expected: _,
+                } = joined.as_ref();
+                // sender/latency are shared physical provider state, not this record.
+                size_of::<Joined>()
+                    .saturating_add(name.capacity())
+                    .saturating_add(properties.owned_heap_bytes())
+                    .saturating_add(info.owned_heap_bytes())
+                    .saturating_add(brand.capacity())
+            }
+            Self::Packet(_, packet, _) => {
+                size_of::<play::Serverbound>().saturating_add(packet.as_ref().owned_heap_bytes())
+            }
+            Self::Left(_, reason) => reason.capacity(),
+            Self::Duplicate(_) => 0,
+        };
+        // Source snapshot, guest inbox, derived HostEvent batch and credit marker,
+        // with spare-capacity allowance. No wire-length proxy for owned buffers.
+        owned.saturating_add(
+            8 * size_of::<(
+                Self,
+                play::Serverbound,
+                hub::HostEvent,
+                crate::net::ingress::ReceiveLease<Self>,
+                usize,
+                usize,
+            )>(),
+        )
+    }
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -380,9 +455,10 @@ impl SecureChat {
 
 /// State shared with the connection threads.
 pub struct Shared {
+    payload_local: Arc<crate::raw_payloads::Local>,
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
-    pub events: Sender<NetEvent>,
+    pub events: crate::net::ingress::Producer<NetEvent>,
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
@@ -445,6 +521,19 @@ impl Shared {
     ) -> Option<horizon_core::nbt::Tag> {
         if self.shutting_down.load(Ordering::Relaxed) {
             return Some(translatable("multiplayer.disconnect.server_shutdown", &[]));
+        }
+        // IntegratedPlayerList.canPlayerLogin: the owner's name (ignoring case,
+        // `isSingleplayerOwner`) is refused while a player of that name is online.
+        if let Some((owner, _)) = &self.config.singleplayer_profile
+            && owner.eq_ignore_ascii_case(name)
+            && self
+                .online
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, online)| online.eq_ignore_ascii_case(name))
+        {
+            return Some(translatable("multiplayer.disconnect.name_taken", &[]));
         }
         if let Some(gate) = &self.config.gate
             && let Some(reason) = gate(address, uuid, name)
@@ -623,7 +712,7 @@ pub fn base64(data: &[u8]) -> String {
 /// A running LAN server.
 pub struct Lan {
     pub shared: Arc<Shared>,
-    events: Receiver<NetEvent>,
+    events: crate::net::ingress::Consumer<NetEvent>,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -643,11 +732,13 @@ impl Lan {
     }
     /// ServerConnectionListener.startTcpServerListener with a configuration.
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
-        let (tx, events) = channel();
+        let (tx, events) = event_channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let hide_online_players = config.hide_online_players;
         let enable_status = config.enable_status;
         let shared = Arc::new(Shared {
+            payload_local: crate::raw_payloads::Local::capture(crate::raw_payloads::Side::Server)
+                .map_err(io::Error::other)?,
             sync: Mutex::new(sync),
             events: tx,
             motd: Mutex::new(config.motd.clone()),
@@ -665,7 +756,7 @@ impl Lan {
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             shutting_down: AtomicBool::new(false),
-            random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
+            random: Mutex::new(horizon_java_properties::now_millis() as u64 | 1),
             config,
         });
         let mut lan = Self {
@@ -751,20 +842,19 @@ impl Lan {
     pub fn connect_local(&self) -> io::Result<horizon_protocol::connection::Pipe> {
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let shared = self.shared.clone();
-        std::thread::Builder::new()
-            .name("horizon-local-conn".into())
-            .spawn(move || {
-                if let Err(e) = conn::serve_local(server, shared)
-                    && std::env::var_os("HORIZON_NET_DEBUG").is_some()
-                {
-                    log::warn!("[lan] local: {e}");
-                }
-            })?;
+        // Configuration payload handlers of wasm mods run on this thread.
+        horizon_guest_stack::spawn("horizon-local-conn".into(), move || {
+            if let Err(e) = conn::serve_local(server, shared)
+                && std::env::var_os("HORIZON_NET_DEBUG").is_some()
+            {
+                log::warn!("[lan] local: {e}");
+            }
+        })?;
         Ok(client)
     }
     /// Everything the connection threads reported since the last call.
-    pub fn poll(&self) -> Vec<NetEvent> {
-        self.events.try_iter().collect()
+    pub fn poll(&self) -> Vec<crate::net::ingress::OwnedReceipt<NetEvent>> {
+        self.events.take_turn()
     }
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
@@ -973,12 +1063,11 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                     continue;
                 };
                 shared.wait(&counted, &stream);
-                let _ = std::thread::Builder::new()
-                    .name("horizon-lan-conn".into())
-                    .spawn(move || {
-                        WAITING.set(Some(counted.2));
-                        handle(stream, addr, counted);
-                    });
+                // Configuration payload handlers of wasm mods run on this thread.
+                let _ = horizon_guest_stack::spawn("horizon-lan-conn".into(), move || {
+                    WAITING.set(Some(counted.2));
+                    handle(stream, addr, counted);
+                });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(25));
@@ -1017,6 +1106,7 @@ pub(super) fn test_loopback() -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "daily"]
     fn a_local_server_accepts_only_the_requested_loopback_address() {
         let lan = super::Lan::start_with(
             std::sync::Arc::new(super::data::SyncData::empty()),
@@ -1039,6 +1129,7 @@ mod tests {
     use std::{io::Read, time::Instant};
 
     #[test]
+    #[ignore = "daily"]
     fn actor_ids_never_wrap() {
         let config = NetConfig {
             announce: false,
@@ -1055,6 +1146,7 @@ mod tests {
     /// the player limit and [`SPARE_CONNECTIONS`], a new one is closed at once instead of taking one
     /// more thread, and the room comes back as they go.
     #[test]
+    #[ignore = "daily"]
     fn a_flood_of_silent_sockets_is_turned_away() {
         let config = NetConfig {
             announce: false,
@@ -1117,6 +1209,37 @@ mod tests {
         assert_eq!(lan.shared.online(), 1);
     }
 
+    /// `IntegratedPlayerList.canPlayerLogin`: a login whose name is the
+    /// singleplayer owner's (`IntegratedServer.isSingleplayerOwner`, ignoring
+    /// case) is refused with `multiplayer.disconnect.name_taken` while a player
+    /// of that name is online. The owner's own first login, and any other name,
+    /// get in; a server with no owner profile (a dedicated one) has no such rule.
+    #[test]
+    fn a_login_with_the_owners_name_is_refused_while_the_owner_is_online() {
+        let owned = NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".to_owned(), 1)),
+            ..NetConfig::loopback(0, "Owned".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), owned).unwrap();
+        let taken = Some(translatable("multiplayer.disconnect.name_taken", &[]));
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
+        assert_eq!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER"), taken);
+        assert_eq!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner"), taken);
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 3, "Guest").is_none());
+        assert_eq!(lan.shared.online(), 2);
+
+        let dedicated = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::loopback(0, "Dedicated".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), dedicated).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER").is_none());
+    }
+
     #[test]
     fn hide_online_players_updates_status_response() {
         let config = NetConfig {
@@ -1161,6 +1284,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_full_server_closes_the_connection_that_waited_longest() {
         use std::io::Read;
         // With a log writer, as on a dedicated server: making room logs, and must not deadlock.

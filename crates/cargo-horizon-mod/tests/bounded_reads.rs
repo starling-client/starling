@@ -21,6 +21,7 @@ impl Fixture {
         let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-horizon-mod"))
             .args(args)
             .env("HORIZON_LAUNCHER", launcher)
+            .env("HORIZON_SDK_BASE", self.0.join("no-sdk"))
             .current_dir(&self.0)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -61,6 +62,7 @@ const COMMANDS: &[&[&str]] = &[
     &["internals", "sync"],
 ];
 #[test]
+#[ignore = "daily"]
 fn bounded_manifest_commands() {
     let f = Fixture::new("manifest");
     let path = f.0.join("horizon-mod.toml");
@@ -77,6 +79,7 @@ fn bounded_manifest_commands() {
 }
 #[cfg(unix)]
 #[test]
+#[ignore = "daily"]
 fn bounded_special_manifests() {
     use std::os::unix::fs::symlink;
     let f = Fixture::new("special");
@@ -93,56 +96,42 @@ fn bounded_special_manifests() {
     }
 }
 #[test]
-fn bounded_slot_command() {
-    let f = Fixture::new("slot");
-    f.manifest();
-    let directory = f.0.join("game/crates/horizon-mod-api-gen/slots");
-    fs::create_dir_all(&directory).unwrap();
-    fs::write(f.0.join("game/Cargo.toml"), "[workspace]").unwrap();
-    let path = directory.join("example.txt");
-    large(&path, 4 << 20);
-    let before = fs::read(f.0.join("horizon-mod.toml")).unwrap();
-    let error = f.run(COMMANDS[2]);
-    assert!(
-        error.contains("example.txt") && error.contains("4194304"),
-        "{error}"
-    );
-    assert_eq!(fs::metadata(&path).unwrap().len(), (4 << 20) + 1);
-    assert_eq!(fs::read(f.0.join("horizon-mod.toml")).unwrap(), before);
-    #[cfg(unix)]
-    {
-        fs::remove_file(&path).unwrap();
-        std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
-        assert!(f.run(COMMANDS[2]).contains("not a regular file"));
-        fs::remove_file(&path).unwrap();
-        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-        assert!(f.run(COMMANDS[2]).contains("not a regular file"));
-    }
-}
-
-#[test]
+#[ignore = "daily"]
 fn bounded_catalog_commands() {
     for (name, relative, commands) in [
         (
             "points",
-            format!("{}/points.json", "a".repeat(40)),
+            format!("{}/build-data/points.json", "a".repeat(40)),
             &COMMANDS[..2],
         ),
-        ("old", "old/internals.json".into(), &COMMANDS[1..2]),
+        (
+            "old",
+            "old/build-data/internals.json".into(),
+            &COMMANDS[1..2],
+        ),
         (
             "internals",
-            format!("{}/internals.json", "a".repeat(40)),
+            format!("{}/build-data/internals.json", "a".repeat(40)),
             &COMMANDS[..2],
         ),
     ] {
         let f = Fixture::new(name);
         f.manifest();
-        let cache = f.0.join("target/horizon-mod/prebuilt");
-        let current = cache.join("a".repeat(40));
+        let cache = f.0.join(".horizon/cache");
+        let current = cache.join("a".repeat(40)).join("build-data");
         fs::create_dir_all(&current).unwrap();
-        fs::write(current.join("internals.json"), "[]").unwrap();
-        fs::write(current.join("points.json"), r#"{"sites":[]}"#).unwrap();
+        fs::write(cache.join("a".repeat(40)).join("build"), "a".repeat(40)).unwrap();
+        let header = r#""schema":1,"build":{"commit":"c"}"#;
+        fs::write(
+            current.join("internals.json"),
+            format!(r#"{{{header},"internals":[]}}"#),
+        )
+        .unwrap();
+        fs::write(
+            current.join("points.json"),
+            format!(r#"{{{header},"sites":[]}}"#),
+        )
+        .unwrap();
         let path = cache.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         large(&path, 256 << 20);
@@ -162,6 +151,7 @@ fn bounded_catalog_commands() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "daily"]
 fn bounded_discovery_reread() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new("discovery");

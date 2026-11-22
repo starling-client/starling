@@ -7,6 +7,7 @@
 mod install;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Instant;
 
 /// Where the preparing is.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -14,7 +15,7 @@ pub enum Stage {
     #[default]
     Idle,
     /// Fetching the Java runtime: bytes so far, and in all.
-    Java(u64, u64),
+    Java(u64, u64, Instant),
     /// Unpacking it.
     Unpacking,
     /// horizon-prepare at work: its last line.
@@ -65,6 +66,7 @@ pub fn start(resources: PathBuf) {
         *shared() = Stage::Failed("On 32-bit x86, import prepared resources as a .starling file. An Android x86 Java 25 runtime is not available.".into());
         return;
     };
+    let started = Instant::now();
     {
         let mut stage = shared();
         if matches!(
@@ -73,13 +75,12 @@ pub fn start(resources: PathBuf) {
         ) {
             return;
         }
-        *stage = Stage::Java(0, runtime.size);
+        *stage = Stage::Java(0, runtime.size, started);
     }
     let spawned = std::thread::Builder::new()
         .name("preparer".into())
         .spawn(move || {
-            let started = std::time::Instant::now();
-            let result = run(&resources);
+            let result = run(&resources, started);
             *shared() = match result {
                 Ok(()) => {
                     log::info!(
@@ -99,7 +100,7 @@ pub fn start(resources: PathBuf) {
     }
 }
 
-fn run(resources: &Path) -> Result<(), String> {
+fn run(resources: &Path, started: Instant) -> Result<(), String> {
     let runtime = starling_account::java::android_runtime(std::env::consts::ARCH)
         .ok_or("No Java runtime is available for this architecture.")?;
     let server_jar = crate::accounts::server_jar()
@@ -119,7 +120,7 @@ fn run(resources: &Path) -> Result<(), String> {
             *shared() = if done >= total {
                 Stage::Unpacking
             } else {
-                Stage::Java(done, total)
+                Stage::Java(done, total, started)
             };
         },
         &|| false,
@@ -315,6 +316,12 @@ pub fn put_shader_pack(game_folder: &Path) {
             dir.display()
         ),
     }
+}
+
+/// The std the wasm mods linked against, which earlier versions put in the app's own files: gone
+/// with the wasm mods (Starling runs none since 2026-11-20).
+pub fn remove_wasm_std() {
+    let _ = std::fs::remove_file(crate::logging::private_home().join("horizon-wasm-std.wasm"));
 }
 
 /// CRC-32 (IEEE), to tell one skin from the next.

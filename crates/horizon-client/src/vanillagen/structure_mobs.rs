@@ -59,15 +59,41 @@ fn load(root: &std::path::Path, defaults: &ItemDefaults) -> Option<Data> {
         camel_husk,
     })
 }
+/// Fills `cell` with `load()` on a thread of its own, unless something fills it
+/// first. A `get_or_init` while it loads waits for it instead of loading again.
+fn fill_behind<T: Send + Sync + 'static>(
+    cell: &Arc<OnceLock<T>>,
+    name: &str,
+    load: impl FnOnce() -> T + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
+    let cell = Arc::downgrade(cell);
+    let spawned = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            // The world closed before the thread ran: nothing to load for.
+            if let Some(cell) = cell.upgrade() {
+                cell.get_or_init(load);
+            }
+        });
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            log::warn!("Horizon: {name} not loaded ahead ({e}): loaded when first needed");
+            None
+        }
+    }
+}
 
 pub struct StructureMobFinalizer {
     root: PathBuf,
     item_data: Arc<ItemData>,
     dimension: String,
-    data: OnceLock<Option<Data>>,
+    /// Shared with the thread `load_behind` starts.
+    data: Arc<OnceLock<Option<Data>>>,
     /// The level's difficulty (0 peaceful to 3 hard) and overworld clock.
     difficulty: AtomicU8,
     day_time: AtomicI64,
+    mob_maps: std::sync::RwLock<Arc<crate::neoforge_mob_maps::NeoForgeMobMaps>>,
 }
 impl StructureMobFinalizer {
     pub fn new(root: PathBuf, dimension: &str, item_data: Arc<ItemData>) -> Self {
@@ -75,10 +101,16 @@ impl StructureMobFinalizer {
             root,
             item_data,
             dimension: dimension.to_owned(),
-            data: OnceLock::new(),
+            data: Arc::new(OnceLock::new()),
             difficulty: AtomicU8::new(2),
             day_time: AtomicI64::new(0),
+            mob_maps: std::sync::RwLock::new(Arc::clone(
+                crate::neoforge_mob_maps::NeoForgeMobMaps::vanilla(),
+            )),
         }
+    }
+    pub fn set_mob_maps(&self, snapshot: &Arc<crate::neoforge_mob_maps::NeoForgeMobMaps>) {
+        *self.mob_maps.write().unwrap() = Arc::clone(snapshot);
     }
     pub fn set_conditions(&self, difficulty: u8, day_time: i64) {
         self.difficulty.store(difficulty, Ordering::Relaxed);
@@ -88,6 +120,7 @@ impl StructureMobFinalizer {
 
 struct Level<'a> {
     data: &'a Data,
+    mob_maps: &'a crate::neoforge_mob_maps::NeoForgeMobMaps,
     biome: &'a str,
     structures: &'a [String],
     difficulty: u8,
@@ -95,6 +128,9 @@ struct Level<'a> {
     next_id: u32,
 }
 impl FinalizeLevel for Level<'_> {
+    fn mob_maps(&self) -> &crate::neoforge_mob_maps::NeoForgeMobMaps {
+        self.mob_maps
+    }
     fn biome(&self, _: [i32; 3]) -> String {
         self.biome.to_owned()
     }
@@ -252,6 +288,13 @@ impl StructureMobFinalizer {
             })
             .as_ref()
     }
+    pub fn load_behind(&self) {
+        let root = self.root.clone();
+        let item_data = self.item_data.clone();
+        let _ = fill_behind(&self.data, "Structure mobs", move || {
+            load(&root, item_data.defaults())
+        });
+    }
     /// A mob chunk generation spawns (`spawnOriginalMobs`): a new one of
     /// `kind` finalized as a structure mob is, as the chunk saves it; `group`
     /// carries a pack's group data from one member to the next.
@@ -283,8 +326,11 @@ impl StructureMobFinalizer {
     ) -> Option<Compound> {
         let base = self.difficulty.load(Ordering::Relaxed);
         let day_time = self.day_time.load(Ordering::Relaxed);
+        // Release the publication lock before any finalize body runs.
+        let mob_maps = Arc::clone(&self.mob_maps.read().unwrap());
         let mut level = Level {
             data,
+            mob_maps: &mob_maps,
             biome,
             structures,
             difficulty: base,
@@ -317,6 +363,69 @@ impl StructureMobFinalizer {
 mod tests {
     use super::*;
     use horizon_world::native_load_context::DataLoadOrigin;
+
+    #[test]
+    #[ignore = "daily"]
+    fn structure_maps_reload_without_cross_world_bleed() {
+        use crate::neoforge_mob_maps::NeoForgeMobMaps;
+        use std::collections::BTreeMap;
+        let root = PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("explicit fixture resources"),
+        );
+        let item_data =
+            crate::test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad).unwrap();
+        let first =
+            StructureMobFinalizer::new(root.clone(), "minecraft:overworld", item_data.clone());
+        let mut second = StructureMobFinalizer::new(root, "minecraft:overworld", item_data);
+        // Resource decoding can be shared; the two worlds' published snapshots cannot.
+        second.data = first.data.clone();
+        let mut desert = NeoForgeMobMaps::default();
+        desert.set_villager_types(BTreeMap::from([("minecraft:plains".into(), 1)]));
+        let desert = Arc::new(desert);
+        let mut snow = NeoForgeMobMaps::default();
+        snow.set_villager_types(BTreeMap::from([("minecraft:plains".into(), 4)]));
+        let snow = Arc::new(snow);
+        let mut removed = NeoForgeMobMaps::default();
+        removed.set_villager_types(BTreeMap::new());
+        let removed = Arc::new(removed);
+        first.set_mob_maps(&desert);
+        second.set_mob_maps(&snow);
+        for (world, snapshot, expected) in [
+            (&first, None, "minecraft:desert"),
+            (&second, None, "minecraft:snow"),
+            (&first, Some(&removed), "minecraft:plains"),
+            (&second, None, "minecraft:snow"),
+            (&first, Some(&desert), "minecraft:desert"),
+        ] {
+            if let Some(snapshot) = snapshot {
+                world.set_mob_maps(snapshot);
+            }
+            let Tag::Compound(mut nbt) = Tag::compound([
+                ("id", Tag::String("minecraft:villager".into())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(0.0f64.to_bits()),
+                        Tag::Double(64.0f64.to_bits()),
+                        Tag::Double(0.0f64.to_bits()),
+                    ]),
+                ),
+            ]) else {
+                unreachable!()
+            };
+            assert!(world.finalize(
+                &mut nbt,
+                "minecraft:plains",
+                &[],
+                &mut LegacyRandom::new(12345)
+            ));
+            let result = Tag::Compound(nbt);
+            assert!(
+                matches!(result.get("VillagerData").and_then(|value| value.get("type")), Some(Tag::String(value)) if value.to_string_lossy() == expected),
+                "{result:?}"
+            );
+        }
+    }
 
     #[test]
     fn structure_zombie_preserves_unknown_profession() {
@@ -594,5 +703,85 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(got, expected);
+    }
+
+    /// A caller that needs the data while the thread reads it waits for that
+    /// read, and it is read once.
+    #[test]
+    fn fill_behind_is_awaited_not_repeated() {
+        use std::sync::{atomic::AtomicUsize, mpsc};
+        use std::time::Duration;
+        let cell = Arc::new(OnceLock::new());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started) = mpsc::channel();
+        let (open, gate) = mpsc::channel::<()>();
+        let handle = {
+            let loads = loads.clone();
+            fill_behind(&cell, "fill test", move || {
+                started_tx.send(()).unwrap();
+                gate.recv().unwrap();
+                loads.fetch_add(1, Ordering::SeqCst);
+                7u32
+            })
+            .unwrap()
+        };
+        started.recv().unwrap();
+        let (done_tx, done) = mpsc::channel();
+        let waiter = {
+            let (cell, loads) = (cell.clone(), loads.clone());
+            std::thread::spawn(move || {
+                let got = *cell.get_or_init(|| {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    0
+                });
+                done_tx.send(got).unwrap();
+            })
+        };
+        // The read isn't finished: the caller is still waiting.
+        assert!(done.recv_timeout(Duration::from_millis(50)).is_err());
+        open.send(()).unwrap();
+        assert_eq!(done.recv_timeout(Duration::from_secs(10)), Ok(7));
+        handle.join().unwrap();
+        waiter.join().unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    /// A read that fails leaves the same answer as a failed read on the tick:
+    /// no data, kept, and not read again.
+    #[test]
+    fn fill_behind_keeps_a_failed_read() {
+        let cell: Arc<OnceLock<Option<u32>>> = Arc::new(OnceLock::new());
+        fill_behind(&cell, "fill test", || None)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(cell.get(), Some(&None));
+        assert_eq!(*cell.get_or_init(|| Some(1)), None);
+    }
+
+    /// Without resources the finalizer has no data, read ahead or not.
+    #[test]
+    fn load_behind_without_resources_has_no_data() {
+        let dir = std::env::temp_dir().join("horizon-structure-mobs-none");
+        // The item data is a separate load from the (absent) structure resources.
+        let items = std::env::temp_dir().join("horizon-structure-mobs-items");
+        std::fs::create_dir_all(&items).unwrap();
+        std::fs::write(items.join("items.json"), "{}").unwrap();
+        let item_data = crate::test_resources::item_data(
+            &items,
+            horizon_world::native_load_context::DataLoadOrigin::ServerDataLoad,
+        )
+        .unwrap();
+        let finalizer = StructureMobFinalizer::new(dir, "minecraft:overworld", item_data);
+        finalizer.load_behind();
+        // The thread has to fill the cell on its own, before anyone asks.
+        for _ in 0..1000 {
+            if finalizer.data.get().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(finalizer.data.get().is_some(), "the thread filled nothing");
+        assert!(finalizer.data().is_none());
     }
 }

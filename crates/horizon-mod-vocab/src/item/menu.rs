@@ -43,6 +43,51 @@ pub enum SwapWith {
     Offhand,
 }
 
+/// Whether `open_menu` or `PlayerRef::open_mod_menu` first sends the client a close for the menu
+/// it replaces, as a Java `MenuProvider` chooses (`shouldTriggerClientSideContainerClosingOnOpen`).
+/// Either way the old menu closes on the server, its cursor stack going back to the player's
+/// inventory and `player_container_close` firing once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// exhaustive: vanilla's choice is a boolean
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum MenuReplace {
+    /// `ServerPlayer.closeContainer`, vanilla's default: the client closes the old screen first,
+    /// which centres the mouse again.
+    CloseFirst,
+    /// `ServerPlayer.doCloseContainer`: the new screen takes the old one's place, title and rows
+    /// included, and the mouse stays where it is.
+    InPlace,
+}
+
+/// Why `menu_set_items` replaced nothing. Nothing was sent when one comes back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum MenuItemsRefusal {
+    /// The call was made on a client.
+    Client,
+    /// No player of that UUID is placed here.
+    NoPlayer,
+    /// `window` is not the `open_menu` menu the player has open.
+    NotOpen,
+    /// The game's item conversion refused one of the stacks: an item the world lacks, a count
+    /// or damage the item does not allow.
+    Stack(crate::StackWriteError),
+}
+
+impl From<crate::StackWriteError> for MenuItemsRefusal {
+    fn from(error: crate::StackWriteError) -> Self {
+        Self::Stack(error)
+    }
+}
+
+impl crate::NoBackend for MenuItemsRefusal {
+    /// No game behind the host: no player is placed there.
+    fn no_backend() -> Self {
+        Self::NoPlayer
+    }
+}
+
 /// How a complete drag distributes the carried stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: vanilla has split, one-per-slot and creative-fill drags
@@ -215,4 +260,58 @@ pub struct AnvilCraft {
     pub left: Option<ItemStack>,
     pub right: Option<ItemStack>,
     pub output: ItemStack,
+}
+
+/// One of a menu's own (non-player) containers: the key a `menu_slot_rules` ask names its slot's
+/// container by (`event.container`, with `event.slot` indexing inside it) and
+/// [`MenuSlotContext::slot`] reads by. A plain menu has `Main` only; a mod menu type with a
+/// crafting grid keeps its grid slots in `Grid` and its crafted result in `Result` (slot 0);
+/// a slot of the player's inventory is `Player`'s.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub enum MenuContainer {
+    /// The menu's own slots (a chest's, a machine's).
+    #[default]
+    Main,
+    /// A crafting grid's slots, row by row.
+    Grid,
+    /// A crafting grid's result slot.
+    Result,
+    /// The player's inventory, which an ask can be about but the context does not copy
+    /// ([`MenuSlotContext::slot`] reads nothing there).
+    Player,
+}
+/// Who and where a `menu_slot_rules` ask is about: the menu's player, its block entity and
+/// its own containers' slots. The game fills it the same way on the server and on the client's
+/// prediction, once per click plan; mods read it.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct MenuSlotContext {
+    /// The UUID of the player whose menu it is; None where no player is known.
+    pub player: Option<u128>,
+    /// The block entity the menu belongs to; None when the menu is not a block's
+    /// (opened by a mod with no block, a vehicle's, the player's own inventory).
+    pub pos: Option<[i32; 3]>,
+    /// The menu's own containers' slots as they stand when the click plans, read only (not
+    /// the player's inventory): one entry per [`MenuContainer`] in its order (`Main`, `Grid`,
+    /// `Result`), each in that container's slot order. Read one with [`Self::slot`].
+    pub slots: Vec<Vec<Option<ItemStack>>>,
+}
+impl MenuSlotContext {
+    /// A context of `player`, the block entity at `pos` and the containers' `slots`, one entry
+    /// per [`MenuContainer`] in its order.
+    pub fn new(
+        player: Option<u128>,
+        pos: Option<[i32; 3]>,
+        slots: Vec<Vec<Option<ItemStack>>>,
+    ) -> Self {
+        Self { player, pos, slots }
+    }
+    /// What slot `index` of `container` holds, keyed as the ask names its own slot; None when
+    /// it is empty or the menu has no such slot.
+    pub fn slot(&self, container: MenuContainer, index: usize) -> Option<&ItemStack> {
+        self.slots.get(container as usize)?.get(index)?.as_ref()
+    }
 }

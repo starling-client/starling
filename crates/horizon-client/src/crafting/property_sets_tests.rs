@@ -59,14 +59,14 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
         )),
         ["pot", "extension"],
     );
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![
             mod_api::ModEntry::new("pot", Box::new(Sets)),
             mod_api::ModEntry::new("extension", Box::new(Extend)),
         ]
         .into(),
         || {
-            let resolved = ResolvedSources::resolve(vec![], &context);
+            let resolved = ResolvedSources::resolve(vec![], &context).unwrap();
             assert!(resolved.property_additions.get("foreign:input").is_none());
             assert!(resolved.property_additions.get("pot:foreign_new").is_none());
             assert!(

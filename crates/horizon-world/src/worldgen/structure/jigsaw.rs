@@ -345,7 +345,8 @@ impl PoolElement {
         }
     }
 }
-/// StructureTemplate.getJigsaws: palette chosen by a position-seeded random.
+/// `StructureTemplate.getJigsaws`: palette chosen by a position-seeded random.
+/// Connector states use plain `BlockState.rotate`, not the placement-only rotate Part.
 fn template_jigsaws<'a>(
     resources: &StructureResources,
     template: &'a StructureTemplate,
@@ -367,6 +368,7 @@ fn template_jigsaws<'a>(
         .iter()
         .map(|j| {
             let relative = StructureTemplate::transform(j.info.pos, Mirror::None, rotation, [0; 3]);
+            let pos = std::array::from_fn(|i| relative[i] + position[i]);
             let state = resources.transforms.rotate(j.info.state, rotation);
             let orientation = resources
                 .registry
@@ -375,7 +377,7 @@ fn template_jigsaws<'a>(
                 .unwrap_or_default();
             let (front, top) = orientation.split_once('_').unwrap_or(("north", "up"));
             Jigsaw {
-                pos: std::array::from_fn(|i| relative[i] + position[i]),
+                pos,
                 front: direction(front),
                 top: direction(top),
                 rollable: j.rollable,

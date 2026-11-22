@@ -130,6 +130,12 @@ impl Game<'_> {
 
     /// A packet from a guest that the hub does not handle itself.
     pub(in crate::game) fn lan_guest_packet(&mut self, conn: u32, packet: S) {
+        // A crossing the hub's move check passed; a dead player's is refused, not dropped.
+        if let S::CustomPayload(p) = &packet
+            && p.channel == horizon_protocol::passage_sync::CROSS_CHANNEL
+        {
+            return self.guest_passage_cross(conn, &p.data);
+        }
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -328,7 +334,7 @@ impl Game<'_> {
                 }
                 4 | 5 => {
                     if !spectator {
-                        self.as_guest(conn, |g| g.drop_held(a.action == 4));
+                        self.guest_drop_held(gi, conn, a.action == 4);
                     }
                 }
                 // RELEASE_USE_ITEM: ServerPlayer.releaseUsingItem.
@@ -340,46 +346,83 @@ impl Game<'_> {
                 // SWAP_ITEM_WITH_OFFHAND: the hands swap and the item in use stops
                 // (ServerGamePacketListenerImpl.handlePlayerAction), not for spectators.
                 7 if !spectator => {
-                    // The mods hear the swap first, and may stop it: the
-                    // client, which swapped at once, gets its slots back.
-                    let (uuid, name) = {
+                    // The mods hear the swap first (LivingSwapItemsEvent.Hands):
+                    // they may stop it, and the client is sent its slots again,
+                    // or change what each hand gets. The
+                    // stacks are copied only for a listener: `heard` holds the
+                    // vanilla (to main hand, to off hand), the old off and main.
+                    let (uuid, name, heard) = {
                         let Some(host) = self.lan.as_ref() else {
                             return;
                         };
                         let g = &host.hub.guests[gi];
-                        (g.uuid, g.name.clone())
+                        let heard = mod_api::__private::listened(mod_api::HookId::PlayerSwapHands)
+                            .then(|| (g.offhand.clone(), g.inventory[g.selected].clone()));
+                        (g.uuid, g.name.clone(), heard)
                     };
                     // With the player's state swapped in, so that the helpers
                     // reach them.
-                    let cancel = self
-                        .as_guest(conn, |g| {
-                            let mut cancel = false;
-                            g.native_player_swap_hands(uuid, &name, &mut cancel);
-                            cancel
-                        })
-                        .unwrap_or(false);
-                    if cancel {
-                        let Some(host) = self.lan.as_mut() else {
-                            return;
-                        };
-                        host.hub.send_inventory(gi);
-                        return;
-                    }
+                    let mut chosen = heard.clone();
+                    let cancel = match chosen.as_mut() {
+                        Some((to_main, to_off)) => self
+                            .as_guest(conn, |g| {
+                                let mut cancel = false;
+                                g.native_player_swap_hands(
+                                    uuid,
+                                    &name,
+                                    to_main,
+                                    to_off,
+                                    &mut cancel,
+                                );
+                                cancel
+                            })
+                            .unwrap_or(false),
+                        None => false,
+                    };
                     let Some(host) = self.lan.as_mut() else {
                         return;
                     };
+                    if cancel {
+                        host.hub.send_inventory(gi);
+                        return;
+                    }
+                    let changed = chosen != heard;
+                    let used =
+                        host.play
+                            .get(&conn)
+                            .and_then(|play| play.using)
+                            .and_then(|(slot, _)| {
+                                let guest = &host.hub.guests[gi];
+                                if slot == crate::game::shield::OFFHAND_SLOT {
+                                    guest.offhand.clone()
+                                } else {
+                                    guest.inventory[slot].clone()
+                                }
+                            });
                     let (offhand, main) = host.hub.guests.update(gi, |g| {
                         let slot = g.selected;
                         std::mem::swap(&mut g.inventory[slot], &mut g.offhand);
+                        if let Some((to_main, to_off)) = chosen {
+                            (g.inventory[slot], g.offhand) = (to_main, to_off);
+                        }
                         (g.offhand.clone(), g.inventory[slot].clone())
                     });
-                    if let Some(play) = host.play.get_mut(&conn) {
-                        play.using = None;
+                    // A mod's stacks differ from vanilla's swap: both slots go to the client.
+                    if changed {
+                        host.hub.send_inventory(gi);
                     }
-                    // setItemInHand: the off hand, then the main hand.
+                    // setItemInHand: the off hand, then the main hand, from what each held.
+                    let (old_off, old_main) = match &heard {
+                        Some((old_off, old_main)) => (old_off.as_ref(), old_main.as_ref()),
+                        None => (main.as_ref(), offhand.as_ref()),
+                    };
                     self.as_guest(conn, |g| {
-                        g.player_on_equip("offhand", main.as_ref(), offhand.as_ref());
-                        g.player_on_equip("mainhand", offhand.as_ref(), main.as_ref());
+                        g.player_on_equip("offhand", old_off, offhand.as_ref());
+                        g.player_on_equip("mainhand", old_main, main.as_ref());
+                        match used {
+                            Some(stack) => g.stop_using_item(&stack),
+                            None => g.using = None,
+                        }
                     });
                     if mod_api::__private::listened(mod_api::HookId::PlayerSwapWithEquipmentSlot) {
                         let Some(host) = self.lan.as_ref() else {
@@ -436,20 +479,20 @@ impl Game<'_> {
                         return;
                     }
                 }
+                self.as_guest(conn, |g| {
+                    if changed
+                        && g.using
+                            .is_some_and(|(slot, _)| slot != crate::game::shield::OFFHAND_SLOT)
+                    {
+                        g.stop_active_item_use();
+                    }
+                });
                 let Some(host) = self.lan.as_mut() else {
                     return;
                 };
                 {
                     let value = p.slot as usize;
                     host.hub.guests.update(gi, |guest| guest.selected = value);
-                }
-                if let Some(play) = host.play.get_mut(&conn)
-                    && changed
-                    && play
-                        .using
-                        .is_some_and(|(slot, _)| slot != crate::game::shield::OFFHAND_SLOT)
-                {
-                    play.using = None;
                 }
                 if changed {
                     self.native_player_switch_hotbar_slot_post(
@@ -623,6 +666,8 @@ impl Game<'_> {
                 });
             }
             S::PlayerCommand(p) if p.action == 6 => self.lan_start_gliding(conn),
+            // STOP_SLEEPING: `stopSleepInBed(false, true)`.
+            S::PlayerCommand(p) if p.action == 0 => self.wake_guest(gi, false, true),
             // START_RIDING_JUMP: the mount's handleStartJump.
             S::PlayerCommand(p) if p.action == 3 => {
                 self.lan_start_riding_jump(conn, p.data);
@@ -708,7 +753,6 @@ impl Game<'_> {
                 }
             }
             S::ContainerClick(p) => {
-                let rules = ItemRules(world_items!(self), &world_stations!(self).enchantments);
                 let Some(host) = self.lan.as_mut() else {
                     return;
                 };
@@ -718,7 +762,7 @@ impl Game<'_> {
                     .filter(|m| m.window == p.container)
                     .map(|m| m.slots);
                 let before = slots.and_then(|s| s.read(&self.world, &host.hub.guests[gi]));
-                let drops = host.hub.container_click(conn, &p, &mut self.world, &rules);
+                let drops = self.lan_hub_click(conn, &p);
                 // A click that changed the container's slots: BlockEntity.setChanged,
                 // so comparators read it again (a double chest's other half follows).
                 let Some(host) = self.lan.as_ref() else {
@@ -752,11 +796,11 @@ impl Game<'_> {
                         }
                         _ => None,
                     });
-                if host.hub.guests[gi]
+                let closing = host.hub.guests[gi]
                     .menu
                     .as_ref()
-                    .is_some_and(|m| m.window == p.container)
-                {
+                    .is_some_and(|m| m.window == p.container);
+                if closing {
                     self.guest_container_closed(conn);
                 }
                 if let Some(key) = vehicle {
@@ -767,6 +811,9 @@ impl Game<'_> {
                 };
                 host.hub.container_closed(conn, p.container);
                 self.guest_carried_back(gi);
+                if closing {
+                    self.player_menu_closing(conn);
+                }
             }
             S::ChatCommand(c) => self.guest_chat_command(conn, &c.command),
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {
@@ -777,11 +824,18 @@ impl Game<'_> {
             {
                 self.guest_book_settings(conn, &p.data)
             }
+            // Starling: the old mod messages (old_mod_net.rs).
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
-                self.guest_native_net(conn, &p.data)
+                self.guest_old_mod_net(conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(conn, &p.data);
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::CHECK_CHANNEL => {
+                self.guest_recipe_check(conn, &p.data);
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                self.guest_perf(conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(conn, &p.data)

@@ -2,7 +2,7 @@
 use crate::{CallClass, Refusal, WasmMod, WeakWasmMod, boundary::Frame};
 use horizon_mod_package::manifest::{
     Manifest,
-    inject::{Access, Inject, Kind},
+    inject::{Inject, Kind},
 };
 use mod_points::__private::{Forward, PointHost, SlotListener};
 use mod_points::PointId;
@@ -76,20 +76,33 @@ impl Endpoint {
     }
 }
 
-/// Check engine subscriptions completely before registering in the host's list. Mod-point
-/// subscriptions are registered inside their dependency group, not forwarded through the host.
+/// Check engine subscriptions completely before registering in the host's list.
 pub(crate) fn listen(manifest: &Manifest, module: &WasmMod) -> Result<(), Refusal> {
     listen_checked(manifest, module).map_err(Refusal::Runtime)
 }
 
 fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
-    let engine: Vec<_> = manifest
-        .inject
-        .iter()
-        .filter(|inject| manifest.mod_point_dependency(&inject.at).is_none())
-        .collect();
+    let engine: Vec<_> = manifest.inject.iter().collect();
     if engine.is_empty() {
         return Ok(());
+    }
+    // The table's own answer, before the guest is asked anything: `register` would refuse each.
+    if !mod_points::__private::TABLE.has_sites() {
+        return Err(format!(
+            "{}: {}: this build has no point sites; start the game through the launcher's mod build",
+            manifest.id, engine[0].at
+        ));
+    }
+    for inject in &engine {
+        if let Some((_, reason)) = mod_points::API_REFUSALS.iter().find(|(target, _)| {
+            horizon_mod_point_emit::plain_path(target)
+                == horizon_mod_point_emit::plain_path(&inject.at)
+        }) {
+            return Err(format!(
+                "{}:{}: no API listener at {}: {reason}",
+                manifest.id, inject.id, inject.at
+            ));
+        }
     }
     let listed: Vec<(u32, String)> = module
         .call(
@@ -110,7 +123,8 @@ fn listen_checked(manifest: &Manifest, module: &WasmMod) -> Result<(), String> {
         let inject = declared
             .remove(id.as_str())
             .ok_or_else(|| format!("undeclared point listener {id}"))?;
-        let point = checked_place(&id, inject, place)?;
+        let point =
+            checked_place(&id, inject, place).map_err(|e| format!("{}: {e}", manifest.id))?;
         slots.push((
             point,
             index as u32,
@@ -151,11 +165,12 @@ fn checked_place(id: &str, inject: &Inject, place: u32) -> Result<PointId, Strin
         .iter()
         .find(|(point, ..)| *point as u32 == place)
     else {
-        return Err(format!("{id}: no API record for place {place}"));
+        return Err(format!(
+            "{id}: {}: no API record for place {place}",
+            inject.at
+        ));
     };
-    if inject.access != Access::Api
-        || !matches!(inject.kind, Kind::Head | Kind::Replace | Kind::Return)
-        || (inject.kind == Kind::Return) != at_return
+    if (inject.kind == Kind::Return) != at_return
         || horizon_mod_point_emit::plain_path(&inject.at)
             != horizon_mod_point_emit::plain_path(target)
     {
@@ -178,21 +193,112 @@ mod tests {
 
     fn inject(kind: Kind, at: &str) -> Inject {
         Inject {
-            local: None,
-            local_type: None,
-            position: None,
-            expr: None,
             id: "own".into(),
             at: at.into(),
             kind,
             with: "own".into(),
-            access: Access::Api,
             priority: 0,
             hash: Some("pin".into()),
-            call: None,
-            nth: None,
-            ctx: None,
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "listener-fixture"))]
+    fn unstaged_build_refuses_api_listener_by_mod_and_target() {
+        crate::test_stack::on_guest_stack(|| {
+            const { assert!(!mod_points::STAGED) };
+            let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id": "site_test", "name": "Sites", "version": "1.0.0", "description": "", "api": "0.2", "capabilities": [],
+            "inject": [{"id": "head", "at": "game::tick", "kind": "head", "with": "listener"}]
+        }))
+        .unwrap();
+            let bytes = wat::parse_str(format!(
+                r#"(module
+            (@custom "dylink.0" "\01\04\00\00\00\00")
+            (import "env" "memory" (memory 1))
+            (func (export "horizon_layout") (result i64) i64.const {})
+            (func (export "horizon_in") (param i32) (result i32) i32.const 0)
+            (func (export "horizon_hook") (param i32) (result i64) i64.const 0))"#,
+                *mod_api::wire::LAYOUT
+            ))
+            .unwrap();
+            let mut modules = WasmMod::instantiate(
+                &crate::runtime::engine().unwrap(),
+                crate::runtime::DEFAULT_GROUP_MEMORY_MIB,
+                &[crate::link::Member {
+                    name: "libsite.so",
+                    module: &bytes,
+                }],
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                listen_checked(&manifest, &modules.remove(0)).unwrap_err(),
+                "site_test: game::tick: this build has no point sites; start the game through the launcher's mod build"
+            );
+        })
+    }
+
+    #[test]
+    #[cfg(feature = "listener-fixture")]
+    fn wasm_loader_refuses_no_wire_by_mod_target_and_type() {
+        crate::test_stack::on_guest_stack(|| {
+            let manifest = Manifest::parse(&format!(
+                r#"id='refused_fixture'
+name='Refused fixture'
+version='1.0.0'
+api='0.2'
+capabilities=['registries']
+[wasm]
+sha512='{}'
+toolchain='fixture'
+[[inject]]
+id='no_wire'
+at='listener_fixture::no_wire'
+kind='head'
+with='no_wire'
+"#,
+                "0".repeat(128)
+            ))
+            .unwrap();
+            let bytes = wat::parse_str(format!(
+                r#"(module
+            (@custom "dylink.0" "\01\04\00\00\00\00")
+            (import "env" "memory" (memory 1))
+            (func (export "horizon_layout") (result i64) i64.const {})
+            (func (export "horizon_in") (param i32) (result i32) i32.const 0)
+            (func (export "horizon_hook") (param i32) (result i64) i64.const 0))"#,
+                *mod_api::wire::LAYOUT
+            ))
+            .unwrap();
+            let mut modules = WasmMod::instantiate(
+                &crate::runtime::engine().unwrap(),
+                crate::runtime::DEFAULT_GROUP_MEMORY_MIB,
+                &[crate::link::Member {
+                    name: "refused.so",
+                    module: &bytes,
+                }],
+                None,
+            )
+            .unwrap();
+            let error = listen(&manifest, &modules.remove(0))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                "refused_fixture:no_wire: no API listener at listener_fixture::no_wire: argument 1 `value` (`&RegistrationData`) has no API type yet"
+            );
+        })
+    }
+
+    #[test]
+    fn missing_place_names_mod_row_and_declared_target() {
+        let error =
+            checked_place("addon:own", &inject(Kind::Head, "game::tick"), u32::MAX).unwrap_err();
+        assert_eq!(
+            error,
+            "addon:own: game::tick: no API record for place 4294967295"
+        );
     }
 
     /// A module built without the build tool may subscribe a `replace` anywhere: the loader

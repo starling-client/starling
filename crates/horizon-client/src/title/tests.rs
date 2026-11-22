@@ -5,12 +5,12 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-struct Fixture {
+pub(super) struct Fixture {
     root: PathBuf,
-    title: Title,
+    pub(super) title: Title,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "horizon-world-menu-{}-{}",
@@ -19,11 +19,11 @@ impl Fixture {
         ));
         fs::create_dir_all(root.join("saves")).unwrap();
         Self {
-            title: Title::new(root.join("saves"), &root),
+            title: Title::new(root.join("saves"), &root, ""),
             root,
         }
     }
-    fn world(&self, folder: &str, name: &str) {
+    pub(super) fn world(&self, folder: &str, name: &str) {
         crate::save::write_dat(
             &self.title.saves.join(folder).join("level.dat"),
             Tag::compound([
@@ -50,7 +50,7 @@ impl Fixture {
         )
         .unwrap();
     }
-    fn click(&mut self, label: &str) -> Action {
+    pub(super) fn click(&mut self, label: &str) -> Action {
         self.click_with_sound(label).0
     }
     fn click_with_sound(&mut self, label: &str) -> (Action, bool) {
@@ -87,13 +87,61 @@ impl Fixture {
 }
 include!("preset_tests.rs");
 
+/// Join a Friend needs a resolver; these tests stand one in (`net::JOINS_FRIENDS_IN_TEST`).
+fn with_resolver() -> Fixture {
+    crate::net::JOINS_FRIENDS_IN_TEST.set(true);
+    Fixture::new()
+}
+
+#[test]
+fn without_a_resolver_the_friends_icon_is_inactive_and_opens_nothing() {
+    crate::net::JOINS_FRIENDS_IN_TEST.set(false);
+    let mut f = Fixture::new();
+    let icons: Vec<_> = f
+        .title
+        .buttons(480.0, 262.0)
+        .into_iter()
+        .filter(|b| b.icon.is_some())
+        .map(|b| (b.label.clone(), b.enabled, b.x))
+        .collect();
+    // Same place and look as with one, only greyed; Language and Accessibility stay active.
+    let friends = icons.iter().find(|(label, ..)| label == "Friends").unwrap();
+    assert!(!friends.1);
+    assert!(
+        icons
+            .iter()
+            .filter(|(label, ..)| label != "Friends")
+            .all(|(_, on, _)| *on)
+    );
+    assert_eq!(f.click("Friends"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Main));
+    crate::net::JOINS_FRIENDS_IN_TEST.set(true);
+    let with: Vec<_> = f
+        .title
+        .buttons(480.0, 262.0)
+        .into_iter()
+        .filter(|b| b.icon.is_some())
+        .map(|b| (b.label.clone(), b.x, b.y))
+        .collect();
+    assert_eq!(
+        with.iter()
+            .map(|(l, x, _)| (l.clone(), *x))
+            .collect::<Vec<_>>(),
+        icons
+            .iter()
+            .map(|(l, _, x)| (l.clone(), *x))
+            .collect::<Vec<_>>()
+    );
+    crate::net::JOINS_FRIENDS_IN_TEST.set(false);
+}
+
 mod multiplayer_parent_navigation {
     use super::*;
     use crate::multiplayer::{Outcome, Screen};
 
     #[test]
     fn friend_cancel_returns_to_title() {
-        let mut f = Fixture::new();
+        let mut f = with_resolver();
         f.click("Friends");
         assert!(matches!(
             f.title.mode,
@@ -105,7 +153,7 @@ mod multiplayer_parent_navigation {
 
     #[test]
     fn friend_escape_returns_to_title() {
-        let mut f = Fixture::new();
+        let mut f = with_resolver();
         f.click("Friends");
         assert!(matches!(
             f.title.mode,
@@ -259,6 +307,7 @@ fn a_gated_title_asks_for_the_multiplayer_lists_steps() {
 }
 
 #[test]
+#[ignore = "daily"]
 fn f5_reloads_the_server_list() {
     let mut f = Fixture::new();
     f.click("Multiplayer");
@@ -502,7 +551,7 @@ fn backup_zip_preserves_nested_files_excludes_lock_and_keeps_duplicate_backups()
     )
     .unwrap();
     for _ in 0..2 {
-        assert!(world_management::backup(&f.title.saves, "World").unwrap() > 0);
+        assert!(world_management::backup(&f.title.saves, "World").unwrap().1 > 0);
     }
     let archives: Vec<_> = fs::read_dir(f.root.join("backups"))
         .unwrap()
@@ -785,6 +834,9 @@ fn only_the_vertical_wheel_cycles_a_create_world_button() {
     let before = state(&f);
     // A horizontal notch arrives with no vertical part.
     f.title.scroll_worlds(0.0, at, size);
+    assert_eq!(state(&f), before);
+    // Starling: a finger dragging over it on a phone scrolls; the button keeps its value.
+    f.title.finger_scroll(-1.0, at, size);
     assert_eq!(state(&f), before);
     f.title.scroll_worlds(-1.0, at, size);
     assert_ne!(state(&f), before);
@@ -1138,35 +1190,8 @@ fn delete_removes_links_without_following_them() {
     assert!(outside.join("keep.txt").is_file());
 }
 
-#[test]
-fn hovered_buttons_ask_for_the_hand_or_not_allowed() {
-    use crate::widgets::Cursor;
-    let mut f = Fixture::new();
-    let atlas =
-        crate::hud::HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
-            (Path::new("/nonexistent/horizon-test-assets")).to_owned(),
-        ))
-        .unwrap();
-    let cursor_over = |title: &Title, label: Option<&str>| {
-        let mouse = label.map_or((0.0, 0.0), |label| {
-            let buttons = title.buttons(480.0, 262.0);
-            let b = buttons.iter().find(|b| b.label == label).unwrap();
-            (b.x + b.w / 2.0, b.y + 10.0)
-        });
-        let _ = crate::widgets::take_cursor();
-        title.draw(&atlas, &mut HudBatch::scratch([480, 262]), mouse, true);
-        crate::widgets::take_cursor()
-    };
-    assert_eq!(
-        cursor_over(&f.title, Some("Singleplayer")),
-        Cursor::PointingHand
-    );
-    assert_eq!(cursor_over(&f.title, None), Cursor::Arrow);
-    // The world list's footer is inactive until a world is selected.
-    f.world("A", "Alpha");
-    f.title.enter_singleplayer();
-    assert_eq!(cursor_over(&f.title, Some("Edit")), Cursor::NotAllowed);
-}
+#[path = "draw_cursor_tests.rs"]
+mod draw_cursor_tests;
 
 /// 26.3's en_us strings for the buttons' tooltips, standing in for the
 /// prepared resources.
@@ -1202,7 +1227,9 @@ fn draw_hovered(
         },
     );
     let english = crate::lang::Language::load(&[&TooltipStrings], "en_us");
-    crate::lang::scoped(english, || title.draw(atlas, &mut batch, mouse, true));
+    crate::lang::scoped(english, || {
+        title.draw(atlas, &mut batch, mouse, true, &mut |_, _| {})
+    });
     crate::widgets::end_frame(*frame + 1);
     *frame += 2;
     (
@@ -1317,7 +1344,7 @@ fn world_search_hint_is_gray_and_only_shown_empty_and_unfocused() {
         .unwrap();
     let draw = |title: &Title| {
         let mut batch = HudBatch::scratch([480, 262]);
-        title.draw(&atlas, &mut batch, (0.0, 0.0), true);
+        title.draw(&atlas, &mut batch, (0.0, 0.0), true, &mut |_, _| {});
         batch
     };
     let has_hint = |batch: &HudBatch| {
@@ -1360,7 +1387,8 @@ fn scrolled_world_list_draws_inside_the_list_and_drags_its_scroller() {
         ))
         .unwrap();
     let mut batch = HudBatch::scratch([480, 262]);
-    f.title.draw(&atlas, &mut batch, (0.0, 0.0), true);
+    f.title
+        .draw(&atlas, &mut batch, (0.0, 0.0), true, &mut |_, _| {});
     assert!(!batch.vertices.is_empty());
 }
 
@@ -2030,7 +2058,7 @@ fn set_world_gen(f: &Fixture, folder: &str, change: impl FnOnce(&mut Tag)) {
     crate::save::write_dat(&path, root).unwrap();
 }
 
-fn only_world(f: &Fixture) -> WorldEntry {
+pub(super) fn only_world(f: &Fixture) -> WorldEntry {
     let worlds = list_worlds(&f.title.saves);
     assert_eq!(worlds.len(), 1);
     worlds[0].clone()
@@ -2731,7 +2759,8 @@ fn a_create_world_tab_label_wider_than_its_tab_stays_inside_it() {
     .unwrap();
     // 90 px wide: three 20 px tabs from x = 14, too narrow for "Game".
     let mut batch = HudBatch::scratch([90, 262]);
-    f.title.draw(&atlas, &mut batch, (0.0, 100.0), true);
+    f.title
+        .draw(&atlas, &mut batch, (0.0, 100.0), true, &mut |_, _| {});
     let labels: Vec<f32> = batch
         .vertices
         .iter()
@@ -3074,4 +3103,39 @@ fn account_secret_fields_accept_credentials_without_chat_filtering_or_debug_disc
         assert!(!format!("{screen:?}").contains("Secret"));
     }
     assert!(!format!("{:?}", f.title.caret.borrow()).contains("Secret"));
+}
+
+#[cfg(test)]
+mod hidden_features {
+    use super::*;
+    #[test]
+    fn experiments_done_preserves_hidden_selection_when_visible_switch_changes() {
+        let mut f = Fixture::new();
+        f.enter_create_world_for_packs();
+        if let Mode::Create { options, .. } = &mut f.title.mode {
+            options.data_packs = vec!["vanilla".into(), "hidden".into(), "visible".into()];
+        } else {
+            panic!("expected Create mode");
+        }
+        *f.title.experiments.borrow_mut() = Some(experiments::ExperimentsScreen::new(vec![
+            experiments::Flag {
+                id: "visible".into(),
+                title: Text::literal("Visible"),
+                description: Text::literal("Feature fixture"),
+                enabled: false,
+            },
+        ]));
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                "/nonexistent/horizon-test-assets".into(),
+            ),
+        )
+        .unwrap();
+        f.title.press_rules(&atlas, (100.0, 240.0), (480.0, 262.0));
+        assert!(f.title.experiments.borrow().is_none());
+        assert_eq!(
+            f.title.creation_packs().map(|(_, ids)| ids),
+            Some(vec!["vanilla".to_owned(), "hidden".to_owned()])
+        );
+    }
 }

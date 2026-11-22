@@ -1,0 +1,11 @@
+# A toy of the Android native mod route (docs: none yet; the android-sdk workflow builds it): the game as a
+# Rust dylib, a mod as its own library linked against it, and a program that opens the mod at run time. It
+# answers one question before the real game is built that way: whether a std built from source with
+# `-Z has-thread-local=yes` (packaging/android/build_apk.py, TLS_FLAGS) can be one shared library that the
+# game and every mod use.
+[workspace]
+members = ["game", "toymod", "host"]
+resolver = "2"
+
+[profile.release]
+opt-level = 1

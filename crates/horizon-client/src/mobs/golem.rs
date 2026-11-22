@@ -48,8 +48,7 @@ impl Goal for ResetUniversalAnger {
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.timestamp = m.ai.last_hurt_by_time;
         // setLastHurtByMob(null) also stamps the time.
-        m.ai.last_hurt_by = None;
-        m.ai.last_hurt_by_time = m.age as i32;
+        m.ai.forget_hurt_by(m.age as i32);
         m.set_ai_target(cx.w, None);
         m.extra.angry_at = None;
         // `TimeUtil.rangeOfSeconds(20, 39)`.
@@ -546,12 +545,16 @@ pub fn iron_anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 pub fn register_snow(m: &mut Mob) {
+    // `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`: the probability of a plain
+    // stroll is the constructor's third argument, not the default 0.001.
+    let mut stroll = Stroll::avoiding_water(1.0);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
     let g = &mut m.ai.goals;
     g.add(
         1,
         super::witch::RangedAttack::new(1.25, 20, 20, 10.0, snowball_attack),
     );
-    g.add(2, Stroll::avoiding_water(1.0));
+    g.add(2, stroll);
     g.add(3, LookAtPlayer::new(6.0));
     g.add(4, RandomLookAround::default());
     m.ai.targets.add(
@@ -573,12 +576,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
-    p.shoot(
-        &mut crate::random_source::entity(),
-        [xd, yd + yo - start.y, zd],
-        1.6,
-        12.0,
-    );
+    p.shoot_own([xd, yd + yo - start.y, zd], 1.6, 12.0);
     cx.events.push(MobEvent::Projectile(p));
     let pitch = 0.4 / (m.random.next_float() * 0.4 + 0.8);
     cx.events.push(MobEvent::Sound(
@@ -610,7 +608,8 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
-        let below = w.facts.get(w.world.block(xx, y - 1, zz));
+        let below_state = w.world.block(xx, y - 1, zz);
+        let below = w.facts.get(below_state);
         // SnowLayerBlock.canSurvive: the two snow-layer tags decide first,
         // then a full top face (or a full snow layer) supports the snow.
         let in_tag = |tag: &str| {
@@ -621,7 +620,10 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let supported = if in_tag("minecraft:cannot_support_snow_layer") {
             false
         } else {
-            in_tag("minecraft:support_override_snow_layer") || below.full_collision
+            in_tag("minecraft:support_override_snow_layer")
+                || w.top_face_full([xx, y - 1, zz])
+                || (&*below.name == "minecraft:snow"
+                    && w.prop(xx, y - 1, zz, "layers") == Some("8"))
         };
         if w.facts.is_air(w.world.block(xx, y, zz))
             && supported
@@ -660,7 +662,7 @@ mod tests {
     }
 
     fn villager_at(id: u32, at: Vec3) -> crate::mobs::Seen {
-        mob(id, Species::Villager, at).seen(None)
+        mob(id, Species::Villager, at).seen(None, &crate::items::Items::empty())
     }
 
     fn pick(w: &MobWorld) -> Option<u32> {
@@ -780,32 +782,71 @@ mod tests {
     }
 
     /// `SnowGolem.aiStep` tests `isAir` (cave and void air too) and
-    /// `SnowLayerBlock.canSurvive` (the two snow-layer tags, then a full top face).
+    /// `SnowLayerBlock.canSurvive`: the two snow-layer tags, then the block
+    /// below's top face (`Block.isFaceFull(collisionShape, UP)`), or a snow
+    /// layer eight deep, whose collision shape is only 14/16 high.
     #[test]
     fn snow_trail_follows_is_air_and_the_snow_layer_tags() {
-        let cases = [
-            ("minecraft:stone", "minecraft:cave_air", true),
-            ("minecraft:stone", "minecraft:void_air", true),
-            ("minecraft:soul_sand", "minecraft:air", true),
-            ("minecraft:mud", "minecraft:air", true),
-            ("minecraft:honey_block", "minecraft:air", true),
-            ("minecraft:ice", "minecraft:air", false),
-            ("minecraft:packed_ice", "minecraft:air", false),
-            ("minecraft:barrier", "minecraft:air", false),
-            ("minecraft:stone", "minecraft:water", false),
+        let cases: &[(&str, &[(&str, &str)], &str, bool)] = &[
+            ("minecraft:stone", &[], "minecraft:cave_air", true),
+            ("minecraft:stone", &[], "minecraft:void_air", true),
+            ("minecraft:soul_sand", &[], "minecraft:air", true),
+            ("minecraft:mud", &[], "minecraft:air", true),
+            ("minecraft:honey_block", &[], "minecraft:air", true),
+            ("minecraft:ice", &[], "minecraft:air", false),
+            ("minecraft:packed_ice", &[], "minecraft:air", false),
+            ("minecraft:barrier", &[], "minecraft:air", false),
+            ("minecraft:stone", &[], "minecraft:water", false),
+            // A top slab's and upside-down stairs' top face is full even
+            // though neither is a full block; a bottom one's is not.
+            (
+                "minecraft:stone_slab",
+                &[("type", "top")],
+                "minecraft:air",
+                true,
+            ),
+            (
+                "minecraft:stone_slab",
+                &[("type", "bottom")],
+                "minecraft:air",
+                false,
+            ),
+            (
+                "minecraft:stone_stairs",
+                &[("half", "top"), ("facing", "north")],
+                "minecraft:air",
+                true,
+            ),
+            (
+                "minecraft:stone_stairs",
+                &[("half", "bottom"), ("facing", "north")],
+                "minecraft:air",
+                false,
+            ),
+            // Eight layers of snow take a layer on top, seven do not.
+            ("minecraft:snow", &[("layers", "8")], "minecraft:air", true),
+            ("minecraft:snow", &[("layers", "7")], "minecraft:air", false),
         ];
-        for (floor, here, expect) in cases {
+        for (floor, properties, here, expect) in cases {
             crate::mobs::world::with_built_test_world(
                 &[],
                 |world, reg| {
+                    let mut floor_state = reg
+                        .state(reg.default_state(floor).unwrap())
+                        .unwrap()
+                        .clone();
+                    for (key, value) in *properties {
+                        floor_state
+                            .properties
+                            .insert((*key).into(), (*value).into());
+                    }
+                    let floor = reg.id(&floor_state).unwrap();
                     world
                         .chunks
                         .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
                     for x in 0..3 {
                         for z in 0..3 {
-                            world
-                                .set(x, 0, z, reg.default_state(floor).unwrap())
-                                .unwrap();
+                            world.set(x, 0, z, floor).unwrap();
                             world
                                 .set(x, 1, z, reg.default_state(here).unwrap())
                                 .unwrap();
@@ -828,7 +869,11 @@ mod tests {
                             true
                         })
                         .count();
-                    assert_eq!(placed > 0, expect, "{floor} under {here}");
+                    assert_eq!(
+                        placed,
+                        usize::from(*expect),
+                        "{floor}{properties:?} under {here}"
+                    );
                 },
             );
         }
@@ -955,7 +1000,7 @@ mod tests {
             let mut kind = (*m.kind).clone();
             kind.category = "monster".into();
             m.kind = Arc::new(kind);
-            golem_prey(&m.seen(None))
+            golem_prey(&m.seen(None, &crate::items::Items::empty()))
         };
         assert!(prey(Species::Zombie));
         assert!(!prey(Species::Creeper));
@@ -970,29 +1015,35 @@ mod tests {
     fn a_creeper_that_hurts_an_iron_golem_is_never_fought_back() {
         let creeper = mob(2, Species::Creeper, Vec3::new(1.5, 64.0, 0.5));
         let zombie = mob(3, Species::Zombie, Vec3::new(1.5, 64.0, 0.5));
-        with_test_world(&[creeper.seen(None), zombie.seen(None)], |w, _| {
-            let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
-            let mut goal = HurtByTarget::new();
-            let mut events = Vec::new();
-            let mut test_level = crate::health::TestLevel::new(0);
-            let level = &mut test_level.level();
-            let mut cx = Cx {
-                w,
-                level,
-                events: &mut events,
-            };
+        with_test_world(
+            &[
+                creeper.seen(None, &crate::items::Items::empty()),
+                zombie.seen(None, &crate::items::Items::empty()),
+            ],
+            |w, _| {
+                let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+                let mut goal = HurtByTarget::new();
+                let mut events = Vec::new();
+                let mut test_level = crate::health::TestLevel::new(0);
+                let level = &mut test_level.level();
+                let mut cx = Cx {
+                    w,
+                    level,
+                    events: &mut events,
+                };
 
-            golem.ai.last_hurt_by = Some(Who::Mob(2));
-            golem.ai.last_hurt_by_time = 1;
-            assert!(!goal.can_use(&mut golem, &mut cx));
-            assert_eq!(golem.ai.target, None, "a creeper is refused");
+                golem.ai.last_hurt_by = Some(Who::Mob(2));
+                golem.ai.last_hurt_by_time = 1;
+                assert!(!goal.can_use(&mut golem, &mut cx));
+                assert_eq!(golem.ai.target, None, "a creeper is refused");
 
-            golem.ai.last_hurt_by = Some(Who::Mob(3));
-            golem.ai.last_hurt_by_time = 2;
-            assert!(goal.can_use(&mut golem, &mut cx));
-            goal.start(&mut golem, &mut cx);
-            assert_eq!(golem.ai.target, Some(Who::Mob(3)));
-        });
+                golem.ai.last_hurt_by = Some(Who::Mob(3));
+                golem.ai.last_hurt_by_time = 2;
+                assert!(goal.can_use(&mut golem, &mut cx));
+                goal.start(&mut golem, &mut cx);
+                assert_eq!(golem.ai.target, Some(Who::Mob(3)));
+            },
+        );
     }
 
     /// A village golem (not built by a player) still goes after the player
@@ -1069,7 +1120,11 @@ mod created_golem_tests {
                 Vec3::new(0.5, 64.0, 2.5),
                 0.0,
             );
-            out = Some((golem(1, true), golem(2, false), zombie.seen(None)));
+            out = Some((
+                golem(1, true),
+                golem(2, false),
+                zombie.seen(None, &crate::items::Items::empty()),
+            ));
         });
         out
     }
@@ -1179,5 +1234,36 @@ mod crack_sound_tests {
             "40 to 30 stays at the same crack"
         );
         assert_eq!(cracks(level, &mut m, 10.0), 1, "30 to 20 crosses 0.25");
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_stroll_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A snow golem of a made-up type: only its goals matter here.
+    fn snow_golem() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).id = "minecraft:snow_golem".into();
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `SnowGolem.registerGoals` adds `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`
+    /// (the bytecode's float constant): the chance of a plain stroll instead of a land one is
+    /// that, not the two-argument constructor's default 0.001.
+    #[test]
+    fn a_snow_golem_strolls_with_the_rare_probability() {
+        let mut m = snow_golem();
+        // The made-up type brings goals of its own.
+        m.ai.goals.clear();
+        register_snow(&mut m);
+        let goals = format!("{:?}", m.ai.goals);
+        let rare = format!("water_avoiding: {:?}", Some(1.000_000_1e-5_f32));
+        let default = format!("water_avoiding: {:?}", Some(0.001_f32));
+        assert!(goals.contains(&rare), "{goals}");
+        assert!(!goals.contains(&default), "{goals}");
+        // One stroll goal, not two.
+        assert_eq!(goals.matches("water_avoiding:").count(), 1, "{goals}");
     }
 }

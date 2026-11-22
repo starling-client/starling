@@ -106,6 +106,9 @@ pub struct BlockProperties {
     pub explosion_resistance: Option<f32>,
     /// Light emitted, 0 to 15.
     pub light: Option<u8>,
+    /// `true`: the block's parts answer `light_emission`, the light a cell emits by where it is
+    /// (`IBlockExtension.hasDynamicLightEmission`); `light` is a cell's without an answer.
+    pub dynamic_light: Option<bool>,
     pub requires_tool: Option<bool>,
     pub friction: Option<f32>,
     /// A `MapColor` id, 0 to 61.
@@ -417,6 +420,11 @@ impl<'de> Deserialize<'de> for BlockShapes {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Shapes {
+            // Starling: one property by name, as light and the other state values take it.
+            // Horizon's catalog mods (voltz, factory_blocks, additional_lights, simplylight)
+            // write their shapes so, and were refused whole for it.
+            #[serde(default)]
+            property: String,
             #[serde(default)]
             properties: Vec<String>,
             #[serde(default)]
@@ -425,7 +433,7 @@ impl<'de> Deserialize<'de> for BlockShapes {
         }
         let shapes = Shapes::deserialize(deserializer)?;
         Ok(Self(StateValues {
-            property: String::new(),
+            property: shapes.property,
             properties: shapes.properties,
             values: shapes.values,
             default: shapes.default,
@@ -620,9 +628,10 @@ fn yes() -> bool {
 }
 
 /// A block the mod adds: a vanilla template's behaviour, states and shapes
-/// under a new id, with `properties` applied. A native mod may build one in
-/// code (`native_blocks`): `..Default::default()` leaves the rest as a file
-/// leaves it out, except `item`, which a file sets unless told not to.
+/// under a new id, with `properties` applied. A mod's code declares one as a
+/// `mod_api::Block` (`native_blocks`), whose `item` is true as a file's is.
+/// Here `..Default::default()` leaves the rest as a file leaves it out, except
+/// `item`, false: the engine's own blocks, such as a fluid's, have none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Block {
     /// `<mod id>:<path>`.
@@ -891,6 +900,11 @@ pub struct MobEffect {
     pub category: EffectCategory,
     /// RGB, `0x000000` to `0xFFFFFF`.
     pub color: u32,
+    /// Where the effect sits in the HUD icons and the inventory's effect list
+    /// (NeoForge's `IMobEffectExtension.getSortOrder`): compared where vanilla
+    /// compares the colour, which it is when absent.
+    #[serde(default)]
+    pub sort_order: Option<i32>,
 }
 
 /// Vanilla's `DyeColor` names, by id.
@@ -916,10 +930,13 @@ pub const DYE_COLORS: [&str; 16] = [
 /// the vanilla entity types a mod's type may copy: thrown item
 /// projectiles (`ThrowableItemProjectile`), then living mobs
 /// ([`LIVING_TEMPLATES`]).
-pub const ENTITY_TEMPLATES: [&str; 4] = [
+pub const ENTITY_TEMPLATES: [&str; 7] = [
     "minecraft:snowball",
+    "minecraft:cat",
+    "minecraft:parrot",
     "minecraft:villager",
     "minecraft:wandering_trader",
+    "minecraft:wolf",
     "minecraft:zombie",
 ];
 
@@ -928,91 +945,20 @@ pub const ENTITY_TEMPLATES: [&str; 4] = [
 /// ...)`), with its own default attributes (`EntityAttributeCreationEvent`).
 /// The wandering trader is the neutral one whose behaviour is all goals,
 /// which a native mod can replace (`register_goals`); a villager's is its
-/// brain.
-pub const LIVING_TEMPLATES: [&str; 3] = [
+/// brain. The cat, the parrot and the wolf are the tameable ones
+/// (`TamableAnimal`): a type copying one tames, sits and follows its owner.
+pub const LIVING_TEMPLATES: [&str; 6] = [
+    "minecraft:cat",
+    "minecraft:parrot",
     "minecraft:villager",
     "minecraft:wandering_trader",
+    "minecraft:wolf",
     "minecraft:zombie",
 ];
 
-/// an entity type the mod adds: a copy of a vanilla template's. A thrown one
-/// is thrown from `item` and drawn as it; a living one is its template's mob
-/// with other `attributes`.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct EntityType {
-    /// `<mod id>:<path>`.
-    #[serde(skip)]
-    pub id: String,
-    /// one of [`ENTITY_TEMPLATES`].
-    pub template: String,
-    /// a thrown type's: one of the mod's own items, which throws it. A
-    /// living type has none.
-    #[serde(default)]
-    pub item: Option<String>,
-    /// a thrown type's: what a hit deals to an entity, as `thrown` damage.
-    #[serde(default)]
-    pub damage: f32,
-    /// a living type's default attribute values that differ from its
-    /// template's, by attribute id (`minecraft:max_health`): the template's
-    /// own attributes only, checked against its row in `entity-types.json`
-    /// when the content root builds.
-    #[serde(default)]
-    pub attributes: BTreeMap<String, f64>,
-    /// passenger attachment points (`passenger_attachments`).
-    #[serde(default, deserialize_with = "deserialize_passenger_attachments")]
-    pub passenger_attachments: Vec<[f32; 3]>,
-}
-
-fn deserialize_passenger_attachments<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Vec<[f32; 3]>, D::Error> {
-    use serde_json::Value;
-    match Value::deserialize(d)? {
-        Value::Number(n) => Ok(vec![[0.0, n.as_f64().unwrap_or(0.0) as f32, 0.0]]),
-        Value::Array(a) if a.len() == 3 && a.iter().all(|v| v.is_number()) => {
-            let p = [
-                a[0].as_f64().unwrap_or(0.0) as f32,
-                a[1].as_f64().unwrap_or(0.0) as f32,
-                a[2].as_f64().unwrap_or(0.0) as f32,
-            ];
-            Ok(vec![p])
-        }
-        Value::Array(a) => a
-            .into_iter()
-            .map(|v| match v {
-                Value::Number(n) => Ok([0.0, n.as_f64().unwrap_or(0.0) as f32, 0.0]),
-                Value::Array(coords) if coords.len() == 3 => Ok([
-                    coords[0]
-                        .as_f64()
-                        .ok_or_else(|| serde::de::Error::custom("expected float"))?
-                        as f32,
-                    coords[1]
-                        .as_f64()
-                        .ok_or_else(|| serde::de::Error::custom("expected float"))?
-                        as f32,
-                    coords[2]
-                        .as_f64()
-                        .ok_or_else(|| serde::de::Error::custom("expected float"))?
-                        as f32,
-                ]),
-                _ => Err(serde::de::Error::custom(
-                    "expected attachment point [x, y, z] or height y",
-                )),
-            })
-            .collect(),
-        _ => Err(serde::de::Error::custom(
-            "expected attachment point or list",
-        )),
-    }
-}
-
-impl EntityType {
-    /// whether the type copies a living mob ([`LIVING_TEMPLATES`]).
-    pub fn is_living(&self) -> bool {
-        LIVING_TEMPLATES.contains(&self.template.as_str())
-    }
-}
+pub mod entity_sounds;
+mod entity_type;
+pub use entity_type::EntityType;
 
 /// A block entity type declared in code, with the blocks it supports.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1711,6 +1657,7 @@ impl Content {
         for (kind, name) in types {
             let file: EntityType =
                 serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            file.sounds.validate(&kind)?;
             if !ENTITY_TEMPLATES.contains(&file.template.as_str()) {
                 return Err(format!(
                     "{name}: template {:?} is not one of {ENTITY_TEMPLATES:?}",
@@ -1753,12 +1700,7 @@ impl Content {
                     file.template
                 ));
             }
-            if !file.passenger_attachments.is_empty() {
-                return Err(format!(
-                    "{name}: only a living type has passenger attachments (its template is {})",
-                    file.template
-                ));
-            }
+            file.validate_thrown_attachments_and_sounds(&name)?;
             let Some(item) = &file.item else {
                 return Err(format!(
                     "{name}: a thrown type names the item that throws it"
@@ -2325,9 +2267,9 @@ capabilities = ["registries"]
             block.collision_shapes.as_ref().unwrap().default,
             Some(vec![])
         );
-        assert!(
-            serde_json::from_str::<BlockShapes>(r#"{"property":"axis","default":[]}"#).is_err()
-        );
+        // Starling: one property by name, as Horizon's catalog mods write their shapes.
+        let one: BlockShapes = serde_json::from_str(r#"{"property":"axis","default":[]}"#).unwrap();
+        assert_eq!(one.property, "axis");
         for value in [
             r#"{"properties":["axis","axis"],"default":[]}"#,
             r#"{"properties":["Axis"],"default":[]}"#,
@@ -2722,11 +2664,11 @@ capabilities = ["registries"]
     }
 
     #[test]
-    fn mob_effects_take_a_category_and_a_colour() {
+    fn mob_effects_take_a_category_a_colour_and_a_sort_order() {
         let files: &[(&str, &[u8])] = &[
             (
                 "data/ruby/horizon/mob_effect/glow.json",
-                br#"{"category": "beneficial", "color": 16711680}"#,
+                br#"{"category": "beneficial", "color": 16711680, "sort_order": -3}"#,
             ),
             (
                 "data/ruby/horizon/mob_effect/curse/dark.json",
@@ -2737,13 +2679,13 @@ capabilities = ["registries"]
         let effects: Vec<_> = content
             .effects
             .iter()
-            .map(|e| (e.id.as_str(), e.category, e.color))
+            .map(|e| (e.id.as_str(), e.category, e.color, e.sort_order))
             .collect();
         assert_eq!(
             effects,
             [
-                ("ruby:curse/dark", EffectCategory::Harmful, 0),
-                ("ruby:glow", EffectCategory::Beneficial, 0xFF0000),
+                ("ruby:curse/dark", EffectCategory::Harmful, 0, None),
+                ("ruby:glow", EffectCategory::Beneficial, 0xFF0000, Some(-3)),
             ]
         );
         for (case, file, why) in [
@@ -3005,6 +2947,19 @@ capabilities = ["registries"]
                 "data/ruby/horizon/entity_type/merchant.json",
                 br#"{"template": "minecraft:wandering_trader"}"#,
             ),
+            // The tameable ones (#4031).
+            (
+                "data/ruby/horizon/entity_type/hound.json",
+                br#"{"template": "minecraft:wolf", "attributes": {"minecraft:max_health": 20}}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/macaw.json",
+                br#"{"template": "minecraft:parrot"}"#,
+            ),
+            (
+                "data/ruby/horizon/entity_type/tabby.json",
+                br#"{"template": "minecraft:cat"}"#,
+            ),
         ];
         let content = hmod("living", MANIFEST_TEXT, files).unwrap();
         let types: Vec<_> = content
@@ -3033,8 +2988,16 @@ capabilities = ["registries"]
                         ("minecraft:movement_speed", 0.3)
                     ]
                 ),
+                (
+                    "ruby:hound",
+                    "minecraft:wolf",
+                    true,
+                    vec![("minecraft:max_health", 20.0)]
+                ),
+                ("ruby:macaw", "minecraft:parrot", true, vec![]),
                 ("ruby:merchant", "minecraft:wandering_trader", true, vec![]),
                 ("ruby:settler", "minecraft:villager", true, vec![]),
+                ("ruby:tabby", "minecraft:cat", true, vec![]),
             ]
         );
         let zombie = |rest: &str| format!(r#"{{"template": "minecraft:zombie"{rest}}}"#);

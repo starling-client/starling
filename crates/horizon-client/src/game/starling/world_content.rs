@@ -101,6 +101,41 @@ pub(super) fn set_running(ids: BTreeSet<String>) {
         .unwrap_or_else(PoisonError::into_inner) = ids;
 }
 
+/// Every content mod (`Capability::Registries`) this process loaded, blocks and items or not
+/// (`mods::content_root` keeps it).
+fn loaded_cell() -> &'static Mutex<BTreeSet<String>> {
+    static LOADED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    LOADED.get_or_init(Default::default)
+}
+pub(super) fn set_loaded(ids: BTreeSet<String>) {
+    *loaded_cell().lock().unwrap_or_else(PoisonError::into_inner) = ids;
+}
+/// Whether this process loaded any content mod, blocks and items or not.
+pub(super) fn any_loaded() -> bool {
+    !loaded().is_empty()
+}
+fn loaded() -> BTreeSet<String> {
+    loaded_cell()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The set a world that keeps none plays with: the content mods Options > Mods turns on, but not
+/// one that loaded here and adds no blocks or items. Such a mod (a wasm mod declaring
+/// `registries` for its hooks) never joins `running`, so with it the world never matched the
+/// running set: it started the game again on every open, and then called the mod missing.
+fn world_default(
+    turned_on: BTreeSet<String>,
+    loaded: &BTreeSet<String>,
+    running: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    turned_on
+        .into_iter()
+        .filter(|id| !loaded.contains(id) || running.contains(id))
+        .collect()
+}
+
 /// The mods adding blocks or items that Options > Mods turns on (`mods::content_root` keeps it):
 /// the set every world played with before worlds kept their own.
 fn enabled_cell() -> &'static Mutex<BTreeSet<String>> {
@@ -192,19 +227,44 @@ pub(super) enum Entry {
 /// A world that keeps no set yet played with the mods Options > Mods turns on (worlds kept none
 /// before): that set is its own, kept once it opens with it.
 pub(super) fn entry(folder: &str) -> Entry {
+    // Calibrate...'s test world (perf_lab.rs) is made, timed and deleted in one go: it plays with
+    // what runs. Starting again for the content mods a new world takes lost the calibration under
+    // way, and the world opened as an ordinary one.
+    if folder == horizon_client::benchmark::WORLD {
+        return Entry::Open;
+    }
     let kept = recorded(folder);
-    decide(
-        folder,
-        kept.clone().unwrap_or_else(enabled),
-        &running(),
-        installed().as_ref(),
-        next_start(),
-        || {
-            if kept.is_none() {
-                record(folder, &running());
-            }
-        },
-    )
+    let running = running();
+    let set = kept
+        .clone()
+        .unwrap_or_else(|| world_default(enabled(), &loaded(), &running));
+    let code = mod_api::__private::installed_code_ids()
+        .map(str::to_owned)
+        .collect();
+    let now = for_world(running, &set, &code);
+    // A mod with code that loaded is there, though not in the mods folder's content (`start_set`
+    // reads no native package): a world made with a native mod's blocks counted it missing.
+    let installed = installed().map(|installed| &installed | &code);
+    decide(folder, set, &now, installed.as_ref(), next_start(), || {
+        if kept.is_none() {
+            record(folder, &now);
+        }
+    })
+}
+
+/// What runs, as world `set` sees it: a mod with code loads with the game whatever a world plays
+/// with, so one the world doesn't name is left out. Starting again never takes it away, and
+/// comparing with it called the world's own mods missing (a native mod's blocks on the POCO,
+/// "This world plays with , which did not load", 2026-11-19).
+fn for_world(
+    running: BTreeSet<String>,
+    set: &BTreeSet<String>,
+    code: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    running
+        .into_iter()
+        .filter(|id| set.contains(id) || !code.contains(id))
+        .collect()
 }
 
 fn decide(
@@ -277,7 +337,14 @@ pub(super) fn start_set(
             continue;
         };
         let m = &package.manifest;
-        if package.is_native() || !m.capabilities.contains(&Capability::Registries) {
+        // Only a mod adding blocks or items is a world's (what `running` keeps): one with data
+        // only (structures, recipes, loot) follows Options > Mods whatever world opens. It was
+        // left out of a world whose set didn't name it, and that world then counted it missing
+        // (YUNG's structures on the POCO, 2026-11-19).
+        if package.is_native()
+            || !m.capabilities.contains(&Capability::Registries)
+            || !adds_blocks_or_items(path, &m.id)
+        {
             continue;
         }
         installed.insert(m.id.clone());
@@ -303,9 +370,61 @@ pub(super) fn start_set(
     }
 }
 
-/// Writes the next start's request: world `folder` with `content`.
-pub(super) fn request_restart(folder: &str, content: &BTreeSet<String>) -> std::io::Result<()> {
-    write_next(serde_json::json!({ "world": folder, "content": content }))
+/// Whether the package at `path` (a folder or a `.hmod`) declares blocks or items: anything under
+/// `data/<id>/horizon/block/` or `item/`, where content mods declare them.
+fn adds_blocks_or_items(path: &Path, id: &str) -> bool {
+    let prefixes = [
+        format!("data/{id}/horizon/block/"),
+        format!("data/{id}/horizon/item/"),
+    ];
+    if path.is_dir() {
+        return prefixes.iter().any(|prefix| path.join(prefix).is_dir());
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    // A name that doesn't decode is no declaration.
+    archive.file_names().flatten().any(|name| {
+        prefixes
+            .iter()
+            .any(|prefix| name.starts_with(prefix.as_str()))
+    })
+}
+
+/// Writes the next start's request: world `folder` with `content`. A world with no level data
+/// yet (named by the control's `open` or `--world`, not made by Create New World) is created
+/// then as `new` says: its game mode, seed and name came back as the defaults (survival) after
+/// the restart.
+pub(super) fn request_restart(
+    folder: &str,
+    content: &BTreeSet<String>,
+    new: Created,
+) -> std::io::Result<()> {
+    let exists = world_dir(folder).join("level.dat").is_file();
+    write_next(restart_body(folder, content, exists, new))
+}
+
+fn restart_body(
+    folder: &str,
+    content: &BTreeSet<String>,
+    exists: bool,
+    new: Created,
+) -> serde_json::Value {
+    if exists {
+        return serde_json::json!({ "world": folder, "content": content });
+    }
+    // Made with the set the restart loads: the start after it creates the world at once.
+    let created = Created {
+        options: horizon_client::title::WorldOptions {
+            mods: Some(content.clone()),
+            ..new.options
+        },
+        ..new
+    };
+    serde_json::json!({ "world": folder, "content": content, "create": created })
 }
 
 /// Writes the next start's request: a new world `folder` made with `created`, with `content`.
@@ -328,7 +447,10 @@ fn write_next(body: serde_json::Value) -> std::io::Result<()> {
 /// Starts the game again: Android's launcher activity, or this program with its arguments.
 pub(super) fn restart() {
     #[cfg(target_os = "android")]
-    crate::android::restart_app();
+    crate::android::restart_app_saying(&horizon_client::lang::get_or(
+        "starling.restart.world_mods",
+        "Opening the world with its mods…",
+    ));
     #[cfg(not(target_os = "android"))]
     {
         let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -365,6 +487,28 @@ mod tests {
         std::fs::write(&file, serde_json::json!({ "mods": ["create"] }).to_string()).unwrap();
         assert_eq!(read_set(&file), Some(set(&["create"])));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loaded_mod_without_blocks_or_items_is_not_a_worlds_content() {
+        let probe_and_create = set(&["create", "probe"]);
+        // Both loaded, only Create adds blocks: a new world plays with Create alone, which is
+        // what runs, so it opens without starting again.
+        let default = world_default(
+            probe_and_create.clone(),
+            &probe_and_create,
+            &set(&["create"]),
+        );
+        assert_eq!(default, set(&["create"]));
+        assert_eq!(
+            decide("w", default, &set(&["create"]), None, None, || {}),
+            Entry::Open
+        );
+        // A mod turned on that did not load here is still asked for.
+        assert_eq!(
+            world_default(probe_and_create, &set(&[]), &set(&[])),
+            set(&["create", "probe"])
+        );
     }
 
     #[test]
@@ -406,6 +550,75 @@ mod tests {
             decide("w", create.clone(), &none, Some(&create), None, || {}),
             Entry::Restart(create)
         );
+    }
+
+    /// Only a mod declaring blocks or items is a world's: a data-only one (structures) is not.
+    #[test]
+    fn only_blocks_and_items_make_a_mod_a_worlds() {
+        let dir = std::env::temp_dir().join(format!("horizon-adds-{}", std::process::id()));
+        let blocks = dir.join("glass");
+        std::fs::create_dir_all(blocks.join("data/glass/horizon/block")).unwrap();
+        let items = dir.join("gems");
+        std::fs::create_dir_all(items.join("data/gems/horizon/item")).unwrap();
+        let data = dir.join("temples");
+        std::fs::create_dir_all(data.join("data/temples/worldgen/structure")).unwrap();
+        assert!(adds_blocks_or_items(&blocks, "glass"));
+        assert!(adds_blocks_or_items(&items, "gems"));
+        assert!(!adds_blocks_or_items(&data, "temples"));
+        assert!(!adds_blocks_or_items(&dir.join("absent.hmod"), "absent"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A native mod's blocks load with the game: a world made without them opens as it is, and
+    /// one made with them still needs them.
+    #[test]
+    fn a_mod_with_code_a_world_does_not_name_is_not_running_for_it() {
+        let world = set(&["mcwdoors"]);
+        let running = set(&["mcwdoors", "cloudglass"]);
+        let code = set(&["cloudglass"]);
+        let now = for_world(running.clone(), &world, &code);
+        assert_eq!(now, world);
+        assert_eq!(
+            decide("w", world.clone(), &now, None, None, || {}),
+            Entry::Open
+        );
+        // A content mod without code still asks for a start with the world's set.
+        let other = for_world(running, &world, &set(&[]));
+        assert_eq!(
+            decide("w", world.clone(), &other, None, None, || {}),
+            Entry::Restart(world)
+        );
+        // A world made with it keeps it in what runs for it.
+        let with = set(&["mcwdoors", "cloudglass"]);
+        assert_eq!(for_world(with.clone(), &with, &code), with);
+    }
+
+    /// Calibrate... opens its test world whatever content mods are turned on (seen on a POCO:
+    /// a wasm mod turned on made it start again, and the calibration was lost).
+    #[test]
+    fn the_calibration_world_never_starts_the_game_again() {
+        assert_eq!(entry(horizon_client::benchmark::WORLD), Entry::Open);
+    }
+
+    /// A new world opened by name (`open NAME creative`) that has to start the game again for
+    /// its mods is created after it in creative, with its seed, not in survival.
+    #[test]
+    fn a_new_world_keeps_its_game_mode_across_the_restart_for_its_mods() {
+        let content = set(&["create"]);
+        let new = Created {
+            name: "Test".into(),
+            seed: Some(7),
+            creative: true,
+            options: Default::default(),
+        };
+        let body = restart_body("w", &content, false, new.clone());
+        let created: Created = serde_json::from_value(body["create"].clone()).unwrap();
+        assert!(created.creative);
+        assert_eq!(created.seed, Some(7));
+        assert_eq!(created.name, "Test");
+        assert_eq!(created.options.mods, Some(content.clone()));
+        // A world that exists keeps its own level data: nothing is created.
+        assert!(restart_body("w", &content, true, new)["create"].is_null());
     }
 
     #[test]

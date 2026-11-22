@@ -10,6 +10,7 @@ pub mod gameplay_guide;
 pub mod held;
 pub mod input;
 pub mod input_mode;
+pub mod input_queue;
 pub mod input_source;
 pub mod interaction_input;
 pub mod key_names;

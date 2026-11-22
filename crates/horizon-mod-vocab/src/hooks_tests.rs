@@ -131,7 +131,7 @@ fn eager_subscribers_are_shared_across_dispatch_threads() {
 #[test]
 fn scoped_mods_dispatch_and_restore_after_panic() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use testing::with_mods;
+    use testing::with_dispatch;
 
     struct Counter(Arc<AtomicUsize>);
     #[mod_api::__subscriptions]
@@ -143,7 +143,7 @@ fn scoped_mods_dispatch_and_restore_after_panic() {
 
     let outer = Arc::new(AtomicUsize::new(0));
     let inner = Arc::new(AtomicUsize::new(0));
-    with_mods(
+    with_dispatch(
         vec![ModEntry::new(
             "outer-counter",
             Box::new(Counter(outer.clone())),
@@ -152,7 +152,7 @@ fn scoped_mods_dispatch_and_restore_after_panic() {
         || {
             dispatch_client_tick_pre(&mut FakeHost::new());
             let result = std::panic::catch_unwind(|| {
-                with_mods(
+                with_dispatch(
                     vec![ModEntry::new(
                         "inner-counter",
                         Box::new(Counter(inner.clone())),
@@ -185,7 +185,7 @@ fn native_switch_skips_and_resumes_subscribed_hooks() {
         }
     }
     let count = Arc::new(AtomicUsize::new(0));
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("counter", Box::new(Counter(count.clone())))].into(),
         || {
             assert_eq!(__private::mod_index("counter"), Some(0));
@@ -210,19 +210,42 @@ fn movement_input_writes_back_all_fields() {
             event.strafe = 0.25;
             event.jump = true;
             event.sneak = true;
+            assert!(!event.forward_key);
+            assert!(event.backward_key);
+            assert!(!event.left_key);
+            assert!(event.right_key);
+            assert!(!event.sprint);
+            event.forward_key = true;
+            event.backward_key = false;
+            event.left_key = true;
+            event.right_key = false;
+            event.sprint = true;
         }
     }
     let mods = [ModEntry::new("movement", Box::new(Movement))];
     install(mods.into());
     let (mut forward, mut strafe, mut jump, mut sneak) = (1.0, 0.0, false, false);
+    let (mut forward_key, mut backward_key, mut left_key, mut right_key, mut sprint) =
+        (false, true, false, true, false);
     dispatch_movement_input(
         &FakeHost::new(),
-        &mut forward,
-        &mut strafe,
-        &mut jump,
-        &mut sneak,
+        crate::__private::MovementInputCall {
+            forward: &mut forward,
+            strafe: &mut strafe,
+            jump: &mut jump,
+            sneak: &mut sneak,
+            forward_key: &mut forward_key,
+            backward_key: &mut backward_key,
+            left_key: &mut left_key,
+            right_key: &mut right_key,
+            sprint: &mut sprint,
+        },
     );
     assert_eq!((forward, strafe, jump, sneak), (-0.5, 0.25, true, true));
+    assert_eq!(
+        (forward_key, backward_key, left_key, right_key, sprint),
+        (true, false, true, false, true),
+    );
 }
 
 #[test]
@@ -275,7 +298,7 @@ fn client_tick_pre_and_post_hear_their_own_moment() {
         }
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("ticks", Box::new(Ticks(heard.clone())))].into(),
         || {
             dispatch_client_tick_pre(&mut FakeHost::new());
@@ -300,7 +323,7 @@ fn level_tick_pre_and_post_hear_the_level_in_their_own_moment() {
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
     let level = LevelRef::new(WorldEpoch::new(4), DimensionKey::OVERWORLD);
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("ticks", Box::new(Ticks(heard.clone())))].into(),
         || {
             dispatch_level_tick_pre(HostSide::Client(&mut FakeHost::new()), level);
@@ -325,7 +348,7 @@ fn living_death_post_hears_the_entity_the_blow_and_the_attacker() {
         }
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("post", Box::new(Post(heard.clone())))].into(),
         || dispatch_living_death_post(&mut FakeHost::new(), 7, "minecraft:fall", 0),
     );
@@ -338,27 +361,41 @@ fn living_death_post_hears_the_entity_the_blow_and_the_attacker() {
 #[test]
 fn render_frame_pre_and_post_hear_their_own_moment_with_the_frames_time() {
     use std::{sync::Mutex, time::Duration};
-    struct Frames(Arc<Mutex<Vec<(&'static str, Duration)>>>);
+    type FrameReading = (&'static str, Duration, f32, f32);
+    struct Frames(Arc<Mutex<Vec<FrameReading>>>);
     #[mod_api::__subscriptions]
     impl Hooks for Frames {
         fn render_frame_pre(&self, _: &mut dyn ClientHost, event: &mut RenderFramePreEvent) {
-            self.0.lock().unwrap().push(("pre", event.elapsed));
+            self.0.lock().unwrap().push((
+                "pre",
+                event.elapsed,
+                event.world_partial_tick,
+                event.partial_tick,
+            ));
         }
         fn render_frame_post(&self, _: &mut dyn ClientHost, event: &mut RenderFramePostEvent) {
-            self.0.lock().unwrap().push(("post", event.elapsed));
+            self.0.lock().unwrap().push((
+                "post",
+                event.elapsed,
+                event.world_partial_tick,
+                event.partial_tick,
+            ));
         }
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("frames", Box::new(Frames(heard.clone())))].into(),
         || {
             let frame = Duration::from_millis(16);
-            dispatch_render_frame_pre(&mut FakeHost::new(), frame);
-            dispatch_render_frame_post(&mut FakeHost::new(), frame);
+            dispatch_render_frame_pre(&mut FakeHost::new(), frame, 0.25, 0.5);
+            dispatch_render_frame_post(&mut FakeHost::new(), frame, 0.25, 0.5);
         },
     );
     let frame = Duration::from_millis(16);
-    assert_eq!(*heard.lock().unwrap(), [("pre", frame), ("post", frame)]);
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [("pre", frame, 0.25, 0.5), ("post", frame, 0.25, 0.5)]
+    );
 }
 
 #[test]
@@ -374,7 +411,7 @@ fn render_gui_pre_cancel_reaches_the_game() {
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
     let mut canceled = false;
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("gui", Box::new(Gui(heard.clone(), true)))].into(),
         || dispatch_render_gui_pre(&FakeHost::new(), &mut canceled),
     );
@@ -406,7 +443,7 @@ fn gui_dispatch(
         .map(|(id, make)| ModEntry::new(id, make(heard.clone())))
         .collect();
     let mut cancelled = cancelled;
-    testing::with_mods(mods.into(), || {
+    testing::with_dispatch(mods.into(), || {
         dispatch_render_gui_pre(&FakeHost::new(), &mut cancelled)
     });
     let heard = heard.lock().unwrap().clone();
@@ -570,7 +607,7 @@ fn window_resize_delivers_physical_and_gui_dimensions() {
         }
     }
     let heard = Arc::new(Mutex::new(Vec::new()));
-    testing::with_mods(
+    testing::with_dispatch(
         vec![ModEntry::new("resize", Box::new(Listener(heard.clone())))].into(),
         || {
             dispatch_window_resize(&mut FakeHost::new(), 1200, 900, 400, 300);
@@ -626,6 +663,16 @@ fn clock_time_takes_a_host(host: &dyn Host, level: LevelRef) -> Option<i64> {
     level.clock_time(host)
 }
 
+/// Compile-only: a mod reads when a level's own clock next reaches a time marker.
+#[allow(dead_code)]
+fn clock_marker_time_takes_a_host(
+    host: &dyn Host,
+    level: LevelRef,
+    marker: &crate::Identifier,
+) -> Option<i64> {
+    level.clock_marker_time(host, marker)
+}
+
 /// Compile-only: a mod reads a level's sea level from a handle on a shared host.
 #[allow(dead_code)]
 fn sea_level_takes_a_host(host: &dyn Host, level: LevelRef) -> Option<i32> {
@@ -673,6 +720,10 @@ fn world_data_and_tick_queries_take_their_hosts(
     let _: bool = level.block_tick(server, [0, 64, 0]);
     let _: bool = level.block_random_tick(server, [0, 64, 0]);
     let _: Option<[i32; 3]> = level.lightning_target(server, [0, 64, 0]);
+    let _: bool = level.has_water_ticket(read, [0, 64, 0]);
+    if let Some(ticket) = level.add_water_ticket(server, [0, 64, 0], [5, 65, 5]) {
+        let _: bool = ticket.remove(server);
+    }
 }
 
 /// Compile-only: the level queries as a mod calls them, the reads on any host and the drop
@@ -814,4 +865,11 @@ fn spawn_policy_writes_take_a_server_host(
         [0.5, 64.0, 0.5],
         SpawnReason::Command,
     );
+}
+
+/// Compile-only: a passage is registered and removed through its level on a server host.
+#[allow(dead_code)]
+fn passages_take_a_server_host(server: &mut dyn ServerHost, level: LevelRef, passage: Passage) {
+    let id: Result<PassageId, PassageRegistrationError> = level.register_passage(server, passage);
+    let _: bool = level.remove_passage(server, id.unwrap());
 }

@@ -80,6 +80,17 @@ pub fn configured_roots() -> Result<Option<Roots>> {
     if FORCE_DEFAULT.load(Ordering::Acquire) {
         return Ok(None);
     }
+    // A unit test never reaches the player's real folders: unless it points at a location file
+    // of its own, its roots are this test process's, under the temporary folder.
+    if cfg!(test) && !overridden("HORIZON_LAUNCHER_LOCATION_FILE") {
+        let home =
+            std::env::temp_dir().join(format!("horizon-launcher-test-{}", std::process::id()));
+        return Ok(Some(Roots {
+            launcher: home.join("launcher"),
+            game: home.join("game"),
+            build: home.join("launcher"),
+        }));
+    }
     let mut slot = location();
     if slot.is_none() {
         let resolved = if overridden("HORIZON_LAUNCHER_HOME") && overridden("HORIZON_HOME") {
@@ -457,7 +468,8 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         ));
     }
     let mut current = PathBuf::new();
-    for part in path.components() {
+    let last = path.components().count().saturating_sub(1);
+    for (i, part) in path.components().enumerate() {
         current.push(part);
         // A Windows drive/UNC prefix alone is not a filesystem root. Inspect it
         // only after RootDir completes it, including canonical verbatim paths.
@@ -466,7 +478,11 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
         }
         match fs::symlink_metadata(&current) {
             Ok(meta) => {
-                reject_link(&current, &meta)?;
+                // Only the root itself may not be a link: the folders above it are never copied
+                // (a ~/.local/share linked to another disk, Fedora Atomic's /home).
+                if i == last {
+                    reject_link(&current, &meta)?;
+                }
                 current = fs::canonicalize(&current).map_err(|e| problem(&current, e))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

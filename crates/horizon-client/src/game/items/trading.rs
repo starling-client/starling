@@ -11,6 +11,7 @@ use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
+    widgets::{Cursor, request_cursor},
 };
 
 /// The merchant screen is 100 px wider than the 176-px menus it shares an origin with.
@@ -179,7 +180,6 @@ impl Game<'_> {
             maps: Some(&maps),
         };
         let offers = self
-            .res
             .stations()
             .trades
             .offers_from_set(&ctx, set, &mut random);
@@ -191,7 +191,13 @@ impl Game<'_> {
     /// `AbstractVillager.getOffers`: generated on first use.
     pub(super) fn ensure_offers(&mut self, index: usize) {
         let species = self.mobs[index].species();
-        if species == Species::Villager && self.mobs[index].extra.profession.index().is_none() {
+        if species == Species::Villager
+            && self
+                .stations()
+                .professions
+                .state_index(&self.mobs[index].extra.profession)
+                .is_none()
+        {
             return;
         }
         let unset = self.mobs[index]
@@ -217,12 +223,9 @@ impl Game<'_> {
                 }
                 v
             } else {
-                let profession = horizon_client::mobs::villager::profession(
-                    m.extra.profession.index().unwrap_or(0),
-                )
-                .id;
+                let profession = m.extra.profession.id();
                 let level = m.extra.villager_level.max(1);
-                let set = merchant::Trades::set_for(profession, level);
+                let set = self.stations().trades.set_for(&profession, level);
                 if self.stations().trades.sets.contains_key(&set) {
                     self.offers_from_set(&set, &variant, origin)
                 } else {
@@ -263,7 +266,12 @@ impl Game<'_> {
             self.handle_mob_events(events)?;
             return Ok(true);
         }
-        let unresolved = species == Species::Villager && m.extra.profession.index().is_none();
+        let unresolved = species == Species::Villager
+            && self
+                .stations()
+                .professions
+                .state_index(&m.extra.profession)
+                .is_none();
         self.award_custom_stat("talked_to_villager", 1);
         if unresolved {
             let mut events = Vec::new();
@@ -284,9 +292,9 @@ impl Game<'_> {
         }
         let villager = species == Species::Villager;
         let profession = if villager {
-            horizon_client::mobs::villager::profession(m.extra.profession.index().unwrap_or(0)).id
+            m.extra.profession.id()
         } else {
-            "wandering_trader"
+            "minecraft:wandering_trader".into()
         };
         let level = if villager {
             m.extra.villager_level.max(1)
@@ -296,12 +304,12 @@ impl Game<'_> {
         let mut session = merchant::Session::new(trade.offers, villager);
         session.xp = trade.xp;
         session.level = level;
-        session.profession = format!("minecraft:{profession}");
+        session.profession = profession;
         session.variant = format!(
             "minecraft:{}",
             VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
         );
-        session.random = m.random.clone();
+        session.random.clone_from(&m.random);
         session.origin = [m.position.x, m.position.y, m.position.z];
         session.ambient_sound_time = m.ambient_timer;
         let (id, name) = (m.id, m.custom_name.clone());
@@ -341,16 +349,18 @@ impl Game<'_> {
             self.rand_sequences.give_back(id, r);
         }
         let Some(id) = state.mob else { return };
+        let professions = self.stations().professions.clone();
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
         m.extra.flag2 = false;
-        if session.villager && m.extra.profession.index().is_none() {
+        if session.villager && professions.state_index(&m.extra.profession).is_none() {
             return;
         }
         if session.villager {
             m.extra.villager_level = session.level.max(1);
         }
+        m.extra.flag2 = false;
         m.random = session.random.clone();
         m.ambient_timer = session.ambient_sound_time;
         let trade = m.extra.trade.get_or_insert_default();
@@ -359,7 +369,11 @@ impl Game<'_> {
     }
     /// Opens a merchant menu without a mob (horizon-ctl `trade`).
     pub(super) fn open_merchant(&mut self, profession: &str, variant: &str, level: i32) {
-        let profession = format!("minecraft:{}", profession.trim_start_matches("minecraft:"));
+        let profession = if profession.contains(':') {
+            profession.to_owned()
+        } else {
+            format!("minecraft:{profession}")
+        };
         let variant = format!("minecraft:{}", variant.trim_start_matches("minecraft:"));
         let level = level.clamp(1, 5);
         let origin = self
@@ -368,7 +382,7 @@ impl Game<'_> {
             .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
         let mut offers = Vec::new();
         for l in 1..=level {
-            let set = merchant::Trades::set_for(&profession, l);
+            let set = self.stations().trades.set_for(&profession, l);
             offers.extend(self.offers_from_set(&set, &variant, origin));
         }
         let mut session = merchant::Session::new(offers, true);
@@ -412,7 +426,7 @@ impl Game<'_> {
     /// The trading mob's random before a menu click (it ticks meanwhile).
     pub(super) fn merchant_sync_in(&self, session: &mut merchant::Session, mob: Option<u32>) {
         if let Some(m) = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id)) {
-            session.random = m.random.clone();
+            session.random.clone_from(&m.random);
             session.ambient_sound_time = m.ambient_timer;
             session.origin = [m.position.x, m.position.y, m.position.z];
         }
@@ -428,7 +442,12 @@ impl Game<'_> {
         if mob
             .and_then(|id| self.mobs.iter().find(|m| m.id == id))
             .is_some_and(|m| {
-                m.species() == Species::Villager && m.extra.profession.index().is_none()
+                m.species() == Species::Villager
+                    && self
+                        .stations()
+                        .professions
+                        .state_index(&m.extra.profession)
+                        .is_none()
             })
         {
             if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut()) {
@@ -462,6 +481,7 @@ impl Game<'_> {
         }
         for e in events {
             match e {
+                merchant::Event::OffersRefreshed => {}
                 merchant::Event::Orb(v) => {
                     self.add_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
                 }
@@ -618,7 +638,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let (_, oy) = self.inventory_origin(&HudBatch::new(size, self.settings.gui_scale_inputs()));
+        let (_, oy) = self.inventory_origin(&self.interface_batch(size));
         let y = self.cursor.1 - oy;
         if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut())
             && m.dragging
@@ -643,7 +663,7 @@ impl Game<'_> {
             return false;
         };
         let (progress, custom) = (m.progress(), m.name.clone());
-        let (profession, level, xp, scroll, shop, future, focused) = (
+        let (profession, level, xp, scroll, shop, future, focused, dragging) = (
             m.session
                 .profession
                 .trim_start_matches("minecraft:")
@@ -654,6 +674,7 @@ impl Game<'_> {
             m.session.selection_hint,
             m.session.future_xp,
             m.focused,
+            m.dragging,
         );
         let offers = m.session.offers.clone();
         let costs: Vec<ItemStack> = offers.iter().map(|o| o.cost_a(self.items())).collect();
@@ -665,6 +686,7 @@ impl Game<'_> {
             r.v1 = r.v0 + 166.0 * dv;
             batch.rect_uv(ox + SHIFT, oy, 276.0, 166.0, r, u32::MAX);
         }
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         let tr = |k: &str, f: &str| horizon_client::lang::get_or(k, f);
         let name = custom.unwrap_or_else(|| {
             if progress {
@@ -754,21 +776,17 @@ impl Game<'_> {
                 }
             }
         }
-        // Scroller.
-        let steps = offers.len() as i32 + 1 - 7;
-        if steps > 1 {
-            let left = 139 - (27 + (steps - 1) * 139 / steps);
-            let step = 1 + left / steps + 139 / steps;
-            let mut y = (scroll as i32 * step).min(113);
-            if scroll as i32 == steps - 1 {
-                y = 113;
-            }
+        // Scroller (`extractScroller`): its thumb, or the disabled sprite.
+        if let Some([x, y, w, h]) = scroller_rect(offers.len(), scroll) {
             batch.sprite(
                 atlas,
                 "gui/sprites/container/villager/scroller",
-                ox + SHIFT + 94.0,
-                oy + 18.0 + y as f32,
+                ox + x,
+                oy + y,
             );
+            if let Some(cursor) = scroller_cursor(local, [x, y, w, h], dragging) {
+                request_cursor(cursor);
+            }
         } else {
             batch.sprite(
                 atlas,
@@ -885,6 +903,8 @@ impl Game<'_> {
             && local.0 < 186.0 + SHIFT + 22.0 + 1.0
             && local.1 >= 35.0 - 1.0
             && local.1 < 35.0 + 21.0 + 1.0;
+        let browser_tip = self.draw_mod_browser(batch);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
         if self.carried.is_some() {
             self.draw_carried(batch);
             if let Some(stack) = tooltip.filter(|s| self.tooltip_with_carried(s)) {
@@ -901,6 +921,9 @@ impl Game<'_> {
         } else if let Some(stack) = tooltip {
             self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
         }
+        if let Some(tooltip) = browser_tip {
+            self.draw_mod_browser_tooltip(batch, tooltip);
+        }
         true
     }
 }
@@ -914,6 +937,31 @@ fn on_scroller(local: (f32, f32), offers: usize) -> bool {
         && local.0 < x + 6.0
         && local.1 > 18.0
         && local.1 <= 18.0 + 139.0 + 1.0
+}
+/// `MerchantScreen.extractScroller`: the thumb's rectangle (GUI origin
+/// relative) while the offers overflow; the track's 139 px, the thumb's 27.
+fn scroller_rect(offers: usize, scroll: usize) -> Option<[f32; 4]> {
+    let steps = offers as i32 + 1 - 7;
+    if steps <= 1 {
+        return None;
+    }
+    let left = 139 - (27 + (steps - 1) * 139 / steps);
+    let step = 1 + left / steps + 139 / steps;
+    let mut y = (scroll as i32 * step).min(113);
+    if scroll as i32 == steps - 1 {
+        y = 113;
+    }
+    Some([SHIFT + 94.0, 18.0 + y as f32, 6.0, 27.0])
+}
+/// `MerchantScreen.extractScroller`'s cursor: only the thumb asks, a hand
+/// until it is dragged and the vertical resize while it is held.
+fn scroller_cursor(local: (f32, f32), rect: [f32; 4], dragging: bool) -> Option<Cursor> {
+    let [x, y, w, h] = rect;
+    (local.0 >= x && local.0 < x + w && local.1 >= y && local.1 <= y + h).then_some(if dragging {
+        Cursor::ResizeNs
+    } else {
+        Cursor::PointingHand
+    })
 }
 /// The first shown offer for the scroller dragged to `y` (GUI origin
 /// relative): the 139-px track starts at 18 and the scroller is 27 px tall.
@@ -967,5 +1015,22 @@ mod tests {
         assert_eq!(drag_scroll(31.5 + 112.0 / 2.0, 10), 2);
         assert_eq!(drag_scroll(31.5 + 112.0, 10), 3);
         assert_eq!(drag_scroll(500.0, 10), 3);
+    }
+
+    /// `MerchantScreen.extractScroller`: the thumb, not the whole track, takes
+    /// the cursor; the vertical resize while it is dragged.
+    #[test]
+    fn the_scroller_thumb_asks_for_its_cursor() {
+        // 8 offers: steps 2, the thumb at the track's top, 139 px tall.
+        let rect = scroller_rect(8, 0).unwrap();
+        assert_eq!(rect, [44.0, 18.0, 6.0, 27.0]);
+        let at = |x: f32, y: f32, dragging: bool| scroller_cursor((x, y), rect, dragging);
+        assert_eq!(at(45.0, 19.0, false), Some(Cursor::PointingHand));
+        assert_eq!(at(45.0, 19.0, true), Some(Cursor::ResizeNs));
+        assert_eq!(at(43.0, 19.0, false), None);
+        assert_eq!(at(45.0, 46.0, false), None);
+        assert_eq!(at(45.0, 45.0, false), Some(Cursor::PointingHand));
+        // 7 offers: the disabled scroller takes no cursor.
+        assert!(scroller_rect(7, 0).is_none());
     }
 }

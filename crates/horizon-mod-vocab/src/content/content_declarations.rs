@@ -15,6 +15,9 @@ pub struct BlockProperties {
     pub explosion_resistance: Option<f32>,
     /// Light emitted, 0 to 15.
     pub light: Option<u8>,
+    /// `true`: the block's parts answer `light_emission`, the light a cell emits by where it is
+    /// (`IBlockExtension.hasDynamicLightEmission`); `light` is a cell's without an answer.
+    pub dynamic_light: Option<bool>,
     /// Whether drops require the appropriate tool.
     pub requires_tool: Option<bool>,
     /// Surface friction; unset inherits the template.
@@ -91,10 +94,23 @@ pub enum RandomTicks {
 pub struct BlockShapes {
     /// State property names selecting a shape, in tuple order.
     pub properties: Vec<String>,
-    /// Comma-separated property-value tuples mapped to boxes in block pixels.
+    /// Comma-separated property-value tuples mapped to boxes in block units (one block is 1).
     pub values: BTreeMap<String, Vec<[f64; 6]>>,
     /// Boxes used when no tuple matches.
     pub default: Option<Vec<[f64; 6]>>,
+}
+
+/// Per-state light emission, overriding `BlockProperties::light`.
+#[derive(Clone, Debug, PartialEq, Default)]
+// exhaustive: declaration drafts mirror the closed content schema.
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct StateLight {
+    /// State property names selecting emission, in tuple order.
+    pub properties: Vec<String>,
+    /// Comma-separated property-value tuples mapped to emission from 0 to 15.
+    pub values: BTreeMap<String, u8>,
+    /// Emission for unmatched states; without it every state must match a tuple.
+    pub default: Option<u8>,
 }
 
 /// Entity category selecting a load-time shape override.
@@ -129,7 +145,9 @@ pub enum BlockStateProperty {
 /// An unvalidated draft; `Content::declare` validates it at load.
 /// Refused drafts are reported by the content admission path as
 /// `native blocks and items of <namespace>: <reason>`, without admitting part of that namespace.
-#[derive(Clone, Debug, PartialEq, Default)]
+/// `Default` and [`Block::new`] leave out what a content file leaves out: every field is empty
+/// except `item`, true, as in a file.
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
 pub struct Block {
@@ -139,6 +157,9 @@ pub struct Block {
     pub template: String,
     /// properties.
     pub properties: BlockProperties,
+    /// Per-state emission, taking precedence over `properties.light`.
+    /// Defaults to `None`, leaving uniform or template light unchanged.
+    pub state_light: Option<StateLight>,
     /// shapes.
     pub shapes: Option<BlockShapes>,
     /// collision shapes.
@@ -153,7 +174,7 @@ pub struct Block {
     pub state_properties: BTreeMap<String, BlockStateProperty>,
     /// State properties overlaid on the template default.
     pub default_state: BTreeMap<String, String>,
-    /// Also add a block item with the same id.
+    /// Also add a block item with the same id; true unless set false, as in a file.
     pub item: bool,
     /// The sound event a fence gate plays opening, instead of its wood's
     /// (`WoodType.fenceGateOpen`); needs a `*_fence_gate` template.
@@ -161,15 +182,17 @@ pub struct Block {
     /// The sound event a fence gate plays closing (`WoodType.fenceGateClose`).
     pub close_sound: Option<String>,
     /// The item this block is, for pick-block and `Block.asItem`, when
-    /// it is not a block item of its own: an item of this mod or a vanilla
-    /// one, checked to exist when the content loads. Needs `item` false.
+    /// it is not a block item of its own: an item of this mod (a bare name is
+    /// this mod's) or a vanilla one (`minecraft:<path>`), checked to exist when
+    /// the content loads. Needs `item` false.
     pub block_item: Option<String>,
     /// The item pick-block takes from this block (`getCloneItemStack`), when it is not
-    /// the block's item: a mature crop picks its seed. An item of this mod or a vanilla
-    /// one, checked to exist when the content loads. Absent is the block's item.
+    /// the block's item: a mature crop picks its seed. An item of this mod (a bare name is
+    /// this mod's) or a vanilla one (`minecraft:<path>`), checked to exist when the content
+    /// loads. Absent is the block's item.
     pub pick_item: Option<String>,
-    /// Its item's ordered component patch: `Some(tag)` sets a component, `None` removes it.
-    /// Component names do not include the removal prefix `!`.
+    /// Its item's component patch: `Some(tag)` sets a component, `None` removes it.
+    /// Component names do not include the removal prefix `!`; repeated IDs are refused.
     pub components: Vec<(String, Option<crate::Tag>)>,
     /// A connecting block (template `minecraft:chorus_plant`, a `PipeBlock`
     /// without the chorus plant's rules): the block tag, without `#`, whose
@@ -183,16 +206,17 @@ pub struct Block {
     /// The template's when unset.
     pub wood_type: Option<String>,
     /// The block a standing or ceiling sign's item places on a wall
-    /// (`StandingAndWallBlockItem.wallBlock`): one of this mod's blocks, whose
-    /// template is the matching wall sign and which has no item. The
-    /// template's when unset.
+    /// (`StandingAndWallBlockItem.wallBlock`): one of this mod's blocks (a bare
+    /// name is this mod's), whose template is the matching wall sign and which
+    /// has no item. The template's when unset.
     pub wall_block: Option<String>,
     /// A sign's new text colour (`SignBlockEntity.createDefaultSignText`): a `DyeColor` name,
     /// black when unset. Applies to a sign when it is placed, front and back.
     pub sign_text_color: Option<String>,
     /// Whether a new sign's text glows, false when unset.
     pub sign_text_glow: Option<bool>,
-    /// The block farmland turns into; the template's base when unset.
+    /// The block farmland turns into: one of this mod's (a bare name is this mod's) or a
+    /// vanilla one (`minecraft:<path>`); the template's base when unset.
     pub base_block: Option<String>,
 }
 
@@ -226,20 +250,51 @@ pub struct Item {
     pub max_stack_size: Option<u8>,
     /// Rarity overriding the template's.
     pub rarity: Option<Rarity>,
-    /// An ordered component patch over the template: `Some(tag)` sets, `None` removes.
-    /// Component names are namespaced identifiers, without a removal prefix `!`.
+    /// A component patch over the template: `Some(tag)` sets, `None` removes.
+    /// Component names are namespaced identifiers, without a removal prefix `!`; repeated IDs are refused.
     pub components: Vec<(String, Option<crate::Tag>)>,
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
-    /// a vanilla item or one of the mod's own.
+    /// a vanilla item (`minecraft:<path>`) or one of the mod's own (a bare name is the mod's).
     pub crafting_remainder: Option<String>,
-    /// The block placed by this item, if any.
+    /// The block placed by this item, if any: one of this mod's (a bare name is this mod's)
+    /// or a vanilla one (`minecraft:<path>`).
     pub block: Option<String>,
     /// The arm pose a humanoid takes holding it, in place of vanilla's (`ArmPose`).
     pub arm_pose: Option<ArmPose>,
 }
 
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            template: String::new(),
+            properties: BlockProperties::default(),
+            state_light: None,
+            shapes: None,
+            collision_shapes: None,
+            outline_context_shapes: BTreeMap::new(),
+            collision_context_shapes: BTreeMap::new(),
+            interaction_shapes: None,
+            state_properties: BTreeMap::new(),
+            default_state: BTreeMap::new(),
+            item: true,
+            open_sound: None,
+            close_sound: None,
+            block_item: None,
+            pick_item: None,
+            components: Vec::new(),
+            connects_to: None,
+            thickness: None,
+            wood_type: None,
+            wall_block: None,
+            sign_text_color: None,
+            sign_text_glow: None,
+            base_block: None,
+        }
+    }
+}
 impl Block {
-    /// Request a block item with the same identifier.
+    /// Whether to add a block item with the same identifier; a block has one unless told not to.
     pub fn with_item(mut self, item: bool) -> Self {
         self.item = item;
         self

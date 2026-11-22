@@ -14,15 +14,14 @@ import sys
 import prebuilt_game as sdk_tools
 
 FIXTURES = Path(__file__).with_suffix("")
-PINNED = sdk_tools.ROOT / "launcher/src/rust_toolchain.rs"
+PINNED = sdk_tools.ROOT / "tools/ci/rust-version"
 # The allocator shim's entry points. Matched as name suffixes: mangled names that merely mention `alloc`
 # (backtrace frames over `alloc::vec`) are not an allocator.
 ALLOCATOR = tuple(f"___rust_{kind}" for kind in ("alloc", "dealloc", "realloc", "alloc_zeroed"))
 
 
 def pinned_release():
-    text = PINNED.read_text()
-    return text.split('pub const VERSION: &str = "', 1)[1].split('"', 1)[0]
+    return PINNED.read_text().strip()
 
 
 def pe_symbols(path):
@@ -186,7 +185,7 @@ def main():
     shipped = output / "shipped"
     shipped.mkdir(exist_ok=True)
     route = ["rustc", "--edition", "2024", "-C", "prefer-dynamic", "-C", "opt-level=3", "-L", f"dependency={deps}",
-             "-L", f"native={sdk / 'native'}", "-L", f"dependency={shipped}"]
+             "-L", f"dependency={sdk / 'host'}", "-L", f"native={sdk / 'native'}", "-L", f"dependency={shipped}"]
     starter = (sdk_tools.ROOT / "crates/cargo-horizon-mod/template/native/lib.rs").read_text()
     (shipped / "mod_0.rs").write_text(starter.replace("{id}", "probe"))
     subprocess.run([*route, "--crate-type", "rlib", "--crate-name", "mod_0", *extern("mod_api"),
@@ -194,7 +193,7 @@ def main():
     template = (sdk / sdk_tools.TEMPLATE).read_text()
     (shipped / "main.rs").write_text(template.replace("/* MOD_ENTRIES */", '        "probe" => mod_0::hooks,\n').replace(
         "/* BUILT_MODS */",
-        '    horizon_mod_package::runtime::BuiltMod { id: "probe", version: "0.1.0", side: horizon_mod_package::Side::Both },\n'))
+        '    mod_api::__private::native::BuiltMod { id: "probe", version: "0.1.0", side: mod_api::Side::Both },\n'))
     shipped_exe = shipped / ("horizon-client.exe" if windows else "horizon-client")
     subprocess.run([*route, "--crate-type", "bin", "--crate-name", "horizon_native_game",
                     *(flag for arg in identity["link_args"] for flag in ("-C", f"link-arg={arg}")),
@@ -223,7 +222,7 @@ def main():
             failures.append("the shipped executable and the game allocate from different heaps (shipped/route-heap.txt)")
 
     common = ["rustc", "--edition=2024", "-C", "prefer-dynamic", "-L", f"dependency={deps}",
-              "-L", f"native={sdk / 'native'}", "-L", f"dependency={output}"]
+              "-L", f"dependency={sdk / 'host'}", "-L", f"native={sdk / 'native'}", "-L", f"dependency={output}"]
     for crate, source in [("probe_shared", "shared.rs"), ("probe_a", "mod.rs"), ("probe_b", "mod.rs")]:
         extra = [] if crate == "probe_shared" else ["--extern", f"probe_shared={output / (prefix + 'probe_shared' + extension)}"]
         run([*common, "--crate-type=dylib", "--crate-name", crate, *extern("horizon_client"), *extern("mod_api"), *extern("mod_points"),

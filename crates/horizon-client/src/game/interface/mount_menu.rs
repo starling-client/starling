@@ -277,10 +277,7 @@ impl Game<'_> {
             Some(format!("minecraft:{}", nautilus::saddle_sound(m)))
         } else {
             put_on.map(|s| {
-                self.res
-                    .items()
-                    .get(&s.item)
-                    .and_then(|i| i.equip_sound.clone())
+                horizon_client::item_sync::equip_sound(s, self.res.items())
                     .unwrap_or_else(|| "minecraft:item.armor.equip_generic".into())
             })
         };
@@ -403,10 +400,7 @@ impl Game<'_> {
         let Some(r) = self.renderer.as_ref() else {
             return true;
         };
-        let batch = HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        );
+        let batch = self.interface_batch([r.config.width, r.config.height]);
         let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1) else {
             return true;
         };
@@ -488,27 +482,28 @@ impl Game<'_> {
         }
         if open.show_saddle {
             batch.sprite(atlas, "gui/sprites/container/slot", ox + 7.0, oy + 17.0);
-            if open.saddle.is_none() {
-                batch.sprite(
-                    atlas,
-                    "gui/sprites/container/slot/saddle",
-                    ox + 8.0,
-                    oy + 18.0,
-                );
-            }
         }
         if open.show_armor {
             batch.sprite(atlas, "gui/sprites/container/slot", ox + 7.0, oy + 35.0);
-            if open.armor.is_none() {
-                let sprite = if llama::is_llama(open.species) {
-                    "gui/sprites/container/slot/llama_armor"
-                } else if nautilus::is_nautilus(open.species) {
-                    "gui/sprites/container/slot/nautilus_armor_inventory"
-                } else {
-                    "gui/sprites/container/slot/horse_armor"
-                };
-                batch.sprite(atlas, sprite, ox + 8.0, oy + 36.0);
-            }
+        }
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        if open.show_saddle && open.saddle.is_none() {
+            batch.sprite(
+                atlas,
+                "gui/sprites/container/slot/saddle",
+                ox + 8.0,
+                oy + 18.0,
+            );
+        }
+        if open.show_armor && open.armor.is_none() {
+            let sprite = if llama::is_llama(open.species) {
+                "gui/sprites/container/slot/llama_armor"
+            } else if nautilus::is_nautilus(open.species) {
+                "gui/sprites/container/slot/nautilus_armor_inventory"
+            } else {
+                "gui/sprites/container/slot/horse_armor"
+            };
+            batch.sprite(atlas, sprite, ox + 8.0, oy + 36.0);
         }
         let grey = rgba(64, 64, 64, 255);
         let title = match self.mobs.iter().find(|m| m.id == open.mob) {

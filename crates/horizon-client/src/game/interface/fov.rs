@@ -4,6 +4,7 @@
 //! (`GameRenderer.renderLevel`) and the spyglass (`SpyglassItem`,
 //! `Hud.extractSpyglassOverlay`). The arithmetic is `horizon_client::camera`.
 use super::Game;
+use horizon_core::position::BlockPos;
 
 pub(super) fn camera_effects_enabled(title: bool, studio_freecam: bool) -> bool {
     !title && !studio_freecam
@@ -21,9 +22,6 @@ use horizon_client::{
     hud::HudBatch,
     hud_layout, hud_overlays,
 };
-
-/// `Abilities.walkingSpeed`.
-const WALKING_SPEED: f32 = 0.1;
 
 fn valid_fov_modifier(modifier: f32, fallback: f32) -> f32 {
     if modifier.is_finite() && (0.01..=10.0).contains(&modifier) {
@@ -80,12 +78,7 @@ impl Game<'_> {
         });
         Some(FovPlayer {
             flying: p.flying,
-            // Abilities.walkingSpeed: a server may change it.
-            walking_speed: self
-                .remote
-                .as_ref()
-                .and_then(|r| r.abilities.as_ref())
-                .map_or(WALKING_SPEED, |a| a.walking_speed),
+            walking_speed: self.remote_walking_speed(),
             // Player.aiStep keeps `speed` as the float movement speed attribute.
             movement_speed: f64::from(p.speed),
             using,
@@ -103,12 +96,12 @@ impl Game<'_> {
             valid_fov_modifier(modifier, base)
         });
         let target = self.zoomed_fov_target(target);
-        // A server's spectator camera on a mob: its eye height. Its modifier
-        // stays 1 (another player's own modifier is not modelled here); the
-        // zoom extra still narrows it.
-        if let Some(m) = self.camera_mob() {
-            let eye = m.eye_height() as f32;
-            self.view.tick(Some(eye), self.zoomed_fov_target(1.0));
+        // A server's spectator camera on a mob or an armor stand: its eye
+        // height. Its modifier stays 1 (another player's own modifier is not
+        // modelled here); the zoom extra still narrows it.
+        if let Some(e) = self.spectated_camera_snapshot() {
+            self.view
+                .tick(Some(e.eye_height), self.zoomed_fov_target(1.0));
             return;
         }
         let eye = self.player.as_ref().map(|p| {
@@ -129,9 +122,30 @@ impl Game<'_> {
             .dead_or_dying()
             .then(|| self.ui.death_time.min(i32::MAX as u32) as i32)
     }
+    /// `Camera.getFluidInCamera` for the camera at `camera`, where the parts of each block it
+    /// reads may answer the state the camera sees there (`state_at_viewpoint`). Both paths go
+    /// through the replaceable `fog_type`.
+    pub(super) fn camera_fog_type(&self, camera: [f64; 3]) -> FogType {
+        let (world, facts, near) = (&self.world, self.res.facts(), self.near_plane());
+        if !mod_api::__private::has_scoped_hook(mod_api::HookId::StateAtViewpoint) {
+            return fog_type(world, facts, camera, &near, &|state, _| state);
+        }
+        let seen = |state, [x, y, z]: [i32; 3]| {
+            if !super::api_values::block_state::block_listens(
+                mod_api::HookId::StateAtViewpoint,
+                state,
+            ) {
+                return state;
+            }
+            let mut seen = state;
+            self.native_state_at_viewpoint(state, BlockPos::new(x, y, z), camera, &mut seen);
+            seen
+        };
+        fog_type(world, facts, camera, &near, &seen)
+    }
     /// The fluid at the camera, as `Camera.getFluidInCamera` reports it.
     pub(super) fn camera_fluid(&self, camera: [f64; 3]) -> CameraFluid {
-        match fog_type(&self.world, self.res.facts(), camera, &self.near_plane()) {
+        match self.camera_fog_type(camera) {
             FogType::Water => CameraFluid::Water,
             FogType::Lava => CameraFluid::Lava,
             FogType::PowderSnow => CameraFluid::PowderSnow,

@@ -470,7 +470,9 @@ impl Game<'_> {
     /// highlight and the on-screen keyboard over everything else (`draw_pad_cursor`).
     pub(in crate::game) fn draw_pad_over_hud(&self, batch: &mut horizon_client::hud::HudBatch) {
         self.draw_pad_radial(batch);
+        let area = self.interface_area(batch);
         self.draw_pad_cursor(batch);
+        area.finish(batch);
     }
 
     /// The overlay, over the HUD, in this player's view: while it shows, and while it fades out.

@@ -36,6 +36,9 @@ pub(super) struct FnState {
     /// Run the `minecraft:load` tag on the next tick.
     load_pending: bool,
     pub schedule: Vec<Scheduled>,
+    /// The world's saved queue has been read once: it is the live
+    /// `TimerQueue` `SavedData`, so a later reload keeps it as it is.
+    schedule_loaded: bool,
     next_seq: u64,
     /// A dedicated server's `function-permission-level`.
     pub permission: Option<u8>,
@@ -212,6 +215,16 @@ impl Game<'_> {
         }
         let _ = self.reload_datapacks(false, &self.level.enabled_features.clone());
     }
+    pub(super) fn open_world_datapacks(
+        &mut self,
+        enabled_features: &[String],
+    ) -> Result<PackStack, ReloadStageError> {
+        // Function admission parses commands immediately, including block arguments.
+        // Populate static registries on first open; admission synchronizes pack IDs.
+        self.build_registries();
+        self.reload_datapacks(false, enabled_features)
+    }
+
     pub(super) fn reload_datapacks(
         &mut self,
         run_load: bool,
@@ -227,7 +240,7 @@ impl Game<'_> {
             )
         })?;
         let next_root = self
-            .stage_enabled_inventory()
+            .stage_condition_inventory()
             .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
         let resources = next_root
             .as_ref()
@@ -249,15 +262,14 @@ impl Game<'_> {
             enabled_features,
             &additional,
         );
-        let prepared = self.prepare_server_reload(&stack, &resources)?;
+        let prepared = self.begin_condition_reload(&stack, &resources)?;
         let context = self
             .prepare_loop_context(&resources)
             .map_err(|error| ReloadStageError::DataSource(error.to_string()))?;
-        let switched = self.mods.data_switched || next_root.is_some();
         let prepared = self.apply_server_reload_callbacks(prepared);
         let world = if run_load && self.remote.is_none() {
             Some(
-                self.prepare_world_reload(&stack, &resources, switched)
+                self.prepare_world_reload(&stack, &resources)
                     .map_err(|error| ReloadStageError::DataSource(error.to_string()))?,
             )
         } else {
@@ -286,7 +298,13 @@ impl Game<'_> {
         }
         self.apply_server_reload(prepared, &stack, enabled_features);
         self.run_native_advancement_grants();
-        if self.fns.schedule.is_empty() {
+        // The schedule is the world's live `TimerQueue` `SavedData`, not pack
+        // content: firing an event (`TimerQueue.tick`) and `/schedule clear`
+        // (`TimerQueue.remove`) drop it from the queue, and a reload only
+        // replaces the function library. Read the saved file when the world's
+        // data loads, then keep the queue as it is.
+        if !self.fns.schedule_loaded {
+            self.fns.schedule_loaded = true;
             self.load_schedule();
         }
         Ok(stack)
@@ -313,11 +331,17 @@ impl Game<'_> {
         registries.function_tags = store.function_tags.keys().cloned().collect();
         registries.predicates = store.predicates.keys().cloned().collect();
         registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
-        registries
+        let sources = registries
             .by_registry
             .entry("minecraft:slot_source".into())
-            .or_default()
-            .ids = store.slot_sources.keys().cloned().collect();
+            .or_default();
+        sources.ids = store.slot_sources.keys().cloned().collect();
+        sources.tags = store
+            .slot_source_tags
+            .keys()
+            .filter(|id| store.slot_source_tag(id).is_ok())
+            .cloned()
+            .collect();
         for (id, ids) in [
             ("minecraft:predicate", &registries.predicates),
             ("minecraft:item_modifier", &registries.item_modifiers),
@@ -373,10 +397,19 @@ impl Game<'_> {
         reg.function_tags = self.fns.store.function_tags.keys().cloned().collect();
         reg.predicates = self.fns.store.predicates.keys().cloned().collect();
         reg.item_modifiers = self.fns.store.item_modifiers.keys().cloned().collect();
-        reg.by_registry
+        let sources = reg
+            .by_registry
             .entry("minecraft:slot_source".into())
-            .or_default()
-            .ids = self.fns.store.slot_sources.keys().cloned().collect();
+            .or_default();
+        sources.ids = self.fns.store.slot_sources.keys().cloned().collect();
+        sources.tags = self
+            .fns
+            .store
+            .slot_source_tags
+            .keys()
+            .filter(|id| self.fns.store.slot_source_tag(id).is_ok())
+            .cloned()
+            .collect();
         reg.schedules = self.fns.schedule.iter().map(|s| s.id.clone()).collect();
 
         reg.datapacks_enabled = std::iter::once("vanilla".to_owned())
@@ -611,14 +644,18 @@ impl Game<'_> {
         args: Option<&Tag>,
         source: Source,
     ) -> R<Outcome> {
-        let lines = f.instantiate(args).map_err(|(key, a)| {
+        let failure = |key: &str, a: &[String]| {
             let args: Vec<&dyn std::fmt::Display> =
                 a.iter().map(|s| s as &dyn std::fmt::Display).collect();
             err(
                 "commands.function.instantiationFailure",
-                &[&f.id, &horizon_client::text::Text::tr(&key, &args).plain()],
+                &[&f.id, &horizon_client::text::Text::tr(key, &args).plain()],
             )
-        })?;
+        };
+        let lines = f.instantiate(args).map_err(|(key, a)| failure(&key, &a))?;
+        if let Err((key, a)) = self.parse_macro_lines(f, &lines) {
+            return Err(failure(&key, &a));
+        }
         if self.exec.functions.len() >= 128 {
             return Ok(Outcome::NoReturn);
         }
@@ -653,6 +690,35 @@ impl Game<'_> {
             Some(Some(v)) => Outcome::Value(v),
             Some(None) => Outcome::Fail,
         })
+    }
+    /// `MacroFunction.MacroEntry.instantiate`: a `$` line is parsed only after
+    /// substitution, at the function compilation permission
+    /// (`CommandFunction.fromLines`' `compilationContext`), and a line that
+    /// does not parse fails the whole call before any of its lines run.
+    fn parse_macro_lines(
+        &mut self,
+        f: &Function,
+        lines: &[String],
+    ) -> Result<(), (String, Vec<String>)> {
+        if !f.is_macro() {
+            return Ok(());
+        }
+        let level = std::mem::replace(&mut self.ui.registries.permission, self.fns.command_level());
+        let d = self.ui.dispatcher.0.clone();
+        let mut out = Ok(());
+        for (line, entry) in lines.iter().zip(&f.lines) {
+            if matches!(entry, datapack::FunctionLine::Macro(_))
+                && let Err(error) = d.parse(line, &self.ui.registries).executable()
+            {
+                out = Err((
+                    "commands.function.error.parse".into(),
+                    vec![f.id.clone(), line.clone(), error.message.plain()],
+                ));
+                break;
+            }
+        }
+        self.ui.registries.permission = level;
+        out
     }
     /// The functions a `FunctionArgument` names: a function or a tag.
     pub(in crate::game) fn functions_named(&mut self, name: &str) -> R<Vec<Function>> {
@@ -1296,7 +1362,7 @@ impl Game<'_> {
         );
         stack.enabled =
             datapack::selected_ids(stack.packs.iter().map(Arc::as_ref), &self.fns.enabled);
-        let prepared = match self.prepare_server_reload(&stack, &self.options.resources) {
+        let prepared = match self.prepare_pack_condition_reload(&stack) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.fns.enabled = previous_enabled;
@@ -1316,7 +1382,7 @@ impl Game<'_> {
             }
         };
         let prepared = self.apply_server_reload_callbacks(prepared);
-        let world = match self.prepare_world_reload(&stack, &root, self.mods.data_switched) {
+        let world = match self.prepare_world_reload(&stack, &root) {
             Ok(world) => world,
             Err(error) => {
                 self.fns.enabled = previous_enabled;
@@ -1387,6 +1453,61 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn first_world_open_admits_block_function() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            let folder = "first-open-block-function";
+            let world = std::env::current_dir().unwrap().join("saves").join(folder);
+            let pack = world.join("datapacks/first_open");
+            let functions = pack.join("data/first_open/function");
+            std::fs::create_dir_all(&functions).unwrap();
+            let f = horizon_core::version::DATA_PACK_FORMAT;
+            std::fs::write(
+                pack.join("pack.mcmeta"),
+                serde_json::json!({"pack":{
+                    "description":"First open regression", "pack_format":f.0,
+                    "min_format":[f.0,f.1], "max_format":[f.0,f.1]
+                }})
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                functions.join("block.mcfunction"),
+                "execute if block 0 64 0 minecraft:repeater[delay=2] run return 1\n",
+            )
+            .unwrap();
+            std::fs::write(
+                functions.join("invalid.mcfunction"),
+                "setblock 0 64 0 first_open:missing_block\n",
+            )
+            .unwrap();
+            let request = crate::game::world_loading::WorldRequest::new(
+                folder,
+                None,
+                Some(3042),
+                true,
+                None,
+                game.level.rule_registry.clone(),
+            )
+            .unwrap();
+            game.load_world(request).unwrap();
+            assert!(
+                game.fns.store.functions.contains_key("first_open:block"),
+                "first-open admission errors: {:?}",
+                game.fns.store.errors
+            );
+            assert!(!game.fns.store.functions.contains_key("first_open:invalid"));
+            assert!(
+                game.fns
+                    .store
+                    .errors
+                    .iter()
+                    .any(|(id, _)| id == "first_open:invalid")
+            );
+        });
+    }
 
     #[test]
     #[ignore = "needs prepared resources and scratch homes/cwd"]
@@ -1935,7 +2056,7 @@ mod tests {
             assert!(game.items().block_tags["reload_test:candidate"].contains("minecraft:stone"));
             assert!(game.run_command("datapack disable \"file/candidate\""));
             assert!(game.run_command("datapack enable \"file/candidate\""));
-            let live_stone = mod_api::__private::part_tests::block_key("minecraft:stone");
+            let live_stone = mod_platform::__private::part_tests::block_key("minecraft:stone");
             assert_eq!(
                 super::super::native_world_read::block_in_tag(live_stone, "reload_test:candidate"),
                 Some(true)
@@ -1950,7 +2071,7 @@ mod tests {
                 horizon_world::level::data::load_registry_with_flags(&game.options.resources)
                     .unwrap();
             crate::game::api_values::resolve_block_definitions(&registry).unwrap();
-            let stone = mod_api::__private::part_tests::block_key("minecraft:stone");
+            let stone = mod_platform::__private::part_tests::block_key("minecraft:stone");
             let old_tag =
                 super::super::native_world_read::block_in_tag(stone, "reload_test:candidate");
             let old_context = game.loop_context.clone();
@@ -2183,13 +2304,8 @@ mod tests {
                     .tags
                     .contains(&"test:feature_marker".to_owned())
             );
-            (game.world_tables, game.health_resources) = game
-                .build_world_tables(
-                    &stack,
-                    false,
-                    &game.options.resources.clone(),
-                    game.mods.data_switched,
-                )
+            (game.world_tables, game.health_resources, _) = game
+                .stage_world_tables(&stack, false, &game.options.resources.clone())
                 .unwrap();
             assert!(game.items().item_tags["test:sample"].contains("minecraft:diamond"));
         });
@@ -2364,6 +2480,111 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// `StringTemplate.fromString` fails a `$` line with no variable, so the
+    /// file is not registered, and `MacroFunction.MacroEntry.instantiate`
+    /// parses a substituted line, throwing `commands.function.error.parse`
+    /// before any of the call's lines run.
+    #[test]
+    #[ignore = "daily"]
+    fn macro_lines_need_a_variable_and_parse_after_substitution() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir = std::env::temp_dir().join(format!("horizon-macro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let functions = dir.join("datapacks/macros/data/h166/function");
+        std::fs::create_dir_all(&functions).unwrap();
+        let format = horizon_core::version::DATA_PACK_FORMAT;
+        std::fs::write(
+            dir.join("datapacks/macros/pack.mcmeta"),
+            serde_json::json!({"pack":{"description":"Macro lines","pack_format":format.0,"min_format":[format.0,format.1],"max_format":[format.0,format.1]}}).to_string(),
+        )
+        .unwrap();
+        for (name, text) in [
+            // No `$(…)`: not a macro at all, so the file does not load.
+            ("novar", "$say hello\nscoreboard players add #ran h166 1\n"),
+            // Substitutes to a line with a trailing argument; the plain lines
+            // around it show that none of the call's lines ran.
+            (
+                "bad",
+                "scoreboard players add #ran h166 1\n$scoreboard players set #seen h166 $(v) bogus\nscoreboard players add #ran h166 1\n",
+            ),
+            (
+                "good",
+                "$scoreboard players set #seen h166 $(v)\nscoreboard players add #ran h166 1\n",
+            ),
+        ] {
+            std::fs::write(functions.join(format!("{name}.mcfunction")), text).unwrap();
+        }
+        game.world_root = dir.clone();
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source)
+        };
+        run(&mut game, "scoreboard objectives add h166 dummy").unwrap();
+        run(&mut game, "scoreboard players set #ran h166 -99").unwrap();
+        game.reload_datapacks(false, &game.level.enabled_features.clone())
+            .unwrap();
+        assert!(!game.fns.store.functions.contains_key("h166:novar"));
+        assert!(
+            game.fns
+                .store
+                .errors
+                .iter()
+                .any(|(id, e)| id == "h166:novar" && e.contains("No variables in macro"))
+        );
+        let error = run(&mut game, "function h166:novar").unwrap_err();
+        assert_eq!(error.key, "arguments.function.unknown");
+        // A substituted line that does not parse fails the call, so no line of
+        // it runs, and the reason names the line `MacroEntry.instantiate` got.
+        let error = run(&mut game, "function h166:bad {v:1}").unwrap_err();
+        assert_eq!(error.key, "commands.function.instantiationFailure");
+        let reason = error.message.plain();
+        assert!(
+            reason.contains("scoreboard players set #seen h166 1 bogus"),
+            "{reason}"
+        );
+        assert_eq!(game.score.board.score("#ran", "h166").unwrap().value, -99);
+        assert!(game.score.board.score("#seen", "h166").is_none());
+        // A valid substitution still runs every line.
+        run(&mut game, "function h166:good {v:7}").unwrap();
+        assert_eq!(game.score.board.score("#ran", "h166").unwrap().value, -98);
+        assert_eq!(game.score.board.score("#seen", "h166").unwrap().value, 7);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn unless_function_keeps_a_fallthrough_after_running_it_once() {
@@ -2501,7 +2722,7 @@ mod tests {
 
     /// What a native mod contributes (`native_data_pack_files`) joins the load
     /// the tables are built from, a world's first open and `/reload` alike
-    /// (`Game::build_world_tables` is both), and sits below the world's own
+    /// (`Game::stage_world_tables` is both), and sits below the world's own
     /// packs. Each load asks again, so it is the current contribution that
     /// counts.
     #[test]
@@ -3306,3 +3527,6 @@ mod required_tag_tests {
 
 #[cfg(test)]
 include!("functions/typed_state_range_tests.rs");
+#[cfg(test)]
+#[path = "functions/schedule_reload_tests.rs"]
+mod schedule_reload_tests;

@@ -12,13 +12,33 @@ fn root() -> &'static Path {
 fn validate(text: &str) -> naga::Module {
     let module = naga::front::wgsl::parse_str(text)
         .unwrap_or_else(|e| panic!("{}\n{text}", e.emit_to_string(text)));
-    naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::default(),
-    )
-    .validate(&module)
-    .unwrap_or_else(|e| panic!("{}\n{text}", e.emit_to_string(text)));
+    let mut capabilities = naga::valid::Capabilities::default();
+    if text.contains("enable wgpu_ray_query;") {
+        capabilities |= naga::valid::Capabilities::RAY_QUERY;
+    }
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{}\n{text}", e.emit_to_string(text)));
     module
+}
+
+/// Vanilla's own entity colour (`entity_color` in the renderer's entity.wgsl), from the stage's
+/// inputs: the reference prints the same function.
+const VANILLA_ENTITY: &str = "\
+fn entity(input: EntityInput) -> Surface {
+    let base = input.albedo.rgb * input.tint.rgb * input.shade;
+    // Vanilla lays the flash over the surface in its gamma (the 2.2 power), before the light.
+    let gamma = vec3<f32>(1.0 / 2.2);
+    let flashed = pow(mix(pow(base, gamma), pow(input.overlay.rgb, gamma), input.overlay.a), vec3<f32>(2.2));
+    return Surface(vec4<f32>(flashed * input.lightmap, input.albedo.a * input.tint.a));
+}
+";
+
+#[test]
+fn the_reference_prints_vanilla_s_entity_function_as_it_is_checked() {
+    let doc = reference::markdown(Api::V0_2);
+    assert!(doc.contains(&format!("```wgsl\n{VANILLA_ENTITY}```")));
+    assert!(!reference::markdown(Api::V0_1).contains("EntityInput"));
 }
 
 /// Vanilla's look, written as each stage.
@@ -39,6 +59,7 @@ fn vanilla(kind: StageKind) -> &'static str {
         StageKind::Tonemap => {
             "fn tonemap(input: TonemapInput) -> vec3<f32> { return input.color; }\n"
         }
+        StageKind::Entity => VANILLA_ENTITY,
     }
 }
 
@@ -64,6 +85,7 @@ fn every_stage_compiles_with_vanilla_s_function() {
     }
     assert_eq!(Api::V0_1.stages().len(), 5);
     assert!(!Api::V0_1.stages().contains(&StageKind::Tonemap));
+    assert!(!Api::V0_1.stages().contains(&StageKind::Entity));
 }
 
 /// The SHA-256 of 0.1's prelude and entries of each stage, as they were before 0.2: the line

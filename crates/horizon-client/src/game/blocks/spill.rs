@@ -41,13 +41,29 @@ pub(super) struct Pending {
     pub(super) copied: HashMap<[i32; 3], (String, Compound)>,
 }
 impl Pending {
-    /// Remember what the block entity at `pos` copies into the drops of `block`.
+    /// `record` for the block entity at `pos` while it is still in `world`:
+    /// its custom name and lock come from there.
+    pub(super) fn record_from(
+        &mut self,
+        world: &horizon_client::world::World,
+        pos: [i32; 3],
+        entity: &BlockEntity,
+        block: &str,
+    ) {
+        let key = (pos[0], pos[1], pos[2]);
+        let name = world.block_names.get(&key).cloned();
+        self.record(pos, entity, block, name, world.block_lock(key));
+    }
+    /// Remember what the block entity at `pos` copies into its own drop.
+    /// Name and lock live outside the model: snapshot the actual lock before
+    /// removal forgets its source. Only the supported shulker copy policy takes it.
     pub(super) fn record(
         &mut self,
         pos: [i32; 3],
         entity: &BlockEntity,
         block: &str,
         name: Option<Tag>,
+        lock: Option<&Tag>,
     ) {
         if let BlockEntity::Banner(banner) = entity {
             self.banner.insert(pos, banner.clone());
@@ -61,8 +77,10 @@ impl Pending {
         }
         // `copy_components` from the block entity: the head tables copy the
         // profile (player heads), note block sound and name, the hive tables
-        // the bees.
+        // the bees, and shulker tables the actual external lock. This is the
+        // supported vanilla class policy, not a selected-table include filter.
         let include: &[&str] = match entity {
+            BlockEntity::Chest(_) if is_shulker_box(block) => &["minecraft:lock"],
             BlockEntity::Skull(_) if block.starts_with("minecraft:player_") => &[
                 "minecraft:profile",
                 "minecraft:note_block_sound",
@@ -75,7 +93,13 @@ impl Pending {
             _ => &[],
         };
         if !include.is_empty() {
-            let saved = save::encode_block_entity((pos[0], pos[1], pos[2]), entity, block);
+            let mut saved =
+                save::block_entity_encode::encode((pos[0], pos[1], pos[2]), entity, block);
+            if is_shulker_box(block)
+                && let (Some(lock), Tag::Compound(tag)) = (lock, &mut saved)
+            {
+                tag.insert("lock".into(), lock.clone());
+            }
             let mut patch = block_entity_nbt::canonical(&saved)
                 .map(|saved| block_entity_item::pick(&saved))
                 .unwrap_or_default();
@@ -217,6 +241,52 @@ pub(super) struct ItemRandom {
     pub bob: f32,
     pub yaw: f32,
     pub velocity: [f64; 3],
+    /// The state a drop hook gave the item entity; the default is a fresh one's.
+    pub state: DropState,
+}
+
+/// Item-entity state a drop hook can set (`ItemDrop`'s `thrower`, `target`, `no_gravity` and
+/// `age`). The default is what `new ItemEntity` starts with.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DropState {
+    pub(crate) thrower: Option<u128>,
+    pub(crate) target: Option<u128>,
+    pub(crate) no_gravity: bool,
+    pub(crate) age: i32,
+}
+
+impl DropState {
+    /// The state `drop` asks for.
+    pub(crate) fn of(drop: &mod_api::ItemDrop) -> Self {
+        Self {
+            thrower: drop.thrower,
+            target: drop.target,
+            no_gravity: drop.no_gravity,
+            age: drop.age,
+        }
+    }
+    /// `drop` with this state.
+    pub(crate) fn to_api(self, drop: mod_api::ItemDrop) -> mod_api::ItemDrop {
+        drop.with_thrower(self.thrower)
+            .with_target(self.target)
+            .with_no_gravity(self.no_gravity)
+            .with_age(self.age)
+    }
+    /// `item` as a fresh item entity with this state (`setThrower`, `setTarget`,
+    /// `setNoGravity` and its age).
+    pub(crate) fn apply(
+        self,
+        item: horizon_client::entities::ItemEntity,
+    ) -> horizon_client::entities::ItemEntity {
+        let uuid = horizon_client::lan::playerdata::uuid_ints;
+        horizon_client::entities::ItemEntity {
+            thrower: self.thrower.map(uuid),
+            target: self.target.map(uuid),
+            no_gravity: self.no_gravity,
+            age: self.age,
+            ..item
+        }
+    }
 }
 
 /// The one ItemEntity constructor random sequence, shared by immediate and
@@ -236,6 +306,7 @@ pub(super) fn prepare_item_random(velocity: Option<[f64; 3]>) -> ItemRandom {
         bob,
         yaw,
         velocity,
+        state: DropState::default(),
     }
 }
 
@@ -258,6 +329,34 @@ pub(crate) struct BlockItemDrop {
     pub(super) position: [f64; 3],
     pub(super) velocity: [f64; 3],
     pub(super) pickup_delay: u32,
+    /// The item-entity state a drop hook set.
+    pub(super) state: DropState,
+}
+
+impl BlockItemDrop {
+    /// The drop as the mods hear and edit it.
+    pub(super) fn from_api(drop: &mod_api::ItemDrop, stack: ItemStack) -> Self {
+        Self {
+            random: None,
+            stack,
+            position: drop.position,
+            velocity: drop.velocity,
+            pickup_delay: drop.pickup_delay,
+            state: DropState::of(drop),
+        }
+    }
+    /// The constructor random the item entity joins with, carrying the state a hook set. A drop
+    /// with no state set keeps its random as it was (none: drawn when it joins).
+    pub(super) fn random_with_state(&self) -> Option<ItemRandom> {
+        if self.state == DropState::default() {
+            return self.random;
+        }
+        let mut random = self
+            .random
+            .unwrap_or_else(|| prepare_item_random(Some(self.velocity)));
+        random.state = self.state;
+        Some(random)
+    }
 }
 
 pub(super) struct BlockDrops {
@@ -271,6 +370,7 @@ pub(super) struct BlockDrops {
 
 #[derive(Default)]
 pub(super) struct Spill {
+    pub(super) piston_positions: Vec<super::piston_carry_state::PositionChange>,
     pub(super) spawns: Vec<Spawn>,
     /// Experience orbs (`ExperienceOrb.award`): where and how much, each
     /// and the merge id it drew from the level random.
@@ -294,7 +394,8 @@ pub(super) struct UsedDrops {
 
 impl Spill {
     pub(super) fn is_empty(&self) -> bool {
-        self.spawns.is_empty()
+        self.piston_positions.is_empty()
+            && self.spawns.is_empty()
             && self.orbs.is_empty()
             && self.removed.is_empty()
             && self.used.is_empty()
@@ -448,6 +549,9 @@ impl GameLevel<'_> {
     fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
         self.pending.attach(pos, &mut stack);
         let at = pop_position(&mut self.world.random, pos);
+        // `Block.popResource` draws its three offsets, then its private
+        // overload reads `GameRules.BLOCK_DROPS` and pops nothing while it is
+        // off: the level random advances either way.
         if self.rules.block_drops {
             self.spill.spawns.push(Spawn {
                 random: None,
@@ -518,11 +622,11 @@ impl GameLevel<'_> {
     pub(super) fn drop_resources_now(&mut self, pos: BlockPos, state: BlockStateId) {
         let key = (pos.x, pos.y, pos.z);
         let at = [pos.x, pos.y, pos.z];
+        self.unpack_loot(super::container_loot::LootTarget::Block(key), None);
         if let Some(entity) = self.world.block_entities.get(&key) {
             let entity = entity.clone();
-            let name = self.world.block_names.get(&key).cloned();
             let block = self.facts.get(state).name.clone();
-            self.pending.record(at, &entity, &block, name);
+            self.pending.record_from(self.world, at, &entity, &block);
         } else if let Some(tag) = saved_entity(self.world, [pos.x, pos.y, pos.z]) {
             self.pending.record_saved(at, &tag);
         }
@@ -552,7 +656,7 @@ impl GameLevel<'_> {
                 kept.push(item.stack);
             } else {
                 self.spill.spawns.push(Spawn {
-                    random: item.random,
+                    random: item.random_with_state(),
                     stack: item.stack,
                     pos: item.position,
                     motion: Some(item.velocity),
@@ -586,7 +690,13 @@ impl GameLevel<'_> {
         let mut copied = Pending::default();
         if let Some(block_entity) = self.world.block_entities.get(&key) {
             let name = self.world.block_names.get(&key).cloned();
-            copied.record(at, block_entity, &self.facts.get(state).name, name);
+            copied.record(
+                at,
+                block_entity,
+                &self.facts.get(state).name,
+                name,
+                self.world.block_lock(key),
+            );
         } else if let Some(tag) = saved_entity(self.world, at) {
             copied.record_saved(at, &tag);
         }
@@ -666,6 +776,7 @@ impl GameLevel<'_> {
             position,
             velocity: random.velocity,
             pickup_delay: 10,
+            state: DropState::default(),
         }
     }
     /// The one event/filter boundary for prepared block item entities and XP.
@@ -690,11 +801,23 @@ impl GameLevel<'_> {
         {
             let mut next_experience = experience;
             let mut next_canceled = canceled;
+            // The block entity still standing here: a level-side break drops before it goes.
+            let block_entity = self.api_level.and_then(|level| {
+                let at = [pos.x, pos.y, pos.z];
+                let generation = self
+                    .world
+                    .block_entities
+                    .generation(&(pos.x, pos.y, pos.z))?;
+                Some(mod_api::__private::game::block_entity_ref(
+                    level, at, generation,
+                ))
+            });
             self.native_block_drops(crate::game::native_hooks::BlockDropsCall {
                 dimension: self.dimension,
                 pos,
                 state,
                 breaker,
+                block_entity,
                 tool,
                 drops: &mut snapshots,
                 experience: &mut next_experience,
@@ -732,19 +855,21 @@ impl GameLevel<'_> {
     /// `BlockEntity.preRemoveSideEffects` and `removeBlockEntity` for the block
     /// entity of `old` at `pos`. A block entity Horizon never created reads as
     /// vanilla's fresh one: an empty container still draws a spot per slot.
-    pub(super) fn remove_entity(
+    pub(crate) fn remove_entity(
         &mut self,
         pos: BlockPos,
         old: BlockStateId,
         side_effects: bool,
     ) -> u8 {
         let key = (pos.x, pos.y, pos.z);
+        self.unpack_loot(super::container_loot::LootTarget::Block(key), None);
         // A replacement is a new block entity, even at the same position.
         // Headless servers cannot rely on renderer visibility to discard this state.
         if &*self.facts.get(old).name == "minecraft:end_gateway" {
-            self.gateway_servers.remove(&[pos.x, pos.y, pos.z]);
+            self.positions.gateways.remove(&[pos.x, pos.y, pos.z]);
         }
         if self.remove_saved_entity(pos, old, side_effects) {
+            self.positions.hoppers.remove(&key);
             return 0;
         }
         // Sculk blocks and creaking hearts notice their removal on their own tick.
@@ -772,6 +897,7 @@ impl GameLevel<'_> {
                 .put(lease, BlockEntity::Mod(entity));
         }
         let entity = self.world.block_entities.remove(&key);
+        self.positions.hoppers.remove(&key);
         self.world.block_names.remove(&key);
         self.world.forget_block_entity_source(key);
         let name = self.facts.get(old).name.clone();
@@ -1050,17 +1176,23 @@ impl Game<'_> {
     /// Apply the shared block-drop event's item entities and experience unchanged.
     pub(super) fn spawn_block_drops(&mut self, pos: [i32; 3], dropped: BlockDrops) {
         for item in dropped.items {
-            self.add_item_entity_prepared(
-                item.stack,
-                item.position,
-                Some(item.velocity),
-                item.pickup_delay,
-                item.random,
-            );
+            self.add_item_drop(item);
         }
         if dropped.experience > 0 {
             self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), dropped.experience);
         }
+    }
+    /// Adds a drop's item entity, with the state a drop hook set.
+    pub(super) fn add_item_drop(&mut self, drop: BlockItemDrop) {
+        let random = drop.random_with_state();
+        let velocity = Some(drop.velocity);
+        self.add_item_entity_prepared(
+            drop.stack,
+            drop.position,
+            velocity,
+            drop.pickup_delay,
+            random,
+        );
     }
     /// Add the item entities the block behaviour spawned and follow up on the
     /// block entities it removed.
@@ -1070,6 +1202,7 @@ impl Game<'_> {
         }
         let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
         let mut spill = std::mem::take(&mut self.spill);
+        self.finish_piston_position_changes(std::mem::take(&mut spill.piston_positions));
         let used = std::mem::take(&mut spill.used);
         let tool = self.held().cloned();
         let player = Some(self.native_acting_id());
@@ -1147,7 +1280,8 @@ mod tests {
             let ore = registry.default_state("minecraft:diamond_ore").unwrap();
             let pos = BlockPos::new(1, 64, 2);
             let break_of = |game: &mut Game<'_>, state, item, exp_to_drop| {
-                game.world.random = LegacyRandom::new(7);
+                game.world.random =
+                    horizon_core::random::LevelRandom::for_level(LegacyRandom::new(7));
                 let dropped = game.with_level(|_, level, _| {
                     level.block_dropped(
                         pos,
@@ -1167,7 +1301,7 @@ mod tests {
             assert_eq!(plain_dirt.items.len(), 1);
             let mods: mod_api::Mods =
                 vec![mod_api::ModEntry::new("block-drops", Box::new(DropsMod))].into();
-            mod_api::testing::with_mods(mods, || {
+            mod_platform::testing::with_mods(mods, || {
                 let (heard, after) = break_of(game, ore, "minecraft:diamond", None);
                 assert_eq!(after, ore_after);
                 assert_eq!(heard.items.len(), 1);
@@ -1192,8 +1326,8 @@ mod tests {
     fn a_block_entity_part_gives_back_what_it_held_when_removed() {
         use horizon_client::chunk::Chunk;
         use horizon_client::containers::{ModBlockEntity, ModBlockEntityFields};
-        use mod_api::__private::part_tests::{HOARD, HOARD_ASKED, game_thread};
         use mod_api::Holder;
+        use mod_platform::__private::part_tests::{HOARD, HOARD_ASKED, game_thread};
         use std::sync::Arc;
         use std::sync::atomic::Ordering;
         crate::game::native_entity_refs::tests::with_game(|game| {
@@ -1269,8 +1403,8 @@ mod tests {
     fn a_block_entity_removing_itself_in_its_tick_is_not_asked() {
         use horizon_client::chunk::Chunk;
         use horizon_client::containers::{ModBlockEntity, ModBlockEntityFields, ModContainer};
-        use mod_api::__private::part_tests::{HOARD, HOARD_ASKED};
         use mod_api::Holder;
+        use mod_platform::__private::part_tests::{HOARD, HOARD_ASKED};
         use std::sync::Arc;
         use std::sync::atomic::Ordering;
         let Some(root) = crate::game::native_entity_refs::tests::declared_part_root(
@@ -1382,17 +1516,17 @@ mod tests {
         for block in ["minecraft:white_banner", "minecraft:white_wall_banner"] {
             let pos = (1, 64, 2);
             let fresh = BlockEntity::for_block(block).unwrap();
-            let fresh = save::encode_block_entity(pos, &fresh, block);
+            let fresh = save::block_entity_encode::encode(pos, &fresh, block);
             let placed = block_entity_item::place(&fresh, &components, false);
             let (_, placed) = save::decode_block_entity(&placed).unwrap();
-            let saved = save::encode_block_entity(pos, &placed, block);
+            let saved = save::block_entity_encode::encode(pos, &placed, block);
             let (_, loaded) = save::decode_block_entity(&saved).unwrap();
             let BlockEntity::Banner(banner) = &loaded else {
                 panic!("placed banner");
             };
             assert_eq!(banner.layers.len(), item_data::OMINOUS_LAYERS.len());
             let mut pending = Pending::default();
-            pending.record([pos.0, pos.1, pos.2], &loaded, block, None);
+            pending.record([pos.0, pos.1, pos.2], &loaded, block, None, None);
             let mut dropped = ItemStack::new("minecraft:white_banner", 1);
             pending.attach([pos.0, pos.1, pos.2], &mut dropped);
             assert!(dropped.data().unwrap().ominous_banner);

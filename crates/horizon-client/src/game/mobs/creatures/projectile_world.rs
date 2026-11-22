@@ -2,11 +2,17 @@
 //! contacts, collisions, fluids and the world border.
 use super::*;
 
+pub(crate) struct ProjWorld<'a, 'w> {
+    pub(crate) w: &'a MobWorld<'w>,
+    pub(crate) targets: &'a [(Who, Aabb)],
+    /// The world border's [minX, minZ, maxX, maxZ], which stops the ray as a
+    /// block would (`clipIncludingBorder`); None: no border.
+    pub(crate) border: Option<[f64; 4]>,
+}
+
 impl ProjectileWorld for ProjWorld<'_, '_> {
-    fn block_contacts(&self, entity: i32, from: Vec3, to: Vec3, bounds: Aabb) {
-        horizon_client::block_contact::swept_inside(entity, from, to, bounds, |p| {
-            self.w.world.block(p.x, p.y, p.z)
-        });
+    fn below_world_y(&self) -> f64 {
+        self.w.world.below_world_y()
     }
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
         let mut scene = SceneCollisions {
@@ -46,8 +52,11 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn in_water(&self, bounds: Aabb) -> bool {
         self.w.fluids(bounds, bounds.max_position().y).in_water
     }
+    fn pushed_by_currents(&self, bounds: Aabb, velocity: Vec3) -> Vec3 {
+        self.w.pushed_by_currents(bounds, velocity)
+    }
     fn targets(&self) -> &[(Who, Aabb)] {
-        &self.targets
+        self.targets
     }
     /// `BaseFireBlock.entityInside` for a thrown projectile: fire and soul
     /// fire set it alight for 160 ticks.

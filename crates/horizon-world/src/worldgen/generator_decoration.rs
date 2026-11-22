@@ -93,6 +93,7 @@ fn possible_biomes(source: &ResolvedBiomeSource) -> Vec<String> {
             .iter()
             .map(|(_, name)| name.clone())
             .collect(),
+        ResolvedBiomeSource::Regions(source) => source.biomes().map(str::to_owned).collect(),
         ResolvedBiomeSource::End(source) => [
             &source.center,
             &source.highlands,
@@ -134,6 +135,12 @@ const FLAT_LAKES: [&str; 2] = [
     "minecraft:lake_lava_surface",
 ];
 impl FlatDecoration {
+    /// None of the biome's entries: the structure pieces alone, for a mod's chunk generator that
+    /// asks for no features.
+    pub(super) const NONE: Self = Self {
+        features: false,
+        lakes: false,
+    };
     /// The settings' `features` and `lakes`, for layers that are all air (`void_gen`) or not and a
     /// biome that is the_void or not.
     pub(super) fn new(features: bool, lakes: bool, void_gen: bool, the_void: bool) -> Self {

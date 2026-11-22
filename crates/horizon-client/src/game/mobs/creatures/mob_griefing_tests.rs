@@ -37,7 +37,7 @@ fn a_mod_denies_one_entity_griefing() {
         Box::new(Deny(vec![denied, denied_player], Arc::clone(&heard))),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             open_to_lan(game);
             assert!(
@@ -80,6 +80,16 @@ fn a_mod_denies_one_entity_griefing() {
                     (25, true)
                 ]
             );
+            // `shouldAffectBlocklikeEntities` asks for the exploding entity: a
+            // blast that keeps blocks spares decorations when the mod denies
+            // it, and reaches them for another exploding entity.
+            use super::super::explosion::BlockInteraction::{Destroy, Keep};
+            game.combat.explosion_source = Some(denied);
+            assert!(game.blast_spares_decorations(Keep));
+            assert!(!game.blast_spares_decorations(Destroy));
+            game.combat.explosion_source = Some(other);
+            assert!(!game.blast_spares_decorations(Keep));
+            game.combat.explosion_source = None;
         });
     });
 }

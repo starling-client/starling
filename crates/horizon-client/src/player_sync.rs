@@ -31,6 +31,7 @@ impl PositionSender {
     pub fn told_rotation(&mut self, rotation: (f32, f32)) {
         self.told = Some(rotation);
     }
+    #[horizon_mod_api_macros::replaceable]
     pub fn update(
         &mut self,
         position: [f64; 3],

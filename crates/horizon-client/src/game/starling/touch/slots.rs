@@ -93,13 +93,13 @@ impl Game<'_> {
     }
 
     fn touch_gui_batch(&self) -> HudBatch {
-        HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs())
+        self.interface_batch(self.touch_size())
     }
 
     /// The slot under a window position, and whether it is outside the window.
     fn slot_touch_at(&mut self, p: PhysicalPosition<f64>) -> (Option<usize>, bool) {
         let batch = self.touch_gui_batch();
-        let gui = (p.x as f32 / batch.scale, p.y as f32 / batch.scale);
+        let gui = self.interface_point([p.x as f32, p.y as f32], batch.scale);
         if self.touch.slots.spread.is_none() {
             self.bedrock_side(gui.0, batch.width);
         }
@@ -116,7 +116,7 @@ impl Game<'_> {
     /// inventory, in the creative screen's inventory tab).
     fn touch_on_player(&self, p: PhysicalPosition<f64>) -> bool {
         let batch = self.touch_gui_batch();
-        let (x, y) = (p.x as f32 / batch.scale, p.y as f32 / batch.scale);
+        let (x, y) = self.interface_point([p.x as f32, p.y as f32], batch.scale);
         let (ox, oy) = self.inventory_origin(&batch);
         let [x0, y0, x1, y1] = if self.creative_inventory_open() {
             [73.0, 6.0, 105.0, 49.0]
@@ -133,9 +133,13 @@ impl Game<'_> {
         (ox + x0..ox + x1).contains(&x) && (oy + y0..oy + y1).contains(&y)
     }
 
-    /// How far a finger turned the inventory's player, in degrees, on a touch screen (where the
-    /// player does not follow a cursor).
+    /// How far a finger turned the inventory's player, in degrees, while using direct touch.
+    /// Virtual Mouse uses the same cursor-following preview as a physical mouse.
     pub(in crate::game) fn player_spin(&self) -> Option<f32> {
+        #[cfg(target_os = "android")]
+        if self.mobile.ui.virtual_mouse {
+            return None;
+        }
         self.has_touch().then_some(self.touch.slots.spin)
     }
 
@@ -210,7 +214,9 @@ impl Game<'_> {
                     return true;
                 }
                 let batch = self.touch_gui_batch();
-                self.bedrock_side(t.location.x as f32 / batch.scale, batch.width);
+                let (x, _) =
+                    self.interface_point([t.location.x as f32, t.location.y as f32], batch.scale);
+                self.bedrock_side(x, batch.width);
                 if self.touch_on_player(t.location) {
                     self.touch.slots.turning = Some((t.id, t.location.x));
                     return true;
@@ -498,15 +504,12 @@ impl Game<'_> {
             return None;
         }
         let batch = self.touch_gui_batch();
-        let gui = (p.x as f32 / batch.scale, p.y as f32 / batch.scale);
+        let gui = self.interface_point([p.x as f32, p.y as f32], batch.scale);
         self.bedrock_side(gui.0, batch.width);
         let (ox, oy) = Self::creative_origin(&batch);
         if self.creative_inventory_open() && Creative::near_trash((gui.0 - ox, gui.1 - oy), REACH) {
             let (x, y) = Creative::TRASH_POSITION;
-            return Some(PhysicalPosition::new(
-                f64::from((ox + x + 8.0) * batch.scale),
-                f64::from((oy + y + 8.0) * batch.scale),
-            ));
+            return Some(self.interface_window_point((ox + x + 8.0, oy + y + 8.0), batch.scale));
         }
         self.creative_catalog_at(&batch, gui).then_some(p)
     }
@@ -640,10 +643,7 @@ impl Game<'_> {
         let batch = self.touch_gui_batch();
         let (ox, oy) = self.inventory_origin(&batch);
         let (sx, sy) = self.slot_position(slot);
-        PhysicalPosition::new(
-            f64::from((ox + sx + 8.0) * batch.scale),
-            f64::from((oy + sy + 8.0) * batch.scale),
-        )
+        self.interface_window_point((ox + sx + 8.0, oy + sy + 8.0), batch.scale)
     }
 
     /// Where `slot` is on the screen (GUI pixels), in whichever window shows it.

@@ -120,8 +120,7 @@ impl Game<'_> {
         // `player.getUUID()`: the acting player, a server's guest included.
         let starter = Some(self.acting_player_uuid());
         let time = zombie_villager::WAIT_MIN
-            + self
-                .world
+            + self.mobs[index]
                 .random
                 .next_int_bound(zombie_villager::WAIT_SPREAD)
                 .unwrap_or(0);
@@ -399,6 +398,7 @@ mod tests {
         use std::sync::Arc;
         let mob = |id, species, name: &str| {
             let kind = MobType {
+                shadow: None,
                 id: name.into(),
                 species,
                 width: 0.6,
@@ -418,6 +418,7 @@ mod tests {
                 jump_strength: 0.42,
                 attributes: Arc::default(),
                 item_stack_limits: Arc::default(),
+                attribute_bounds: Default::default(),
                 gravity: 0.08,
                 safe_fall_distance: 3.0,
                 fall_damage_multiplier: 1.0,
@@ -441,7 +442,7 @@ mod tests {
                 brain: Brain::Passive,
                 anim: Anim::Humanoid { zombie_arms: true },
                 sounds: ["entity.villager.ambient"; 3],
-                step_sound: None,
+                sound_overrides: Default::default(),
                 food: Arc::default(),
                 tempt: Arc::default(),
                 passenger_attachments: Vec::new(),

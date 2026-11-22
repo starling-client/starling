@@ -50,9 +50,22 @@ public final class GameFolderChecks {
         ids(new File(work, "ids"));
         opening(new File(work, "opening"));
         ownFiles(new File(work, "own"));
+        wardrobeImages(new File(work, "wardrobe"));
         sharedFolder(new File(work, "shared"));
         links(new File(work, "links"));
         System.out.println("ok");
+    }
+
+    private static void wardrobeImages(File root) throws IOException {
+        File image = write(new File(root, "game-wardrobe/images/local.png"), "image");
+        write(new File(root, "game-wardrobe/cloud/cached.png"), "cache");
+        write(new File(root, "game-wardrobe/wardrobe.json"), "index");
+        GameFolder folder = new GameFolder(root, true);
+        check("starling/game-wardrobe/images/local.png".equals(folder.idOf(image)),
+                "the wardrobe images have document IDs");
+        check(folder.children("starling/game-wardrobe").equals(
+                Arrays.asList("starling/game-wardrobe/images")), "only local images are exposed");
+        check(folder.idOf(new File(root, "skins")) != null, "the separate skins folder can open");
     }
 
     /** Follows android.rs game_folder, and never makes the shared folder itself. */

@@ -586,8 +586,10 @@ impl Game<'_> {
             ..last
         });
         let mut mob = self.mobs.remove(i);
+        mob.extra.client_side = true;
         let mut lent = horizon_client::health::LentLevel::take(&mut self.world);
         let mut events = Vec::new();
+        let hooks = self.damage_hooks.client_side();
         {
             let world = self.mob_world_base(&[]);
             let mut level = horizon_client::health::DamageLevel::lent(
@@ -596,9 +598,9 @@ impl Game<'_> {
                 &mut lent,
                 None,
                 None,
-                &self.damage_hooks,
+                &hooks,
             )
-            .predicted();
+            .on_client(true);
             mob.tick(&world, &mut level, &mut events);
         }
         // Only the server's packets take the mount away.
@@ -633,6 +635,7 @@ impl Game<'_> {
             steer,
             sprint: sprinting,
             jumping: keys.jump,
+            sneak: keys.shift,
             client: false,
         });
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
@@ -834,7 +837,7 @@ mod tests {
                 let mut server_mount = game.mobs[0].clone();
                 let before = server_mount.position;
                 let mut test_level = horizon_client::health::TestLevel::new(0);
-                *test_level.random() = game.world.random.clone();
+                *test_level.random() = (*game.world.random).clone();
                 let mut events = Vec::new();
                 server_mount.tick(
                     &game.mob_world_base(&[]),
@@ -994,6 +997,32 @@ mod tests {
 
 #[cfg(test)]
 mod plugin_seat_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn controlling_client_copies_sneak_press_and_release_into_rider() {
+        use horizon_client::sprint::Keys;
+        crate::game::mounts::sneak_dismount_tests::with_horse(|game, horse, _, _| {
+            game.riding = Some(horse);
+            for shift in [true, false] {
+                let i = game.mobs.iter().position(|m| m.id == horse).unwrap();
+                // Exercise client prediction itself, not the server input assignment.
+                game.drive_mount(
+                    i,
+                    Keys {
+                        shift,
+                        ..Keys::default()
+                    },
+                    0.0,
+                );
+                let input = game.mobs[i]
+                    .rider
+                    .expect("prediction stores next tick's input");
+                assert_eq!(input.sneak, shift);
+                assert!(!input.client, "the controlling client simulates this mount");
+            }
+        });
+    }
+
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn local_rider_uses_attachments_and_follows_a_moving_seat_chain() {

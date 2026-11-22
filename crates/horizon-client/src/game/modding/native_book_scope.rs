@@ -58,7 +58,7 @@ impl Game<'_> {
             .mod_type
             .filter(|t| t.id == menu && t.slots == m.size)
             .ok_or(Refusal::Unavailable)?;
-        if !m.slots.still_valid(&self.world, g, m.pos) {
+        if !m.still_valid(&host.hub.loop_context, &self.world, g) {
             return Err(Refusal::Stale);
         }
         let Slots::Block(pos) = m.slots else {
@@ -137,7 +137,7 @@ impl Game<'_> {
             || g.health.to_bits() != before.health
             || (g.xp_level, g.xp_progress.to_bits(), g.xp_total, g.xp_seed) != before.xp
             || g.recipe_book.recipes != before.known
-            || !m.slots.still_valid(&self.world, g, m.pos)
+            || !m.still_valid(&host.hub.loop_context, &self.world, g)
         {
             return false;
         }

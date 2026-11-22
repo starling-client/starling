@@ -884,7 +884,7 @@ mod tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         // Every texture its own rect, so a swapped texture shows.
         let atlas = |name: &str| {
@@ -934,7 +934,16 @@ mod tests {
                     let mut gpu = Vec::new();
                     let mut skin = Skin::new(&mut models, &mut frame);
                     render::render_skinned(
-                        &m, 0.4, camera, &atlas, 0x50a0, &data, None, &mut gpu, &mut skin,
+                        &m,
+                        0.4,
+                        camera,
+                        &atlas,
+                        0x50a0,
+                        &data,
+                        Default::default(),
+                        None,
+                        &mut gpu,
+                        &mut skin,
                     );
                     let bounds = skin.bounds;
                     if frame.reset {

@@ -1,7 +1,8 @@
 [workspace]
-exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "tools/fixtures/paper-trace-mod"]
+exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "third_party/android-activity", "tools/fixtures/paper-trace-mod"]
 members = [
     "crates/starling-catalog",
+    "crates/horizon-guest-stack",
     "crates/horizon-mod-vocab",
     "crates/horizon-game-discovery",
     "crates/horizon-cosmetics",
@@ -25,6 +26,7 @@ members = [
     "crates/horizon-client",
     # Starling: the game as a NativeActivity library; empty on other targets.
     "crates/horizon-android",
+    "crates/horizon-engine-slots",
     "crates/horizon-mod-points",
     "crates/horizon-internals",
     "crates/horizon-client-lib",
@@ -34,6 +36,7 @@ members = [
     "crates/horizon-command",
     "crates/horizon-items",
     "crates/horizon-server-files",
+    "crates/horizon-java-properties",
     "crates/horizon-anticheat",
     "crates/horizon-chat-filter",
     # The Model Context Protocol, shared by horizon-ctl, horizon-server and the launcher.
@@ -47,6 +50,9 @@ members = [
     "crates/horizon-prepare",
     "crates/horizon-system",
     "crates/horizon-bench",
+    "crates/horizon-perf-format",
+    "crates/horizon-perf",
+    "crates/horizon-perf-share",
     "crates/horizon-friends",
     "crates/horizon-relay",
     "crates/horizon-mod-package",
@@ -54,10 +60,14 @@ members = [
     "crates/horizon-mod-api-gen",
     "crates/horizon-mod-api",
     "crates/horizon-mod-dimension-game",
+    "crates/horizon-hot-paths-game",
     "crates/horizon-mod-api-macros",
     "crates/horizon-mod-point-shape",
+    "crates/horizon-mod-source",
+    "crates/horizon-mod-surface",
     "crates/horizon-mod-point-emit",
     "crates/horizon-mod-api-gen/dispatch-tests",
+    "crates/horizon-mod-wasm/wire-loopback",
     "crates/cargo-horizon-mod",
     "crates/horizon-port-pack",
     "crates/horizon-shaders",
@@ -103,6 +113,11 @@ large_enum_variant = "allow"
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
 winit = { path = "third_party/winit" }
+# android-activity 0.6.1 whose NativeActivity thread, the game's, has the wasm guest stack on 64-bit
+# Android (horizon-guest-stack): std's 2 MiB was too little for a wasm mod to run on it. One spawn,
+# marked "Horizon's patch" (src/native_activity/glue.rs); the folder drops android-games-sdk, which
+# only GameActivity builds. Drop this once android-activity takes a stack size.
+android-activity = { path = "third_party/android-activity" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
 naga = { path = "third_party/naga" }
 # libmimalloc-sys 0.1.49 whose mimalloc v3 counts bits without POPCNT when MSVC builds it: the
@@ -138,6 +153,9 @@ opt-level = 3
 [profile.dev.package.horizon-mod-api-gen]
 opt-level = 3
 [profile.dev.package.syn]
+opt-level = 3
+# The perf-format tests gzip over 512 MiB; unoptimized deflate took most of their time.
+[profile.dev.package.miniz_oxide]
 opt-level = 3
 [profile.dev.package.proc-macro2]
 opt-level = 3

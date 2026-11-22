@@ -70,10 +70,7 @@ impl Game<'_> {
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
             .ok_or("no renderer yet")?;
-        Ok(self.inventory_origin(&horizon_client::hud::HudBatch::new(
-            size,
-            self.settings.gui_scale_inputs(),
-        )))
+        Ok(self.inventory_origin(&self.interface_batch(size)))
     }
     /// Commands not known to control.rs; None when unknown here too.
     pub(super) fn station_command(&mut self, words: &[&str]) -> Result<Option<Value>> {
@@ -199,7 +196,7 @@ impl Game<'_> {
                 if !horizon_client::mobs::villager::profession_table()
                     .entries()
                     .iter()
-                    .any(|p| p.trade_set == Some(profession.as_str()))
+                    .any(|p| p.trade_set.as_deref() == Some(profession.as_str()))
                 {
                     return Err(format!("unknown profession {profession}").into());
                 }

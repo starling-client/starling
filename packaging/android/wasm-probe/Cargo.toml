@@ -1,0 +1,18 @@
+[package]
+name = "starling-wasm-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by `cargo horizon-mod build --wasm`, as a
+# modder's project has it (cargo-horizon-mod's template).
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
+
+# The SDK build this mod is made for: the arismoko/horizon commit sync 7 merged (bade262391), so
+# that it is built as a mod for that Horizon is.
+[package.metadata.horizon]
+sdk = "bade262391477ff2a668e3ae5ea6ee34f3115035"
+
+# A mod is its own project, not a member of the game's workspace.
+[workspace]

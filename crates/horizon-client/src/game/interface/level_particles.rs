@@ -280,8 +280,8 @@ impl Game<'_> {
         };
         let above = self.world.block(pos.x, root_y + 1, pos.z);
         let above_facts = self.res.facts().get(above);
-        let nether = self.dim == super::Dim::Nether;
-        let fluid = if &*above_facts.name == "minecraft:mud" && !nether {
+        let evaporates = self.dimension_type().water_evaporates;
+        let fluid = if &*above_facts.name == "minecraft:mud" && !evaporates {
             horizon_client::blocks::Fluid::Water
         } else {
             above_facts.fluid
@@ -291,7 +291,7 @@ impl Game<'_> {
             horizon_client::blocks::Fluid::Lava => ParticleType::DrippingDripstoneLava,
             // A mod's fluid drips as no fluid above the dripstone would.
             horizon_client::blocks::Fluid::None | horizon_client::blocks::Fluid::Modded
-                if nether =>
+                if evaporates =>
             {
                 ParticleType::DrippingDripstoneLava
             }
@@ -318,21 +318,24 @@ impl Game<'_> {
     }
     /// `ServerLevel.globalLevelEvent`: heard by every player on the server
     /// (an end portal opening, the dragon's death roar): here, and sent to
-    /// every guest whatever their dimension.
+    /// every guest whatever their dimension, each at their own position
+    /// (`Hub::global_level_event`).
     pub(super) fn global_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
         // ServerLevel.globalLevelEvent: without global_sound_events it is a
-        // plain level event, which the client has no sound for (1023, 1028
-        // and 1038 are only in `LevelEventHandler.globalLevelEvent`).
+        // plain level event (`levelEvent(null, ...)`), sent to the players
+        // near `pos`; the vanilla client has no plain sound for 1023, 1028
+        // and 1038 (they are only in `LevelEventHandler.globalLevelEvent`).
         if !self
             .ui
             .rules
             .bool_at(horizon_client::gamerules::vanilla::GLOBAL_SOUND_EVENTS)
         {
+            self.level_event_at(id, pos, data);
             return;
         }
         self.global_level_event_sound(id, pos);
         if self.audio.capture.is_some() {
-            self.lan_global_events.push((id, pos, data));
+            self.lan_global_events.push((self.dim.id(), id, pos, data));
         }
     }
     /// `LevelEventHandler.globalLevelEvent`: the sound two blocks from the
@@ -372,14 +375,7 @@ impl Game<'_> {
             return;
         }
         if play_sound {
-            let sounds = self.res.facts().get(state).sounds.clone();
-            // Each guest plays it from the level event itself.
-            self.audio.play_unshared(
-                &sounds.hit,
-                Some(pos.map(|v| f64::from(v) + 0.5)),
-                (sounds.volume + 1.0) / 8.0,
-                sounds.pitch * 0.5,
-            );
+            self.play_mining_hit_sound(state, pos, face, true);
         }
         self.crack_particle(pos, face, state);
     }
@@ -466,3 +462,7 @@ impl Game<'_> {
         let _ = self.process_level_events();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/phantom_bite_tests.rs"]
+mod phantom_bite_tests;

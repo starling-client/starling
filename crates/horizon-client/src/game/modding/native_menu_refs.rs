@@ -159,13 +159,11 @@ impl Game<'_> {
             (open.window == menu.fields().window && open.hidden.is_empty()).then_some(guest)
         } else {
             let play = host.play.get(&guest.conn);
+            let menus = host.menus.get(&guest.conn);
             if menu.fields().window != 0
+                || menus.is_some_and(|m| m.crafting.table.is_some() || m.station.is_some())
                 || play.is_some_and(|p| {
-                    p.merchant.is_some()
-                        || p.crafting.table.is_some()
-                        || p.station.is_some()
-                        || p.lectern.is_some()
-                        || p.mount_window.is_some()
+                    p.merchant.is_some() || p.lectern.is_some() || p.mount_window.is_some()
                 })
             {
                 return None;
@@ -288,7 +286,11 @@ impl Game<'_> {
                 slot: n,
             },
             SlotBacking::Ender(n) => MenuSlotBacking::Ender(n),
-            SlotBacking::Native(n) => MenuSlotBacking::Native(n),
+            // Only a slot a mod backed (`player_back_mod_menu_slots`) reads as a place.
+            SlotBacking::Native(n) => match self.native_menu_place(guest.conn, open.window, n) {
+                Some(place) => MenuSlotBacking::Place(place),
+                None => MenuSlotBacking::Native(n),
+            },
         })
     }
 
@@ -314,6 +316,8 @@ impl Game<'_> {
             MenuSlotBacking::CraftResult => guest.craft_result.clone(),
             MenuSlotBacking::Ender(n) => guest.ender_items.get(n)?.clone(),
             MenuSlotBacking::Native(n) => guest.native_menu.get(n)?.clone(),
+            // The place's mirror, refreshed after each click and each tick.
+            MenuSlotBacking::Place(_) => guest.native_menu.get(slot)?.clone(),
             _ => unreachable!("MenuSlotBacking: unhandled variant"),
         })
     }
@@ -864,7 +868,7 @@ mod tests {
             assert_eq!(newer.slot_count(game), None);
             let inventory = game.player_container_menu(player).unwrap();
             let host = game.lan.as_mut().unwrap();
-            host.play.entry(1).or_default().crafting.table = Some((
+            *host.menus.entry(1).or_default().crafting.table = Some((
                 7,
                 0,
                 Box::new(horizon_client::menu::Menu::new(
@@ -876,6 +880,7 @@ mod tests {
             assert_eq!(inventory.slot_count(game), None);
             let host = game.lan.as_mut().unwrap();
             host.play.clear();
+            host.menus.clear();
             host.hub.guests.replace(0, guest());
             assert_eq!(inventory.slot_count(game), None);
 

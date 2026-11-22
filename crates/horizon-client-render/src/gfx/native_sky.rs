@@ -39,12 +39,13 @@ fn vanilla_sky() -> String {
     prefixed(&text, PREFIX)
 }
 
-/// The sky shader for the pack's sky stage `source`.
-fn shader_source(source: &str, api: horizon_shader_api::Api) -> String {
+/// The sky shader for the pack's sky stage `source`, of the line `api`, onto a frame that holds
+/// linear light when `linear`.
+fn shader_source(source: &str, (api, linear): (horizon_shader_api::Api, bool)) -> String {
     format!(
         "{source}\n// Horizon's sky (terrain.wgsl)\n{}{}{PACK_ENTRY}",
         vanilla_sky(),
-        super::native_post::line_helpers(api)
+        super::native_post::line_helpers(api, linear)
     )
 }
 
@@ -102,7 +103,7 @@ fn build(
     frame: &NativeFrame,
     stage: &CheckedStage,
 ) -> Result<(naga::Module, wgpu::PipelineLayout), String> {
-    let text = shader_source(&stage.source, frame.api);
+    let text = shader_source(&stage.source, (frame.api, frame.linear));
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))?;
     let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -198,7 +199,7 @@ mod tests {
         // A pack may use the renderer's names for its own things.
         let own = "override gain: f32;\nconst PI: f32 = 3.0;\nfn view_ray() -> f32 { return PI; }\n\
             fn sky(input: SkyInput) -> vec4<f32> { return input.color * gain * view_ray(); }\n";
-        let text = shader_source(&stage(own).source, horizon_shader_api::Api::V0_1);
+        let text = shader_source(&stage(own).source, (horizon_shader_api::Api::V0_1, false));
         let module = naga::front::wgsl::parse_str(&text).unwrap_or_else(|e| {
             panic!("{}", e.emit_to_string(&text));
         });
@@ -214,6 +215,7 @@ mod tests {
     /// vanilla's pixels, one that inverts them draws the inverse (and stays opaque).
     #[test]
     fn a_pack_gets_vanilla_s_colour_and_draws_opaque() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
@@ -261,7 +263,8 @@ mod tests {
             Vec::new(),
             Default::default(),
             None,
-            horizon_shader_api::Api::V0_1,
+            (horizon_shader_api::Api::V0_1, false),
+            None,
         );
         queue.write_buffer(
             &frame.buffer,

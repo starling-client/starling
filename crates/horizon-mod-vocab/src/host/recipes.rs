@@ -6,15 +6,17 @@ use crate::*;
 pub trait RecipesHost {
     /// Side: both.
     /// Published asset/data read: available in Setup, Reloading and World.
-    /// The recipes of type `kind` (`minecraft:smelting`, `mymod:crusher`), vanilla's
+    /// The recipes of registered recipe type `kind` (`minecraft:crafting`, `mymod:crusher`), vanilla's
     /// types and mods' own alike, from `data/<namespace>/recipe/*.json` of vanilla,
     /// the content mods (`.hmod`) and the world's data packs, in file order: each
     /// one typed (`Recipe`: its ingredients, results, group, cooking time and
     /// experience, or its stonecutting, smithing or special crafting rule),
-    /// with its file as JSON for a mod's own type. Dynamic rules are not fixed
+    /// with its file as JSON for a mod's own type. The file's type field names its
+    /// serializer; this can differ from the reported recipe kind. Dynamic rules are not fixed
     /// outputs; use `LevelRef::recipe_for` for engine-matchable recipe types.
-    /// Cache mod-owned types once per load/reload and match those in mod memory;
-    /// the host returns RecipeLookupError::NotMatchable for such types. These are the
+    /// Registered crafting kinds match through LevelRef::recipe_for. Cache other mod-owned
+    /// types once per load/reload and match those in mod memory; those return
+    /// RecipeLookupError::NotMatchable. These are the
     /// recipes in force (`RecipeManager.getAllRecipesFor`): data packs merged and
     /// load conditions held, so a pack's override or removal shows. A data pack
     /// changes them on `/reload`, so look them up again when you need them. Empty
@@ -30,8 +32,8 @@ pub trait RecipesHost {
     /// An ingredient from recipe-file JSON text: an item, a `#tag`, or a list
     /// of them, a bare id as `minecraft:` (as vanilla reads it); `test` says
     /// whether a stack fits. Items the game doesn't know are left out; None
-    /// when nothing is left (an unknown or empty tag, for one) and outside a
-    /// world.
+    /// for missing tags, invalid ingredients or no known named items, and
+    /// outside a world. An existing-empty tag returns an empty ingredient.
     /// Invalid JSON is refused with `RecipeJsonError::InvalidJson`.
     #[access(PublishedResources)]
     fn recipe_ingredient(&self, json: &str) -> Result<Option<Ingredient>, RecipeJsonError>;
@@ -66,10 +68,23 @@ pub trait RecipesClientHost {
     /// Shows the panel beside container screens with these items (at most
     /// 8192), as the game's own slots in pages, with a search box; the
     /// player's clicks, searches and keys over items come back as
-    /// `native_panel_event`. The panel is the last mod's to show one; empty
+    /// `panel_event`. The panel is the last mod's to show one; empty
     /// items and no recipe page take yours away.
     #[access(WorldOnly)]
     fn panel_items(&mut self, mod_id: &str, items: Vec<Stack>);
+    /// Side: client.
+    /// How mod `mod_id`'s item panel (`panel_items`) looks from now on:
+    /// `PanelStyle::RecipeBook` (the default: the recipe book's page arrows
+    /// and a plain search box), `PanelStyle::Viewer` (square page buttons on
+    /// a bar over the items and the viewer's search box, as Horizon's Recipes
+    /// panel draws them) or `PanelStyle::Classic` (JEI's list on Minecraft
+    /// 1.12: flush right under page buttons that always show and wrap around,
+    /// the search box at the foot of the screen with a settings button that
+    /// opens the mod's page in Options > Mods). The viewer's look changes
+    /// only the drawing; the classic one also lays the panel out. Kept for
+    /// the session, whether or not the panel is showing.
+    #[access(WorldOnly)]
+    fn panel_style(&mut self, mod_id: &str, style: PanelStyle);
     /// Side: client.
     /// Places a recipe in the open screen's grid as a click in the recipe
     /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid or a
@@ -83,6 +98,19 @@ pub trait RecipesClientHost {
     /// without requiring the recipe to be learned. The screen shows any refusal.
     #[access(WorldOnly)]
     fn transfer_recipe(&mut self, book_id: i32);
+    /// Side: client.
+    /// What `transfer_recipe(book_id)` would do now, worked out by the server
+    /// without moving anything: the player's inventory, the grid and every
+    /// container a mod lends the grid's recipes (a crafting station's chests,
+    /// which the client can't see) counted. For a viewer's "+", to mark the
+    /// inputs it lacks. The first call for a recipe asks and returns None;
+    /// the answer comes a moment later and is kept for that recipe while the
+    /// menu, the inventory and the grid stay as they were; while it is still
+    /// wanted it is asked again every two seconds, at most fifteen times for
+    /// one state of the menu. None outside a screen that
+    /// takes `transfer_recipe` and on a server that doesn't answer it.
+    #[access(WorldOnly)]
+    fn transfer_recipe_check(&mut self, book_id: i32) -> Option<RecipeTransferCheck>;
 }
 /// The handles' reads of the `recipes` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

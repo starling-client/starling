@@ -21,11 +21,29 @@ fn whoami(proxy_from: &str) -> String {
 }
 
 #[test]
+#[ignore = "daily"]
 fn a_listed_load_balancer_names_the_client() {
     assert!(whoami("127.0.0.0/8").contains("203.0.113.7:51000"));
 }
 
 #[test]
+#[ignore = "daily"]
 fn anyone_else_is_closed_unanswered() {
     assert_eq!(whoami("10.0.0.0/8"), "");
+}
+
+#[test]
+#[ignore = "daily"]
+fn anyone_else_is_closed_before_the_first_line() {
+    let (_relay, address, _) = Relay::spawn_local(Config {
+        proxy_protocol: true,
+        proxy_from: Net::parse_list("10.0.0.0/8").unwrap(),
+        first_line: Duration::from_secs(30),
+        ..Config::default()
+    })
+    .unwrap();
+    // Silent: closed at once, not held for `first_line` with one of the relay's slots.
+    let mut s = TcpStream::connect(address).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(s.read(&mut [0; 16]).unwrap(), 0);
 }

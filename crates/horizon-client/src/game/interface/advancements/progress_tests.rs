@@ -121,7 +121,7 @@ fn progress_events_capture_each_players_full_mutation_state() {
         Box::new(Observer(observed.clone())),
     )]
     .into();
-    mod_api::__private::install(mods);
+    mod_platform::__private::install(mods);
     let scratch = std::env::current_dir().unwrap().join("progress-data");
     let dir = scratch.join("data/testmod/advancement");
     std::fs::create_dir_all(&dir).unwrap();
@@ -376,7 +376,11 @@ fn progress_events_capture_each_players_full_mutation_state() {
             sync.advancements = horizon_client::lan::ServerAdvancements::load(
                 &scratch,
                 &horizon_world::loot::PackOverlay::NONE,
-                Default::default(),
+                // Rewards must name a recipe registered in the server's index.
+                std::collections::BTreeMap::from([(
+                    "testmod:reward".into(),
+                    r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stone"],"result":{"id":"minecraft:diamond","count":1}}"#.into(),
+                )]),
                 Default::default(),
             );
             let reload = case == "reload";

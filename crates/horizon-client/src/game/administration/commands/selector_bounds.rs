@@ -22,8 +22,10 @@ impl Game<'_> {
     /// `Entity.getBoundingBox`: use each simulated kind's existing physical
     /// box. None means no authoritative box is modeled here yet; the selector
     /// retains its existing point fallback for those kinds.
-    pub(super) fn selector_target_bounds(&self, target: Target) -> Option<Aabb> {
+    pub(in crate::game) fn selector_target_bounds(&self, target: Target) -> Option<Aabb> {
         match target {
+            // Stage 3's insertion joins live rows; the point fallback stands.
+            Target::General(_) => None,
             Target::Player => self.player.as_ref().map(|p| p.bounds()),
             Target::Guest(conn) => self.command_guest(conn).map(|p| p.bounds()),
             Target::Hook(id) => self.fishing_hook_by_id(id).map(|(h, _)| h.bounds()),

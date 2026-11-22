@@ -185,41 +185,9 @@ fn baby_or<'a>(
         adult.into()
     }
 }
-/// A name built from parts (`entity/villager/profession/farmer`), kept for the
-/// process so that drawing a mob allocates no names each frame: they come from
-/// a few tables (types, professions, levels, materials, variants). Past 4096
-/// names on a thread (an unknown item's material from a server) a new one comes
-/// back owned.
-fn interned(args: std::fmt::Arguments) -> Cow<'static, str> {
-    use std::fmt::Write;
-    thread_local! {
-        static NAMES: std::cell::RefCell<(String, crate::fast_hash::FxHashSet<&'static str>)> =
-            std::cell::RefCell::default();
-    }
-    NAMES.with(|names| {
-        let (buffer, set) = &mut *names.borrow_mut();
-        buffer.clear();
-        let _ = buffer.write_fmt(args);
-        if let Some(name) = set.get(buffer.as_str()) {
-            return Cow::Borrowed(*name);
-        }
-        if set.len() >= 4096 {
-            return Cow::Owned(buffer.clone());
-        }
-        let name: &'static str = Box::leak(buffer.as_str().into());
-        set.insert(name);
-        Cow::Borrowed(name)
-    })
-}
-/// Resolve the namespace of a profession to the shared atlas's sprite name.
-fn profession_texture(folder: &str, id: &str) -> Cow<'static, str> {
-    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-    if namespace == "minecraft" {
-        interned(format_args!("{folder}/profession/{path}"))
-    } else {
-        interned(format_args!("{namespace}:{folder}/profession/{path}"))
-    }
-}
+#[path = "villager_client.rs"]
+pub mod villager_client;
+use villager_client::interned;
 
 fn climate(m: &Mob) -> &'static str {
     match m.extra.variant {
@@ -230,7 +198,7 @@ fn climate(m: &Mob) -> &'static str {
 }
 /// `AvatarRenderer` entities: a mannequin draws exactly like a player —
 /// the player model, its resolved skin and the same scale.
-fn avatar(m: &Mob) -> bool {
+pub fn avatar(m: &Mob) -> bool {
     matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin")
 }
 /// `AvatarRenderer.shouldRenderLayers`: a spectating player or mannequin
@@ -735,7 +703,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
             if let Some(armor) = m.extra.body_id()
                 && let Some(material) = armor
                     .strip_prefix("minecraft:")
-                    .and_then(|a| a.strip_suffix("_horse_armor"))
+                    .and_then(super::equine::horse_armor_asset)
             {
                 let tex = interned(format_args!("entity/equipment/horse_body/{material}"));
                 let color = if material == "leather" {
@@ -949,16 +917,15 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 white,
                 false,
             );
-            let prof = super::villager::profession(m.extra.profession.index().unwrap_or(0)).id;
-            if !m.is_baby() && prof != "none" {
-                push(
-                    &mut v,
-                    model.clone(),
-                    profession_texture(folder, prof),
-                    white,
-                    false,
-                );
-                if prof != "nitwit" {
+            let nitwit = m.extra.profession.index() == Some(11);
+            if !m.is_baby()
+                && let Some(texture) = villager_client::texture(
+                    &m.extra.profession,
+                    folder == "entity/zombie_villager",
+                )
+            {
+                push(&mut v, model.clone(), texture, white, false);
+                if !nitwit {
                     // `LEVEL_LOCATIONS` clamps the level to 1..=5.
                     let level = ["stone", "iron", "gold", "emerald", "diamond"]
                         [(m.extra.villager_level.max(1) as usize - 1).min(4)];
@@ -1204,7 +1171,7 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         let pitch = m.previous_head_pitch + (m.head_pitch - m.previous_head_pitch) * alpha;
         base *= glam::Mat4::from_rotation_x((-90.0 - pitch).to_radians())
             * glam::Mat4::from_rotation_y(((m.age as f32 + alpha) * -75.0).to_radians());
-    } else if matches!(m.custom_name.as_deref(), Some("Dinnerbone" | "Grumm")) {
+    } else if anim::upside_down(m) {
         // isEntityUpsideDown
         base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, m.height() + 0.1, 0.0))
             * glam::Mat4::from_rotation_z(PI);
@@ -1346,7 +1313,7 @@ fn body_overlay(m: &Mob, alpha: f32) -> u32 {
 }
 /// LivingEntityRenderState.hasRedOverlay: hurt or dying (not a creaking
 /// tearing down).
-fn red_overlay(m: &Mob) -> bool {
+pub fn red_overlay(m: &Mob) -> bool {
     m.hurt_time > 0 || (m.death_time > 0 && !super::creaking::tearing_down(m))
 }
 fn species_scale(m: &Mob, alpha: f32) -> glam::Mat4 {
@@ -1563,11 +1530,11 @@ pub fn render_with(
         out,
     );
 }
-/// [`render_with`], with the parts a mod's `player_submit` hid left out of the body (after Skin
-/// Customization); the armour in `extra` and the other layers keep every part. `parts`, given
-/// while a mod's `mob_layer` listens, gets the humanoid parts as the body was drawn
-/// ([`PosedParts`](mod_api::PosedParts)); it stays None for a mob that isn't a humanoid or isn't
-/// drawn.
+/// [`render_with`], with the parts a mod's `render_player_pre` hid left out of the body (after Skin
+/// Customization) and the layers on its own model; the armour in `extra` and the other layers keep
+/// every part. `parts`, given while the mods' post hooks want them, gets the humanoid parts as the
+/// body was drawn ([`PosedParts`](mod_api::PosedParts)); it stays None for a mob that isn't a
+/// humanoid or isn't drawn.
 #[allow(clippy::too_many_arguments)]
 pub fn render_with_hidden(
     m: &Mob,
@@ -1626,7 +1593,7 @@ pub fn render_with_hidden(
 }
 /// `render` with the model's ordinary draws posed on the GPU when the mob
 /// allows it (`super::skin`): the same picture, no vertices on the CPU.
-/// `parts` as for [`render_with_hidden`].
+/// `hidden` and `parts` as for [`render_with_hidden`].
 #[allow(clippy::too_many_arguments)]
 pub fn render_skinned(
     m: &Mob,
@@ -1635,6 +1602,7 @@ pub fn render_skinned(
     atlas: Atlas,
     light: u32,
     data: &MobData,
+    hidden: mod_api::HiddenParts,
     parts: Option<&mut Option<mod_api::PosedParts>>,
     out: &mut Vec<Vertex>,
     skin: &mut super::skin::Skin,
@@ -1648,7 +1616,7 @@ pub fn render_skinned(
             light,
             data,
             &[],
-            Default::default(),
+            hidden,
             parts,
             out,
         );
@@ -1663,7 +1631,7 @@ pub fn render_skinned(
         data,
         &[],
         true,
-        Default::default(),
+        hidden,
         parts,
         out,
         Some(skin),
@@ -1984,8 +1952,8 @@ fn cem_key(model_key: &str) -> &str {
 /// choose a variant for each.
 pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     fn push(names: &mut Vec<String>, custom: Option<&super::cem::CemLayer>, vanilla: String) {
-        if let Some(texture) = custom.and_then(|c| c.texture.clone()) {
-            names.push(texture);
+        if let Some(texture) = custom.and_then(|c| c.texture_for(&vanilla)) {
+            names.push(texture.to_owned());
         }
         names.push(vanilla);
     }
@@ -2026,7 +1994,7 @@ fn cem_texture<'a>(
     atlas: Atlas<'_>,
 ) -> &'a str {
     custom
-        .and_then(|c| c.texture.as_deref())
+        .and_then(|c| c.texture_for(vanilla))
         .filter(|t| atlas(t).is_some())
         .unwrap_or(vanilla)
 }
@@ -2073,7 +2041,7 @@ fn posed_body(
     let anchors = custom.map_or(Vec::new(), |c| c.anchors.clone());
     (model, poses, anchors)
 }
-/// The humanoid parts of a body drawn with `poses`, for `mob_layer`: read from the poses the
+/// The humanoid parts of a body drawn with `poses`, for the mods' post hooks and layers: read from the poses the
 /// draw already made, so nothing is posed twice; fixed-size, nothing allocated.
 fn posed_parts(poses: &Poses) -> Option<mod_api::PosedParts> {
     mod_api::PosedParts::new(|part| {
@@ -2081,6 +2049,63 @@ fn posed_parts(poses: &Poses) -> Option<mod_api::PosedParts> {
         Some((poses.pose_of(name)?, !poses.is_hidden_named(name)))
     })
 }
+// Validate names against this frame's model before mutating its body poses.
+// Return the borrowed name so a repeated refusal never allocates an error string.
+fn hide_parts<'a>(poses: &mut Poses, hidden: &'a mod_api::HiddenParts) -> Result<(), &'a str> {
+    for name in hidden.names() {
+        if poses.pose_of(name).is_none() {
+            return Err(name);
+        }
+    }
+    for name in hidden.names() {
+        poses.visible(name, false);
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct HiddenPartReports {
+    names: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    count: usize,
+}
+
+impl HiddenPartReports {
+    // Mods can change their eight hidden names between frames. Never evict an entry (which
+    // would report it again); after this process-wide budget, suppress new diagnostics too.
+    const LIMIT: usize = 4096;
+
+    fn first(&mut self, kind: &str, name: &str) -> bool {
+        if self.count >= Self::LIMIT
+            || self
+                .names
+                .get(kind)
+                .is_some_and(|names| names.contains(name))
+        {
+            return false;
+        }
+        self.names
+            .entry(kind.to_owned())
+            .or_default()
+            .insert(name.to_owned());
+        self.count += 1;
+        true
+    }
+}
+
+fn report_unknown_hidden_part(kind: &str, name: &str) {
+    // Shared by every renderer, including mirror views and different render threads.
+    static REPORTS: std::sync::Mutex<Option<HiddenPartReports>> = std::sync::Mutex::new(None);
+    let mut reports = REPORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reports
+        .get_or_insert_with(HiddenPartReports::default)
+        .first(kind, name)
+    {
+        eprintln!("mob {kind}: unknown hidden part {name}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
     m: &Mob,
@@ -2227,19 +2252,21 @@ fn render_visible(
     if !posable {
         skin = None;
     }
-    // The parts a mod's `player_submit` hid this frame: the body draws without them, the armour and
-    // the other layers below with every part.
+    // The parts a mod's `render_player_pre` or `render_living_pre` hid this frame: the body and the
+    // layers over its own model (`getParentModel`) draw without them, the armour and the other
+    // layers below with every part.
     let mut hidden_poses = Poses::pooled();
     let body_poses: &Poses = if hidden.is_empty() {
         &poses
     } else {
         hidden_poses.copy_from(&poses);
-        for part in hidden.iter() {
-            hidden_poses.visible(part.model_name(), false);
+        if let Err(name) = hide_parts(&mut hidden_poses, &hidden) {
+            report_unknown_hidden_part(&m.kind.id, name);
+            return;
         }
         &hidden_poses
     };
-    // `mob_layer`'s snapshot: the body's parts as drawn, for `HumanoidMobRenderer`'s families
+    // The mods' post hooks' snapshot: the body's parts as drawn, for `HumanoidMobRenderer`'s families
     // (`anim::extracts_humanoid`) only.
     if let Some(parts) = parts
         && anim::extracts_humanoid(m)
@@ -2335,10 +2362,27 @@ fn render_visible(
             let day = (m.age as f32 + alpha).rem_euclid(24000.0) / 24000.0;
             (uv, color) = crate::custom_armor::layer_look(Some(armor), Some(rgb), uv, day);
         }
+        // VillagerProfessionLayer: the type layer under a profession's full hat draws on
+        // `noHatModel`, a model of its own, the others on the parent model.
+        let type_hat_shown = if matches!(m.species(), Species::Villager | Species::ZombieVillager)
+            && let Some((folder, _variant)) = layer
+                .texture
+                .split_once("/type/")
+                .or_else(|| layer.texture.split_once("/baby/"))
+        {
+            villager_client::type_hat_shown(
+                &m.extra.profession,
+                folder == "entity/zombie_villager",
+                m.extra.variant,
+            )
+        } else {
+            true
+        };
         if custom.is_none() && custom_body.is_none() && std::sync::Arc::ptr_eq(&part, &model) {
             // A layer over the body's own model (a villager's type, profession
-            // and level, a spider's eyes): `setupAnim` gives the body's poses.
-            layer_poses.copy_from(&poses);
+            // and level, a spider's eyes): `setupAnim` gives the body's poses,
+            // without the parts a mod hid on it.
+            layer_poses.copy_from(if type_hat_shown { body_poses } else { &poses });
         } else {
             layer_poses.reset(&part);
             anim::setup(m, &s, &mut layer_poses, &data.animations);
@@ -2346,18 +2390,8 @@ fn render_visible(
                 animation.run(m, &s, &mut layer_poses);
             }
         }
-        if matches!(m.species(), Species::Villager | Species::ZombieVillager)
-            && let Some((folder, variant)) = layer
-                .texture
-                .split_once("/type/")
-                .or_else(|| layer.texture.split_once("/baby/"))
-        {
-            let profession =
-                super::villager::profession(m.extra.profession.index().unwrap_or(0)).id;
-            data.villager_hats
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .apply(folder, variant, profession, &mut layer_poses);
+        if !type_hat_shown {
+            layer_poses.visible("head", false);
         }
         let light = if layer.full_bright {
             FULL_BRIGHT
@@ -2867,13 +2901,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unknown_hidden_parts_report_once_per_kind_and_name() {
+        let mut reports = HiddenPartReports::default();
+        assert!(reports.first("minecraft:cow", "nose"));
+        for _ in 0..10 {
+            assert!(!reports.first("minecraft:cow", "nose"));
+        }
+        assert!(reports.first("minecraft:pig", "nose"));
+        assert!(reports.first("minecraft:cow", "hat_rim"));
+        assert!(!reports.first("minecraft:pig", "nose"));
+        assert!(!reports.first("minecraft:cow", "hat_rim"));
+        assert_eq!(reports.count, 3);
+
+        for i in 3..HiddenPartReports::LIMIT {
+            assert!(reports.first("minecraft:cow", &format!("part_{i}")));
+        }
+        assert!(!reports.first("minecraft:cow", "over_budget"));
+        assert!(!reports.first("minecraft:sheep", "nose"));
+        assert!(!reports.first("minecraft:cow", "nose"));
+        assert_eq!(reports.count, HiddenPartReports::LIMIT);
+        assert_eq!(reports.names.len(), 2);
+    }
+
+    #[test]
     fn profession_texture_preserves_nested_namespaces() {
         assert_eq!(
-            profession_texture("entity/villager", "minecraft:farmer"),
+            villager_client::profession_texture("entity/villager", "minecraft:farmer"),
             "entity/villager/profession/farmer"
         );
         assert_eq!(
-            profession_texture("entity/zombie_villager", "example:nested/engineer"),
+            villager_client::profession_texture(
+                "entity/zombie_villager",
+                "example:nested/engineer"
+            ),
             "example:entity/zombie_villager/profession/nested/engineer"
         );
     }
@@ -2960,7 +3020,7 @@ mod tests {
             blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
             mod_spawns: Default::default(),
             armor_atlases: Default::default(),
             equipment: Default::default(),
@@ -2968,117 +3028,12 @@ mod tests {
         (mob, data)
     }
 
-    /// `mob_layer`'s posed parts are kept from the body's own draw, on every entry the game draws
-    /// a mob or player through (CPU, GPU, layers only), and keeping them changes nothing drawn
-    /// (#2060, #2464).
-    #[test]
-    fn posed_parts_are_the_poses_the_draw_made_and_change_nothing() {
-        use super::super::anim;
-        let (mob, data) = humanoid_zombie();
-        let atlas = |_: &str| Some([0.0, 0.0, 1.0, 1.0]);
-        let draw = |mob: &Mob, keep: bool| {
-            let (mut out, mut parts) = (Vec::new(), None);
-            render_with_hidden(
-                mob,
-                0.5,
-                glam::DVec3::ZERO,
-                &atlas,
-                0xf0f0,
-                &data,
-                &[],
-                Default::default(),
-                keep.then_some(&mut parts),
-                &mut out,
-            );
-            (
-                out.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>(),
-                parts,
-            )
-        };
-        let (before, none) = draw(&mob, false);
-        assert!(none.is_none(), "nothing kept unless asked");
-        let (after, parts) = draw(&mob, true);
-        assert_eq!(after, before, "keeping the poses changes nothing drawn");
-        let parts = parts.expect("a head and a body: a humanoid");
+    // The mods' post hooks' posed parts are kept from the body's own draw, on every entry the game draws
+    // a mob or player through (CPU, GPU, layers only), and keeping them changes nothing drawn
+    // (#2060, #2464).
+    include!("render_pose_tests.rs");
 
-        // Independently: the model's poses after the zombie's setupAnim for this frame.
-        let mut poses = anim::Poses::new(&mob.kind.model);
-        anim::setup(&mob, &anim::state(&mob, 0.5), &mut poses, &data.animations);
-        for part in mod_api::HumanoidPart::ALL {
-            let expected = poses.pose_of(part.model_name());
-            let got = parts.get(part).map(|p| {
-                let q = p.pose;
-                [
-                    q.x, q.y, q.z, q.x_rot, q.y_rot, q.z_rot, q.x_scale, q.y_scale, q.z_scale,
-                ]
-            });
-            assert_eq!(got, expected, "{part:?}");
-        }
-        let arm = parts.get(mod_api::HumanoidPart::RightArm).unwrap();
-        assert!(
-            arm.pose.x_rot != 0.0 && arm.visible,
-            "a zombie holds its arms out"
-        );
-        assert!(
-            parts.get(mod_api::HumanoidPart::RightSleeve).is_none(),
-            "a zombie has no sleeves"
-        );
-
-        // The GPU path and the layers-only draw (an invisible player's armour) keep the same.
-        let mut models = super::super::skin::SkinModels::default();
-        let mut frame = crate::gfx::entity_skin::SkinFrame::default();
-        let mut skin = super::super::skin::Skin::new(&mut models, &mut frame);
-        let mut skinned = None;
-        render_skinned(
-            &mob,
-            0.5,
-            glam::DVec3::ZERO,
-            &atlas,
-            0xf0f0,
-            &data,
-            Some(&mut skinned),
-            &mut Vec::new(),
-            &mut skin,
-        );
-        assert_eq!(skinned, Some(parts), "the GPU path");
-        let mut layered = None;
-        render_layers(
-            &mob,
-            0.5,
-            glam::DVec3::ZERO,
-            &atlas,
-            0xf0f0,
-            &data,
-            &[],
-            Some(&mut layered),
-            &mut Vec::new(),
-        );
-        assert_eq!(layered, Some(parts), "the layers over an unseen body");
-
-        // QuadrupedModel (a cow) has a head and a body too: its family, not its parts, says it
-        // isn't humanoid.
-        let cube = |x: f32| serde_json::json!({ "pose": [x, 0.0, 0.0], "polygons": [[[x, 0.0, 0.0, 0.0, 0.0], [x + 1.0, 0.0, 0.0, 1.0, 0.0], [x + 1.0, 1.0, 0.0, 1.0, 1.0], [x, 1.0, 0.0, 0.0, 1.0]]] });
-        let quadruped = serde_json::json!({ "children": {
-            "head": cube(0.0), "body": cube(0.0), "right_hind_leg": cube(-2.0),
-            "left_hind_leg": cube(2.0), "right_front_leg": cube(-2.0), "left_front_leg": cube(2.0),
-        }});
-        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
-        kind.species = Species::Cow;
-        kind.anim = super::super::Anim::Quadruped;
-        kind.model = std::sync::Arc::new(Part::parse("root", &quadruped));
-        let mut cow = Mob::new(
-            2,
-            std::sync::Arc::new(kind),
-            horizon_core::geometry::Vec3::ZERO,
-            0.0,
-        );
-        cow.age = 37;
-        let (cow_drawn, cow_parts) = draw(&cow, true);
-        assert!(!cow_drawn.is_empty(), "the cow draws");
-        assert!(cow_parts.is_none(), "a cow is no humanoid");
-    }
-
-    /// A part `player_submit` hid leaves the body, after Skin Customization, while the armour
+    /// A part `render_player_pre` hid leaves the body, after Skin Customization, while the armour
     /// layered on it keeps the part (#2060, part 2).
     #[test]
     fn a_hidden_part_leaves_the_body_but_not_its_armour() {
@@ -3132,7 +3087,7 @@ mod tests {
             "only the body loses the arm"
         );
 
-        // `mob_layer` reads the parts as the body drew them: the hidden arm doesn't draw, and
+        // `render_living_post` reads the parts as the body drew them: the hidden arm doesn't draw, and
         // nothing else changed (#2464).
         let (_, shown) = draw_parts(hide(&[]), &[]);
         let (_, armless) = draw_parts(hide(&[mod_api::HumanoidPart::RightArm]), &[]);
@@ -3222,6 +3177,7 @@ mod tests {
 
         let model = Arc::new(Part::parse("root", &json!({"children": {"head": {}}})));
         let kind = Arc::new(MobType {
+            shadow: None,
             id: "minecraft:player".into(),
             species: Species::Zombie,
             width: 0.6,
@@ -3241,6 +3197,7 @@ mod tests {
             jump_strength: 0.42,
             attributes: Arc::default(),
             item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -3259,7 +3216,7 @@ mod tests {
             brain: Brain::Passive,
             anim: Anim::Camel,
             sounds: [""; 3],
-            step_sound: None,
+            sound_overrides: Default::default(),
             food: Arc::default(),
             tempt: Arc::default(),
             passenger_attachments: Vec::new(),
@@ -3408,7 +3365,7 @@ mod tests {
             pois: Default::default(),
             species_placements: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("_inner") {
@@ -3505,7 +3462,7 @@ mod tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("copper_golem_eyes") {
@@ -3566,7 +3523,7 @@ mod tests {
             equipment: Default::default(),
             species_placements: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         for left in [false, true] {
             let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();
@@ -3686,7 +3643,7 @@ mod tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
         let part = &kind.model;
@@ -3996,7 +3953,7 @@ mod scroll_tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         };
         let atlas = |name: &str| {
             let h = name.len() as f32 / 64.0;
@@ -4166,7 +4123,7 @@ mod emissive_tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         }
     }
 
@@ -4450,7 +4407,7 @@ mod random_texture_tests {
             armor_atlases: Default::default(),
             equipment: Default::default(),
             mod_spawns: Default::default(),
-            pathfindable_overrides: Default::default(),
+            resolved: Default::default(),
         }
     }
 

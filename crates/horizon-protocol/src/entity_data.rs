@@ -308,7 +308,18 @@ impl Particle {
     pub fn write(&self, w: &mut Writer) {
         w.varint(self.id);
         let Some(data) = &self.data else { return };
+        // Written for a client before 1.21.2: dust colors are three floats (the reverse of `legacy_rgb`).
+        let legacy = matches!(ids::active(), Some((ids, ids::Way::Down)) if ids.quirks.components_before_1_21_2);
         match data {
+            ParticleData::ColorScale(c, f) if legacy => {
+                write_legacy_rgb(*c, w);
+                w.f32(*f);
+            }
+            ParticleData::ColorScale2(a, b, f) if legacy => {
+                write_legacy_rgb(*a, w);
+                write_legacy_rgb(*b, w);
+                w.f32(*f);
+            }
             ParticleData::State(s) | ParticleData::Delay(s) => w.varint(*s),
             ParticleData::Color(c) | ParticleData::Geyser(c) => w.i32(*c),
             ParticleData::ColorScale(c, f)
@@ -345,6 +356,12 @@ impl Particle {
                 w.varint(*ticks);
             }
         }
+    }
+}
+/// An RGB color as three floats 0..=1 (Vector3f before 1.21.2).
+fn write_legacy_rgb(c: i32, w: &mut Writer) {
+    for shift in [16, 8, 0] {
+        w.f32(((c >> shift) & 0xFF) as f32 / 255.0);
     }
 }
 // ARGB.colorFromFloat(1, r, g, b), preserving Java's float multiply before flooring.
@@ -575,8 +592,16 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
     }
     fn write(v: &Vec<(u8, i32, Value)>, w: &mut Writer) {
         for (index, kind, value) in v {
+            // Written for an older client: its serializer ids, and nothing it has no serializer for.
+            let wire = match ids::active() {
+                Some((ids, ids::Way::Down)) => match ids.entity_data_serializer.down(*kind) {
+                    Some(wire) => wire,
+                    None => continue,
+                },
+                _ => *kind,
+            };
             w.u8(*index);
-            w.varint(*kind);
+            w.varint(wire);
             write_value(*kind, value, w);
         }
         w.u8(0xFF);
@@ -586,9 +611,202 @@ impl Codec<Vec<(u8, i32, Value)>> for EntityData {
 /// ItemEntity.DATA_ITEM (after the eight Entity data entries).
 pub const ITEM_ENTITY_ITEM: u8 = 8;
 
+// Generated retained-allocation traversals; regenerate with protocol-retained-gen.
+impl crate::retained::OwnedHeap for Value {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Byte(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Int(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Long(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Float(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::String(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Text(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptText(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptGlobalPos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Item(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Bool(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Floats(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Pos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptPos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptUuid(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Id(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Ids(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Particle(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Particles(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Profile(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for Profile {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self {
+            name,
+            uuid,
+            properties,
+            body,
+            cape,
+            elytra,
+            slim,
+        } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(name))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(uuid))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(properties))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(body))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(cape))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(elytra))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(slim))
+    }
+}
+impl crate::retained::OwnedHeap for Particle {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self { id, data } = self;
+        0usize
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+            .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(data))
+    }
+}
+impl crate::retained::OwnedHeap for ParticleData {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::State(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Color(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::ColorScale(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::ColorScale2(field_0, field_1, field_2) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_2)),
+            Self::ColorPower(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::Scalar(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Delay(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Trail(field_0, field_1, field_2) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_2)),
+            Self::Item(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Geyser(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::GeyserBase(field_0, field_1) => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_1)),
+            Self::Vibration { source, ticks } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(source))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(ticks)),
+            Self::Mod(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+        }
+    }
+}
+impl crate::retained::OwnedHeap for PositionSource {
+    fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Block(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::Entity { id, y_offset } => 0usize
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(id))
+                .saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(y_offset)),
+        }
+    }
+}
+impl crate::retained::OwnedHeap for EntityData {
+    fn owned_heap_bytes(&self) -> usize {
+        let Self = self;
+        0usize
+    }
+}
+// End generated retained traversals.
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_client_is_written_its_own_serializer_ids_and_none_it_lacks() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        use crate::buf::Codec;
+        let ids = ServerVersion::V1_21_11.ids().unwrap();
+        let profile = Value::Profile(Profile {
+            name: Some("npc".into()),
+            uuid: Some(7),
+            ..Default::default()
+        });
+        let data = vec![
+            (2u8, serializer::POSE, Value::Id(0)),
+            (17u8, serializer::RESOLVABLE_PROFILE, profile),
+            (18u8, serializer::CAT_SOUND_VARIANT, Value::Id(0)),
+        ];
+        let mut w = Writer::new();
+        {
+            let _down = crate::adapter::ids::renumbering(ids, Way::Down);
+            EntityData::write(&data, &mut w);
+        }
+        // 1.21.11: pose 20 as pinned, the profile serializer 37 (pinned 41), no cat sound variant
+        let mut r = Reader::new(&w.data);
+        assert_eq!((r.u8().unwrap(), r.varint().unwrap()), (2, 20));
+        r.varint().unwrap();
+        assert_eq!((r.u8().unwrap(), r.varint().unwrap()), (17, 37));
+        let back = {
+            let _up = crate::adapter::ids::renumbering(ids, Way::Up);
+            EntityData::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].1, serializer::RESOLVABLE_PROFILE);
+    }
 
     #[test]
     fn vanilla_vibration_sources_cross_the_identifier_boundary() {
@@ -698,6 +916,38 @@ mod tests {
             assert_eq!(Particle::read(&mut r).unwrap(), particle);
             assert_eq!(r.remaining(), 0);
         }
+    }
+
+    #[test]
+    fn dust_is_written_with_float_colors_for_a_client_before_1_21_2() {
+        use crate::adapter::{ServerVersion, ids::Way};
+        let ids = ServerVersion::V1_21_1.ids().unwrap();
+        let dust = Particle {
+            id: 13,
+            data: Some(ParticleData::ColorScale(0xFFFF_8000u32 as i32, 1.5)),
+        };
+        let mut w = Writer::new();
+        {
+            let _down = crate::adapter::ids::renumbering(ids, Way::Down);
+            dust.write(&mut w);
+        }
+        let mut r = Reader::new(&w.data);
+        r.varint().unwrap();
+        assert_eq!(
+            [r.f32().unwrap(), r.f32().unwrap(), r.f32().unwrap()],
+            [1.0, 128.0 / 255.0, 0.0]
+        );
+        assert_eq!(r.f32().unwrap(), 1.5);
+        assert_eq!(r.remaining(), 0);
+        // read back as 1.21.1 data: the same color
+        let back = {
+            let _up = crate::adapter::ids::renumbering(ids, Way::Up);
+            Particle::read(&mut Reader::new(&w.data)).unwrap()
+        };
+        assert_eq!(
+            back.data,
+            Some(ParticleData::ColorScale(0xFFFF_8000u32 as i32, 1.5))
+        );
     }
 
     #[test]

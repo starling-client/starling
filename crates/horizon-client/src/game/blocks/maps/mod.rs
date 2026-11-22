@@ -14,36 +14,6 @@ use horizon_client::{
 use horizon_core::nbt::{JavaString, Tag};
 use std::collections::HashMap;
 
-/// `LodestoneTracker.tick`: existing native eligibility/loaded-block predicate.
-/// The POI/unloaded boundary is unchanged; callers mutate their actual stacks.
-pub(super) fn lodestone_target_gone(game: &Game<'_>, stack: &ItemStack, dim: &str) -> bool {
-    let Some(tracker) = stack
-        .data()
-        .and_then(|d| d.other("minecraft:lodestone_tracker"))
-    else {
-        return false;
-    };
-    let (Some(target), true) = (
-        tracker.get("target"),
-        horizon_client::save::number(tracker.get("tracked")).is_none_or(|v| v != 0),
-    ) else {
-        return false;
-    };
-    let Some(Tag::IntArray(pos)) = target.get("pos") else {
-        return false;
-    };
-    let [x, y, z] = [pos[0], pos[1], pos[2]];
-    horizon_client::save::text(target.get("dimension")).as_deref() == Some(dim)
-        && game.world.chunks.contains_key(&(x >> 4, z >> 4))
-        && game
-            .res
-            .facts()
-            .get(game.world.block(x, y, z))
-            .name
-            .as_ref()
-            != "minecraft:lodestone"
-}
-
 /// What a decoration is filed under in `MapItemSavedData.decorations` (a
 /// `LinkedHashMap<String, MapDecoration>`): a player's marker by their
 /// connection, the banner at a position (`MapBanner.getId`), a framed map's
@@ -671,6 +641,17 @@ impl MapData {
         Some(map)
     }
 }
+/// What a read of a map gives: from the cache when the map is loaded, else from its saved file.
+fn map_read<T>(
+    cached: Option<&MapData>,
+    saved: impl FnOnce() -> Option<MapData>,
+    read: impl FnOnce(&MapData) -> T,
+) -> Option<T> {
+    match cached {
+        Some(map) => Some(read(map)),
+        None => saved().map(|map| read(&map)),
+    }
+}
 pub(super) struct Maps {
     pub data: HashMap<i32, MapData>,
     /// The highest map id handed out (`maps/last_id.dat`), loaded on first use.
@@ -903,14 +884,17 @@ impl Game<'_> {
     /// `f` of map `id`'s data: the loaded map, else its `.dat` read without keeping it, so a
     /// read needs no `&mut`. None for a map id nothing made.
     pub(super) fn with_map<R>(&self, id: i32, f: impl FnOnce(&MapData) -> R) -> Option<R> {
-        if let Some(map) = self.maps.data.get(&id) {
-            return Some(f(map));
-        }
-        if self.maps.missing.contains(&id) {
-            return None;
-        }
-        let saved = horizon_client::save::read_dat(&self.map_path(&format!("{id}.dat")))?;
-        Some(f(&MapData::from_nbt(&saved)?))
+        map_read(
+            self.maps.data.get(&id),
+            || {
+                if self.maps.missing.contains(&id) {
+                    return None;
+                }
+                horizon_client::save::read_dat(&self.map_path(&format!("{id}.dat")))
+                    .and_then(|saved| MapData::from_nbt(&saved))
+            },
+            f,
+        )
     }
     /// The map's data, loaded from `data/minecraft/maps/<id>.dat` on first use.
     pub(super) fn map(&mut self, id: i32) -> Option<&mut MapData> {
@@ -1233,7 +1217,12 @@ impl Game<'_> {
     /// `MapItem.useOn`: a map used on a banner toggles that banner's marker
     /// on the map; when the map's data says no (`toggleBanner` fails) the use
     /// ends without a swing, and nothing else is done with the map either way.
-    pub(super) fn use_map_on_banner(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
+    pub(super) fn use_map_on_banner(
+        &mut self,
+        hit: &super::Hit,
+        stack: &ItemStack,
+        before: &ItemStack,
+    ) -> bool {
         let Some(id) = map_id(stack) else {
             return false;
         };
@@ -1253,14 +1242,19 @@ impl Game<'_> {
         if failed {
             return true;
         }
-        self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
+        self.trigger_block("minecraft:item_used_on_block", hit.pos, before);
         self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
     /// `CompassItem.useOn`: a compass used on a lodestone locks onto it (a
     /// single one in survival changes in place, else one is split off).
-    pub(super) fn use_lodestone_compass(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
+    pub(super) fn use_lodestone_compass(
+        &mut self,
+        hit: &super::Hit,
+        stack: &ItemStack,
+        before: &ItemStack,
+    ) -> bool {
         if &*stack.item != "minecraft:compass" {
             return false;
         }
@@ -1276,21 +1270,26 @@ impl Game<'_> {
             return false;
         }
         let at = [x, y, z].map(|v| f64::from(v) + 0.5);
-        self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
+        self.trigger_block("minecraft:item_used_on_block", hit.pos, before);
         self.audio
             .play("minecraft:item.lodestone_compass.lock", Some(at), 1.0, 1.0);
-        let target = Tag::compound([(
-            "target",
-            Tag::compound([
-                ("dimension", Tag::String(self.dimension_id().into())),
-                ("pos", Tag::IntArray(vec![x, y, z])),
-            ]),
-        )]);
+        let target = Tag::compound([
+            (
+                "target",
+                Tag::compound([
+                    ("dimension", Tag::String(self.dimension_id().into())),
+                    ("pos", Tag::IntArray(vec![x, y, z])),
+                ]),
+            ),
+            ("tracked", Tag::Byte(1)),
+        ]);
         if !self.creative && stack.count == 1 {
-            if let Some(held) = self.held_mut() {
-                held.data_mut()
-                    .set_other("minecraft:lodestone_tracker", Some(target));
-            }
+            self.edit_block_use_stack(|cell| {
+                if let Some(held) = cell {
+                    held.data_mut()
+                        .set_other("minecraft:lodestone_tracker", Some(target.clone()));
+                }
+            });
         } else {
             let mut locked = stack.clone();
             locked.count = 1;
@@ -1304,36 +1303,14 @@ impl Game<'_> {
         self.swing_arm();
         true
     }
-    /// `CompassItem.inventoryTick` / `LodestoneTracker.tick`: a compass whose
-    /// lodestone is gone loses its target. A target in an unloaded chunk waits.
+    /// `Inventory.tick` (and `EntityEquipment.tick` for the armour) ->
+    /// `CompassItem.inventoryTick`: each compass the player carries whose
+    /// lodestone is gone loses its target (`inventory_tick`).
     pub(super) fn tick_lodestone_compasses(&mut self) {
-        let dim = self.dimension_id();
-        for slot in (0..self.inventory.len()).chain([super::shield::OFFHAND_SLOT]) {
-            if self
-                .stack_in(slot)
-                .is_some_and(|s| lodestone_target_gone(self, s, dim))
-                && let Some(s) = self.stack_in_mut(slot)
-            {
-                s.data_mut().set_other(
-                    "minecraft:lodestone_tracker",
-                    Some(Tag::Compound(Default::default())),
-                );
-            }
-        }
-        // `LivingEntity.tick` ticks `EntityEquipment` (the armour slots) as
-        // well as the inventory, so a compass worn there loses its target too.
-        let gone = self.armor.each_ref().map(|stack| {
-            stack
-                .as_ref()
-                .is_some_and(|s| lodestone_target_gone(self, s, dim))
-        });
-        for (stack, gone) in self.armor.iter_mut().zip(gone) {
-            if gone && let Some(stack) = stack {
-                stack.data_mut().set_other(
-                    "minecraft:lodestone_tracker",
-                    Some(Tag::Compound(Default::default())),
-                );
-            }
+        let (world, facts, dim) = (&self.world, self.res.facts(), self.dim.id());
+        let stacks = self.inventory.iter_mut().chain([&mut self.offhand]);
+        for stack in stacks.chain(self.armor.iter_mut()).flatten() {
+            super::inventory_tick::compass_inventory_tick(world, facts, dim, stack);
         }
     }
     fn give_or_drop_stack(&mut self, stack: ItemStack) {
@@ -1968,6 +1945,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod live_frame_tests;
 #[cfg(test)]
+mod native_read_tests;
+#[cfg(test)]
 mod save_tests;
 
 #[cfg(test)]
@@ -2102,6 +2081,7 @@ mod tests {
     /// `can_place_on` component includes the banner block toggles that banner's
     /// marker, while one without does not.
     #[test]
+    #[ignore = "daily"]
     fn map_on_banner_in_adventure_mode_honours_can_place_on() {
         use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
         use horizon_client::{chunk::Chunk, command::args::GameMode};
@@ -2183,7 +2163,7 @@ mod tests {
 
         // Without can_place_on, use_map_on_banner fails in adventure mode.
         *game.held_mut() = Some(stack.clone());
-        assert!(!game.use_map_on_banner(&hit, &stack));
+        assert!(!game.use_map_on_banner(&hit, &stack, &stack));
         assert!(game.map(map_id).unwrap().banners.is_empty());
 
         // With can_place_on listing the banner block, the marker toggles.
@@ -2195,13 +2175,13 @@ mod tests {
             )]),
         ));
         *game.held_mut() = Some(stack.clone());
-        assert!(game.use_map_on_banner(&hit, &stack));
+        assert!(game.use_map_on_banner(&hit, &stack, &stack));
         assert_eq!(game.map(map_id).unwrap().banners.len(), 1);
         assert_eq!(game.map(map_id).unwrap().banners[0].pos, pos);
         assert_eq!(game.map(map_id).unwrap().banners[0].color, "red");
 
         // Second use toggles the marker off.
-        assert!(game.use_map_on_banner(&hit, &stack));
+        assert!(game.use_map_on_banner(&hit, &stack, &stack));
         assert!(game.map(map_id).unwrap().banners.is_empty());
     }
 }

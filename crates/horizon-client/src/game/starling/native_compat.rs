@@ -76,9 +76,70 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(in crate::game) fn native_tick(&mut self) {}
+    /// The client accepted a play login (the old `native_client_player_network_logging_in`,
+    /// without the identity the fork's `native_client_player_logging_in` passes). Client only.
+    pub(in crate::game) fn native_client_player_network_logging_in(&mut self) {}
+    /// A block item placed `state` at `pos` from `stack`, after the placement's sound and its
+    /// placed_block trigger (the old `native_place_block`, API 14). Server-side, for every player
+    /// of the world. The fork tells its typed hooks elsewhere (`on_block_placed_by`).
+    pub(in crate::game) fn native_place_block(
+        &mut self,
+        stack: &ItemStack,
+        pos: [i32; 3],
+        state: BlockStateId,
+    ) {
+        let _ = (stack, pos, state);
+    }
     /// Once a frame, in a world or not, after Horizon's extras.
     pub(in crate::game) fn native_frame(&mut self, elapsed: Duration) {
         let _ = elapsed;
+    }
+    /// `durability_loss` as the mods made for Horizon's API call it: the player wears the item (the
+    /// fork's unbreaking roll takes the wearer now). Only mods call it.
+    #[allow(dead_code)]
+    pub(in crate::game) fn durability_loss_old(&mut self, stack: &ItemStack, amount: u32) -> u32 {
+        self.durability_loss(stack, amount, super::durability::Wearer::Player)
+    }
+    /// A key for the main-hand stack (`destroyingItem`): its item and components, as Horizon's
+    /// `main_hand_key` gave it (the fork's gives the stack). Only mods call it.
+    #[allow(dead_code)]
+    pub(in crate::game) fn main_hand_key_old(&self) -> String {
+        self.main_hand_key()
+            .map_or(String::new(), |s| format!("{} {:?}", s.item, s.extra))
+    }
+    /// Local player movement input, after reading it and before applying it, as Horizon's hook had it:
+    /// the axes and the jump and sneak keys, which the mod may change. The fork's
+    /// `native_movement_input` takes one `MovementInputCall` now.
+    pub(in crate::game) fn native_movement_input_old(
+        &self,
+        forward: &mut f32,
+        strafe: &mut f32,
+        jump: &mut bool,
+        sneak: &mut bool,
+    ) {
+        let _ = (forward, strafe, jump, sneak);
+    }
+    /// `native_movement_input_old` over the keys, as Horizon applied it: a changed axis sets its keys
+    /// and the analog vector (the fork's `mod_movement_keys` does the same for its own hook after it).
+    pub(in crate::game) fn old_movement_keys(
+        &self,
+        mut keys: horizon_client::sprint::Keys,
+    ) -> horizon_client::sprint::Keys {
+        let [mut strafe, mut forward] = keys.direction();
+        let original = [strafe, forward];
+        self.native_movement_input_old(&mut forward, &mut strafe, &mut keys.jump, &mut keys.shift);
+        if [strafe, forward] != original {
+            if forward != original[1] {
+                keys.forward = forward > 0.0;
+                keys.backward = forward < 0.0;
+            }
+            if strafe != original[0] {
+                keys.left = strafe > 0.0;
+                keys.right = strafe < 0.0;
+            }
+            keys.analog = Some([strafe, forward]);
+        }
+        keys
     }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
@@ -197,6 +258,22 @@ impl Game<'_> {
     /// Button `button` of mod `mod_id`'s settings page was clicked.
     pub(in crate::game) fn native_settings_click(&mut self, mod_id: &str, button: usize) {
         let _ = (mod_id, button);
+    }
+    /// A message from `player`'s client on `channel` (`mod_id:name`), within the caps
+    /// (old_mod_net.rs): check `channel`, and treat `data` as the player's own bytes, checked by
+    /// nothing. Runs in the host's tick after it arrives. Server-side.
+    pub(in crate::game) fn native_net_from_client(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) {
+        let _ = (player, channel, data);
+    }
+    /// A message from the server on `channel` (`mod_id:name`), whose `data` is the sender's own
+    /// bytes. The window's game only.
+    pub(in crate::game) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
+        let _ = (channel, data);
     }
 }
 
@@ -767,22 +844,23 @@ impl Game<'_> {
     pub(in crate::game) fn native_screen_title(&self) -> Option<String> {
         self.screen_title()
     }
-    /// Sends `data` on `channel` to the server.
+    /// Sends `data` on `channel` (`mod_id:name`) to the server, as the old mod messages go
+    /// (old_mod_net.rs): an error on a server that doesn't carry them.
     pub(in crate::game) fn native_net_send_to_server(
         &mut self,
         channel: &str,
         data: &[u8],
     ) -> Result<(), String> {
-        self.net_send_to_server(channel, data)
+        self.old_net_send_to_server(channel, data)
     }
-    /// Sends `data` on `channel` to `player`.
+    /// Sends `data` on `channel` to `player`'s client at the tick's end (old_mod_net.rs).
     pub(in crate::game) fn native_net_send_to_player(
         &mut self,
         player: u128,
         channel: &str,
         data: &[u8],
     ) -> Result<(), String> {
-        self.net_send_to_player(player, channel, data)
+        self.old_net_send_to_player(player, channel, data)
     }
     /// An image for the mod's own screen.
     pub(in crate::game) fn native_mod_image(

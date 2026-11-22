@@ -26,6 +26,9 @@ pub struct TouchUi {
     /// GUI-space offset below the title screen account button; zero in game.
     pub utility_offset_y: f32,
     pub hub_visible: bool,
+    /// Options' pauseOnLostFocus, as the game has it: the Recommended tab's "Pause in the
+    /// Background" row.
+    pub pause_in_background: bool,
     pub expanded: bool,
     pub floating_menu: bool,
     pub floating_drag: Option<(u64, [f32; 2], bool)>,
@@ -35,6 +38,8 @@ pub struct TouchUi {
     pub hub_scroll_drag: Option<(u64, f32, f32, bool)>,
     pub presets_modal_open: bool,
     pub preset_dialog: Option<PresetDialogState>,
+    /// The preset whose delete button was tapped once: a second tap on it deletes it.
+    pub preset_delete_armed: Option<String>,
     pub cached_presets: Vec<crate::android_controls::PresetMeta>,
     pub cached_presets_style: Option<crate::android_controls::ControlStyle>,
     slider_gesture: Option<(u64, [f32; 2], InGameMenuAction)>,
@@ -78,6 +83,15 @@ pub struct TouchUi {
     pub keyboard: Option<Keyboard>,
     gesture: Option<(u64, [f32; 2], [f32; 2], bool)>,
     pointer_drag: Option<u64>,
+    /// A finger that landed on a slider of a list page and has not yet moved past the slop: it
+    /// scrolls the list, or takes the slider moving clearly sideways (`direct_pointer`).
+    slider_pending: Option<(u64, [f32; 2])>,
+    /// Where that finger landed, once it took the slider: the press the host owes it.
+    slider_press: Option<[f32; 2]>,
+    /// A slider takes a finger only once it moves clearly sideways (the Options pages, where a
+    /// list of sliders scrolls under the thumb), and `slider_slop` GUI pixels is how far it moves.
+    pub defer_sliders: bool,
+    pub slider_slop: f32,
     held_keys: BTreeMap<u64, KeyCode>,
     pub f3_latched: bool,
 }
@@ -87,6 +101,7 @@ impl Default for TouchUi {
         Self {
             utility_offset_y: 0.,
             hub_visible: true,
+            pause_in_background: true,
             expanded: false,
             floating_menu: false,
             floating_drag: None,
@@ -96,6 +111,7 @@ impl Default for TouchUi {
             hub_scroll_drag: None,
             presets_modal_open: false,
             preset_dialog: None,
+            preset_delete_armed: None,
             cached_presets: Vec::new(),
             cached_presets_style: None,
             slider_gesture: None,
@@ -127,6 +143,10 @@ impl Default for TouchUi {
             keyboard: None,
             gesture: None,
             pointer_drag: None,
+            slider_pending: None,
+            slider_press: None,
+            defer_sliders: false,
+            slider_slop: 4.0,
             held_keys: BTreeMap::new(),
             f3_latched: false,
         }
@@ -139,6 +159,8 @@ pub enum InGameMenuAction {
     OpenControlEditor,
     SetControlStyle(crate::android_controls::ControlStyle),
     SelectPreset(String),
+    /// Delete a user-created preset of the active control system (the protected Default stays).
+    DeletePreset(String),
     CopyPreset {
         source_id: String,
         name: String,
@@ -184,12 +206,16 @@ pub enum InGameMenuAction {
     ForceKill,
     /// Open the game's log folder in the system file manager.
     OpenLogs,
+    /// Back to Horizon Android's launcher (`ha_launcher`), a world saved first.
+    OpenLauncher,
     /// The naming field of a preset dialog was tapped: show the system keyboard.
     EditPresetField(bool),
     /// Adjust real-time 3D world resolution scale percentage (25%..=100%) without recreating UI surface.
     SetResolutionScale(u32),
     /// Toggle in-game animations (animated textures, view bobbing, chunk fade, UI transitions).
     ToggleGameAnimations,
+    /// Pause the game and its sound when the app leaves the screen (Options' pauseOnLostFocus).
+    TogglePauseInBackground,
     /// Send a custom keyboard key, mouse button/scroll, or gameplay action token immediately.
     SendCustomInput(String),
 }
@@ -683,6 +709,7 @@ impl TouchUi {
     pub fn cancel(&mut self) {
         self.gesture = None;
         self.pointer_drag = None;
+        self.slider_pending = None;
         self.relative = None;
         self.relative_click = None;
         self.slider_gesture = None;
@@ -778,18 +805,38 @@ impl TouchUi {
         }
         None
     }
-    /// Sliders retain mouse dragging; list rows use scroll-or-tap gestures.
+    /// Sliders retain mouse dragging; list rows use scroll-or-tap gestures. With `defer_sliders` a
+    /// finger on a slider is a list's until it moves clearly sideways (more than twice as far
+    /// sideways as up or down, as `TouchPointer::prefer_slider` does); then it takes the slider
+    /// from where it landed (`take_slider_press`), and a tap or a scroll leaves the slider be.
     pub fn direct_pointer(&mut self, id: u64, p: [f32; 2], phase: TouchPhase, track: bool) -> bool {
-        if phase == TouchPhase::Started
-            && (track
-                || crate::widgets::last_targets().iter().any(|t| {
-                    let [x, y, w, h] = t.rect;
-                    matches!(t.kind, crate::widgets::Kind::Slider { .. })
-                        && (x..x + w).contains(&p[0])
-                        && (y..y + h).contains(&p[1])
-                }))
+        if phase == TouchPhase::Started {
+            let on_slider = crate::widgets::last_targets().iter().any(|t| {
+                let [x, y, w, h] = t.rect;
+                matches!(t.kind, crate::widgets::Kind::Slider { .. })
+                    && (x..x + w).contains(&p[0])
+                    && (y..y + h).contains(&p[1])
+            });
+            if track || (on_slider && !self.defer_sliders) {
+                self.pointer_drag = Some(id);
+            } else if on_slider && self.slider_pending.is_none() {
+                self.slider_pending = Some((id, p));
+            }
+        }
+        if let Some((owner, start)) = self.slider_pending
+            && owner == id
         {
-            self.pointer_drag = Some(id);
+            let (dx, dy) = (p[0] - start[0], p[1] - start[1]);
+            if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.slider_pending = None;
+            } else if dx.hypot(dy) > self.slider_slop {
+                self.slider_pending = None;
+                if dx.abs() > 2.0 * dy.abs() {
+                    self.gesture = None;
+                    self.pointer_drag = Some(id);
+                    self.slider_press = Some(start);
+                }
+            }
         }
         if self.pointer_drag == Some(id) {
             if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
@@ -798,6 +845,11 @@ impl TouchUi {
             return true;
         }
         false
+    }
+    /// Where the finger that just took a slider landed, in GUI pixels: the host presses there
+    /// before the finger's move, as the finger's own press would have.
+    pub fn take_slider_press(&mut self) -> Option<[f32; 2]> {
+        self.slider_press.take()
     }
     /// A drag scrolls; a tap clicks only on release. Never activate a row while scrolling it.
     pub fn gesture(&mut self, id: u64, p: [f32; 2], phase: TouchPhase) -> Gesture {
@@ -1013,6 +1065,40 @@ impl TouchUi {
         }
     }
 }
+/// `draw` laid out on the part of `batch` between the camera cutout's strips (`left` and `right`
+/// GUI pixels wide) as if that were the whole width, then moved in from the left.
+pub fn draw_between_strips(
+    batch: &mut HudBatch,
+    left: f32,
+    right: f32,
+    draw: impl FnOnce(&mut HudBatch),
+) {
+    let (start, width) = (batch.vertices.len(), batch.width);
+    batch.width = (width - left - right).max(0.0);
+    draw(batch);
+    batch.width = width;
+    batch.translate_since(start, left, 0.0);
+}
+
+/// A touch at `px` (window pixels) in the layout `draw_between_strips` draws: GUI pixels from
+/// the left strip's edge.
+pub fn point_between_strips(px: [f32; 2], scale: f32, left: f32) -> [f32; 2] {
+    [px[0] / scale - left, px[1] / scale]
+}
+
+/// Where the hub's title ends, and the line under it ("Configure touch controls..."), from the
+/// hub's left edge.
+const HUB_TITLE_END: f32 = 190.0;
+const HUB_LINE_END: f32 = 292.0;
+
+/// The hub's Launcher button, in its header left of the controls' badge (drawn and hit there).
+/// On a hub too narrow for it beside the line under the title, the line goes; on one too narrow
+/// for it beside the title, there is none (the pause menu still has Launcher).
+fn hub_launcher_button(dx: f32, dy: f32, dw: f32) -> Option<[f32; 4]> {
+    let r = [dx + dw - 272.0, dy + 10.0, 76.0, 28.0];
+    (r[0] >= dx + HUB_TITLE_END).then_some(r)
+}
+
 fn button(b: &mut HudBatch, a: &HudAtlas, label: &str, x: f32, y: f32, w: f32) {
     if !crate::android_controls::theme_button(
         b,
@@ -1631,6 +1717,21 @@ fn hub_metrics(w: f32, h: f32) -> (f32, f32, f32, f32, f32, f32, f32, f32, f32) 
 }
 
 impl TouchUi {
+    /// What a tap on the hub can change: the floating menu, its tab, the presets list and dialog,
+    /// the keyboard. The hub answers a finger on an empty part of it with `Close` as well, and
+    /// the game clicks only when this changed or another action came.
+    pub fn hub_state(&self) -> (bool, bool, u8, bool, bool, bool, bool) {
+        (
+            self.expanded,
+            self.floating_menu,
+            self.hub_tab,
+            self.presets_modal_open,
+            self.preset_dialog.is_some(),
+            self.keyboard.is_some(),
+            self.preset_delete_armed.is_some(),
+        )
+    }
+
     fn step_animations(&self) -> (f32, f32) {
         let open_target = if self.floating_menu { 1.0 } else { 0.0 };
         if crate::android_control_theme::motion::game_animations_disabled()
@@ -2178,6 +2279,8 @@ impl TouchUi {
             let mdh = (h - 18.0).clamp(248.0, 360.0);
             let mdx = (w - mdw) * 0.5;
             let mdy = (h - mdh) * 0.5;
+            // A delete waits for its second tap only until the next tap elsewhere.
+            let armed = self.preset_delete_armed.take();
             if !inside([mdx, mdy, mdw, mdh]) || inside([mdx + mdw - 78.0, mdy + 10.0, 64.0, 28.0]) {
                 self.presets_modal_open = false;
                 return Some(InGameMenuAction::Close);
@@ -2191,6 +2294,14 @@ impl TouchUi {
                 let row_r = [mdx + 14.0, ry, mdw - 28.0, row_h];
                 let copy_r = [row_r[0] + row_r[2] - 68.0, ry + 8.0, 60.0, 30.0];
                 let edit_r = [row_r[0] + row_r[2] - 104.0, ry + 8.0, 30.0, 30.0];
+                let delete_r = [row_r[0] + row_r[2] - 140.0, ry + 8.0, 30.0, 30.0];
+                if !preset.is_default && inside(delete_r) {
+                    if armed.as_deref() == Some(preset.id.as_str()) {
+                        return Some(InGameMenuAction::DeletePreset(preset.id.clone()));
+                    }
+                    self.preset_delete_armed = Some(preset.id.clone());
+                    return Some(InGameMenuAction::Close);
+                }
                 if inside(copy_r) {
                     self.preset_dialog = Some(PresetDialogState {
                         is_copy: true,
@@ -2220,6 +2331,10 @@ impl TouchUi {
 
         // 3. Main Horizon Control Hub Dialog
         if phase == TouchPhase::Started {
+            if hub_launcher_button(dx, dy, dw).is_some_and(inside) {
+                self.floating_menu = false;
+                return Some(InGameMenuAction::OpenLauncher);
+            }
             if !inside([dx, dy, dw, dh]) || inside([dx + dw - 76.0, dy + 10.0, 64.0, 30.0]) {
                 self.floating_menu = false;
                 self.resolution_scale_dragging = false;
@@ -2444,6 +2559,9 @@ impl TouchUi {
                 let anim_y = body_y + 394.0;
                 if inside([cx, anim_y, cw, 46.0]) {
                     return Some(InGameMenuAction::ToggleGameAnimations);
+                }
+                if inside([cx, body_y + 448.0, cw, 46.0]) {
+                    return Some(InGameMenuAction::TogglePauseInBackground);
                 }
             }
             1 => {
@@ -2795,16 +2913,19 @@ impl TouchUi {
             dx + 52.0,
             dy + 8.0,
             text_c,
-            "Horizon Control Hub",
+            "Starling Control Hub",
         );
-        ui.text(
-            Face::Regular,
-            9.6,
-            dx + 52.0,
-            dy + 25.0,
-            muted_c,
-            "Configure touch controls, virtual mouse & feedback",
-        );
+        // The line under the title gives way to the Launcher button on a narrow hub.
+        if hub_launcher_button(dx, dy, dw).is_none_or(|r| r[0] >= dx + HUB_LINE_END) {
+            ui.text(
+                Face::Regular,
+                9.6,
+                dx + 52.0,
+                dy + 25.0,
+                muted_c,
+                "Configure touch controls, virtual mouse & feedback",
+            );
+        }
 
         // Active Control System Pill Badge in Header
         let mode_badge_txt = if settings.control_style == ControlStyle::Mcpe {
@@ -2820,6 +2941,14 @@ impl TouchUi {
             );
             ui.border(badge_r[0], badge_r[1], badge_r[2], badge_r[3], 8.0, accent);
             ui.centered_fit(Face::SemiBold, 9.5, badge_r, accent_hi, mode_badge_txt);
+        }
+
+        // Starling: the way back to Horizon Android's launcher, from any screen, in the header
+        // beside the controls' badge.
+        if let Some(r) = hub_launcher_button(dx, dy, dw) {
+            ui.rounded(r[0], r[1], r[2], r[3], 9.0, card_bg);
+            ui.border(r[0], r[1], r[2], r[3], 9.0, border_c);
+            ui.centered_fit(Face::SemiBold, 11.0, r, text_c, "Launcher");
         }
 
         // "Done" Button in top-right
@@ -2860,7 +2989,7 @@ impl TouchUi {
         // Scrollable Right Content Panel with scissor clip and tab transition slide
         let tab_slide = (1.0 - tab_ease) * 14.0;
         let content_height = match self.hub_tab {
-            0 => 448.0,
+            0 => 502.0,
             1 => 430.0,
             2 => 470.0,
             3 => 350.0,
@@ -3139,6 +3268,14 @@ impl TouchUi {
                     "In-Game Animations",
                     "Animated block textures, view bobbing, FOV transitions & menu motion",
                     Some(!settings.disable_game_animations),
+                    None,
+                );
+                draw_toggle_row(
+                    &mut ui,
+                    body_y + 448.0,
+                    "Pause in the Background",
+                    "Pause the game and its sound when Starling leaves the screen",
+                    Some(self.pause_in_background),
                     None,
                 );
             }
@@ -3959,6 +4096,33 @@ impl TouchUi {
                         edit_r[1] + 7.0,
                         16.0,
                         accent_hi,
+                    );
+                    // Delete: a first tap turns it red, a second one deletes.
+                    let armed = self.preset_delete_armed.as_deref() == Some(preset.id.as_str());
+                    let delete_r = [row_r[0] + row_r[2] - 140.0, ry + 8.0, 30.0, 30.0];
+                    let danger = rgba(230, 72, 72, 255);
+                    ui.rounded(
+                        delete_r[0],
+                        delete_r[1],
+                        delete_r[2],
+                        delete_r[3],
+                        8.0,
+                        if armed { danger } else { surface_bg },
+                    );
+                    ui.border(
+                        delete_r[0],
+                        delete_r[1],
+                        delete_r[2],
+                        delete_r[3],
+                        8.0,
+                        if armed { danger } else { border_c },
+                    );
+                    ui.icon(
+                        Icon::Trash,
+                        delete_r[0] + 7.0,
+                        delete_r[1] + 7.0,
+                        16.0,
+                        if armed { text_c } else { danger },
                     );
                 }
 
@@ -7467,19 +7631,12 @@ pub fn touch_hud_editor(
                                 }
                                 _ => {
                                     if let Some(idx) = ed.selected_custom {
-                                        let hints = [
-                                            "PRI", "SEC", "JUMP", "SNEAK", "SPRINT", "INV", "SWAP",
-                                            "DROP", "CHAT", "DEBUG", "3RD", "MOUSE", "MACRO",
-                                            "CLICK",
-                                        ];
                                         if let Some(btn) = tc.settings.custom_buttons.get_mut(idx) {
-                                            let pos = hints
-                                                .iter()
-                                                .position(|h| *h == btn.custom_label)
-                                                .map(|idx_h| (idx_h + 1) % hints.len())
-                                                .unwrap_or(0);
-                                            btn.custom_label = hints[pos].to_owned();
+                                            btn.custom_label.clear();
                                         }
+                                        ed.editing_label = true;
+                                        ed.keyboard_request = true;
+                                        ed.status_msg = Some("Type the label, then press Enter. Empty = default name.".into());
                                     }
                                 }
                             }
@@ -8162,23 +8319,30 @@ mod tests {
         );
     }
 
+    /// Starling: the hub's Launcher sits in its header between the title's line and the controls'
+    /// badge, or not at all when the hub is too narrow for it.
+    #[test]
+    fn the_hubs_launcher_button_fits_beside_its_title_or_is_not_there() {
+        // The widest hub (`hub_metrics`): beside the title and the line under it.
+        let (dx, dw) = (10.0, 610.0);
+        let r = hub_launcher_button(dx, 20.0, dw).expect("a wide hub has it");
+        assert!(r[0] + r[2] < dx + dw - 188.0, "it ends before the badge");
+        assert!(
+            r[0] >= dx + HUB_LINE_END,
+            "it starts after the title's line"
+        );
+        // A narrower one: beside the title, the line gone.
+        let r = hub_launcher_button(dx, 20.0, 500.0).expect("a middle hub has it");
+        assert!(r[0] >= dx + HUB_TITLE_END && r[0] < dx + HUB_LINE_END);
+        // The narrowest (352): none.
+        assert!(hub_launcher_button(dx, 20.0, 352.0).is_none());
+    }
+
     /// The hub's "..." and its "H" button drawn between a camera cutout's strips (as
-    /// `Game::draw_clear_of_cutout` draws them: narrowed, then moved in from the left) are where a
+    /// the layout draws them: narrowed, then moved in from the left) are where a
     /// touch on them lands, whatever the inset (#166).
     #[test]
     fn the_hub_buttons_are_hit_where_they_are_drawn_beside_a_cutout() {
-        fn between_strips(
-            batch: &mut HudBatch,
-            left: f32,
-            right: f32,
-            draw: impl FnOnce(&mut HudBatch),
-        ) {
-            let (start, width) = (batch.vertices.len(), batch.width);
-            batch.width = (width - left - right).max(0.0);
-            draw(batch);
-            batch.width = width;
-            batch.translate_since(start, left, 0.0);
-        }
         let atlas = HudAtlas::boot();
         crate::android_controls::set_current_hud_opacity_scale(1.0);
         let mut settings = crate::android_controls::Settings {
@@ -8217,15 +8381,14 @@ mod tests {
             // The "...": drawn clear of the strips and hit as `Game::android_aux_touch` tests a
             // touch: its window pixels at the hub's scale, the strip taken off the point and the
             // width once (a second time hit the keys at the left a strip's width off).
-            between_strips(&mut batch, left, right, |b| ui.draw(b, &atlas, false));
+            draw_between_strips(&mut batch, left, right, |b| ui.draw(b, &atlas, false));
             let [x0, y0, x1, y1] = bounds(&batch, 0);
             assert!(
                 x0 >= left,
                 "inset {inset}: the key keeps out of the left strip"
             );
             let hit_at = |x: f32| {
-                let window = [x * scale, (y0 + y1) / 2.0 * scale];
-                let p = [window[0] / scale - left, window[1] / scale];
+                let p = point_between_strips([x * scale, (y0 + y1) / 2.0 * scale], scale, left);
                 ui.action(batch.width - left - right, batch.height, p, false)
             };
             for x in [x0 + 2.0, (x0 + x1) / 2.0, x1 - 2.0] {
@@ -8246,11 +8409,12 @@ mod tests {
                     unicode: false,
                 },
             );
-            between_strips(&mut batch, left, right, |b| {
+            draw_between_strips(&mut batch, left, right, |b| {
                 ui.draw_floating_menu(b, &atlas, &settings)
             });
             let [x0, y0, x1, y1] = bounds(&batch, 0);
-            let p = [(x0 + x1) / 2.0 - left, (y0 + y1) / 2.0];
+            let centre = [(x0 + x1) / 2.0 * scale, (y0 + y1) / 2.0 * scale];
+            let p = point_between_strips(centre, scale, left);
             let mut hit = HudBatch::new(
                 [3200, 1440],
                 crate::hud::GuiScale {
@@ -8456,6 +8620,36 @@ mod tests {
         ui.menu_direct_pointer = false;
         assert!(ui.compute_virtual_mouse_visibility(&controls, true, false, true, false));
         assert!(controls.settings.virtual_mouse_enabled);
+    }
+    #[test]
+    fn a_list_slider_scrolls_under_a_finger_moving_up_and_takes_one_moving_sideways() {
+        let mut ui = TouchUi::default();
+        crate::widgets::target_as(
+            [10., 50., 200., 20.],
+            crate::widgets::Kind::Slider {
+                value: 0.5,
+                track: [15., 190.],
+            },
+        );
+        crate::widgets::end_frame(crate::widgets::generation() + 1);
+        ui.defer_sliders = true;
+        // A tap: the slider is not taken, the gesture (a tap) decides.
+        assert!(!ui.direct_pointer(1, [100., 60.], TouchPhase::Started, false));
+        assert!(!ui.direct_pointer(1, [100., 60.], TouchPhase::Ended, false));
+        // A drag more up than sideways scrolls.
+        assert!(!ui.direct_pointer(2, [100., 60.], TouchPhase::Started, false));
+        assert!(!ui.direct_pointer(2, [110., 40.], TouchPhase::Moved, false));
+        assert!(!ui.direct_pointer(2, [130., 10.], TouchPhase::Moved, false));
+        assert!(ui.take_slider_press().is_none());
+        assert!(!ui.direct_pointer(2, [130., 10.], TouchPhase::Ended, false));
+        // A clearly sideways one takes the slider from where it landed.
+        assert!(!ui.direct_pointer(3, [100., 60.], TouchPhase::Started, false));
+        assert!(ui.direct_pointer(3, [120., 62.], TouchPhase::Moved, false));
+        assert_eq!(ui.take_slider_press(), Some([100., 60.]));
+        assert!(ui.direct_pointer(3, [150., 62.], TouchPhase::Ended, false));
+        // Without the deferral (other screens) the slider takes the finger at once.
+        ui.defer_sliders = false;
+        assert!(ui.direct_pointer(4, [100., 60.], TouchPhase::Started, false));
     }
     #[test]
     fn scrollbar_owns_drag_until_release_outside_track() {

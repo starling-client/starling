@@ -8,7 +8,7 @@ use ash::{ext, khr, vk};
 
 use drm::{
     self,
-    control::{self, connector, Device as _},
+    control::{self, Device as _, connector},
 };
 
 struct Card(i32);

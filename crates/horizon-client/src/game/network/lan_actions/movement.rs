@@ -1,4 +1,5 @@
 use super::*;
+use horizon_core::position::BlockPos;
 
 impl Game<'_> {
     /// ServerGamePacketListenerImpl.handlePlayerCommand START_RIDING_JUMP: the
@@ -81,7 +82,7 @@ impl Game<'_> {
     /// 20th tick wears the glider by one, and every 10th is an
     /// `elytra_glide` game event. Entity.checkFallDistanceAccumulation runs
     /// first: a glide that isn't diving keeps the fall distance at 1.
-    pub(super) fn guest_glide_tick(&mut self, conn: u32, fell: f64) {
+    pub(in crate::game) fn guest_glide_tick(&mut self, conn: u32, fell: f64) {
         let Some(creative) = self.lan.as_mut().and_then(|host| {
             host.hub
                 .update_guest(conn, |g| {
@@ -134,15 +135,24 @@ impl Game<'_> {
     /// as 0.8 of the body (0.48 at scale 1, 0.048 at scale 0.1). Suffocating
     /// is a full collision box that is also a full render cube
     /// (`BlockBehaviour.isSuffocating`'s default; glass and the like opt
-    /// out), as the mobs' check has it.
-    pub(super) fn in_wall(&self, at: [f64; 3], body: Dimensions) -> bool {
+    /// out), as the mobs' check has it. A block sharing volume with one of
+    /// guest `conn`'s collision exclusions is no wall (#3717).
+    pub(super) fn in_wall(&self, conn: u32, at: [f64; 3], body: Dimensions) -> bool {
         let y = (at[1] + f64::from(body.eye_height)).floor() as i32;
         let [xs, zs] = eye_columns(at, body);
+        let guest = self.lan.as_ref().and_then(|host| host.hub.guest(conn));
+        let spared = |x: i32, z: i32| {
+            guest.is_some_and(|g| g.collision_exclusions.spares(BlockPos::new(x, y, z)))
+        };
         xs.into_iter().any(|x| {
             zs.clone().any(|z| {
                 let f = self.res.facts().get(self.world.block(x, y, z));
-                f.full_collision && f.solid_render
+                f.full_collision && f.solid_render && !spared(x, z)
             })
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tests/collision_exclusion_wall_tests.rs"]
+mod collision_exclusion_wall_tests;

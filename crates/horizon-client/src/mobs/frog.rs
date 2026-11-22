@@ -19,6 +19,7 @@ use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
+use horizon_world::move_gate::MoveGate;
 use mod_api::SoundSource;
 use std::fmt::Debug;
 
@@ -184,7 +185,7 @@ pub fn travel(
         return false;
     }
     m.move_relative(m.ai.speed, input);
-    m.do_move(w, level, events);
+    m.do_move(w, level, events, &mut MoveGate::new());
     m.velocity = m.velocity.scale(0.9);
     true
 }
@@ -411,6 +412,16 @@ impl LaySpawn {
             if open_top && supports && Self::is_air(cx.w, spawn) {
                 if let Some(state) = cx.w.registry.default_state("minecraft:frogspawn") {
                     cx.events.push(MobEvent::SetBlock { pos: spawn, state });
+                    cx.events.push(MobEvent::GameEvent {
+                        event: "minecraft:block_place",
+                        at: [
+                            f64::from(spawn[0]) + 0.5,
+                            f64::from(spawn[1]) + 0.5,
+                            f64::from(spawn[2]) + 0.5,
+                        ],
+                        source: m.id,
+                        state,
+                    });
                 }
                 // level.playSound(null, body, FROG_LAY_SPAWN, BLOCKS, 1, 1).
                 cx.events.push(MobEvent::bound_sound(
@@ -507,6 +518,30 @@ impl Goal for ShootTongue {
             m.extra.frog.nearest = None;
             return false;
         };
+        // `StartAttacking` selects ATTACK_TARGET before `ShootTongue`
+        // checks its path and `Frog.canEat`. A redirected target must pass
+        // those same checks; players and other prey cannot be eaten.
+        // A frog can never accept a player. Hide the mutable player
+        // selection from this proposal so a rejected player redirect cannot
+        // change who the remainder of the mob tick sees.
+        let change = if cx.w.mob_hooks.is_none() {
+            super::TargetChange::Set(Some(Who::Mob(t.id)))
+        } else {
+            let mut target_world = cx.w.clone();
+            target_world.player = cx.w.selected_player().cloned();
+            target_world.player_identity = cx.w.selected_player_identity();
+            target_world.player_selection = None;
+            target_world.change_target(m, true, Some(Who::Mob(t.id)))
+        };
+        let super::TargetChange::Set(Some(Who::Mob(id))) = change else {
+            return false;
+        };
+        let Some(t) =
+            cx.w.seen(id)
+                .filter(|t| t.alive && can_eat(t.species, t.size))
+        else {
+            return false;
+        };
         // canPathfindToTarget: a path that ends at the target.
         let at = [t.position.x, t.position.y, t.position.z];
         let ends = m
@@ -551,6 +586,8 @@ impl Goal for ShootTongue {
     }
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         let f = &mut m.extra.frog;
+        // `ShootTongue.stop` erases brain memory directly, independently
+        // of `StartAttacking` / `StopAttackingIfTargetInvalid` hooks.
         f.target = None;
         f.tongue_target = None;
         f.phase = Phase::Done;
@@ -641,14 +678,14 @@ pub(super) fn count_down_cooldown(m: &mut Mob) {
     }
 }
 /// `LONG_JUMP_COOLDOWN_TICKS`.
-fn jump_cooldown(m: &Mob) -> Option<i64> {
+pub(crate) fn jump_cooldown(m: &Mob) -> Option<i64> {
     m.extra
         .memories
         .iter()
         .find(|x| x.0 == LONG_JUMP_COOLDOWN)
         .map(|x| x.1)
 }
-fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
+pub(crate) fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
     let memories = &mut m.extra.memories;
     let at = memories.iter().position(|x| x.0 == LONG_JUMP_COOLDOWN);
     match (at, ticks) {
@@ -1024,6 +1061,144 @@ mod tests {
         Mob::new(1, kind, Vec3::new(0.5, 0.0, 0.5), 0.0)
     }
 
+    #[test]
+    #[ignore = "requires prepared entity resources in .local/horizon-client"]
+    fn tongue_acquisition_honors_brain_hooks_and_edible_redirects() {
+        use crate::mobs::{MobHooks, PlayerView, TargetChange};
+        use std::cell::Cell;
+        struct Hook(TargetChange, Cell<usize>);
+        impl MobHooks for Hook {
+            fn enderman_anger_suppressed(&self, _: u32, _: &PlayerView) -> bool {
+                false
+            }
+            fn can_grief(&self, _: u32, rule: bool) -> bool {
+                rule
+            }
+            fn grief_hooked(&self) -> bool {
+                false
+            }
+            fn living_visibility(&self, _: &PlayerView, _: u32, v: f64) -> f64 {
+                v
+            }
+            fn living_change_target(
+                &self,
+                _: &mut Mob,
+                world: &MobWorld<'_>,
+                brain: bool,
+                proposed: Option<Who>,
+            ) -> TargetChange {
+                assert!(brain);
+                assert_eq!(proposed, Some(Who::Mob(2)));
+                self.1.set(self.1.get() + 1);
+                // Mirror the native host selecting a redirected player.
+                if self.0 == TargetChange::Set(Some(Who::Player))
+                    && let Some(selection) = world.player_selection
+                {
+                    assert!(selection.select(100));
+                }
+                assert_eq!(world.selected_player_identity().map(|p| p.1), Some(99));
+                self.0
+            }
+        }
+        let mut others = Vec::new();
+        assert!(crate::mobs::world::with_test_world(&[], |_, types| {
+            for (id, name, size) in [
+                (2, "slime", 1),
+                (3, "magma_cube", 1),
+                (4, "slime", 2),
+                (5, "zombie", 1),
+            ] {
+                let kind = std::sync::Arc::new(types.types[&format!("minecraft:{name}")].clone());
+                let mut seen = Mob::new(id, kind, Vec3::new(1.5, 64.0, 0.5), 0.0)
+                    .seen(None, &crate::items::Items::empty());
+                seen.size = size;
+                others.push(seen);
+            }
+        }));
+        assert!(crate::mobs::world::with_built_test_world(
+            &others,
+            |world, registry| {
+                for x in -1..=0 {
+                    for z in -1..=0 {
+                        world.chunks.insert(
+                            (x, z),
+                            std::sync::Arc::new(crate::chunk::Chunk::empty(x, z)),
+                        );
+                    }
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in -4..=4 {
+                    for z in -4..=4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+            },
+            |world, types| {
+                for (with_hook, outcome, expected) in [
+                    (false, TargetChange::Keep, Some(2)),
+                    (true, TargetChange::Keep, None),
+                    (true, TargetChange::Set(None), None),
+                    (true, TargetChange::Set(Some(Who::Mob(2))), Some(2)),
+                    (true, TargetChange::Set(Some(Who::Mob(3))), Some(3)),
+                    (true, TargetChange::Set(Some(Who::Mob(4))), None),
+                    (true, TargetChange::Set(Some(Who::Mob(5))), None),
+                    (true, TargetChange::Set(Some(Who::Mob(999))), None),
+                    (true, TargetChange::Set(Some(Who::Player)), None),
+                ] {
+                    let hook = Hook(outcome, Cell::new(0));
+                    let selection = crate::mobs::player_selection::PlayerSelection::new(
+                        [99, 100]
+                            .into_iter()
+                            .map(|entity_id| crate::mobs::player_selection::TickPlayer {
+                                entity_id,
+                                connection: Some(entity_id),
+                                view: crate::mobs::world::test_player(Vec3::new(3.5, 64.0, 0.5)),
+                            })
+                            .collect(),
+                        Some(99),
+                    )
+                    .unwrap();
+                    let mut world = world.clone();
+                    world.player_selection = Some(&selection);
+                    world.mob_hooks = with_hook.then_some(&hook as &dyn MobHooks);
+                    let kind = std::sync::Arc::new(types.types["minecraft:frog"].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    register(&mut m);
+                    m.on_ground = true;
+                    m.extra.frog.nearest = Some(2);
+                    let mut events = Vec::new();
+                    let mut fixture = crate::health::TestLevel::new(0);
+                    let mut cx = Cx {
+                        w: &world,
+                        level: &mut fixture.level(),
+                        events: &mut events,
+                    };
+                    assert_eq!(
+                        ShootTongue.can_use(&mut m, &mut cx),
+                        expected.is_some(),
+                        "{outcome:?}"
+                    );
+                    assert_eq!(attack_target(&m), expected.map(Who::Mob));
+                    assert_eq!(hook.1.get(), usize::from(with_hook));
+                    assert_eq!(selection.selected().unwrap().entity_id, 99);
+                    assert!(!selection.has_switched());
+                    if expected.is_some() {
+                        ShootTongue.start(&mut m, &mut cx);
+                        assert_eq!(m.extra.frog.tongue_target, expected);
+                        ShootTongue.stop(&mut m, &mut cx);
+                        assert_eq!(attack_target(&m), None);
+                        assert_eq!(m.extra.frog.tongue_target, None);
+                        assert_eq!(
+                            hook.1.get(),
+                            usize::from(with_hook),
+                            "ShootTongue.stop erases memory directly"
+                        );
+                    }
+                }
+            }
+        ));
+    }
+
     /// `Frog.travelInWater`: the move uses `getSpeed` (the speed the move
     /// control stored, here 0.25, not the movement attribute 1.0 and not the
     /// turtle's 0.1), then the whole motion is scaled by 0.9. Out of water
@@ -1272,5 +1447,58 @@ mod tests {
         assert_eq!(memory(&saved), None, "a laid frog saves no pregnancy");
         let back = mob_from_nbt(&saved, &types, 3, None).unwrap();
         assert!(!is_pregnant(&back), "and does not come back pregnant");
+    }
+
+    /// `TryLaySpawnOnFluidNearLand`: the frogspawn is set, then
+    /// `block_place` is posted from the frog at the new block, then the lay
+    /// sound, and the pregnancy is erased.
+    #[test]
+    fn laying_frogspawn_posts_block_place_from_the_frog() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let water = registry.default_state("minecraft:water").unwrap();
+                world.set(8, 63, 7, water).unwrap();
+            },
+            |w, _| {
+                let mut m = frog();
+                m.position = Vec3::new(8.5, 64.0, 8.5);
+                m.on_ground = true;
+                set_pregnant(&mut m, true);
+                let mut lr = crate::health::TestLevel::new(3);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    level: &mut lr.level(),
+                    events: &mut events,
+                };
+                LaySpawn::lay(&mut m, &mut cx);
+                let spawn = w.registry.default_state("minecraft:frogspawn").unwrap();
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::SetBlock { pos: [8, 64, 7], state } if *state == spawn)),
+                    "the frogspawn is set: {events:?}"
+                );
+                assert!(
+                    events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::GameEvent {
+                            event: "minecraft:block_place",
+                            at: [8.5, 64.5, 7.5],
+                            source: 1,
+                            state,
+                        } if *state == spawn
+                    )),
+                    "the new frogspawn posts block_place from the frog: {events:?}"
+                );
+                assert!(!is_pregnant(&m), "laying erases the pregnancy");
+            },
+        );
+        let _ = ran;
     }
 }

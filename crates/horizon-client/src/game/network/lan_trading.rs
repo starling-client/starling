@@ -62,8 +62,10 @@ impl Game<'_> {
             json!({"window":gm.window,"merchant":self.persist.uuids.get(&id)?,
             "player":uuid_words(guest.uuid),"slots":gm.slots.iter().map(stack).collect::<Vec<_>>(),
             "carried":stack(&guest.carried),"xp":session.xp,
+            "sent_offers":gm.sent.iter().map(|o|json!({"uses":o.uses,
+                "special":o.special_price_diff,"demand":o.demand,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>(),
             "offers":session.offers.iter().map(|o|json!({"uses":o.uses,
-                "special":o.special_price_diff,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>()}),
+                "special":o.special_price_diff,"demand":o.demand,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>()}),
         ))
     }
 
@@ -115,6 +117,7 @@ impl Game<'_> {
         if let Some(host) = self.lan.as_mut() {
             host.play.entry(conn).or_default().merchant = Some(gm);
         }
+        self.player_menu_opening(conn);
     }
     /// `Entity.getDisplayName` of the merchant, the screen's title: its name
     /// (custom, else the profession's) with the show_entity hover event and
@@ -247,6 +250,7 @@ impl Game<'_> {
         &mut self,
         conn: u32,
         window: Option<i32>,
+        refresh_offers: bool,
         op: impl FnOnce(&mut Menu, &Env),
     ) -> bool {
         let Some(mut gm) = self
@@ -305,7 +309,9 @@ impl Game<'_> {
             trade: Some(&trade_env),
             maps: None,
             limited_crafting: host.hub.limited_crafting,
+            can_equip: None,
             known_recipes: Some(&g.recipe_book),
+            slot_rules: Some(self),
         };
         let mut menu = Menu::new(Kind::Merchant);
         menu.set_registry_id(Some("minecraft:merchant"));
@@ -358,6 +364,10 @@ impl Game<'_> {
                 m.species() == horizon_client::mobs::Species::Villager
                     && m.extra.profession.index().is_none()
             });
+        let offers_refreshed = session
+            .events
+            .iter()
+            .any(|event| matches!(event, merchant::Event::OffersRefreshed));
         let (mut session, traded) = if opaque {
             (session, Vec::new())
         } else {
@@ -381,7 +391,9 @@ impl Game<'_> {
         }
         gm.merchant.session = session;
         self.drop_guest_items(gi, dropped);
-        self.lan_send_offers(conn, &mut gm, false);
+        if refresh_offers || offers_refreshed {
+            self.lan_send_offers(conn, &mut gm, true);
+        }
         self.lan_send_merchant_content(conn, &mut gm);
         if let Some(host) = self.lan.as_mut() {
             host.play.entry(conn).or_default().merchant = Some(gm);
@@ -431,7 +443,7 @@ impl Game<'_> {
             _ => Input::PickupAll,
         };
         let (slot, button) = (i32::from(p.slot), i32::from(p.button));
-        self.lan_merchant_op(conn, Some(p.container), |menu, env| {
+        self.lan_merchant_op(conn, Some(p.container), false, |menu, env| {
             let _ = menu.click(env, slot, button, input);
         })
     }
@@ -448,7 +460,9 @@ impl Game<'_> {
         else {
             return;
         };
-        if self.lan_merchant_op(conn, None, |menu, env| menu.merchant_select(env, index)) {
+        if self.lan_merchant_op(conn, None, false, |menu, env| {
+            menu.merchant_select(env, index)
+        }) {
             let villager = self
                 .lan
                 .as_ref()
@@ -461,7 +475,7 @@ impl Game<'_> {
     /// The guest closed the trading window (or it is closed for them):
     /// MerchantMenu.removed, then the villager gets its state back.
     pub(super) fn lan_merchant_closed(&mut self, conn: u32, window: Option<i32>) -> bool {
-        if !self.lan_merchant_op(conn, window, |menu, env| menu.merchant_close(env)) {
+        if !self.lan_merchant_op(conn, window, false, |menu, env| menu.merchant_close(env)) {
             return false;
         }
         let Some(mut gm) = self
@@ -473,6 +487,9 @@ impl Game<'_> {
             return false;
         };
         self.merchant_closed(&mut gm.merchant);
+        if window.is_some() {
+            self.player_menu_closing(conn);
+        }
         true
     }
     /// `Merchant.stillValid` for a trader: it is alive and the guest is within
@@ -555,7 +572,7 @@ impl Game<'_> {
                 continue;
             };
             let reputation = self.villager_reputation_of(id, uuid);
-            self.lan_merchant_op(conn, None, |menu, env| {
+            self.lan_merchant_op(conn, None, true, |menu, env| {
                 if let Some(s) = menu.merchant.as_mut() {
                     s.reputation = reputation;
                     s.update_special_prices();
@@ -609,7 +626,7 @@ impl Game<'_> {
         conn: u32,
         edit: impl FnOnce(&mut merchant::Session),
     ) -> bool {
-        let done = self.lan_merchant_op(conn, None, |menu, env| {
+        let done = self.lan_merchant_op(conn, None, false, |menu, env| {
             let Some(session) = menu.merchant.as_mut() else {
                 return;
             };
@@ -1182,7 +1199,7 @@ mod tests {
             Box::new(Observer(seen.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 let (villager, _rx, first) = open_trade(game, 1);
                 let second = offer("minecraft:coal", "minecraft:diamond");

@@ -452,3 +452,87 @@ fn registered_node_draws_the_models_the_mod_answers_per_stack() {
         LayerContent::Model { model } if model == "nodetest:item/full")));
     assert!(drawn(1, &NoEnv).is_empty(), "no mod answers");
 }
+
+#[test]
+fn a_head_model_names_a_skull_kind_only_once_a_mod_registers_it() {
+    let head = |kind: &str| SpecialModel::decode(&json!({"type": "minecraft:head", "kind": kind}));
+    // Before registration a mod's kind is refused, as an unknown vanilla kind is.
+    assert!(head("skulltest:goblin").is_err());
+    assert!(head("goblin").is_err());
+    let kept = register_skull_kinds(vec![
+        "skulltest:goblin".into(),
+        "minecraft:goblin".into(),
+        "zombie".into(),
+        "skulltest:goblin".into(),
+    ]);
+    // Vanilla's namespace, an unnamespaced name and a second registration are left out.
+    assert_eq!(kept, ["skulltest:goblin"]);
+    assert!(register_skull_kinds(vec!["skulltest:goblin".into()]).is_empty());
+    assert!(is_skull_kind("skulltest:goblin"));
+    assert!(!is_skull_kind("minecraft:goblin"));
+    let goblin = head("skulltest:goblin").unwrap();
+    assert!(matches!(&goblin.kind, SpecialKind::Head { kind, .. } if kind == "skulltest:goblin"));
+    assert_eq!(goblin.to_json()["kind"], "skulltest:goblin");
+    assert!(head("minecraft:goblin").is_err());
+    assert!(head("skulltest:orc").is_err());
+    // Vanilla's kinds are unchanged.
+    assert!(head("zombie").is_ok());
+}
+
+#[test]
+fn last_index_less_or_equal_linear_and_binary() {
+    use super::last_index_less_or_equal;
+    let make = |thresholds: &[f32]| -> Vec<(f32, ItemModelNode)> {
+        thresholds
+            .iter()
+            .map(|&t| (t, ItemModelNode::Empty))
+            .collect()
+    };
+
+    // Empty
+    assert_eq!(last_index_less_or_equal(&[], 0.0), None);
+
+    // Short (< 16): linear search
+    let short = make(&[-1.0, 0.0, 1.0, 2.5, 5.0]);
+    assert_eq!(last_index_less_or_equal(&short, -2.0), None);
+    assert_eq!(last_index_less_or_equal(&short, -1.0), Some(0));
+    assert_eq!(last_index_less_or_equal(&short, -0.5), Some(0));
+    assert_eq!(last_index_less_or_equal(&short, 0.0), Some(1));
+    assert_eq!(last_index_less_or_equal(&short, 2.5), Some(3));
+    assert_eq!(last_index_less_or_equal(&short, 3.0), Some(3));
+    assert_eq!(last_index_less_or_equal(&short, 5.0), Some(4));
+    assert_eq!(last_index_less_or_equal(&short, 10.0), Some(4));
+
+    // Long (>= 16): binary search
+    let thresholds: Vec<f32> = (0..32).map(|i| i as f32 * 10.0).collect();
+    let long = make(&thresholds);
+    assert_eq!(last_index_less_or_equal(&long, -5.0), None);
+    assert_eq!(last_index_less_or_equal(&long, 0.0), Some(0));
+    assert_eq!(last_index_less_or_equal(&long, 5.0), Some(0));
+    assert_eq!(last_index_less_or_equal(&long, 10.0), Some(1));
+    assert_eq!(last_index_less_or_equal(&long, 150.0), Some(15));
+    assert_eq!(last_index_less_or_equal(&long, 155.0), Some(15));
+    assert_eq!(last_index_less_or_equal(&long, 310.0), Some(31));
+    assert_eq!(last_index_less_or_equal(&long, 1000.0), Some(31));
+
+    // Short lists use upper-bound tie behavior, including signed zero.
+    let duplicates = make(&[1.0, 1.0, 2.0]);
+    assert_eq!(last_index_less_or_equal(&duplicates, 1.0), Some(1));
+
+    let zeroes = make(&[-0.0, 0.0]);
+    assert_eq!(last_index_less_or_equal(&zeroes, -0.0), Some(1));
+    assert_eq!(last_index_less_or_equal(&zeroes, 0.0), Some(1));
+
+    // At 16 entries, vanilla returns Arrays.binarySearch's hit, not the last tie.
+    // Expected indices were checked on the JVM.
+    let duplicates = make(&[
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 7.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+    ]);
+    assert_eq!(last_index_less_or_equal(&duplicates, 7.0), Some(7));
+
+    let zeroes = make(&[
+        -8.0, -7.0, -6.0, -5.0, -4.0, -3.0, -2.0, -0.0, -0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0,
+    ]);
+    assert_eq!(last_index_less_or_equal(&zeroes, -0.0), Some(7));
+    assert_eq!(last_index_less_or_equal(&zeroes, 0.0), Some(9));
+}

@@ -105,6 +105,7 @@ impl PlayerMotion {
             sync_velocity: &mut h.sync_velocity,
             game_time: h.game_time,
             events: &mut self.events,
+            random: &mut self.random,
         };
         h.food.tick(&mut world)
     }
@@ -127,6 +128,7 @@ struct TickWorld<'a> {
     sync_velocity: &'a mut bool,
     game_time: i64,
     events: &'a mut Vec<MotionEvent>,
+    random: &'a mut horizon_core::random::EntityRandom,
 }
 impl FoodWorld for TickWorld<'_> {
     type Error = Box<dyn std::error::Error>;
@@ -197,6 +199,8 @@ impl FoodWorld for TickWorld<'_> {
                 .damage
                 .source::<()>(id, None, None, None)
                 .expect("validated starvation source"),
+            weapon: None,
+            random: self.random,
             living_cause: false,
             events: self.events,
             dead: self.dead,
@@ -207,6 +211,7 @@ impl FoodWorld for TickWorld<'_> {
             blocking: None,
             blocked: 0.0,
             shield_damage: 0,
+            blocking_item_used: false,
             fully_blocked: false,
             block_sound: false,
             knocked: false,

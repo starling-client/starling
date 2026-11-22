@@ -210,7 +210,7 @@ fn the_late_sky_draws_the_usual_pixels() {
         cache: None,
     };
     let usual_celestial = device.create_render_pipeline(&celestial);
-    let stars = Stars::new(&device, FORMAT);
+    let stars = Stars::new(&device, (FORMAT, false));
     let late = LateSky::new(
         &TerrainModule {
             kept: &kept,

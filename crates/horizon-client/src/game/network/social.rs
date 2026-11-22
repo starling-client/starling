@@ -166,19 +166,38 @@ impl Game<'_> {
         horizon_client::widgets::begin_screen(|| {
             horizon_client::widgets::ScreenInfo::new("social", social_screen::TITLE)
         });
-        social_screen::draw(
+        social_screen::draw_background(batch, &self.gui.atlas, true);
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
+        let tooltip = social_screen::draw_contents(
             batch,
             &self.gui.atlas,
             self.cursor,
             &view,
             &mut self.social.search,
             &mut self.social.tooltip,
-            true,
         );
+        self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
+        if let Some(tooltip) = tooltip {
+            horizon_client::ui::tooltip(batch, &self.gui.atlas, &[tooltip], self.cursor);
+        }
     }
     pub(super) fn social_click(&mut self) {
+        let size = self.gui_size();
+        let cursor = self.cursor;
         let view = self.social_view();
-        let Some(action) = social_screen::click(self.gui_size(), self.cursor, &view) else {
+        let Some(kind) = social_screen::click_kind(size, cursor, &view) else {
+            return;
+        };
+        // The widget first: the search box's `onClick` puts the caret under the
+        // pointer, before any list button is considered.
+        if let social_screen::Click::Search = kind {
+            let shift = self.has_shift_down();
+            self.social
+                .search
+                .click(&self.gui.atlas, cursor.0, shift, false);
+            return;
+        }
+        let social_screen::Click::Action(action) = kind else {
             return;
         };
         self.audio.play_button_click();

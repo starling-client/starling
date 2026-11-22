@@ -2,6 +2,7 @@
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::resource_source::ResourceSource;
+mod slot_sources;
 use crate::zip::Zip;
 use std::{
     collections::BTreeMap,
@@ -121,20 +122,42 @@ pub fn discover(world: &Path) -> Vec<DataPack> {
 /// `FolderRepositorySource.loadPacks`: packs in Create World's temporary
 /// folder or a world's data-pack directory, with required folder metadata.
 pub fn discover_folder(dir: &Path) -> Vec<DataPack> {
+    discover_folder_with(dir, &crate::packs::DirectoryValidator::game())
+}
+/// [`discover_folder`] under an explicit `allowed_symlinks.txt` validator.
+pub(crate) fn discover_folder_with(
+    dir: &Path,
+    validator: &crate::packs::DirectoryValidator,
+) -> Vec<DataPack> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut packs = Vec::new();
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let path = e.path();
+        // `PackDetector.detectPackResources`: a link, or a pack holding one, is
+        // not a pack unless the validator allows the target; the id stays the
+        // entry's name while the contents come from the target.
+        let path = match crate::packs::detected_pack_path(&e.path(), validator) {
+            Ok(Some(path)) => path,
+            Ok(None) => continue,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read properties of '{}', ignoring: {err}",
+                    e.path().display()
+                );
+                continue;
+            }
+        };
         if path.is_dir() && folder_metadata_present(&path) {
             packs.push(DataPack {
                 id: format!("file/{name}"),
                 source: ResourceSource::directory(path),
                 selection: None,
             });
-        } else if name.ends_with(".zip")
+        } else if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with(".zip"))
             && let Ok(z) = Zip::open(&path)
             && z.contains("pack.mcmeta")
         {
@@ -204,6 +227,7 @@ pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
                 required: false,
                 position: crate::packs::Position::Bottom,
                 fixed: false,
+                hidden: false,
             });
             packs.push(pack);
         }
@@ -265,6 +289,7 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
             required: false,
             position: Position::Top,
             fixed: false,
+            hidden: false,
         })
         .collect();
     infos.push(PackInfo {
@@ -281,6 +306,7 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
         required: false,
         position: Position::Bottom,
         fixed: false,
+        hidden: false,
     });
     for p in feature_packs(resources) {
         infos.extend(p.selection);
@@ -652,7 +678,15 @@ pub fn parse_function(id: &str, text: &str) -> Result<Function, String> {
             });
         }
         if let Some(m) = line.strip_prefix('$') {
-            for p in macro_parameters(m)? {
+            let names = macro_parameters(m)?;
+            // `StringTemplate.fromString`: a `$` line with no `$(…)` is not a
+            // macro, and fails the whole file rather than running unchanged.
+            if names.is_empty() {
+                return Err(format!(
+                    "Can't parse function line {number}: '{m}': No variables in macro"
+                ));
+            }
+            for p in names {
                 if !parameters.contains(&p) {
                     parameters.push(p);
                 }
@@ -674,12 +708,14 @@ pub fn parse_function(id: &str, text: &str) -> Result<Function, String> {
 pub struct DataStore {
     pub functions: BTreeMap<String, Function>,
     /// Function tag id -> entries (`ns:f`, `#ns:tag`), with `required` flags.
-    pub function_tags: BTreeMap<String, Vec<(String, bool)>>,
+    pub function_tags: BTreeMap<String, Vec<TagEntryOf>>,
     pub predicates: BTreeMap<String, serde_json::Value>,
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
     /// `slot_source` definitions, evaluated against a command's live accessor.
     pub slot_sources: BTreeMap<String, serde_json::Value>,
+    /// Slot-source tags belong to the same loaded snapshot as their definitions.
+    pub slot_source_tags: BTreeMap<String, Vec<TagEntryOf>>,
     /// The content tables' raw files from the packs after the built-in one:
     /// Server JSON resources (recipes, loot, enchantments, songs, instruments,
     /// predicates, modifiers, advancements, registries, data maps and tags), by
@@ -725,16 +761,20 @@ fn resource_id(file: &str, kind: &str, ext: &str) -> Option<String> {
 /// The entry files of mods' datapack registries in `packs`, lowest pack first: each file
 /// `data/<entry namespace>/<registry namespace>/<registry path>/<entry>.json` of a registry
 /// in `registries` (`(namespace, path)` of its key), by that path, each path's versions in
-/// pack order. The folders are the mods' own, so the fixed kinds `DataStore` lists never
-/// cover them.
+/// pack order, each with its pack's id. Only the highest accepted version is read into
+/// the returned map. `fallback` permits trying lower versions after a condition refusal;
+/// registered conditions disable fallback so losing callbacks never run. The folders
+/// are the mods' own, so the fixed kinds `DataStore` lists never cover them.
 pub fn registry_files(
     packs: &[&DataPack],
     registries: &[(&str, &str)],
-) -> BTreeMap<String, Vec<Vec<u8>>> {
+    fallback: bool,
+    mut accepts: impl FnMut(&str, &str, &[u8]) -> bool,
+) -> Result<BTreeMap<String, Vec<(String, Vec<u8>)>>, Box<mod_api::DatapackLoadError>> {
     let mut kinds: Vec<&str> = registries.iter().map(|(namespace, _)| *namespace).collect();
     kinds.sort_unstable();
     kinds.dedup();
-    let mut files: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+    let mut sources: BTreeMap<String, Vec<&DataPack>> = BTreeMap::new();
     for pack in packs {
         for file in pack.list_kinds(&kinds) {
             let in_registry = file
@@ -749,13 +789,59 @@ pub fn registry_files(
                                 .is_some_and(|rest| rest.starts_with('/'))
                         })
                 });
-            if in_registry && let Some(bytes) = pack.read(&file) {
-                files.entry(file).or_default().push(bytes);
+            if in_registry {
+                sources.entry(file).or_default().push(pack);
             }
         }
     }
-    files
+    let mut files = BTreeMap::new();
+    let mut total = 0;
+    for (file, packs) in sources {
+        for pack in packs.into_iter().rev() {
+            // Read at most the custom-registry limit plus a refusal byte, including
+            // decompressed output. No losing payload remains resident.
+            let bytes = pack
+                .source
+                .read_head(&file, mod_api::MAX_DATAPACK_ENTRY_BYTES as u64 + 1)
+                .unwrap_or_default();
+            let oversized = bytes.len() > mod_api::MAX_DATAPACK_ENTRY_BYTES;
+            if oversized || accepts(&file, &pack.id, &bytes) {
+                total += bytes.len();
+                if !oversized && total > mod_api::MAX_SNAPSHOT_BYTES {
+                    let (namespace, path) = registries
+                        .iter()
+                        .find(|(namespace, path)| {
+                            file.splitn(3, '/').nth(2).is_some_and(|rest| {
+                                rest.starts_with(&format!("{namespace}/{path}/"))
+                            })
+                        })
+                        .expect("listed custom registry file");
+                    let rest = file.strip_prefix("data/").unwrap();
+                    let (entry_namespace, rest) = rest.split_once('/').unwrap();
+                    let entry = rest
+                        .strip_prefix(&format!("{namespace}/{path}/"))
+                        .unwrap()
+                        .strip_suffix(".json")
+                        .unwrap();
+                    return Err(Box::new(mod_api::DatapackLoadError {
+                        registry: format!("{namespace}:{path}"),
+                        entry: format!("{entry_namespace}:{entry}"),
+                        file,
+                        pack: pack.id.clone(),
+                        reason: mod_api::DatapackLoadReason::CandidateTooLarge,
+                    }));
+                }
+                files.insert(file.clone(), vec![(pack.id.clone(), bytes)]);
+                break;
+            }
+            if !fallback {
+                break;
+            }
+        }
+    }
+    Ok(files)
 }
+
 impl DataStore {
     pub fn load(packs: &[&DataPack]) -> Self {
         Self::load_impl(packs, None)
@@ -823,10 +909,14 @@ impl DataStore {
                     && let Some(bytes) = pack.read(&f)
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
                 {
-                    if conditions.is_some_and(|conditions| !conditions.allows(&v)) {
-                        continue;
+                    let mut entries = tag_entries(&v);
+                    if let Some(removes) = v["remove"].as_array() {
+                        entries.extend(
+                            tag_entries(&serde_json::json!({ "values": removes }))
+                                .into_iter()
+                                .map(|(id, required, _)| (id, required, true)),
+                        );
                     }
-                    let entries = tag_entries(&v);
                     let slot = s.function_tags.entry(id).or_default();
                     if v["replace"].as_bool() == Some(true) {
                         slot.clear();
@@ -842,6 +932,23 @@ impl DataStore {
                     && let Ok(v) = serde_json::from_slice(&bytes)
                 {
                     s.item_modifiers.insert(id, v);
+                } else if let Some(id) = resource_id(&f, "tags/slot_source", ".json")
+                    && let Some(bytes) = pack.read(&f)
+                    && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                {
+                    let mut entries = tag_entries(&v);
+                    if let Some(removes) = v["remove"].as_array() {
+                        entries.extend(
+                            tag_entries(&serde_json::json!({ "values": removes }))
+                                .into_iter()
+                                .map(|(id, required, _)| (id, required, true)),
+                        );
+                    }
+                    let slot = s.slot_source_tags.entry(id).or_default();
+                    if v["replace"].as_bool() == Some(true) {
+                        slot.clear();
+                    }
+                    slot.extend(entries);
                 } else if let Some(id) = resource_id(&f, "slot_source", ".json")
                     && let Some(bytes) = pack.read(&f)
                     && let Ok(v) = serde_json::from_slice(&bytes)
@@ -851,8 +958,10 @@ impl DataStore {
             }
         }
         if let Some(conditions) = conditions {
-            s.predicates.retain(|_, value| conditions.allows(value));
-            s.item_modifiers.retain(|_, value| conditions.allows(value));
+            s.predicates
+                .retain(|id, value| conditions.allows_id(value, "predicate", id));
+            s.item_modifiers
+                .retain(|id, value| conditions.allows_id(value, "item_modifier", id));
         }
         s
     }
@@ -884,7 +993,10 @@ impl DataStore {
                 invalid.insert(tag);
                 continue;
             };
-            for (entry, required) in entries {
+            for (entry, required, remove) in entries {
+                if *remove {
+                    continue;
+                }
                 if let Some(child) = entry.strip_prefix('#') {
                     pending.push(child);
                     if *required {
@@ -921,9 +1033,46 @@ impl DataStore {
         let Some(entries) = self.function_tags.get(id) else {
             return;
         };
-        for (e, _) in entries {
+        for (e, required, remove) in entries {
+            // A removal (a `remove` list's entry, after the file's values)
+            // takes an id or a tag's members out of the set built so far; it
+            // is optional: an unknown id removes nothing and never
+            // invalidates the tag.
+            if *remove {
+                match e.strip_prefix('#') {
+                    Some(inner) => {
+                        let mut members = Vec::new();
+                        self.expand(
+                            inner,
+                            &mut members,
+                            &mut Default::default(),
+                            seen_tags,
+                            invalid,
+                        );
+                        out.retain(|f| !members.contains(f));
+                        seen_fns.retain(|f| !members.iter().any(|member| member.as_str() == *f));
+                    }
+                    None => {
+                        out.retain(|f| f.as_str() != e.as_str());
+                        seen_fns.remove(e.as_str());
+                    }
+                }
+                continue;
+            }
+            let _ = required;
             match e.strip_prefix('#') {
-                Some(inner) => self.expand(inner, out, seen_fns, seen_tags, invalid),
+                Some(inner) => {
+                    let mut members = Vec::new();
+                    let mut member_ids = Default::default();
+                    self.expand(inner, &mut members, &mut member_ids, seen_tags, invalid);
+                    for member in members {
+                        if let Some(&id) = member_ids.get(member.as_str())
+                            && seen_fns.insert(id)
+                        {
+                            out.push(member);
+                        }
+                    }
+                }
                 None => {
                     if self.functions.contains_key(e) && seen_fns.insert(e) {
                         out.push(e.clone());
@@ -931,6 +1080,7 @@ impl DataStore {
                 }
             }
         }
+        seen_tags.remove(id);
     }
 }
 fn normalize(id: &str) -> String {
@@ -940,18 +1090,23 @@ fn normalize(id: &str) -> String {
         format!("minecraft:{id}")
     }
 }
-fn tag_entries(v: &serde_json::Value) -> Vec<(String, bool)> {
+/// An entry of a tag file's `values` or `remove`: its id, whether it is
+/// required, and whether it removes (`TagLoader.EntryWithSource.remove`).
+type TagEntryOf = (String, bool, bool);
+
+fn tag_entries(v: &serde_json::Value) -> Vec<TagEntryOf> {
     v["values"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|e| match e {
-            serde_json::Value::String(s) => Some((hash_normalize(s), true)),
+            serde_json::Value::String(s) => Some((hash_normalize(s), true, false)),
             serde_json::Value::Object(o) => Some((
                 hash_normalize(o.get("id")?.as_str()?),
                 o.get("required")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true),
+                o.get("remove").and_then(serde_json::Value::as_bool) == Some(true),
             )),
             _ => None,
         })
@@ -1611,6 +1766,55 @@ mod tests {
         assert_eq!(plain.instantiate(None).unwrap(), ["say 1"]);
     }
 
+    /// `StringTemplate.fromString` throws "No variables in macro" for a `$`
+    /// line with no `$(…)`, so `FunctionBuilder.addMacro` fails and
+    /// `ServerFunctionLibrary.reload` leaves the whole file out: `/function`
+    /// reports it unknown instead of running the line unchanged.
+    #[test]
+    fn a_macro_line_without_a_variable_drops_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("hz-datapack-macro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/macros");
+        let write = |p: &str, t: &str| {
+            let path = pack.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, t).unwrap();
+        };
+        write(
+            "pack.mcmeta",
+            "{\"pack\":{\"description\":\"Macros\",\"pack_format\":1}}",
+        );
+        // A plain line before and after does not save the file.
+        write(
+            "data/t/function/novar.mcfunction",
+            "say before\n$say hello\nsay after\n",
+        );
+        write("data/t/function/lone.mcfunction", "$\n");
+        // A `$` not followed by `(` is text, not a variable.
+        write(
+            "data/t/function/dollar.mcfunction",
+            "$say $(who) costs $5\n",
+        );
+        write("data/t/function/plain.mcfunction", "say plain\n");
+        let packs = discover(&dir);
+        let store = DataStore::load(&[&packs[0]]);
+        for id in ["t:novar", "t:lone"] {
+            assert!(!store.functions.contains_key(id), "{id} was registered");
+            assert!(
+                store
+                    .errors
+                    .iter()
+                    .any(|(e, m)| e == id && m.contains("No variables in macro")),
+                "{id} has no load error: {:?}",
+                store.errors
+            );
+        }
+        let dollar = &store.functions["t:dollar"];
+        assert_eq!(dollar.parameters, ["who"]);
+        assert!(store.functions.contains_key("t:plain"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn packs_provide_functions_and_tags() {
         let dir = std::env::temp_dir().join(format!("hz-datapack-{}", std::process::id()));
@@ -1673,6 +1877,37 @@ mod tests {
     }
 
     #[test]
+    fn function_removals_use_finished_members_and_ignore_missing_ids() {
+        let mut store = DataStore::default();
+        store.functions.insert(
+            "t:f".into(),
+            Function {
+                id: "t:f".into(),
+                lines: Vec::new(),
+                parameters: Vec::new(),
+            },
+        );
+        store.function_tags.insert(
+            "t:child".into(),
+            vec![("t:f".into(), true, false), ("t:f".into(), true, true)],
+        );
+        store.function_tags.insert(
+            "t:parent".into(),
+            vec![
+                ("t:f".into(), true, false),
+                ("#t:child".into(), true, true),
+                ("t:missing".into(), true, true),
+                ("#t:missing".into(), true, true),
+            ],
+        );
+        assert_eq!(store.tag_functions("t:parent"), ["t:f"]);
+        store
+            .function_tags
+            .insert("t:child".into(), vec![("t:f".into(), true, false)]);
+        assert!(store.tag_functions("t:parent").is_empty());
+    }
+
+    #[test]
     fn tag_resolution_dedupes_fast_ends_cycles_and_nests_deeply() {
         let mut store = DataStore::default();
         // Every referenced function exists; missing required ones invalidate a tag.
@@ -1689,8 +1924,8 @@ mod tests {
                 },
             );
         }
-        let big: Vec<(String, bool)> = (0..50_000)
-            .map(|i| (format!("t:f{}", i % 25_000), true))
+        let big: Vec<TagEntryOf> = (0..50_000)
+            .map(|i| (format!("t:f{}", i % 25_000), true, false))
             .collect();
         store.function_tags.insert("t:big".into(), big);
         let start = std::time::Instant::now();
@@ -1701,22 +1936,23 @@ mod tests {
         // A cycle terminates and keeps first-seen order.
         store.function_tags.insert(
             "t:a".into(),
-            vec![("#t:b".into(), true), ("t:x".into(), true)],
+            vec![("#t:b".into(), true, false), ("t:x".into(), true, false)],
         );
         store.function_tags.insert(
             "t:b".into(),
-            vec![("#t:a".into(), true), ("t:y".into(), true)],
+            vec![("#t:a".into(), true, false), ("t:y".into(), true, false)],
         );
         assert_eq!(store.tag_functions("t:a"), ["t:y", "t:x"]);
         // Nesting deeper than the old cap of 16 still resolves.
         for i in 0..40 {
-            store
-                .function_tags
-                .insert(format!("d:{i}"), vec![(format!("#d:{}", i + 1), true)]);
+            store.function_tags.insert(
+                format!("d:{i}"),
+                vec![(format!("#d:{}", i + 1), true, false)],
+            );
         }
         store
             .function_tags
-            .insert("d:40".into(), vec![("t:deep".into(), true)]);
+            .insert("d:40".into(), vec![("t:deep".into(), true, false)]);
         assert_eq!(store.tag_functions("d:0"), ["t:deep"]);
     }
 
@@ -1812,13 +2048,19 @@ mod tests {
         );
         assert!(off.predicates.is_empty());
         assert!(off.item_modifiers.is_empty());
-        assert_eq!(off.function_tags["demo:load"], [("demo:low".into(), true)]);
-        assert!(!off.function_tags.contains_key("demo:unknown"));
+        assert_eq!(
+            off.function_tags["demo:load"],
+            [("demo:high".into(), true, false)]
+        );
+        assert!(off.function_tags["demo:unknown"].is_empty());
         let enabled = horizon_world::conditions::LoadConditions::new(["provider"]);
         let on = DataStore::load_with_conditions(&refs, &enabled);
         assert_eq!(on.predicates["demo:entry"]["layer"], "high");
         assert_eq!(on.item_modifiers["demo:entry"]["layer"], "high");
-        assert_eq!(on.function_tags["demo:load"], [("demo:high".into(), true)]);
+        assert_eq!(
+            on.function_tags["demo:load"],
+            [("demo:high".into(), true, false)]
+        );
         assert_eq!(on.files, off.files);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1945,7 +2187,7 @@ mod tests {
             ));
         }
         let refs = packs.iter().collect::<Vec<_>>();
-        let files = registry_files(&refs, &[("example", "spell")]);
+        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
         assert_eq!(
             files.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -1955,9 +2197,23 @@ mod tests {
         );
         assert_eq!(
             files["data/example/example/spell/fire.json"],
-            vec![b"low".to_vec(), b"high".to_vec()]
+            vec![("high".to_owned(), b"high".to_vec())]
         );
-        assert!(registry_files(&refs, &[]).is_empty());
+        assert!(
+            registry_files(&refs, &[], true, |_, _, _| true)
+                .unwrap()
+                .is_empty()
+        );
+        // Oversized losing files are never read; an oversized winner is retained
+        // only as the bounded refusal prefix, not as its full payload.
+        let path = "data/example/example/spell/fire.json";
+        std::fs::write(root.join("low").join(path), vec![b' '; 1_048_577]).unwrap();
+        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
+        assert_eq!(files[path], vec![("high".to_owned(), b"high".to_vec())]);
+        std::fs::write(root.join("high").join(path), vec![b' '; 1_048_578]).unwrap();
+        let files = registry_files(&refs, &[("example", "spell")], true, |_, _, _| true).unwrap();
+        assert_eq!(files[path].len(), 1);
+        assert_eq!(files[path][0].1.len(), 1_048_577);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

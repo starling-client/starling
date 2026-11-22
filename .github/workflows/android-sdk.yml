@@ -1,0 +1,198 @@
+name: android-sdk
+# The Android native mod route, step by step (branch android-native-sdk): first a toy (tools/android_dylib_toy)
+# that answers whether the std the APK builds from source (build_apk.py's TLS_FLAGS and BUILD_STD) can be one
+# shared library for the game and every mod. Its artifact goes to a phone by adb (`toyhost libtoymod.so`).
+on:
+  push:
+    branches: [android-native-sdk]
+  workflow_dispatch:
+    inputs:
+      mods:
+        description: Ids of the Horizon catalog's native mods to build beside the APK, separated by spaces
+        required: false
+        default: accelerateddecay cloudglass
+      profile:
+        description: The Cargo profile (fast for a Nightly players install, quick for tests)
+        type: choice
+        options: [quick, fast]
+        default: quick
+      nightly:
+        description: Publish the APK as a pre-release Nightly (nightly-<commit>), the build Compile v2's store builds for
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  toy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the NDK build_apk.py pins
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Install Rust for Android and cargo-ndk
+        run: |
+          bash tools/ci/rustup_install.sh --profile minimal --component rust-src --target aarch64-linux-android
+          cargo install cargo-ndk --version 3.5.4 --locked
+      # A: the std from source with the TLS flag, every crate linking it dynamically.
+      - name: Build the toy with the std from source (has-thread-local)
+        id: source
+        continue-on-error: true
+        working-directory: tools/android_dylib_toy
+        run: |
+          builtins=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux/libclang_rt.builtins-aarch64-android.a | tail -1)
+          export RUSTC_BOOTSTRAP=1
+          export RUSTFLAGS="-C prefer-dynamic -Z has-thread-local=yes -C link-arg=$builtins"
+          cargo ndk -t arm64-v8a --platform 26 build --release -Zbuild-std=std,panic_unwind 2>&1 | tail -40
+          test "${PIPESTATUS[0]}" -eq 0
+          mkdir -p "$RUNNER_TEMP/a"
+          find target/aarch64-linux-android/release -maxdepth 2 -name '*.so' -exec cp {} "$RUNNER_TEMP/a/" \;
+          cp target/aarch64-linux-android/release/toyhost "$RUNNER_TEMP/a/"
+          ls -la "$RUNNER_TEMP/a"
+      # B: the toolchain's own std library (no TLS flag), for comparison when A fails.
+      - name: Build the toy with the toolchain's std
+        id: prebuilt
+        continue-on-error: true
+        working-directory: tools/android_dylib_toy
+        run: |
+          rm -rf target
+          export RUSTFLAGS="-C prefer-dynamic"
+          cargo ndk -t arm64-v8a --platform 26 build --release 2>&1 | tail -40
+          test "${PIPESTATUS[0]}" -eq 0
+          mkdir -p "$RUNNER_TEMP/b"
+          find target/aarch64-linux-android/release -maxdepth 2 -name '*.so' -exec cp {} "$RUNNER_TEMP/b/" \;
+          cp target/aarch64-linux-android/release/toyhost "$RUNNER_TEMP/b/"
+          sysroot=$(rustc --print sysroot)
+          cp "$sysroot"/lib/rustlib/aarch64-linux-android/lib/libstd-*.so "$RUNNER_TEMP/b/" || true
+          ls -la "$RUNNER_TEMP/b"
+      - name: What each library needs
+        run: |
+          readelf=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf)
+          for d in a b; do
+            for f in "$RUNNER_TEMP/$d"/*; do
+              [ -f "$f" ] || continue
+              echo "== $d/$(basename "$f")"
+              "$readelf" -d "$f" | grep -E 'NEEDED|SONAME|RUNPATH' || true
+              "$readelf" --dyn-syms "$f" | grep -cE '__emutls|__tls_get' || true
+            done
+          done
+          echo "A: ${{ steps.source.outcome }}  B: ${{ steps.prebuilt.outcome }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-dylib-toy
+          path: ${{ runner.temp }}/a
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-dylib-toy-prebuilt-std
+          path: ${{ runner.temp }}/b
+          if-no-files-found: ignore
+
+  # The Preview APK with the game and the mod API as libraries of their own (tools/android_native_sdk.py), and
+  # catalog native mods built beside it as libraries the game loads from its native-libs folder (android_lib.rs).
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      MODS: ${{ inputs.mods || 'accelerateddecay cloudglass' }}
+      PROFILE: ${{ inputs.profile || 'quick' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install the build-tools, platform and NDK build_apk.py pins
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Install Rust for Android and cargo-ndk
+        run: |
+          bash tools/ci/rustup_install.sh --profile minimal --component rust-src --target aarch64-linux-android
+          cargo install cargo-ndk --version 3.5.4 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-dylib-arm64-v8a
+          save-if: ${{ github.ref == 'refs/heads/android-native-sdk' }}
+      - name: Unpack the debug key
+        env:
+          KEYSTORE: ${{ secrets.STARLING_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE" || exit 0
+          mkdir -p target/android
+          echo "$KEYSTORE" | base64 -d > target/android/debug.keystore
+      - name: The game and the mod API as dylibs
+        run: python3 tools/android_native_sdk.py prepare
+      - name: Build the APK
+        env:
+          RUSTFLAGS: -C prefer-dynamic
+          HORIZON_ANDROID_KEY_ALIAS: horizon-debug
+        run: |
+          python packaging/android/build_apk.py --abi arm64-v8a --profile "$PROFILE" --preview
+          # The game's libraries as the APK has them, to check the mods' build leaves them as they are.
+          (cd "target/aarch64-linux-android/$PROFILE" && sha256sum libhorizon_android.so deps/lib*.so) > "$RUNNER_TEMP/game.sha256"
+      - name: Fetch the catalog's packages of the mods
+        run: |
+          mkdir -p "$RUNNER_TEMP/hmods"
+          python3 - "$RUNNER_TEMP/hmods" $MODS <<'EOF'
+          import hashlib, json, sys, urllib.request
+          out, wanted = sys.argv[1], set(sys.argv[2:])
+          index = json.load(urllib.request.urlopen("https://horizon-rust.github.io/horizon-mods/index.json", timeout=60))
+          host = "https://github.com/horizon-rust/horizon-mods/releases/download/"
+          for project in index["projects"]:
+              if project["kind"] != "native-mod" or project["id"] not in wanted:
+                  continue
+              file = project["versions"][0]["file"]
+              assert file["url"].startswith(host), file["url"]
+              data = urllib.request.urlopen(file["url"], timeout=120).read()
+              assert hashlib.sha256(data).hexdigest() == file["sha256"], project["id"]
+              open(f"{out}/{project['id']}.hmod", "wb").write(data)
+              print(project["id"], len(data))
+          EOF
+      - name: Build the mods beside the game
+        env:
+          RUSTFLAGS: -C prefer-dynamic
+        run: |
+          python3 tools/android_native_sdk.py mods "$RUNNER_TEMP/native-libs" "$RUNNER_TEMP"/hmods/*.hmod --profile "$PROFILE" --abi arm64-v8a
+          # A mod library only loads beside the exact game it was linked against: the one in the APK.
+          (cd "target/aarch64-linux-android/$PROFILE" && sha256sum --quiet -c "$RUNNER_TEMP/game.sha256") \
+            || { echo "the mods' build changed the game's libraries: the mods don't match the APK"; exit 1; }
+          echo "the game's libraries are the APK's"
+          readelf=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf)
+          for f in "$RUNNER_TEMP"/native-libs/*.so target/android/*.so; do
+            echo "== $f"; "$readelf" -d "$f" | grep -E 'NEEDED|SONAME' || true
+          done
+          ls -la target/android "$RUNNER_TEMP/native-libs"
+          cat "$RUNNER_TEMP/native-libs/native-mods.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: starling-preview-dylib-arm64-v8a
+          path: target/android/starling-*.apk
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs
+          path: ${{ runner.temp }}/native-libs
+      # The Nightly players install, and the build Compile v2's store builds mods for (mod-builds' store-base.yml
+      # takes this commit, the profile and the APK's URL, and checks its game's libraries against the APK's).
+      - name: Publish the Nightly
+        if: inputs.nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short=${GITHUB_SHA:0:10}
+          apk="$RUNNER_TEMP/starling-preview-nightly-$short-arm64-v8a.apk"
+          cp target/android/starling-*-arm64-v8a.apk "$apk"
+          gh release create "nightly-$short" "$apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Starling Preview nightly $(date -u +%Y-%m-%d) · $short (native mods)" \
+            --notes "Starling Preview built from $GITHUB_SHA with the game as Rust libraries ($PROFILE profile), so native mods from Horizon's catalog load beside it. arm64-v8a only."
+          echo "APK: https://github.com/$GITHUB_REPOSITORY/releases/download/nightly-$short/$(basename "$apk")"

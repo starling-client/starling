@@ -559,6 +559,10 @@ impl Secrets {
     pub fn xuid(&self) -> Option<&str> {
         self.xuid.as_deref()
     }
+    /// Whose token it is: Microsoft's or Ely.by's.
+    pub fn provider(&self) -> Provider {
+        self.provider
+    }
     /// Seconds since the epoch at which the Minecraft token stops working.
     pub fn expires_at(&self) -> u64 {
         self.minecraft_expires_at

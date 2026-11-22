@@ -2,8 +2,186 @@
 use crate::wire::{Reader, Wire, WireError, Writer};
 use crate::{
     BlockEntityTypeKey, BlockKey, BoolGameRuleKey, DimensionKey, EffectKey, EnchantmentKey,
-    EntityTypeKey, FluidKey, ItemKey, MenuKey, TagKey, UnresolvedFluid,
+    FluidKey, ItemKey, MenuKey, TagKey, UnresolvedFluid,
 };
+
+impl Wire for crate::InsideEffect {
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::InsideEffect));
+    const MIN: usize = 4;
+    fn put(&self, out: &mut Writer) {
+        out.put(&match self {
+            Self::Freeze => 0u32,
+            Self::ClearFreeze => 1u32,
+            Self::FireIgnite => 2u32,
+            Self::LavaIgnite => 3u32,
+            Self::Extinguish => 4u32,
+        });
+    }
+    fn put_owned(self, out: &mut Writer) {
+        self.put(out)
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        Ok(match input.take::<u32>()? {
+            0 => Self::Freeze,
+            1 => Self::ClearFreeze,
+            2 => Self::FireIgnite,
+            3 => Self::LavaIgnite,
+            4 => Self::Extinguish,
+            tag => return Err(WireError::Tag(tag)),
+        })
+    }
+}
+
+impl Wire for crate::EntityWrite {
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::EntityWrite));
+    const MIN: usize = 4;
+    fn put(&self, out: &mut Writer) {
+        let vector = |values: &[f64; 3]| values.to_vec();
+        match self {
+            Self::Push(values) => {
+                out.put(&0u32);
+                out.put(&vector(values));
+            }
+            Self::SetMovement(values) => {
+                out.put(&1u32);
+                out.put(&vector(values));
+            }
+            Self::StuckIn(values) => {
+                out.put(&2u32);
+                out.put(&vector(values));
+            }
+            Self::Hurt { source, amount } => {
+                out.put(&3u32);
+                out.put(source);
+                out.put(amount);
+            }
+            Self::ResetFallDistance => {
+                out.put(&4u32);
+            }
+            Self::SetFireTicks(ticks) => {
+                out.put(&5u32);
+                out.put(ticks);
+            }
+            Self::AddEffect {
+                effect,
+                duration,
+                amplifier,
+            } => {
+                out.put(&6u32);
+                out.put(effect);
+                out.put(duration);
+                out.put(amplifier);
+            }
+        }
+    }
+    fn put_owned(self, out: &mut Writer) {
+        self.put(out)
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        let triple = |what: &'static str, values: Vec<f64>| -> Result<[f64; 3], WireError> {
+            if values.len() != 3 {
+                return Err(WireError::Invalid(what));
+            }
+            Ok([values[0], values[1], values[2]])
+        };
+        input.nested(|input| {
+            Ok(match input.take::<u32>()? {
+                0 => Self::Push(triple("entity write push", input.take()?)?),
+                1 => Self::SetMovement(triple("entity write movement", input.take()?)?),
+                2 => Self::StuckIn(triple("entity write stuck", input.take()?)?),
+                3 => Self::Hurt {
+                    source: input.take()?,
+                    amount: input.take()?,
+                },
+                4 => Self::ResetFallDistance,
+                5 => Self::SetFireTicks(input.take()?),
+                6 => Self::AddEffect {
+                    effect: input.take()?,
+                    duration: input.take()?,
+                    amplifier: input.take()?,
+                },
+                tag => return Err(WireError::Tag(tag)),
+            })
+        })
+    }
+}
+
+impl Wire for crate::PlannedInside {
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::PlannedInside));
+    const MIN: usize = 4;
+    fn put(&self, out: &mut Writer) {
+        match self {
+            Self::Effect(effect) => {
+                out.put(&0u32);
+                out.put(effect);
+            }
+            Self::Write(write) => {
+                out.put(&1u32);
+                out.put(write);
+            }
+        }
+    }
+    fn put_owned(self, out: &mut Writer) {
+        self.put(out)
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        input.nested(|input| {
+            Ok(match input.take::<u32>()? {
+                0 => Self::Effect(input.take()?),
+                1 => Self::Write(input.take()?),
+                tag => return Err(WireError::Tag(tag)),
+            })
+        })
+    }
+}
+
+impl Wire for crate::InsideEffects {
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::InsideEffects));
+    const MIN: usize = <i32 as Wire>::MIN;
+    fn put(&self, out: &mut Writer) {
+        out.put(&self.last_step);
+        out.put(&self.in_step.to_vec());
+        out.put(&self.before.to_vec());
+        out.put(&self.after.to_vec());
+        out.put(&self.planned);
+    }
+    fn put_owned(self, out: &mut Writer) {
+        self.put(out)
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        input.nested(|input| {
+            let last_step: i32 = input.take()?;
+            let step: Vec<bool> = input.take()?;
+            let before: Vec<Vec<crate::EntityWrite>> = input.take()?;
+            let after: Vec<Vec<crate::EntityWrite>> = input.take()?;
+            let planned: Vec<crate::PlannedInside> = input.take()?;
+            if step.len() != 5 {
+                return Err(WireError::Invalid("inside effects step flags"));
+            }
+            let mut step_array = [false; 5];
+            step_array.copy_from_slice(&step);
+            let to_array = |what: &'static str,
+                            rows: Vec<Vec<crate::EntityWrite>>|
+             -> Result<[Vec<crate::EntityWrite>; 5], WireError> {
+                if rows.len() != 5 {
+                    return Err(WireError::Invalid(what));
+                }
+                let mut array = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+                for (index, row) in rows.into_iter().enumerate() {
+                    array[index] = row;
+                }
+                Ok(array)
+            };
+            Ok(Self {
+                last_step,
+                in_step: step_array,
+                before: to_array("inside effects before writes", before)?,
+                after: to_array("inside effects after writes", after)?,
+                planned,
+            })
+        })
+    }
+}
 
 impl Wire for crate::OwnProvider {
     layout_fields!("handler" => String, "resource" => u64);
@@ -35,6 +213,22 @@ impl Wire for crate::ItemResource {
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
         Ok(Self::of(&input.take()?))
+    }
+}
+impl Wire for crate::StoragePage {
+    layout_fields!("entries" => Vec<(crate::ItemResource, u64)>, "limit" => u64);
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::StoragePage));
+    const MIN: usize = 12;
+    fn put(&self, out: &mut Writer) {
+        let (entries, limit) = self.wire_parts();
+        out.put(&entries.to_vec());
+        out.put(&(limit as u64));
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        // The host's cap bounds what a guest's encoded length may allocate.
+        let entries = input.list_with(crate::MAX_STORAGE_PAGE, Wire::take)?;
+        let limit = input.take()?;
+        Self::from_wire(entries, limit).ok_or(WireError::Invalid("a storage page past its limit"))
     }
 }
 impl Wire for crate::FluidResource {
@@ -70,14 +264,20 @@ impl Wire for crate::LoadedMods {
     }
 }
 impl Wire for crate::RegistrationContext {
-    const LAYOUT_SEED: u64 = crate::wire::layout_seed("RegistrationContext.instance_dir.v1");
-    const MIN: usize = <Option<crate::InstanceDirectory> as Wire>::MIN;
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed("RegistrationContext.runtime.startup.v3");
+    const MIN: usize = <Option<crate::InstanceDirectory> as Wire>::MIN
+        + <Option<crate::RuntimeEnvironment> as Wire>::MIN
+        + <Option<std::sync::Arc<dyn crate::StartupScreen>> as Wire>::MIN;
     fn put(&self, out: &mut Writer) {
         out.put(&self.instance_dir);
+        out.put(&self.runtime);
+        out.put(&self.startup);
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
         let mut context = Self::new();
         context.instance_dir = input.take()?;
+        context.runtime = input.take()?;
+        context.startup = input.take()?;
         Ok(context)
     }
 }
@@ -85,6 +285,27 @@ impl Wire for crate::RegistrationContext {
 #[cfg(test)]
 mod resource_wire_tests {
     use super::*;
+    #[test]
+    fn registration_runtime_crosses_wire_without_guest_backend() {
+        for dist in [crate::Dist::Client, crate::Dist::DedicatedServer] {
+            for enabled in [false, true] {
+                let mut native = crate::RegistrationContext::new();
+                native.runtime = Some(crate::RuntimeEnvironment::new(
+                    dist,
+                    "26.3".into(),
+                    "nightly-test".into(),
+                    enabled,
+                ));
+                let mut out = Writer::new();
+                out.put(&native);
+                let guest: crate::RegistrationContext = Reader::new(out.bytes()).take().unwrap();
+                assert_eq!(guest.dist(), dist);
+                assert_eq!(guest.game_version(), "26.3");
+                assert_eq!(guest.horizon_version(), "nightly-test");
+                assert_eq!(guest.game_tests_enabled(), enabled);
+            }
+        }
+    }
 
     #[test]
     fn wire_tokens_and_package_inventory() {
@@ -117,8 +338,23 @@ mod resource_wire_tests {
             crate::PackageKind::Content,
             crate::Side::Both,
             vec!["test".into()],
-            vec!["other".into()],
-        );
+            vec![crate::PackageDependency::new(
+                "other".into(),
+                "^1".into(),
+                crate::DependencyKind::Optional,
+                crate::DependencyOrder::Before,
+                crate::Side::Server,
+                Some("Shared library".into()),
+                Some("https://example.org/library".into()),
+            )],
+        )
+        .with_details(crate::PackageDetails {
+            name: "Test".into(),
+            homepage: Some("https://example.org".into()),
+            runtime: Some(crate::PackageRuntime::Wasm),
+            properties: [("tier".into(), crate::PropertyValue::Integer(3))].into(),
+            ..Default::default()
+        });
         let mut out = Writer::new();
         out.put(&package);
         let decoded: crate::PackageInfo = Reader::new(out.bytes()).take().unwrap();
@@ -127,6 +363,29 @@ mod resource_wire_tests {
         assert_eq!(decoded.kind(), crate::PackageKind::Content);
         assert_eq!(decoded.side(), crate::Side::Both);
         assert!(decoded.depends_on("other"));
+        assert_eq!(decoded.dependencies()[0].version(), "^1");
+        assert_eq!(
+            decoded.dependencies()[0].kind(),
+            crate::DependencyKind::Optional
+        );
+        assert_eq!(
+            decoded.dependencies()[0].order(),
+            crate::DependencyOrder::Before
+        );
+        assert_eq!(decoded.dependencies()[0].side(), crate::Side::Server);
+        assert_eq!(decoded.dependencies()[0].reason(), Some("Shared library"));
+        assert_eq!(
+            decoded.dependencies()[0].url(),
+            Some("https://example.org/library")
+        );
+        assert_eq!(decoded.name(), "Test");
+        assert_eq!(decoded.homepage(), Some("https://example.org"));
+        assert_eq!(decoded.runtime(), Some(crate::PackageRuntime::Wasm));
+        assert_eq!(
+            decoded.property("tier"),
+            Some(&crate::PropertyValue::Integer(3))
+        );
+        assert_eq!(decoded.property("missing"), None);
         for end in 0..out.bytes().len() {
             assert!(
                 Reader::new(&out.bytes()[..end])
@@ -134,7 +393,7 @@ mod resource_wire_tests {
                     .is_err()
             );
         }
-        assert!(Reader::new(&[2, 0, 0, 0]).take::<crate::Side>().is_err());
+        assert!(Reader::new(&[3, 0, 0, 0]).take::<crate::Side>().is_err());
         assert!(
             Reader::new(&[2, 0, 0, 0])
                 .take::<crate::PackageKind>()
@@ -163,7 +422,7 @@ layout_fields!("slot" => $width);
         }
     )+};
 }
-slot_keys!(u32; BlockEntityTypeKey, BlockKey, BoolGameRuleKey, DimensionKey, EffectKey, EnchantmentKey, EntityTypeKey, FluidKey, ItemKey, MenuKey, crate::client::particle_keys::ParticleKey, TagKey);
+slot_keys!(u32; BlockEntityTypeKey, BlockKey, BoolGameRuleKey, DimensionKey, EffectKey, EnchantmentKey, FluidKey, ItemKey, MenuKey, crate::client::particle_keys::ParticleKey, TagKey);
 slot_keys!(u64; UnresolvedFluid);
 
 impl Wire for crate::Identifier {
@@ -198,7 +457,12 @@ impl Wire for crate::ConfigPath {
         out.put_str(self.as_str());
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        Self::new(&input.take::<String>()?).map_err(|_| WireError::Invalid("invalid config path"))
+        let text = input.take::<String>()?;
+        if text.is_empty() {
+            Ok(Self::root())
+        } else {
+            Self::try_from(text).map_err(|_| WireError::Invalid("invalid config path"))
+        }
     }
 }
 impl Wire for crate::SpawnerKey {
@@ -303,6 +567,18 @@ impl Wire for crate::ItemStack {
 impl Wire for crate::ModelRef {
     layout_fields!("generation" => u64, "slot" => u32);
     const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::ModelRef));
+    const MIN: usize = 12;
+    fn put(&self, out: &mut Writer) {
+        out.put(&self.0);
+        out.put(&self.1);
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        Self::from_parts(input.take()?, input.take()?).map_err(WireError::Invalid)
+    }
+}
+impl Wire for crate::RenderPipelineRef {
+    layout_fields!("generation" => u64, "slot" => u32);
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::RenderPipelineRef));
     const MIN: usize = 12;
     fn put(&self, out: &mut Writer) {
         out.put(&self.0);
@@ -434,7 +710,7 @@ impl Wire for crate::ModBlockEntity {
 }
 
 impl Wire for crate::ItemPlace {
-    layout_fields!("tag" => u32, "0:PlayerSlot.player" => u128, "0:PlayerSlot.slot" => i32, "1:PlayerHand.player" => u128, "1:PlayerHand.hand" => crate::Hand, "2:PlayerCursor.menu" => crate::MenuRef, "3:BlockEntity.level" => crate::LevelRef, "3:BlockEntity.pos" => [i32;3], "3:BlockEntity.side" => Option<crate::Direction>, "3:BlockEntity.slot" => usize, "4:ItemEntity.id" => u32, "5:EntitySlot.entity" => u32, "5:EntitySlot.slot" => usize, "6:Nested.parent" => Box<crate::ItemPlace>, "6:Nested.slot" => usize, "7:MenuSlot.menu" => crate::MenuRef, "7:MenuSlot.slot" => usize, "8:Mod.provider" => String, "8:Mod.key" => u64, "9:Equipment.entity" => u32, "9:Equipment.slot" => crate::EquipmentSlot);
+    layout_fields!("tag" => u32, "0:PlayerSlot.player" => u128, "0:PlayerSlot.slot" => i32, "1:PlayerHand.player" => u128, "1:PlayerHand.hand" => crate::Hand, "2:PlayerCursor.menu" => crate::MenuRef, "3:BlockEntity.level" => crate::LevelRef, "3:BlockEntity.pos" => [i32;3], "3:BlockEntity.side" => Option<crate::Direction>, "3:BlockEntity.slot" => usize, "4:ItemEntity.id" => u32, "5:EntitySlot.entity" => u32, "5:EntitySlot.slot" => usize, "6:Nested.parent" => Box<crate::ItemPlace>, "6:Nested.slot" => usize, "7:MenuSlot.menu" => crate::MenuRef, "7:MenuSlot.slot" => usize, "8:Mod.provider" => String, "8:Mod.key" => u64, "9:Equipment.entity" => u32, "9:Equipment.slot" => crate::EquipmentSlot, "10:Scratch.0" => u64, "11:Strict.0" => Box<crate::ItemPlace>, "12:OneByOne.0" => Box<crate::ItemPlace>, "13:InfiniteMaterials.player" => u128, "13:InfiniteMaterials.inner" => Box<crate::ItemPlace>);
     const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::ItemPlace));
     const MIN: usize = 4;
     fn put(&self, out: &mut Writer) {
@@ -496,6 +772,23 @@ impl Wire for crate::ItemPlace {
                     out.put_str(provider);
                     out.put(key)
                 }
+                Scratch(id) => {
+                    out.put(&10u32);
+                    out.put(id)
+                }
+                Strict(inner) => {
+                    out.put(&11u32);
+                    out.put(inner)
+                }
+                OneByOne(inner) => {
+                    out.put(&12u32);
+                    out.put(inner)
+                }
+                InfiniteMaterials { player, inner } => {
+                    out.put(&13u32);
+                    out.put(player);
+                    out.put(inner)
+                }
             }
         });
     }
@@ -541,6 +834,13 @@ impl Wire for crate::ItemPlace {
                     provider: crate::wire::intern(&input.take::<String>()?)?,
                     key: input.take()?,
                 },
+                10 => Scratch(input.take()?),
+                11 => Strict(input.take()?),
+                12 => OneByOne(input.take()?),
+                13 => InfiniteMaterials {
+                    player: input.take()?,
+                    inner: input.take()?,
+                },
                 n => return Err(WireError::Tag(n)),
             })
         })
@@ -561,7 +861,9 @@ mod tests {
 
     #[test]
     fn wire_checked_values_and_garbage() {
+        super::layout_tests::install_layout_resources();
         round(crate::ConfigPath::new("example/options.toml").unwrap());
+        round(crate::ConfigPath::root());
         round(crate::SpawnerKey::new("example:spawner").unwrap());
         round(crate::CustomSpawners::vanilla());
         round(crate::Identifier::parse("example:thing").unwrap());
@@ -1210,7 +1512,7 @@ impl crate::wire::Wire for crate::TicketOwner {
 }
 #[allow(unreachable_patterns, unused_variables)]
 impl crate::wire::Wire for crate::Holder {
-    layout_fields!("tag" => u32, "0:Entity" => u32, "1:Player" => u128, "2:BlockEntity" => [i32;3], "3:Chunk" => [i32;2], "4:Level" => ());
+    layout_fields!("tag" => u32, "0:Entity" => u32, "1:Player" => u128, "2:BlockEntity" => [i32;3], "3:Chunk" => [i32;2], "4:Level" => (), "5:OriginalPlayer" => u64);
     const LAYOUT_SEED: u64 = crate::wire::layout_name("Holder");
     const MIN: usize = 4;
     fn put(&self, out: &mut crate::wire::Writer) {
@@ -1232,6 +1534,10 @@ impl crate::wire::Wire for crate::Holder {
                 out.put(f0);
             }
             Self::Level => out.put(&4u32),
+            Self::OriginalPlayer(f0) => {
+                out.put(&5u32);
+                out.put(f0);
+            }
             _ => {
                 out.fail(crate::wire::WireError::Invalid("unknown Holder"));
             }
@@ -1256,6 +1562,10 @@ impl crate::wire::Wire for crate::Holder {
                 out.put_owned(f0);
             }
             Self::Level => out.put_owned(4u32),
+            Self::OriginalPlayer(f0) => {
+                out.put_owned(5u32);
+                out.put_owned(f0);
+            }
             _ => {
                 out.fail(crate::wire::WireError::Invalid("unknown Holder"));
             }
@@ -1271,6 +1581,7 @@ impl crate::wire::Wire for crate::Holder {
                 2 => Self::BlockEntity(input.take()?),
                 3 => Self::Chunk(input.take()?),
                 4 => Self::Level,
+                5 => Self::OriginalPlayer(input.take()?),
                 tag => return Err(crate::wire::WireError::Tag(tag)),
             })
         })

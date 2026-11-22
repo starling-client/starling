@@ -1,0 +1,2 @@
+# starling-account's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+starling-account the_android_runtime_unpacks by-hand manual # needs the downloaded Android runtime archive in STARLING_TEST_JRE; timed by hand

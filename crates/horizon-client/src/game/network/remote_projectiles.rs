@@ -110,6 +110,19 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
     })
 }
 
+/// `ShulkerBullet.tick` on a server's client: only the server steers it, so
+/// the client moves it by its motion and applies the effects of the blocks it
+/// went through (`applyEffectsFromBlocks`): a bubble column pushes it. The
+/// surface's particles are the server's to send (`sendBubbleColumnParticles`).
+fn remote_bullet_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
+    p.set_old_pos_and_rot();
+    p.age += 1;
+    let from = p.position;
+    p.position = p.position.add_vector(p.velocity);
+    p.bubble_columns_along(w, from);
+    p.bubble_surfaces.clear();
+}
+
 /// A server's client ticks a projectile itself: it flies on between the
 /// tracker's updates (10 to 20 ticks apart) with its own gravity and drag,
 /// and a block stops it there; only the server decides what it hits.
@@ -311,6 +324,45 @@ impl Game<'_> {
         packet: &horizon_protocol::packets::play::AddEntity,
         rotation: (f32, f32),
     ) -> bool {
+        let id = packet.id;
+        self.remove_remote_projectile(id as u32);
+        self.spawn_remote_projectile_inner(kind, packet, rotation)
+    }
+
+    /// Whether the client tracks `id` already: asked by `AddEntity` before it tracks the new one.
+    pub(super) fn tracks_remote_entity(&self, id: i32) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(|r| r.tracked_entity(id).is_some())
+    }
+
+    /// `AddEntity`'s `spawn_remote_projectile`. Only an id the client already tracked (`replace`)
+    /// can still be in `falling` or `tnts`, so a new id skips those passes; the crystals and the
+    /// small lists are filtered every time, since the client adds to some of those itself.
+    pub(super) fn spawn_added_projectile(
+        &mut self,
+        p: &horizon_protocol::packets::play::AddEntity,
+        kind: &str,
+        rotation: (f32, f32),
+        replace: bool,
+    ) {
+        if replace {
+            self.spawn_remote_projectile(kind, p, rotation);
+        } else {
+            self.crystals.retain(|c| c.id != p.id as u32);
+            self.remove_remote_small_projectiles(p.id as u32);
+            self.spawn_remote_projectile_inner(kind, p, rotation);
+        }
+    }
+
+    /// `spawn_remote_projectile` without first removing an entity under the same id: for
+    /// `AddEntity` of an id the client does not track yet, which no list holds.
+    pub(super) fn spawn_remote_projectile_inner(
+        &mut self,
+        kind: &str,
+        packet: &horizon_protocol::packets::play::AddEntity,
+        rotation: (f32, f32),
+    ) -> bool {
         let id = packet.id as u32;
         let position = packet.position;
         let velocity = packet.velocity;
@@ -318,7 +370,6 @@ impl Game<'_> {
         let at = Vec3::new(position[0], position[1], position[2]);
         let velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
         let (yaw, pitch) = rotation;
-        self.remove_remote_projectile(id);
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
@@ -338,6 +389,7 @@ impl Game<'_> {
                 owner: None,
                 guest: None,
                 power: 4.0,
+                used_portal: false,
                 block_state: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
@@ -405,16 +457,8 @@ impl Game<'_> {
                     .next_int_bound(100_000)
                     .unwrap_or(0);
                 let time = super::dragon::Crystal::start_time(at, drawn, self.clock.still());
-                self.crystals.push(super::dragon::Crystal {
-                    attachment_lifetime: Default::default(),
-                    join: Default::default(),
-                    id,
-                    position: at,
-                    show_bottom: true,
-                    time,
-                    beam: None,
-                    invulnerable: false,
-                });
+                self.crystals
+                    .push(super::dragon::Crystal::new(id, at, true, time));
             }
             _ => {
                 let Some(k) = projectile_kind(kind) else {
@@ -749,29 +793,22 @@ impl Game<'_> {
             let w = self.mob_world_base(&[]);
             let world = super::creatures::ProjWorld {
                 w: &w,
-                targets: Vec::new(),
+                targets: &[],
                 border: Some(self.border.bounds()),
             };
-            projectiles.for_each_mut(|p| {
-                match p.kind {
-                    ProjectileKind::Arrow { .. } => {
-                        let _ = horizon_client::arrows::tick_client(p, &arrow_scene);
-                        if let Some(a) = p.arrow.as_mut() {
-                            arrow_events.extend(
-                                std::mem::take(&mut a.events)
-                                    .into_iter()
-                                    .map(|event| (p.position, event)),
-                            );
-                        }
+            projectiles.for_each_mut(|p| match p.kind {
+                ProjectileKind::Arrow { .. } => {
+                    let _ = horizon_client::arrows::tick_client(p, &arrow_scene);
+                    if let Some(a) = p.arrow.as_mut() {
+                        arrow_events.extend(
+                            std::mem::take(&mut a.events)
+                                .into_iter()
+                                .map(|event| (p.position, event)),
+                        );
                     }
-                    // ShulkerBullet.tick: only the server steers it.
-                    ProjectileKind::ShulkerBullet { .. } => {
-                        p.set_old_pos_and_rot();
-                        p.age += 1;
-                        p.position = p.position.add_vector(p.velocity);
-                    }
-                    _ => remote_projectile_tick(p, &world),
                 }
+                ProjectileKind::ShulkerBullet { .. } => remote_bullet_tick(p, &world),
+                _ => remote_projectile_tick(p, &world),
             });
             for t in &mut tridents {
                 t.remote_tick(&world, self.remote_eye(t.owner));
@@ -809,11 +846,14 @@ impl Game<'_> {
         #[cfg(test)]
         nested_spawn_tests::after_lift(self, nested_spawn_tests::Point::RemoteRocket);
         for r in &mut rockets {
-            r.remote_step(&mut SceneCollisions {
-                world: &self.world,
-                binding: self.collision,
-                subject: None,
-            });
+            r.remote_step(
+                &mut SceneCollisions {
+                    world: &self.world,
+                    binding: self.collision,
+                    subject: None,
+                },
+                &self.loop_context,
+            );
             if let Some(target) = r.attached_to {
                 if me == Some(target) {
                     continue;
@@ -953,6 +993,47 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &[]
         }
+    }
+
+    /// An upward bubble column at (0, 100, 0) with water over it.
+    struct Column;
+    impl ProjectileWorld for Column {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
+            (p == [0, 100, 0]).then_some((false, false))
+        }
+    }
+
+    /// `ShulkerBullet.tick` applies the blocks' effects on the client too
+    /// (`applyEffectsFromBlocks` after its move), so a bullet in a bubble
+    /// column gets `Projectile.onInsideBubbleColumn`'s 0.06 up and its fall
+    /// reset there, between the server's updates.
+    #[test]
+    fn a_client_shulker_bullet_in_a_bubble_column_is_pushed_up() {
+        let mut p = Projectile::new(
+            ProjectileKind::ShulkerBullet {
+                target: Some(Who::Player),
+                dir: None,
+                steps: 0,
+                delta: [0.0; 3],
+                seed: 0,
+            },
+            Vec3::new(0.5, 100.1, 0.5),
+            None,
+        );
+        p.fall_distance = 5.0;
+        remote_bullet_tick(&mut p, &Column);
+        assert_eq!(p.velocity, Vec3::new(0.0, 0.06, 0.0));
+        assert_eq!(p.fall_distance, 0.0);
+        assert!(p.bubble_surfaces.is_empty());
     }
 
     /// A thrown item, as a server's client tracks it: the spawn position and

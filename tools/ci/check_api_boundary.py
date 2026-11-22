@@ -284,6 +284,15 @@ def check(crate: Path):
     return findings
 
 
+def vocab_output(path: Path) -> bool:
+    """Whether `path` is in horizon-mod-vocab's build script output: `build/horizon-mod-vocab-<hash>/out`, or
+    `build/horizon-mod-vocab/<hash>/out` in the layout newer Cargo writes (Starling: its `checks` builds with
+    `+stable`, which found none in the old layout's place)."""
+    build = path.parent.parent
+    return bool(re.fullmatch(r"horizon-mod-vocab-[0-9a-f]+", build.name)) or (
+        bool(re.fullmatch(r"[0-9a-f]+", build.name)) and build.parent.name == "horizon-mod-vocab")
+
+
 def generated_findings(target: Path):
     """Scan the freshest vocabulary build output, never a fixture crate or stale profile.
 
@@ -291,8 +300,7 @@ def generated_findings(target: Path):
     from generation. Checking only the catalog would miss those public types.
     Cargo must run first; callers may not silently skip missing build output.
     """
-    candidates = [p for p in target.rglob("mod_api_generated.rs")
-                  if re.fullmatch(r"horizon-mod-vocab-[0-9a-f]+", p.parent.parent.name)]
+    candidates = [p for p in target.rglob("mod_api_generated.rs") if vocab_output(p)]
     if not candidates:
         return [Finding(str(target), 1, "missing-generated", "build horizon-mod-vocab before the full boundary audit")]
     newest = max(candidates, key=lambda p: p.stat().st_mtime_ns)

@@ -79,6 +79,7 @@ pub(super) fn synchronous_startup(options: &Options) -> bool {
         || std::env::var_os("HORIZON_SCREEN_BUILD_FIXTURE").is_some()
         || std::env::var_os("HORIZON_DISPENSE_FIXTURE").is_some()
         || std::env::var_os("HORIZON_SCULK_FIXTURE").is_some()
+        || std::env::var_os("HORIZON_HOT_PATHS").is_some()
         || std::env::var_os("HORIZON_COMMAND_SCRIPT").is_some()
         || std::env::var_os("HORIZON_NET_REPORT").is_some()
 }
@@ -108,7 +109,7 @@ pub(super) fn named_scope<'scope, T: Send + 'scope>(
     let inherited = mod_api::testing::inherit_mods(move |_: &()| f());
     #[cfg(test)]
     let f = move || inherited(&());
-    std::thread::Builder::new()
+    horizon_guest_stack::builder()
         // Linux keeps 15 bytes of a thread name: a short prefix keeps them apart
         // ("horizon-load-core" and "horizon-load-collision" would both read
         // "horizon-load-co").
@@ -375,6 +376,13 @@ pub(super) fn gameplay_tables(
                 motion.attributes =
                     std::sync::Arc::new(with_mod_attributes(&motion.attributes, declared)?);
             }
+            // #3728: then the bounds mods widen, on vanilla's attributes and
+            // the declared ones alike, before anything reads a definition.
+            let widenings = mod_api::__private::attribute_bounds_widenings();
+            if !widenings.is_empty() {
+                motion.attributes =
+                    std::sync::Arc::new(with_mod_widened_bounds(&motion.attributes, widenings)?);
+            }
             // #845: a mod's declared attribute sets
             // (`EntityAttributeCreationEvent`) become their entity types' rows
             // in the live attribute map's catalog — the one record the mob
@@ -439,10 +447,30 @@ pub(super) fn with_mod_attributes(
                 )
                 .map_err(|error| format!("mod attribute {}: {error}", declared.id))?,
                 syncable: declared.syncable,
-                sentiment: match declared.sentiment {
-                    mod_api::Sentiment::Positive => horizon_world::attributes::Sentiment::Positive,
-                    mod_api::Sentiment::Negative => horizon_world::attributes::Sentiment::Negative,
-                    mod_api::Sentiment::Neutral => horizon_world::attributes::Sentiment::Neutral,
+                tooltip: horizon_world::attributes::Tooltip {
+                    sentiment: match declared.sentiment {
+                        mod_api::Sentiment::Positive => {
+                            horizon_world::attributes::Sentiment::Positive
+                        }
+                        mod_api::Sentiment::Negative => {
+                            horizon_world::attributes::Sentiment::Negative
+                        }
+                        mod_api::Sentiment::Neutral => {
+                            horizon_world::attributes::Sentiment::Neutral
+                        }
+                    },
+                    display: match declared.tooltip.display {
+                        mod_api::AttributeDisplay::Ranged => {
+                            horizon_world::attributes::Display::Ranged
+                        }
+                        mod_api::AttributeDisplay::Percentage => {
+                            horizon_world::attributes::Display::Percentage
+                        }
+                        mod_api::AttributeDisplay::Boolean => {
+                            horizon_world::attributes::Display::Boolean
+                        }
+                    },
+                    base_modifier: declared.tooltip.base_modifier.clone(),
                 },
             })
         })
@@ -450,6 +478,28 @@ pub(super) fn with_mod_attributes(
     catalog
         .with_attributes(&added)
         .map_err(|error| format!("mod attribute declarations: {error}"))
+}
+
+/// The catalog with the attribute bounds mods widened (#3728,
+/// `Registrar::widen_attribute_bounds`): the union of every ask, whatever the
+/// load order. An unknown attribute, or a range without the attribute's
+/// default, refuses the load, naming the mod.
+pub(super) fn with_mod_widened_bounds(
+    catalog: &horizon_world::attributes::entity::Catalog,
+    widenings: &[mod_api::__private::AttributeBoundsWidening],
+) -> std::result::Result<horizon_world::attributes::entity::Catalog, String> {
+    let asks: Vec<_> = widenings
+        .iter()
+        .map(|ask| horizon_world::attributes::entity::WidenedBounds {
+            mod_id: ask.mod_id.clone(),
+            id: ask.id.clone(),
+            min: ask.min,
+            max: ask.max,
+        })
+        .collect();
+    catalog
+        .with_widened_bounds(&asks)
+        .map_err(|error| format!("mod attribute bounds: {error}"))
 }
 
 /// The catalog with the attributes mods add to existing entity types
@@ -540,7 +590,13 @@ pub(super) fn load_resources(
         if headless {
             UiResources::server(source)
         } else {
-            UiResources::load(source)
+            UiResources::load(source).map(|ui| {
+                ui.with_splashes(
+                    source,
+                    vanilla_root,
+                    settings.extras.skip_modded_splashes_if_vanilla_modified,
+                )
+            })
         }
     };
     // The menu bundle loads on this thread while workers build the world
@@ -600,6 +656,9 @@ pub(super) fn load_resources(
         );
         resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
     };
+    // Every loaded game publishes scalar registry keys, including callers that
+    // load a prepared root directly instead of building a mod content overlay.
+    crate::game::mods::register_iterated_registries(resolved.prepared())?;
     log::info!("load core tables: {:.2}s", started.elapsed().as_secs_f32());
     let CoreTables {
         item_data,
@@ -623,6 +682,18 @@ pub(super) fn load_resources(
     } = core;
     let assets = Arc::new(assets);
     let render = Arc::new(render);
+    // The namespaces of the mod block states registered now: what every level.dat saved from
+    // here on records, and what a world is checked against before it opens (`level_mods`). A
+    // launch world's data preload, which may already have started, reads no mod records; its
+    // open, which checks them, waits for these resources.
+    {
+        use horizon_client::save::level_mods;
+        let registry = assets.registry;
+        let names = (0..registry.len() as u32)
+            .filter_map(|id| registry.state(horizon_world::registry::BlockStateId(id)))
+            .map(|state| state.name.as_str());
+        level_mods::set_block_namespaces(Some(level_mods::mod_namespaces(names)));
+    }
     if let Some(folder) = launch_world {
         world_loading::preload_launch_world(
             folder,
@@ -636,6 +707,7 @@ pub(super) fn load_resources(
     }
     api_values::resolve_block_definitions(assets.registry)?;
     mods::extend_poi_types(assets.registry);
+    mods::register_cauldron_fluid_contents(assets.registry);
     let tables = Arc::new(startup::time("pack.mesh_tables", || {
         MeshTables::new(
             &assets,
@@ -701,11 +773,11 @@ pub(super) fn load_resources(
         let entity_models = entity_models.clone();
         let rest_progress = progress.clone();
         let progress = progress.clone();
-        let handle = std::thread::Builder::new()
+        let handle = horizon_guest_stack::builder()
             .name("world-rest-loader".into())
             .spawn(move || {
                 let _step = startup::step("rest");
-                let rest = load_world_rest(
+                let rest = world_rest::load_world_rest(
                     &resource_root,
                     &resources,
                     &assets,
@@ -736,7 +808,7 @@ pub(super) fn load_resources(
             handle,
         })
     } else {
-        let rest = load_world_rest(
+        let rest = world_rest::load_world_rest(
             &resolved,
             &resources,
             &assets,
@@ -831,7 +903,7 @@ pub(super) fn write_prepared_files(root: PathBuf) {
     if prepared_files::open(&root).is_some() || !root.join("horizon-resources.json").is_file() {
         return;
     }
-    let spawned = std::thread::Builder::new()
+    let spawned = horizon_guest_stack::builder()
         .name("Prepared data file".into())
         .spawn(move || {
             horizon_threads::idle_current();

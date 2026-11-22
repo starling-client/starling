@@ -20,10 +20,7 @@ pub enum LoopSide {
     /// A client loop.
     Client,
 }
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The permission boundary of the current owning thread. Only the game advances it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,18 +40,6 @@ pub enum ModPhase {
     /// Restricted data or asset loading, including published resource queries,
     /// returning to its entering phase.
     Reloading,
-}
-
-#[derive(Clone, Copy)]
-struct PhaseState {
-    phase: ModPhase,
-    resume: Option<ModPhase>,
-}
-
-thread_local! {
-    static PHASE: std::cell::Cell<PhaseState> = const { std::cell::Cell::new(PhaseState {
-        phase: if cfg!(test) { ModPhase::World } else { ModPhase::Packages }, resume: None,
-    }) };
 }
 
 /// A refused engine transition never changes the phase or dispatches a hook.
@@ -79,28 +64,68 @@ impl std::fmt::Display for PhaseError {
 }
 impl std::error::Error for PhaseError {}
 
+// no wire: plain phase snapshot for the engine-owned load-state socket.
+// hidden: platform-owned instrumentation plumbing, not a mod authoring surface.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+// exhaustive: the platform or fixture constructs this process-local record as a complete unit.
+pub struct PhaseState {
+    pub phase: ModPhase,
+    pub resume: Option<ModPhase>,
+}
 // no wire: thread-bound phase authority or RAII restoration guard; never transferred as data.
 /// Engine-only authority for one thread; moving it does not transfer authority.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct PhaseOwner {
     thread: std::thread::ThreadId,
+    fallback: Arc<std::sync::Mutex<PhaseState>>,
 }
 impl PhaseOwner {
     /// Bind a new owning thread (or a loader) to its initial phase. Registration
     /// is process-owned; a new side starts at Setup after those tables are frozen.
     pub fn new(initial: ModPhase) -> Self {
-        PHASE.set(PhaseState {
+        let state = PhaseState {
             phase: initial,
             resume: None,
-        });
-        Self {
+        };
+        let owner = Self {
             thread: std::thread::current().id(),
+            fallback: Arc::new(std::sync::Mutex::new(state)),
+        };
+        owner.write_state(state);
+        owner
+    }
+    fn read_state(&self) -> PhaseState {
+        crate::dispatch_scope::backend().map_or_else(
+            || {
+                *self
+                    .fallback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+            },
+            |backend| (backend.phase_state)(),
+        )
+    }
+    fn write_state(&self, state: PhaseState) {
+        if let Some(backend) = crate::dispatch_scope::backend() {
+            (backend.set_phase)(state);
+        } else {
+            *self
+                .fallback
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = state;
         }
     }
     /// A loader's temporary thread-local phase; the calling thread's state is restored.
     pub fn scope(initial: ModPhase) -> PhaseScope {
-        let previous = PHASE.with(std::cell::Cell::get);
+        let previous = crate::dispatch_scope::backend().map_or(
+            PhaseState {
+                phase: current_phase(),
+                resume: None,
+            },
+            |backend| (backend.phase_state)(),
+        );
         PhaseScope {
             owner: Self::new(initial),
             previous,
@@ -112,8 +137,8 @@ impl PhaseOwner {
         if self.thread != std::thread::current().id() {
             return Err(PhaseError::WrongThread);
         }
-        PHASE.with(|cell| {
-            let mut state = cell.get();
+        {
+            let mut state = self.read_state();
             let from = state.phase;
             match (from, to) {
                 (ModPhase::Packages, ModPhase::Registration)
@@ -130,9 +155,9 @@ impl PhaseOwner {
                 _ => return Err(PhaseError::Transition { from, to }),
             }
             state.phase = to;
-            cell.set(state);
+            self.write_state(state);
             Ok(())
-        })
+        }
     }
     /// Load configs before returning to normal runtime, including on failure.
     pub fn config(&self) -> Result<PhaseGuard<'_>, PhaseError> {
@@ -145,7 +170,7 @@ impl PhaseOwner {
     }
     /// Nest a reload in Setup or World; errors and panics restore the caller's phase.
     pub fn reloading(&self) -> Result<PhaseGuard<'_>, PhaseError> {
-        let resume = current_phase();
+        let resume = self.read_state().phase;
         self.advance(ModPhase::Reloading)?;
         Ok(PhaseGuard {
             owner: self,
@@ -171,7 +196,7 @@ impl std::ops::Deref for PhaseScope {
 }
 impl Drop for PhaseScope {
     fn drop(&mut self) {
-        PHASE.set(self.previous);
+        self.owner.write_state(self.previous);
     }
 }
 
@@ -191,11 +216,17 @@ impl Drop for PhaseGuard<'_> {
     }
 }
 
-/// The phase of this thread, used in refusal diagnostics.
+/// The current owning phase, or the initial phase before the platform installs its reader.
 pub fn current_phase() -> ModPhase {
-    PHASE.with(|cell| cell.get().phase)
+    crate::dispatch_scope::backend().map_or(
+        if cfg!(test) {
+            ModPhase::World
+        } else {
+            ModPhase::Packages
+        },
+        |backend| (backend.current_phase)(),
+    )
 }
-
 /// The catalog-owned access class of a generated game operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -219,7 +250,9 @@ pub(crate) fn unprovided(method: &'static str, operation: &'static str, access: 
 }
 
 /// One cell read at the generated API boundary, not a tick scan or registry lookup.
-/// A refused mod call panics so a listener cannot ignore a Result and continue.
+/// Native callers currently panic on refusal. The wasm host dispatcher checks
+/// `access_allowed` before entering these methods and returns a named phase refusal
+/// instead; the guest must never consult its own independent phase state.
 #[inline]
 pub fn check_access(operation: &str, access: LoadAccess) {
     assert!(
@@ -278,8 +311,9 @@ pub struct PackageInfo {
     pub(crate) side: crate::Side,
     /// Its own namespace, then the others it declares.
     pub(crate) namespaces: Vec<String>,
-    /// The ids it declares dependencies on.
-    pub(crate) dependencies: Vec<String>,
+    /// Its `[dependencies]` rows, sorted by id.
+    pub(crate) dependencies: Vec<crate::PackageDependency>,
+    pub(crate) details: crate::PackageDetails,
 }
 
 impl PackageInfo {
@@ -290,7 +324,7 @@ impl PackageInfo {
         kind: PackageKind,
         side: crate::Side,
         namespaces: Vec<String>,
-        dependencies: Vec<String>,
+        dependencies: Vec<crate::PackageDependency>,
     ) -> Self {
         Self {
             id,
@@ -299,7 +333,13 @@ impl PackageInfo {
             side,
             namespaces,
             dependencies,
+            details: crate::PackageDetails::default(),
         }
+    }
+    /// The same snapshot with the manifest's descriptive fields.
+    pub fn with_details(mut self, details: crate::PackageDetails) -> Self {
+        self.details = details;
+        self
     }
     /// Package identifier.
     pub fn id(&self) -> &str {
@@ -323,77 +363,48 @@ impl PackageInfo {
     }
     /// Whether this package declares a dependency on `id`.
     pub fn depends_on(&self, id: &str) -> bool {
-        self.dependencies.iter().any(|d| d == id)
+        self.dependencies.iter().any(|d| d.id() == id)
     }
-}
-
-static PACKAGES: OnceLock<Arc<[PackageInfo]>> = OnceLock::new();
-
-#[cfg(any(test, feature = "testing"))]
-thread_local! {
-    static TEST_PACKAGES: std::cell::RefCell<Option<Arc<[PackageInfo]>>> = const { std::cell::RefCell::new(None) };
-}
-/// Runs `f` with only the packages `ids` installed, for tests.
-#[cfg(any(test, feature = "testing"))]
-pub fn with_test_packages<R>(ids: &[&str], f: impl FnOnce() -> R) -> R {
-    let packages: Vec<_> = ids
-        .iter()
-        .map(|id| {
-            PackageInfo::new(
-                (*id).to_owned(),
-                "1".to_owned(),
-                PackageKind::Code,
-                crate::Side::Client,
-                vec![(*id).to_owned()],
-                vec![],
-            )
-        })
-        .collect();
-    with_test_package_inventory(packages, f)
-}
-
-#[cfg(any(test, feature = "testing"))]
-pub(crate) fn with_test_package_inventory<R>(
-    packages: Vec<PackageInfo>,
-    f: impl FnOnce() -> R,
-) -> R {
-    let previous = TEST_PACKAGES.replace(Some(packages.into()));
-    let result = f();
-    TEST_PACKAGES.set(previous);
-    result
-}
-
-fn inventory(native: &[PackageInfo], content: &[PackageInfo]) -> Vec<PackageInfo> {
-    let mut packages = native.to_vec();
-    for selected in content {
-        if !packages.iter().any(|p| p.id() == selected.id()) {
-            packages.push(selected.clone());
-        }
+    /// Its declared dependencies, sorted by id.
+    pub fn dependencies(&self) -> &[crate::PackageDependency] {
+        &self.dependencies
     }
-    // The code inventory follows the one installed native/wasm dispatch slice;
-    // content-only packages remain after it in their selected layer order.
-    packages.sort_by_key(|p| {
-        crate::mods()
-            .iter()
-            .position(|entry| entry.id == p.id)
-            .unwrap_or(usize::MAX)
-    });
-    packages
-}
-
-/// Records the package inventory once at startup; a second call panics.
-pub fn install_packages(native: &[PackageInfo], content: &[PackageInfo]) {
-    assert!(
-        PACKAGES.set(inventory(native, content).into()).is_ok(),
-        "package inventory already installed"
-    );
-}
-
-/// Install the host's ordered package inventory in a guest at initialization.
-// hidden: the guest runtime installs this once before dispatching hooks.
-#[doc(hidden)]
-pub fn install_guest_packages(packages: Vec<PackageInfo>) {
-    let _ = PACKAGES.set(packages.into());
+    /// The display name; empty when the snapshot carries no manifest details.
+    pub fn name(&self) -> &str {
+        &self.details.name
+    }
+    /// The description, or empty.
+    pub fn description(&self) -> &str {
+        &self.details.description
+    }
+    /// The authors, in manifest order.
+    pub fn authors(&self) -> &[String] {
+        &self.details.authors
+    }
+    /// The license name, or empty.
+    pub fn license(&self) -> &str {
+        &self.details.license
+    }
+    /// The home page link.
+    pub fn homepage(&self) -> Option<&str> {
+        self.details.homepage.as_deref()
+    }
+    /// Where to report problems.
+    pub fn issues(&self) -> Option<&str> {
+        self.details.issues.as_deref()
+    }
+    /// The icon's path inside the package, such as `icon.png`.
+    pub fn icon_path(&self) -> Option<&str> {
+        self.details.icon_path.as_deref()
+    }
+    /// How its code runs; `None` for a content package.
+    pub fn runtime(&self) -> Option<crate::PackageRuntime> {
+        self.details.runtime
+    }
+    /// One value of its manifest's `[properties]` table.
+    pub fn property(&self, key: &str) -> Option<&crate::PropertyValue> {
+        self.details.properties.get(key)
+    }
 }
 
 // no wire: shared immutable loader inventory; contexts query it through LoadReader rather than transferring its Arc storage.
@@ -404,10 +415,14 @@ pub fn install_guest_packages(packages: Vec<PackageInfo>) {
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct RegistrationData {
     instance_dir: crate::InstanceDirectory,
+    runtime: crate::RuntimeEnvironment,
     /// Built-in registry names in ID order, by registry name.
     pub(crate) registries: Arc<[(String, Arc<[String]>)]>,
     /// Each loaded mod's settings, by mod ID then key.
     pub(crate) settings: Arc<[(String, Arc<[(String, String)]>)]>,
+    /// The same load-owned behavior owners that supply the game's default providers.
+    capability_coverage: Option<fn(crate::ProvidedBy, &str, &str) -> bool>,
+    block_entity_coverage: Option<fn(&str, &str) -> bool>,
 }
 
 impl RegistrationData {
@@ -417,9 +432,13 @@ impl RegistrationData {
         registries: BTreeMap<String, Vec<String>>,
         settings: BTreeMap<String, BTreeMap<String, String>>,
         instance_dir: crate::InstanceDirectory,
+        runtime: crate::RuntimeEnvironment,
     ) -> Self {
         Self {
             instance_dir,
+            runtime,
+            capability_coverage: None,
+            block_entity_coverage: None,
             registries: registries
                 .into_iter()
                 .map(|(name, ids)| (name, ids.into()))
@@ -429,6 +448,16 @@ impl RegistrationData {
                 .map(|(id, values)| (id, values.into_iter().collect()))
                 .collect(),
         }
+    }
+    /// Bind the game's pure type-coverage projection. It reads no world or runtime position.
+    pub fn with_capability_coverage(
+        mut self,
+        coverage: fn(crate::ProvidedBy, &str, &str) -> bool,
+        block_entity_coverage: fn(&str, &str) -> bool,
+    ) -> Self {
+        self.capability_coverage = Some(coverage);
+        self.block_entity_coverage = Some(block_entity_coverage);
+        self
     }
     fn registry(&self, name: &str) -> Option<Arc<[String]>> {
         let at = self
@@ -449,38 +478,26 @@ impl RegistrationData {
     }
 }
 
-static REGISTRATION_DATA: OnceLock<RegistrationData> = OnceLock::new();
-
-#[cfg(any(test, feature = "testing"))]
-thread_local! {
-    static TEST_REGISTRATION_DATA: std::cell::RefCell<Option<RegistrationData>> = const { std::cell::RefCell::new(None) };
-}
-/// Runs `f` with `data` as the registration data, for tests.
-#[cfg(any(test, feature = "testing"))]
-pub fn with_test_registration_data<R>(data: RegistrationData, f: impl FnOnce() -> R) -> R {
-    TEST_REGISTRATION_DATA.set(Some(data));
-    let result = f();
-    TEST_REGISTRATION_DATA.set(None);
-    result
-}
-
 fn registration_data() -> Option<RegistrationData> {
-    #[cfg(any(test, feature = "testing"))]
-    if let Some(data) = TEST_REGISTRATION_DATA.with_borrow(Clone::clone) {
-        return Some(data);
+    crate::dispatch_scope::backend().and_then(|backend| (backend.registration_data)())
+}
+
+pub(crate) fn game_capability_registered(by: crate::ProvidedBy, name: &str, id: &str) -> bool {
+    if matches!(by, crate::ProvidedBy::Item)
+        && crate::parts::installation::builtin_item_capability_registered(name, id)
+    {
+        return true;
     }
-    REGISTRATION_DATA.get().cloned()
+    registration_data()
+        .and_then(|data| data.capability_coverage)
+        .is_some_and(|coverage| coverage(by, name, id))
 }
 
-/// Records the registries and settings registration reads, once at startup, after the
-/// package inventory and before the first registration hook; a second call panics.
-pub fn install_registration_data(data: RegistrationData) {
-    assert!(
-        REGISTRATION_DATA.set(data).is_ok(),
-        "registration data already installed"
-    );
+pub(crate) fn block_entity_covers(kind: &str, block: &str) -> bool {
+    registration_data()
+        .and_then(|data| data.block_entity_coverage)
+        .is_some_and(|coverage| coverage(kind, block))
 }
-
 /// Read-only view of the startup package inventory, shared: cloning it copies no package.
 // no wire: zero-byte phase token: decoding rebinds the installed package inventory rather than transferring entries.
 #[derive(Clone)]
@@ -491,12 +508,13 @@ pub struct LoadedMods {
 
 impl LoadedMods {
     pub(crate) fn new() -> Self {
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         if let Some(entries) = TEST_PACKAGES.with_borrow(Clone::clone) {
             return Self { entries };
         }
         Self {
-            entries: PACKAGES.get().cloned().unwrap_or_else(|| Arc::new([])),
+            entries: crate::dispatch_scope::backend()
+                .map_or_else(|| Arc::from([]), |backend| (backend.packages)()),
         }
     }
 
@@ -572,26 +590,57 @@ impl std::error::Error for RegistrationReadError {}
 /// }
 /// ```
 // exhaustive: its fields are private, so mods cannot build or destructure it
-// no wire: phase context has a custom Wire layout for its derived directory value; other host tables rebind locally.
+// no wire: phase context has a custom Wire layout for its derived directory value and the game's startup screen (a held resource); other host tables rebind locally.
 pub struct RegistrationContext {
     pub(crate) mods: LoadedMods,
     pub(crate) data: Option<RegistrationData>,
     pub(crate) declaration_refusals: std::sync::Mutex<Vec<String>>,
     pub(crate) self_refusal: std::sync::Mutex<Option<String>>,
+    pub(crate) warnings: std::sync::Mutex<Vec<crate::LoadingMessage>>,
     pub(crate) instance_dir: Option<crate::InstanceDirectory>,
+    /// The game's startup screen, for [`progress`](Self::progress) and
+    /// [`message`](Self::message); none without a game.
+    pub(crate) startup: Option<Arc<dyn crate::StartupScreen>>,
+    pub(crate) runtime: Option<crate::RuntimeEnvironment>,
 }
 
 impl RegistrationContext {
     pub(crate) fn new() -> Self {
         let data = registration_data();
         let instance_dir = data.as_ref().map(|data| data.instance_dir.clone());
+        let runtime = data.as_ref().map(|data| data.runtime.clone());
         Self {
             mods: LoadedMods::new(),
             data,
             declaration_refusals: Default::default(),
             self_refusal: Default::default(),
+            warnings: Default::default(),
             instance_dir,
+            startup: crate::world::startup_progress::installed(),
+            runtime,
         }
+    }
+
+    /// Physical process, independent of the logical side of a hook.
+    pub fn dist(&self) -> crate::Dist {
+        self.runtime().dist()
+    }
+    /// Exact Minecraft version captured before registration.
+    pub fn game_version(&self) -> &str {
+        self.runtime().game_version()
+    }
+    /// Horizon version, identical to the crash report's version.
+    pub fn horizon_version(&self) -> &str {
+        self.runtime().horizon_version()
+    }
+    /// Startup opt-in for test-only content; does not gate test registration.
+    pub fn game_tests_enabled(&self) -> bool {
+        self.runtime().game_tests_enabled()
+    }
+    fn runtime(&self) -> &crate::RuntimeEnvironment {
+        self.runtime
+            .as_ref()
+            .expect("registration runtime environment is installed")
     }
 
     /// The instance directory captured before registration, identically on native
@@ -858,6 +907,15 @@ pub trait WorldgenHost {
 
     /// The same loaded-mod view available during registration.
     fn mods(&self) -> LoadedMods;
+
+    /// `BlockState.setValue`: `state` with its property `key` set to `value`; `state` itself
+    /// when it already has that value, None when its block has no such property or value.
+    fn state_with_property(
+        &self,
+        state: crate::BlockState,
+        key: &str,
+        value: &str,
+    ) -> Option<crate::BlockState>;
 }
 
 // no wire: borrowed phase-scoped host readers; authority stays with their owning thread.
@@ -868,18 +926,26 @@ pub trait WorldgenHost {
 pub struct OwningWorldgen<'a> {
     registry: &'a dyn Fn(&str) -> Option<Arc<[String]>>,
     setting: &'a dyn Fn(&str, &str) -> Option<String>,
+    state_with_property: &'a StateWithProperty<'a>,
     mods: LoadedMods,
 }
 
+/// `BlockState.setValue` as the game answers it for [`OwningWorldgen`].
+type StateWithProperty<'a> =
+    dyn Fn(crate::BlockState, &str, &str) -> Option<crate::BlockState> + 'a;
+
 impl<'a> OwningWorldgen<'a> {
-    /// The server's registries and mod settings, read through the game's worldgen context.
+    /// The server's registries, mod settings and block states, read through the game's
+    /// worldgen context.
     pub fn new(
         registry: &'a dyn Fn(&str) -> Option<Arc<[String]>>,
         setting: &'a dyn Fn(&str, &str) -> Option<String>,
+        state_with_property: &'a StateWithProperty<'a>,
     ) -> Self {
         Self {
             registry,
             setting,
+            state_with_property,
             mods: LoadedMods::new(),
         }
     }
@@ -895,456 +961,128 @@ impl WorldgenHost for OwningWorldgen<'_> {
     fn mods(&self) -> LoadedMods {
         self.mods.clone()
     }
+    fn state_with_property(
+        &self,
+        state: crate::BlockState,
+        key: &str,
+        value: &str,
+    ) -> Option<crate::BlockState> {
+        (self.state_with_property)(state, key, value)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolved_dispatch_slice_keeps_order_in_registration_config_and_reload() {
-        use crate::*;
-        use std::sync::Mutex;
-        struct Trace {
-            id: &'static str,
-            calls: Arc<Mutex<Vec<(&'static str, &'static str)>>>,
-        }
-        #[crate::__subscriptions]
-        impl Hooks for Trace {
-            fn register(&self, _: &mut dyn Registrar, _: &RegistrationContext) {
-                assert_eq!(current_phase(), ModPhase::Registration);
-                self.calls.lock().unwrap().push(("register", self.id));
-            }
-            fn config_loading(&self, _: HostSide<'_>, _: &mut ConfigLoadingEvent<'_>) {
-                assert_eq!(current_phase(), ModPhase::Config);
-                self.calls.lock().unwrap().push(("config", self.id));
-            }
-            fn add_server_reload_listeners(
-                &self,
-                _: &dyn Host,
-                _: &mut AddServerReloadListenersEvent<'_>,
-            ) {
-                assert_eq!(current_phase(), ModPhase::Reloading);
-                self.calls.lock().unwrap().push(("reload", self.id));
-            }
-        }
-        struct Server;
-        impl Host for Server {}
-        mod_api::impl_host_areas!(Server);
-        impl ServerHost for Server {}
-        mod_api::impl_server_host_areas!(Server);
-        // The loader supplies a dependency-resolved slice; phase dispatch must retain it.
-        let order = [1, 0, 2];
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let ids = ["z", "lib", "a"];
-        let mods: Mods = order
-            .into_iter()
-            .map(|i| {
-                ModEntry::new(
-                    ids[i],
-                    Box::new(Trace {
-                        id: ids[i],
-                        calls: calls.clone(),
-                    }),
-                )
-            })
-            .collect::<Vec<_>>()
-            .into();
-        crate::install(mods.clone());
-        let owner = PhaseOwner::new(ModPhase::Packages);
-        owner.advance(ModPhase::Registration).unwrap();
-        crate::install_parts(&mods, &crate::parts::tests::rule_schema(), |_| false).unwrap();
-        owner.advance(ModPhase::Setup).unwrap();
-        let mut host = Server;
-        for _world in 0..2 {
-            {
-                let _config = owner.config().unwrap();
-                dispatch_config_loading(
-                    HostSide::Server(&mut host),
-                    &ConfigFile {
-                        mod_id: "lib".into(),
-                        kind: ConfigKind::Server,
-                        file: "lib-server.toml".into(),
-                        text: String::new(),
-                    },
-                );
-            }
-            for _reload in 0..2 {
-                let _reload = owner.reloading().unwrap();
-                dispatch_add_server_reload_listeners(&host, &mut ServerListenerRegistry::new());
-            }
-        }
-        let expected = [
-            "register", "config", "reload", "reload", "config", "reload", "reload",
-        ]
-        .into_iter()
-        .flat_map(|moment| ["lib", "z", "a"].map(|id| (moment, id)))
-        .collect::<Vec<_>>();
-        assert_eq!(*calls.lock().unwrap(), expected);
-    }
-
-    #[test]
-    fn phase_edges_are_exhaustive_and_refusal_leaves_state_unchanged() {
-        use ModPhase::*;
-        let phases = [Packages, Registration, Setup, Config, World, Reloading];
-        let edges = [
-            (Packages, Registration),
-            (Registration, Setup),
-            (Setup, Config),
-            (Config, World),
-            (World, Config),
-            (Setup, Reloading),
-            (World, Reloading),
-        ];
-        for from in phases {
-            for to in phases {
-                let owner = PhaseOwner::new(from);
-                let result = owner.advance(to);
-                assert_eq!(
-                    result.is_ok(),
-                    edges.contains(&(from, to)),
-                    "{from:?} -> {to:?}"
-                );
-                assert_eq!(current_phase(), if result.is_ok() { to } else { from });
-            }
-        }
-        let owner = PhaseOwner::new(Packages);
-        let other = owner.clone();
-        assert_eq!(
-            std::thread::spawn(move || other.advance(Registration))
-                .join()
-                .unwrap(),
-            Err(PhaseError::WrongThread)
-        );
-        assert_eq!(current_phase(), Packages);
-    }
-
-    #[test]
-    fn reloads_restore_setup_or_world_and_world_config_can_repeat() {
-        use ModPhase::*;
-        let owner = PhaseOwner::new(Packages);
-        owner.advance(Registration).unwrap();
-        owner.advance(Setup).unwrap();
-        {
-            let _reload = owner.reloading().unwrap();
-            assert_eq!(current_phase(), Reloading);
-            assert!(owner.reloading().is_err());
-        }
-        assert_eq!(current_phase(), Setup);
-        assert!(owner.advance(Registration).is_err());
-        for _world in 0..2 {
-            {
-                let _config = owner.config().unwrap();
-                assert_eq!(current_phase(), Config);
-                check_access("setting", LoadAccess::WorldOnly);
-            }
-            assert_eq!(current_phase(), World);
-            for _reload in 0..2 {
-                let _ = std::panic::catch_unwind(|| {
-                    let _reload = owner.reloading().unwrap();
-                    assert_eq!(current_phase(), Reloading);
-                    check_access("block_state_default", LoadAccess::Metadata);
-                    panic!("failed prepare");
-                });
-                assert_eq!(current_phase(), World);
-            }
-        }
-        {
-            let _loader = PhaseOwner::scope(Setup);
-            assert_eq!(current_phase(), Setup);
-        }
-        assert_eq!(current_phase(), World);
-    }
-
-    #[test]
-    fn fluid_state_facts_follow_metadata_access() {
-        use ModPhase::*;
-        for phase in [Packages, Registration, Setup, Config, Reloading, World] {
-            let _owner = PhaseOwner::new(phase);
-            for operation in [
-                "fluid_legacy_block",
-                "fluid_state_definition",
-                "fluid_state_validate",
-                "fluid_type_properties",
-            ] {
-                let result = std::panic::catch_unwind(|| {
-                    check_access(operation, LoadAccess::Metadata);
-                });
-                assert_eq!(result.is_ok(), matches!(phase, Setup | Reloading | World));
-            }
-        }
-    }
-
-    #[test]
-    fn early_world_handle_and_transaction_calls_panic_naming_the_phase() {
-        use crate::{Host, HostTransaction, ServerHost, prelude::*};
-        struct HostDouble;
-        impl Host for HostDouble {}
-        mod_api::impl_host_areas!(HostDouble);
-        impl ServerHost for HostDouble {}
-        mod_api::impl_server_host_areas!(HostDouble);
-        for phase in [
-            ModPhase::Registration,
-            ModPhase::Config,
-            ModPhase::Reloading,
-            ModPhase::Setup,
-        ] {
-            let _owner = PhaseOwner::new(phase);
-            for action in [0, 1, 2, 3] {
-                let panic = std::panic::catch_unwind(|| {
-                    let mut host = HostDouble;
-                    match action {
-                        0 => {
-                            let _ = host.entity(1);
-                        }
-                        1 => {
-                            let _ = host.level("minecraft:overworld");
-                        }
-                        2 => {
-                            let _ = host.player(1);
-                        }
-                        _ => {
-                            let _: Result<(), ()> = host.transaction(|_, _| Ok(()));
-                        }
-                    }
-                })
-                .expect_err("early access must panic, not return a refusal");
-                let message = panic.downcast_ref::<String>().unwrap();
-                assert!(message.contains(&format!("{phase:?}")), "{message}");
-            }
-        }
-        let _owner = PhaseOwner::new(ModPhase::Registration);
-        let refused = std::panic::catch_unwind(|| HostDouble.block_state_id("stone")).unwrap_err();
-        assert!(
-            refused
-                .downcast_ref::<String>()
-                .unwrap()
-                .contains("Registration")
-        );
-    }
-
-    #[test]
-    fn inventory_keeps_first_content_package_after_code_mods() {
-        let native = [PackageInfo::new(
-            "runtime".into(),
-            "3".into(),
-            PackageKind::Code,
-            crate::Side::Client,
-            vec!["runtime".into()],
-            vec![],
-        )];
-        let package = |version: &str| {
+thread_local! {
+    static TEST_PACKAGES: std::cell::RefCell<Option<Arc<[PackageInfo]>>> = const { std::cell::RefCell::new(None) };
+}
+/// Runs `f` with only the packages `ids` installed, for tests.
+#[cfg(test)]
+pub fn with_test_packages<R>(ids: &[&str], f: impl FnOnce() -> R) -> R {
+    let packages: Vec<_> = ids
+        .iter()
+        .map(|id| {
             PackageInfo::new(
-                "plain".into(),
-                version.into(),
-                PackageKind::Content,
-                crate::Side::Client,
-                vec!["plain".into()],
-                vec![],
-            )
-        };
-        let entries = inventory(&native, &[package("1"), package("2")]);
-        let view = LoadedMods {
-            entries: entries.into(),
-        };
-        assert_eq!(view.ids().collect::<Vec<_>>(), ["runtime", "plain"]);
-        let runtime = view.get("runtime").unwrap();
-        assert_eq!(runtime.kind(), PackageKind::Code);
-        assert_eq!(runtime.version(), "3");
-        assert_eq!(runtime.side(), crate::Side::Client);
-        let plain = view.get("plain").unwrap();
-        assert_eq!(plain.kind(), PackageKind::Content);
-        assert_eq!(plain.version(), "1");
-        assert_eq!(plain.side(), crate::Side::Client);
-        assert_eq!(plain.namespaces().collect::<Vec<_>>(), ["plain"]);
-        assert!(!plain.depends_on("runtime"));
-        assert!(view.get("missing").is_none());
-    }
-
-    #[test]
-    fn a_loop_context_reads_its_side_registries_and_mods() {
-        let source = TestReader {
-            registries: std::collections::BTreeMap::from([(
-                "item".to_owned(),
-                vec!["a:b".into()].into(),
-            )]),
-            tags: Arc::from([]),
-        };
-        with_test_packages(&["one", "two"], || {
-            let context = OwningLoop::new(LoopSide::Client, &source);
-            assert_eq!(context.side(), LoopSide::Client);
-            assert_eq!(
-                context.registry("item").as_deref(),
-                Some(&["a:b".to_owned()][..])
-            );
-            assert_eq!(context.registry("block"), None);
-            assert_eq!(context.setting("one", "mode"), None);
-            assert_eq!(context.mods().ids().collect::<Vec<_>>(), ["one", "two"]);
-        });
-    }
-
-    #[test]
-    fn registration_hooks_read_one_snapshot_and_refuse_bad_reads() {
-        use crate::*;
-        use std::sync::Mutex;
-
-        /// Every answer the context gives this hook, for the keys the test names.
-        fn probe(cx: &RegistrationContext) -> Vec<String> {
-            let registry = |name| format!("{:?}", cx.registry(name));
-            let setting = |id, key| format!("{:?}", cx.setting(id, key));
-            vec![
-                format!(
-                    "{:?}",
-                    cx.instance_dir()
-                        .map(|dir| dir == &crate::InstanceDirectory::Unix(vec![47, 255]))
-                ),
-                registry("minecraft:item"),
-                registry("minecraft:missing"),
-                registry("item"),
-                registry(""),
-                setting("reader", "mode"),
-                setting("reader", "unset"),
-                setting("other", "mode"),
-                setting("absent", "mode"),
-                setting("reader", ""),
-                setting("reader", ".."),
-                setting("reader", "../mode"),
-                setting("reader", "a\\b"),
-            ]
-        }
-        struct Reader(Arc<Mutex<Vec<String>>>);
-        #[crate::__subscriptions]
-        impl Hooks for Reader {
-            fn register(&self, _: &mut dyn Registrar, cx: &RegistrationContext) {
-                *self.0.lock().unwrap() = probe(cx);
-            }
-            fn component_types(
-                &self,
-                cx: &RegistrationContext,
-                event: &mut ComponentTypesEvent<'_>,
-            ) {
-                *event.types = probe(cx);
-            }
-        }
-
-        let data = RegistrationData::new(
-            BTreeMap::from([(
-                "minecraft:item".to_owned(),
-                vec!["minecraft:air".to_owned(), "minecraft:stone".to_owned()],
-            )]),
-            BTreeMap::from([
-                (
-                    "reader".to_owned(),
-                    BTreeMap::from([("mode".to_owned(), "fast".to_owned())]),
-                ),
-                (
-                    "other".to_owned(),
-                    BTreeMap::from([("mode".to_owned(), "slow".to_owned())]),
-                ),
-            ]),
-            crate::InstanceDirectory::Unix(vec![47, 255]),
-        );
-
-        let registered = Arc::new(Mutex::new(Vec::new()));
-        let mods: Mods = vec![ModEntry::new(
-            "reader",
-            Box::new(Reader(registered.clone())),
-        )]
-        .into();
-        crate::install(mods.clone());
-        let expected = [
-            "Ok(true)",
-            r#"Ok(["minecraft:air", "minecraft:stone"])"#,
-            r#"Err(UnknownRegistry("minecraft:missing"))"#,
-            r#"Err(InvalidRegistryName("item"))"#,
-            r#"Err(InvalidRegistryName(""))"#,
-            r#"Ok(Some("fast"))"#,
-            "Ok(None)",
-            r#"Ok(Some("slow"))"#,
-            r#"Err(UnknownMod("absent"))"#,
-            r#"Err(InvalidSettingKey(""))"#,
-            r#"Err(InvalidSettingKey(".."))"#,
-            r#"Err(InvalidSettingKey("../mode"))"#,
-            r#"Err(InvalidSettingKey("a\\b"))"#,
-        ];
-        with_test_packages(&["reader", "other"], || {
-            with_test_registration_data(data, || {
-                crate::install_parts(&mods, &crate::parts::tests::rule_schema(), |_| false)
-                    .unwrap();
-                assert_eq!(*registered.lock().unwrap(), expected);
-                let mut types = Vec::new();
-                dispatch_component_types(&RegistrationContext::new(), &mut types);
-                assert_eq!(types, expected, "a later step reads the same snapshot");
-            });
-            // No engine view: every read is refused, and a bad name or key still says so.
-            crate::install_parts(&mods, &crate::parts::tests::rule_schema(), |_| false).unwrap();
-            let refused = registered.lock().unwrap().clone();
-            assert_eq!(refused[0], "Err(Unavailable)");
-            assert_eq!(refused[1], "Err(Unavailable)");
-            assert_eq!(refused[3], r#"Err(InvalidRegistryName("item"))"#);
-            assert_eq!(refused[5], "Err(Unavailable)");
-            assert_eq!(refused[9], r#"Err(InvalidSettingKey(""))"#);
-        });
-    }
-}
-
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct TestReader {
-    pub registries: std::collections::BTreeMap<String, Arc<[String]>>,
-    pub tags: Arc<[(String, Arc<[String]>)]>,
-}
-#[cfg(test)]
-impl LoadReader for TestReader {
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
-        self.registries.get(name).cloned()
-    }
-    fn fluid_tags(&self) -> Arc<[(String, Arc<[String]>)]> {
-        self.tags.clone()
-    }
-    fn setting(&self, _: &str, _: &str) -> Option<String> {
-        None
-    }
-}
-#[cfg(test)]
-impl LoopReader for TestReader {
-    fn registry(&self, name: &str) -> Option<Arc<[String]>> {
-        self.registries.get(name).cloned()
-    }
-    fn setting(&self, _: &str, _: &str) -> Option<String> {
-        None
-    }
-}
-
-#[test]
-fn client_only_attribute_does_not_shift_both_side_registry() {
-    use crate::Sentiment;
-    use crate::parts::{AttributesRegistrar, PartRegistrar};
-    let packages = [("alpha", crate::Side::Client), ("zeta", crate::Side::Both)]
-        .into_iter()
-        .map(|(id, side)| {
-            PackageInfo::new(
-                id.to_owned(),
+                (*id).to_owned(),
                 "1".to_owned(),
                 PackageKind::Code,
-                side,
-                vec![id.to_owned()],
+                crate::Side::Client,
+                vec![(*id).to_owned()],
                 vec![],
             )
         })
-        .collect::<Vec<_>>();
-    TEST_PACKAGES.set(Some(packages.into()));
-    let mut alpha = PartRegistrar::new("alpha");
-    let mut zeta = PartRegistrar::new("zeta");
+        .collect();
+    with_test_package_inventory(packages, f)
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_package_inventory<R>(
+    packages: Vec<PackageInfo>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let previous = TEST_PACKAGES.replace(Some(packages.into()));
+    let result = f();
+    TEST_PACKAGES.set(previous);
+    result
+}
+
+#[cfg(test)]
+pub(crate) use crate::testing::TestReader;
+
+#[test]
+fn phase_authority_advances_without_a_platform_backend() {
+    let owner = PhaseOwner::new(ModPhase::Packages);
+    owner.advance(ModPhase::Registration).unwrap();
+    let other = owner.clone();
     assert_eq!(
-        alpha.declare_attribute("decoration", 0.0, 0.0, 1.0, false, Sentiment::Neutral),
-        Err(crate::AttributeRegistrationError::WrongSide)
+        std::thread::spawn(move || other.advance(ModPhase::Setup))
+            .join()
+            .unwrap(),
+        Err(PhaseError::WrongThread)
     );
-    assert!(
-        zeta.declare_attribute("mana", 0.0, 0.0, 1.0, true, Sentiment::Positive)
-            .is_ok()
+    owner.advance(ModPhase::Setup).unwrap();
+    {
+        let _reload = owner.reloading().unwrap();
+    }
+    owner.advance(ModPhase::Config).unwrap();
+    owner.advance(ModPhase::World).unwrap();
+    {
+        let _config = owner.config().unwrap();
+    }
+    assert_eq!(
+        owner.advance(ModPhase::Setup),
+        Err(PhaseError::Transition {
+            from: ModPhase::World,
+            to: ModPhase::Setup
+        })
     );
-    assert!(alpha.attributes.is_empty());
-    assert_eq!(zeta.attributes[0].id, "zeta:mana");
-    TEST_PACKAGES.set(None);
+}
+
+#[test]
+fn the_registration_context_lists_installed_packages_with_their_details() {
+    let details = crate::PackageDetails {
+        name: "Machines".to_owned(),
+        runtime: Some(crate::PackageRuntime::Native),
+        ..Default::default()
+    };
+    let packages = vec![
+        PackageInfo::new(
+            "machines".to_owned(),
+            "2".to_owned(),
+            PackageKind::Code,
+            crate::Side::Both,
+            vec!["machines".to_owned()],
+            vec![crate::PackageDependency::new(
+                "base".to_owned(),
+                "^1".to_owned(),
+                crate::DependencyKind::Required,
+                crate::DependencyOrder::After,
+                crate::Side::Both,
+                None,
+                None,
+            )],
+        )
+        .with_details(details),
+        PackageInfo::new(
+            "base".to_owned(),
+            "1".to_owned(),
+            PackageKind::Content,
+            crate::Side::Client,
+            vec!["base".to_owned()],
+            vec![],
+        ),
+    ];
+    with_test_package_inventory(packages, || {
+        let context = RegistrationContext::new();
+        assert_eq!(
+            context.mods().ids().collect::<Vec<_>>(),
+            ["machines", "base"]
+        );
+        let machines = context.mods().get("machines").unwrap();
+        assert_eq!(machines.name(), "Machines");
+        assert_eq!(machines.runtime(), Some(crate::PackageRuntime::Native));
+        assert!(machines.depends_on("base"));
+        let base = context.mods().get("base").unwrap();
+        assert_eq!(base.runtime(), None);
+        assert!(context.mods().get("missing").is_none());
+    });
 }

@@ -388,15 +388,7 @@ impl Game<'_> {
         {
             return own;
         }
-        match self.dim {
-            Dim::Overworld => self.res.environment(),
-            Dim::Extra(_) => horizon_client::environment::Environment::for_level(
-                self.dim.id(),
-                self.res.environment(),
-            ),
-            Dim::Nether => self.res.nether_environment(),
-            Dim::End => self.res.end_environment(),
-        }
+        self.res.environment_of(&self.dimension_type().id)
     }
 
     /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh.
@@ -638,10 +630,14 @@ impl Game<'_> {
             // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
             self.tick_fight();
         }
+        if let Some((id, from, to)) = self.dragon.as_ref().map(|d| (d.id, d.previous, d.position)) {
+            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+        }
         // The spikes' crystals (placed above) join before they light a fire:
         // a mod that cancels one keeps its fire out too.
         self.native_joins_flush(false, 0);
         self.tick_crystals();
+        self.clear_crystal_fire();
         self.tick_eyes();
         if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
@@ -1353,6 +1349,8 @@ impl Game<'_> {
             let next = eye.position + eye.velocity;
             eye.velocity = EyeOfEnder::update_delta(eye.velocity, next, eye.target);
             eye.position = next;
+            // Its move is filed at once (told with the dragon's step), also for one about to go.
+            self.entity_section_step(eye.id, eye.previous.to_array(), next.to_array());
             eye.life += 1;
             if eye.life <= 80 {
                 return true;
@@ -1551,8 +1549,15 @@ impl Game<'_> {
             if self.restart_portal_cooldown(id) {
                 continue;
             }
-            self.end.gateways.entry(id).or_default().enter(pos);
+            let delay = self.dimension_changing_delay(id);
+            self.end
+                .gateways
+                .entry(id)
+                .or_default()
+                .enter_with_delay(pos, delay);
         }
+        // ThrowableProjectile applies the gateway's block effect before Entity.tick.
+        self.handle_end_gateway_portals_phase(true);
     }
 
     /// `ThrownEnderpearl.onInsideBlock` in an End gateway: its owner's
@@ -1577,7 +1582,11 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
-        // Nobody in a gateway (nearly always): nothing to look up.
+        self.handle_end_gateway_portals_phase(false);
+    }
+
+    fn handle_end_gateway_portals_phase(&mut self, after_move: bool) {
+        // Nobody in a gateway: nothing to look up.
         if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
             return;
         }
@@ -1625,11 +1634,25 @@ impl Game<'_> {
             if !ticking {
                 continue;
             }
+            // Only an entity in a gateway has a state: skip the others before
+            // the per-id lookups below, which walk the entity lists.
+            if !self.end.gateways.contains_key(&id) {
+                continue;
+            }
+            let is_pearl = self
+                .creatures
+                .projectiles
+                .iter()
+                .any(|p| p.id == id && matches!(p.kind, ProjectileKind::EnderPearl));
+            if is_pearl != after_move {
+                continue;
+            }
+            let delay = self.dimension_changing_delay(id);
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
             // The End gateway has no transition time (Portal.getPortalTransitionTime).
-            if let Some(entry) = state.travel(allowed) {
+            if let Some(entry) = state.travel_with_delay(allowed, delay) {
                 leaving.push((id, entry));
             }
             if state.is_done() {
@@ -1845,7 +1868,7 @@ mod tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_pearl_reads_the_portal_cooldown_its_end_gateway_gave_it() {
+    fn a_pearl_reads_its_end_gateway_cooldown_and_refuses_the_write() {
         use super::super::native_entity_refs::tests::with_game;
 
         with_game(|game| {
@@ -1857,9 +1880,15 @@ mod tests {
             let id = game.creatures.projectiles[0].id;
             let pearl = game.entity(id).unwrap();
             assert_eq!(pearl.portal_cooldown(game), Some(0));
+            // The write refuses a pearl by name: its cooldown is the End
+            // gateway traveller's, not the level's portal state.
+            assert!(!pearl.set_portal_cooldown(game, 40));
+            assert_eq!(pearl.portal_cooldown(game), Some(0));
             let traveller = game.end.gateways.entry(id).or_default();
             traveller.enter(BlockPos::new(0, 64, 0));
             assert!(traveller.travel(true).is_some());
+            assert_eq!(pearl.portal_cooldown(game), Some(300));
+            assert!(!pearl.set_portal_cooldown(game, 40));
             assert_eq!(pearl.portal_cooldown(game), Some(300));
         });
     }
@@ -1979,3 +2008,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "end/gateway_cooldown_tests.rs"]
+mod cooldown_tests;

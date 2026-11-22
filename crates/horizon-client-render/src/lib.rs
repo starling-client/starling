@@ -1,6 +1,7 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (horizon-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
+pub mod android_display;
 pub mod android_gamepad;
 pub mod android_runtime;
 pub mod assets;
@@ -24,6 +25,7 @@ pub mod border_render;
 pub mod breaking;
 pub mod brewing;
 pub mod camera;
+pub mod carrier_fences;
 pub mod chat;
 pub mod chunk;
 pub mod chunk_map;
@@ -43,6 +45,7 @@ pub mod crash;
 pub mod custom_sky;
 pub mod datapack;
 pub mod dynamic_light;
+pub mod dynamic_resolution;
 pub mod effects;
 pub mod elyby;
 pub mod environment;
@@ -54,6 +57,7 @@ pub mod fog;
 pub mod font;
 pub mod fusion;
 pub mod gfx;
+pub mod gpu_drivers;
 pub mod graphics;
 pub mod graphics_style;
 pub mod graphics_ui;
@@ -76,16 +80,19 @@ pub mod level_loading;
 pub mod light;
 pub mod lod;
 pub mod logging;
+pub mod mark_sprite;
 pub mod menu_blur;
 pub mod menu_style;
 pub mod mesher;
 pub mod minimap;
 pub mod mipmap;
 pub mod mod_animations;
+pub mod mod_block_state_models;
 pub mod mod_browser;
 pub mod mod_chunk_tickets;
 pub mod mod_list;
 pub mod mod_model_loaders;
+pub mod mod_pipelines;
 pub mod mod_sprite_sources;
 pub mod model_library;
 pub mod models;
@@ -113,6 +120,9 @@ pub mod pad_glyph;
 pub mod paged_maps;
 pub mod par;
 pub mod particles;
+#[cfg(target_os = "linux")]
+pub mod perf_capture;
+pub mod perf_gpu;
 pub mod poi_sections;
 pub mod polytone_post;
 pub mod post_chain;
@@ -201,3 +211,10 @@ pub use horizon_items::items;
 pub use horizon_items::random_sequences;
 
 pub mod android_controls;
+pub mod render_geometry;
+pub mod render_slots;
+
+pub mod render_views;
+
+#[cfg(test)]
+mod test_log;

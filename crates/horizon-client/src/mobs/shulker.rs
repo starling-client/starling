@@ -3,7 +3,7 @@
 //! their face is lost or when badly hurt, and shrugging off arrows while
 //! closed.
 use super::{
-    Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who,
+    Damage, Mob, MobEvent, MobWorld, Species, Who,
     anim::{Poses, State},
     control::LookKind,
     goals::{
@@ -390,12 +390,28 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             1.0,
             1.0,
         ));
-        m.position = Vec3::new(
-            f64::from(t[0]) + 0.5,
-            f64::from(t[1]),
-            f64::from(t[2]) + 0.5,
+        super::living::teleports::snap_to_with(
+            m,
+            Vec3::new(
+                f64::from(t[0]) + 0.5,
+                f64::from(t[1]),
+                f64::from(t[2]) + 0.5,
+            ),
+            w.section_writer.clone(),
         );
-        m.previous = m.position;
+        // `level.gameEvent(GameEvent.TELEPORT, oldPos, Context.of(this))`:
+        // the BlockPos overload uses `Vec3.atCenterOf(oldPos)`, between the
+        // sound and the level event.
+        events.push(MobEvent::GameEvent {
+            event: "minecraft:teleport",
+            at: [
+                f64::from(old[0]) + 0.5,
+                f64::from(old[1]) + 0.5,
+                f64::from(old[2]) + 0.5,
+            ],
+            source: m.id,
+            state: horizon_world::registry::BlockStateId(0),
+        });
         // Level.levelEvent(2016, oldPos, packedDiff): the teleport's
         // particles at both ends, seen by the players around.
         events.push(MobEvent::LevelEvent {
@@ -471,16 +487,27 @@ fn set_peek(
         source: m.id,
         state: horizon_world::registry::BlockStateId(0),
     });
+    // The getAttribute(ARMOR) calls make the instance (saved as an armor entry
+    // even with no modifier) and swap the covered +20 modifier.
+    use super::finalize::{Attr, Op};
+    super::finalize::set_base(m, Attr::Armor, super::finalize::base_value(m, Attr::Armor));
+    super::finalize::remove_modifier(m, Attr::Armor, "minecraft:covered");
+    if amount == 0 {
+        super::finalize::add_modifier(m, Attr::Armor, "minecraft:covered", 20.0, Op::AddValue);
+    }
     m.extra.counter = amount;
 }
 /// `Shulker.updatePeekAmount`/`updatePeekAmountO`: the eased peek.
 fn ease_peek(m: &mut Mob) -> (f32, f32) {
     let old = m.anim.v[PEEK];
     let target = m.extra.counter as f32 * 0.01;
+    // `Mth.clamp(float, float, float)` tolerates `max < min` (a negative or
+    // oversized raw `Peek`), where `f32::clamp` would panic.
+    let mth_clamp = |v: f32, lo: f32, hi: f32| if v < lo { lo } else { v.min(hi) };
     let new = if old > target {
-        (old - 0.05).clamp(target, 1.0)
+        mth_clamp(old - 0.05, target, 1.0)
     } else {
-        (old + 0.05).clamp(0.0, target)
+        mth_clamp(old + 0.05, 0.0, target)
     };
     m.anim.v[PEEK] = new;
     (old, new)
@@ -518,7 +545,7 @@ pub fn shell_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     let (old, new) = ease_peek(m);
     if new != old {
-        on_peek_change(m, w, old, new, events);
+        on_peek_change(m, old, new, events);
     }
 }
 /// `Shulker.getPhysicalPeek`: the lid's lift for a peek amount.
@@ -542,58 +569,24 @@ fn peek_push(m: &Mob, old: f32, new: f32) -> Option<([f64; 3], Aabb)> {
     Some((delta, area))
 }
 /// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
-/// every entity that can be collided with (except other shulkers): the
-/// player and the mobs here, the armor stands through
-/// [`MobEvent::LidPush`].
-fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
-    let Some((delta, area)) = peek_push(m, old, new) else {
-        return;
-    };
-    events.push(MobEvent::LidPush {
-        shulker: m.id,
-        area,
-        delta,
-    });
-    if let Some(p) = w.selected_player()
-        && p.alive
-        && !p.spectator
-        && p.bounds.intersects(area)
-    {
-        events.push(MobEvent::Shift {
-            target: Who::Player,
-            delta,
-        });
-    }
-    for seen in w.others_near(area) {
-        if seen.id == m.id
-            || !seen.alive
-            || seen.species == Species::Shulker
-            || !seen.bounds.intersects(area)
-        {
-            continue;
-        }
-        events.push(MobEvent::Shift {
-            target: Who::Mob(seen.id),
+/// every entity in the box the lid swept, through [`MobEvent::LidPush`]
+/// (the game's one lid push picks them and moves them).
+fn on_peek_change(m: &Mob, old: f32, new: f32, events: &mut Vec<MobEvent>) {
+    if let Some((delta, area)) = peek_push(m, old, new) {
+        events.push(MobEvent::LidPush {
+            shulker: m.id,
+            area,
             delta,
         });
     }
 }
 /// `Shulker.tick`'s `onPeekAmountChange` on a client that is not the server,
-/// after `client_tick` eased the lid: the client moves its own player, so a
-/// lid opening into `player` (the local player's box, alive and not a
-/// spectator) pushes it out of the way.
-pub fn client_push(m: &Mob, player: Aabb, events: &mut Vec<MobEvent>) {
+/// after `client_tick` eased the lid: the client moves its own player, which
+/// the [`MobEvent::LidPush`] reaches.
+pub fn client_push(m: &Mob, events: &mut Vec<MobEvent>) {
     let (old, new) = (m.anim.vo[PEEK], m.anim.v[PEEK]);
-    if new == old {
-        return;
-    }
-    if let Some((delta, area)) = peek_push(m, old, new)
-        && player.intersects(area)
-    {
-        events.push(MobEvent::Shift {
-            target: Who::Player,
-            delta,
-        });
+    if new != old {
+        on_peek_change(m, old, new, events);
     }
 }
 /// `ShulkerLookControl.getYRotD`: the look yaw in the open direction's
@@ -685,9 +678,9 @@ pub fn render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
         -f64::from(current[2] - old[2]) * scale,
     )
 }
-/// `Shulker.hurtServer` before the damage: arrows bounce off a closed shell.
-pub fn accepts(m: &Mob, source: &Damage) -> bool {
-    !(m.extra.counter == 0 && source.kind == DamageKind::Arrow)
+/// `Shulker.hurtServer`: direct AbstractArrow entities, including ThrownTrident, bounce off a closed shell.
+pub fn accepts(m: &Mob, source: &Damage, attack: &crate::health::Attack) -> bool {
+    !(m.extra.counter == 0 && attack.direct_is_arrow(source))
 }
 /// `Shulker.hurtServer` after the damage: below half health, a one in four
 /// chance to teleport away.
@@ -1195,6 +1188,18 @@ mod tests {
         assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
     }
 
+    /// `Mth.clamp` saturates when the target is below the floor: a negative
+    /// raw `Peek` eases the lid there once and then holds, no panic.
+    #[test]
+    fn a_negative_peek_target_does_not_panic() {
+        let mut m = shulker();
+        m.extra.counter = -1;
+        for _ in 0..3 {
+            ease_peek(&mut m);
+        }
+        assert_eq!(m.anim.v[PEEK], -0.01);
+    }
+
     /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
     /// CONTAINER_CLOSE, for the sculk sensors and wardens nearby.
     #[test]
@@ -1277,8 +1282,13 @@ mod tests {
     #[test]
     fn a_closed_shell_refuses_an_arrow() {
         let mut fixture = crate::health::TestLevel::new(0);
-        let mut level = fixture.level();
-        let source = Damage::of(DamageKind::Arrow);
+        let attack = crate::health::Attack {
+            projectile: Some(2),
+            projectile_is_arrow: true,
+            ..Default::default()
+        };
+        let mut level = fixture.level().attacked_by(&attack);
+        let source = Damage::of(super::super::DamageKind::Arrow);
         let mut closed = shulker();
         closed.extra.counter = 0;
         let health = closed.health;

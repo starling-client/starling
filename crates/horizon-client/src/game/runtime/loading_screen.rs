@@ -151,11 +151,23 @@ pub(super) enum WorldRenderer {
 /// world renderer anyway (a hidden window may never be asked to redraw).
 pub(super) const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
+    fn show_startup_console(&self) -> bool {
+        cfg!(target_os = "android")
+            && self.failure.is_none()
+            && !self.setup.starting
+            && self.menu.pending.is_none()
+            && self
+                .options
+                .as_ref()
+                .is_some_and(|options| !options.offscreen)
+    }
+
     /// The handoff and, offscreen, the world renderer's build run on the main
     /// thread, so either before the title is on the screen holds the title back.
     /// Wait for one title frame first, unless a world is waiting to open.
     pub(super) fn ready_for_handoff(&self) -> bool {
         self.title_drawn
+            || (self.show_startup_console() && self.shown)
             || self.menu.pending.is_some()
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
     }
@@ -209,6 +221,10 @@ impl Loading {
             }
         };
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = hwnd(&window) {
+            horizon_threads::system_menu::suppress(hwnd);
+        }
         drop(window_step);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
@@ -327,6 +343,20 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        #[cfg(target_os = "android")]
+        if self.onboarding_input(&event) {
+            return;
+        }
+        if self.show_startup_console()
+            && matches!(
+                event,
+                WindowEvent::Touch(_)
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::KeyboardInput { .. }
+            )
+        {
+            return;
+        }
         if self.failure.is_some()
             && !self.menu.options_open
             && let WindowEvent::KeyboardInput { event, .. } = &event
@@ -405,8 +435,13 @@ impl Loading {
             .options
             .as_ref()
             .map_or_else(Vec::new, |options| pack_finders::data_packs(&options.mods));
-        self.menu
-            .set_root(root, gui.source.clone(), &self.settings, additional.into());
+        self.menu.set_root(
+            root,
+            gui.source.clone(),
+            &self.settings,
+            additional.into(),
+            &gui.splashes,
+        );
         self.gui = Some(gui);
         self.setup.starting = false;
         self.title_drawn = false;
@@ -457,6 +492,21 @@ impl Loading {
             event_loop.exit();
             return;
         }
+        if self.setup.onboarding_visible() {
+            #[cfg(target_os = "android")]
+            if self.finish_saved_onboarding() {
+                return;
+            }
+            // Draw the first frame explicitly, then redraw only for input and window events.
+            if !self.shown
+                && !self.suspended
+                && let Some(window) = &self.window
+            {
+                window.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         if self.failure.is_some() {
             // Prepared resources handed in (Android's "Open with" or the picker): load again.
             if self.imports.poll(&self.vanilla_root)
@@ -497,6 +547,23 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        if self.show_startup_console() && self.shown {
+            let console_due = self
+                .menu
+                .diagnostic_frame
+                .is_none_or(|last| last.elapsed() >= Duration::from_millis(200));
+            // Poll the loader without competing for the device while the game renderer builds.
+            if self.world_renderer.is_none()
+                && console_due
+                && let Some(w) = &self.window
+            {
+                w.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+            return;
+        }
         if let Some(next) = loading_frame_due(self.menu.diagnostic_frame) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
             return;
@@ -511,6 +578,16 @@ impl Loading {
         event_loop.set_control_flow(ControlFlow::Poll);
     }
     pub(super) fn draw(&mut self) {
+        let console = self.show_startup_console();
+        let onboarding = self.setup.onboarding_visible();
+        if onboarding && self.setup.onboarding_already_chosen() {
+            return;
+        }
+        // Android may still deliver a redraw queued just before the renderer started building.
+        if console && !onboarding && self.shown && self.world_renderer.is_some() {
+            return;
+        }
+        let _frame = startup::step("loading.frame");
         let diagnostic_started = Instant::now();
         let diagnostic_elapsed = self
             .menu
@@ -526,7 +603,9 @@ impl Loading {
             return;
         };
         let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-        if self.failure.is_some() && self.menu.options_open {
+        if onboarding || (console && self.setup.onboarding_pending()) {
+            self.draw_setup(&mut batch, "");
+        } else if self.failure.is_some() && self.menu.options_open {
             // The setup's settings: the menu's own screens, in the skin it put on.
             self.draw_menu(&mut batch);
         } else if let Some(failure) = &self.failure {
@@ -538,6 +617,10 @@ impl Loading {
         } else if self.setup.starting {
             // Prepared: the setup stays until the menu's own font has come.
             self.draw_setup(&mut batch, "");
+        } else if console {
+            let atlas = self.gui.as_ref().map_or(&self.boot, |gui| &gui.atlas);
+            let logs = horizon_client::logging::recent_lines();
+            horizon_client::ui_theme::draw_boot(atlas, &mut batch, &logs);
         } else {
             self.draw_menu(&mut batch);
         }
@@ -549,8 +632,8 @@ impl Loading {
         );
         let diagnostic_prepared = diagnostic_started.elapsed();
         let drawn = if let Some(boot) = &mut self.boot_renderer {
-            match boot.render(&batch, yaw) {
-                Ok(()) => true,
+            match boot.render(&batch, yaw, !console && !onboarding) {
+                Ok(drawn) => drawn,
                 Err(e) => {
                     log::warn!("Horizon: loading screen frame failed: {e}");
                     false
@@ -626,7 +709,7 @@ impl Loading {
                 renderer.gpu_times.clear();
             }
         }
-        if !self.shown {
+        if drawn && !self.shown {
             self.shown = true;
             startup::mark("loading_screen.shown");
             log::info!(
@@ -660,6 +743,11 @@ impl Loading {
     }
     /// Load the resources again (they were imported after a failure): a fresh loader, as at start.
     pub(super) fn retry(&mut self) -> Result<()> {
+        #[cfg(target_os = "android")]
+        if self.vanilla_root.join("horizon-resources.json").is_file() && self.show_onboarding() {
+            self.failure = None;
+            return Ok(());
+        }
         let options = self.options.as_ref().ok_or("loading already finished")?;
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -731,10 +819,8 @@ impl Loading {
         ui.finish();
         self.imports.draw(&gui.atlas, batch);
     }
-    /// The resources are in: the world's renderer starts on a thread of its own, on the boot
-    /// renderer's device, and the title stays on the screen and answers meanwhile. Built at the
-    /// handoff on the main thread, it held the title still for as long: 3.5 s on an Adreno 740,
-    /// 11 s on a PowerVR B-Series.
+    /// Build the world's renderer on the boot renderer's device. Backends that can share it
+    /// during initialization build on a worker while the title stays responsive.
     fn begin_world_renderer(&mut self) -> Result<()> {
         let (Some(boot), Some(gui), Some(Ok(loaded)), Some(window)) = (
             &self.boot_renderer,
@@ -764,9 +850,31 @@ impl Loading {
             shader_packs::picked_pack_shape(&self.settings),
             // What a renderer reads from the display comes after its first frames.
             Default::default(),
-        )
-        .into_owned();
+        );
         let lent = boot.lend();
+        // EGL serializes operations on the shared context. Slow GLES shader compilation can
+        // hold that lock past wgpu's timeout while the boot renderer is drawing on Android.
+        #[cfg(target_os = "android")]
+        if boot.info().backend == wgpu::Backend::Gl {
+            let built = startup::time("renderer.world", || parts.build(None, Some(lent)))
+                .map(|(renderer, pixels)| (renderer, pixels.into_owned()));
+            // As a build on the thread that fails (`poll_world_renderer`): these resources are
+            // done with. Android keeps the loop running after a failure, and would build from
+            // them again every frame.
+            let (renderer, pixels) = match built {
+                Ok(built) => built,
+                Err(e) => {
+                    self.loaded = None;
+                    return Err(e);
+                }
+            };
+            if atlas.is_some() {
+                gui.atlas.pixels = pixels;
+            }
+            self.world_renderer = Some(WorldRenderer::Built(Box::new(renderer)));
+            return Ok(());
+        }
+        let parts = parts.into_owned();
         let generation = loaded.pack.render.generation;
         let thread = std::thread::Builder::new()
             .name("world-renderer".into())
@@ -838,6 +946,9 @@ impl Loading {
     /// What the app does next (`App::about_to_wait`): nothing yet, or the game, made from the
     /// loaded resources and the world's renderer.
     fn poll_handoff(&mut self) -> Option<Result<Option<split::Split<'static>>>> {
+        if self.setup.onboarding_visible() {
+            return None;
+        }
         // Offscreen there is no boot renderer: the world's is built at the handoff, on the main
         // thread, from the loading renderer's device.
         let threaded = self.boot_renderer.is_some() || self.world_renderer.is_some();
@@ -847,6 +958,15 @@ impl Loading {
         // A window in the background has no surface for the game's renderer: the loaded
         // resources wait for it to come back.
         if self.menu.reload_packs || self.suspended || !self.ready_for_handoff() {
+            return None;
+        }
+        // Keep the boot menu responsive while the world tables load. Client
+        // model publication needs them even for a start without mods.
+        if self.options.as_ref().is_some_and(Options::is_client_start)
+            && let Some(Ok(loaded)) = &self.loaded
+            && let Some(loader) = &loaded.rest_loader
+            && !loader.handle.is_finished()
+        {
             return None;
         }
         let renderer = match self.world_renderer.take() {
@@ -884,6 +1004,7 @@ impl Loading {
             self.settings.file.int("maxAnisotropyBit"),
         );
         let renderer_at = Instant::now();
+        let renderer_step = startup::step("handoff.renderer");
         let renderer = match built {
             Some(mut renderer) => {
                 // The window keeps the one surface it has: the boot renderer's, its last frame
@@ -897,7 +1018,13 @@ impl Loading {
                     Some(surface) => renderer.adopt_surface(surface, size.width, size.height)?,
                     None => renderer.resume(size.width, size.height)?,
                 }
-                finish_renderer(&mut renderer, &loaded.pack, &gui, filtering)?;
+                finish_renderer(
+                    &mut renderer,
+                    &loaded.pack,
+                    &gui,
+                    filtering,
+                    (self.settings.vsync, self.settings.horizon.present_mode),
+                )?;
                 renderer
             }
             None => {
@@ -915,6 +1042,7 @@ impl Loading {
                         loaded.renderer_cpu.take(),
                         self.settings.horizon.api,
                         self.settings.horizon.translucent_batching,
+                        self.settings.vsync,
                         &self.settings.horizon,
                         shader_packs::picked_pack_shape(&self.settings),
                         self.renderer
@@ -926,6 +1054,7 @@ impl Loading {
                 })?
             }
         };
+        drop(renderer_step);
         log::info!(
             "Horizon: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -933,6 +1062,7 @@ impl Loading {
         let renderer_ms = renderer_at.elapsed().as_millis();
         // Audio is made on the main thread: the menu's since its first frame, read again from the
         // resource packs' root where they change it, else made now.
+        let audio_step = startup::step("handoff.audio");
         let audio = if !options.execution_role.is_client() {
             Audio::silent(&loaded.pack.source)
         } else {
@@ -946,6 +1076,16 @@ impl Loading {
                 None => Audio::with_device(&loaded.pack.source, &self.settings.sound_device),
             }
         };
+        drop(audio_step);
+        // The menu read its language from the prepared root alone (`set_root`) and
+        // `load_resources` skips it on this path: read it again with the mods' layers, in the
+        // language picked in the menu.
+        startup::time("handoff.language", || {
+            horizon_client::lang::set(horizon_client::lang::Language::load(
+                &[&loaded.pack.source],
+                &horizon_client::lang::code(),
+            ));
+        });
         let pack_error = loaded.pack_error.or_else(|| self.pack_error.take());
         // The game borrows its shared resources for the process's lifetime,
         // like the single copy an integrated server would share.
@@ -1034,6 +1174,11 @@ impl ApplicationHandler for App {
                 return;
             }
             App::Loading(loading) => {
+                #[cfg(target_os = "android")]
+                if crate::ha_launcher::launcher_next() {
+                    event_loop.exit();
+                    return;
+                }
                 loading.about_to_wait(event_loop);
                 if loading.error.is_some() {
                     event_loop.exit();
@@ -1084,18 +1229,27 @@ impl ApplicationHandler for App {
 
 /// Every launch reads the prepared game files (`horizon-prepare`'s output, whose
 /// manifest is `horizon-resources.json`): without them, say where they were
-/// looked for and how to get them, before a window or a loader starts.
+/// looked for and how to get them, before a window or a loader starts. `get` is
+/// the page a hook sends the player to (`horizon_hooks::engine::get_the_game`).
 #[cfg(not(target_os = "android"))]
-pub(super) fn missing_resources(root: &std::path::Path) -> Option<String> {
+pub(super) fn missing_resources(
+    root: &std::path::Path,
+    get: Option<horizon_hooks::GetTheGame>,
+) -> Option<String> {
     let shown = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
     if !root.join("horizon-resources.json").is_file() {
+        let launcher = get.map_or(String::new(), |get| {
+            format!(
+                "Horizon is started from its launcher: download it at {} (Download). It needs \
+                 your own Minecraft: Java Edition; the launcher signs you in and prepares the \
+                 game files.\nDevelopers: ",
+                get.address
+            )
+        });
         return Some(format!(
             "Horizon's prepared game files are missing: no horizon-resources.json in {}\n\
-             Horizon is started from its launcher: download it at {} (Download). It needs your \
-             own Minecraft: Java Edition; the launcher signs you in and prepares the game files.\n\
-             Developers: horizon-prepare --prepare, or pass --resources <folder>",
+             {launcher}horizon-prepare --prepare, or pass --resources <folder>",
             shown.display(),
-            horizon_client::no_resources::DOWNLOAD_URL
         ));
     }
     damaged_prepared(root).map(|problem| {

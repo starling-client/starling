@@ -78,7 +78,9 @@ where
         request.max_step,
         request.on_ground,
         |bounds| {
-            let mut shapes = Vec::with_capacity(entities.len() + 8);
+            // A box's blocks are a few dozen shapes at most: one allocation,
+            // not the doubling a push-by-push list makes.
+            let mut shapes = Vec::with_capacity(entities.len() + 16);
             shapes.extend(entities.iter().cloned().map(Collider::Shape));
             if let Some(border) = world
                 .movement_border(request.entity, bounds)
@@ -112,17 +114,14 @@ pub fn no_world_collision<W, E>(
 where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
-    let mut scan = BlockCollisionScan::new(
+    if BlockCollisionScan::any_collision(
         world,
         request.context,
         request.bounds,
         false,
         request.candidate_budget,
-    )?;
-    while let Some(hit) = scan.next_collider() {
-        if !hit?.1.is_empty() {
-            return Ok(false);
-        }
+    )? {
+        return Ok(false);
     }
     if !world
         .entity_collisions(request.entity, request.bounds)

@@ -3,6 +3,8 @@
 mod horizon_look;
 use crate::{crash, game, logging};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+pub(crate) mod dedicated_arguments;
+pub(crate) mod runtime_environment;
 
 /// Validated startup state. No native hooks or workers may run before prepare returns.
 pub struct Startup {
@@ -64,12 +66,24 @@ pub fn set_after_log(hook: impl FnOnce() + Send + 'static) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
 }
 
-/// A native function slot, checked against its place's exact type before erasure.
-pub use mod_points::__private::SlotListener as NativeSlot;
+/// Refuse startup if any merged copy could not be installed, before loading any mod.
+/// Cells cannot roll back: each copy merges all requesting rows, so stopping the whole
+/// start is how we ensure none of a refused mod's rows run.
+pub fn installed(patched: &[(&str, &[&str], bool)]) {
+    let refusals = installation_refusals(patched);
+    for line in &refusals {
+        eprintln!("{line}");
+    }
+    if !refusals.is_empty() {
+        std::process::exit(game::exit_code::ERROR);
+    }
+}
 
-/// The places raw listeners register at, named by the generated `main`.
-#[doc(hidden)]
-pub use mod_points::PointId;
+fn installation_refusals(patched: &[(&str, &[&str], bool)]) -> Vec<String> {
+    patched.iter().filter(|(_, _, installed)| !installed).map(|(target, mods, _)| {
+        format!("Horizon: {}: {target}: a patched copy was already installed; the game was not started", mods.join(", "))
+    }).collect()
+}
 
 /// Code-runtime services supplied by the platform at startup.
 pub struct CodeRuntime {
@@ -93,7 +107,7 @@ pub(crate) fn code_refusal(id: &str) -> Option<String> {
     CODE_RUNTIME.get().and_then(|runtime| (runtime.refusal)(id))
 }
 
-/// Start with named mods and their function slots in installed dependency order.
+/// Start the engine with dependency-ordered code supplied by the host.
 pub fn start<G>(
     native: horizon_mod_package::runtime::Runtime,
     load: impl FnOnce(
@@ -101,7 +115,6 @@ pub fn start<G>(
         &LaunchArguments,
     ) -> (Vec<&'static str>, G),
     code: CodeRuntime,
-    slots: &[NativeSlot],
     startup: Startup,
 ) {
     let _ = CODE_RUNTIME.set(code);
@@ -110,7 +123,9 @@ pub fn start<G>(
         options,
         _capture,
     } = startup;
+    runtime_environment::capture(&launch);
     horizon_threads::configure_allocator();
+    horizon_chat_filter::install();
     horizon_look::give();
     // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
     horizon_client::pack_formats::install();
@@ -126,17 +141,9 @@ pub fn start<G>(
     // then the Horizon parts still in this crate; none registers after this point.
     game::player_hooks::register();
     horizon_hooks::engine::seal();
+    // The text crates ship (`horizon_hooks::lang`), loaded with the game's own languages.
+    horizon_client::lang::install_crate_files(horizon_hooks::lang::engine::all());
     horizon_client::spans::startup::init(std::time::Instant::now());
-    horizon_client::spans::trace::start_from_env();
-    let (ids, _loaded_code) = load(&native, &launch);
-    for id in ids {
-        for slot in slots.iter().filter(|slot| slot.id() == id) {
-            if let Err(error) = mod_points::register(slot) {
-                eprintln!("Horizon: {id}: {error}");
-                std::process::exit(game::exit_code::ERROR);
-            }
-        }
-    }
     logging::set_game_home(launch.context.home.clone());
     // The dedicated server logs in its own folder, as vanilla's does; the game in its home.
     let (home, side, thread) = if launch
@@ -161,6 +168,10 @@ pub fn start<G>(
     );
     // The log's first line names the build, so a bug report that carries the log says which one it was.
     log::info!("Horizon {}", crash::version());
+    // Mods' startup bars and lines (`RegistrationContext::progress`), before they register.
+    game::startup_progress::install(side == "server");
+    // Mod loading emits refusals; both client and dedicated logs must exist first.
+    let (_ids, _loaded_code) = load(&native, &launch);
     crash::install(home.clone(), side);
     if let Some(after_log) = AFTER_LOG
         .lock()
@@ -171,6 +182,8 @@ pub fn start<G>(
     }
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
+            item_ability_default: horizon_items::item_abilities::vanilla_can_perform,
+            loot_ability: crate::game::api_values::loot_values::dispatch_loot_ability,
             loot_table_load: |context, id, table| {
                 if !mod_api::__private::listened(mod_api::HookId::LootTableLoad) {
                     return;
@@ -205,6 +218,9 @@ pub fn start<G>(
     if horizon_world::native_worldgen_hooks::install(
         horizon_world::native_worldgen_hooks::NativeWorldgenHooks {
             alter_ground: crate::game::api_values::alter_ground,
+            on_tree_grow: crate::game::native_tree_grow::on_tree_grow,
+            rotate: crate::game::native_rotate::rotate,
+            feature: crate::game::native_worldgen_parts::feature,
         },
     )
     .is_err()
@@ -222,12 +238,15 @@ pub fn start<G>(
     raise_open_file_limit();
     if let Err(error) = game::run_with(options, native) {
         // A bad command line is the caller's mistake, not a crash: no report.
-        let usage = error.is::<game::UsageError>();
+        let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
+        let usage = error.is::<game::UsageError>() || missing_mods;
         #[cfg(target_os = "android")]
         if !usage {
             crate::diagnostics::fatal_error(&error.to_string());
         }
-        log::error!("Horizon: {error}");
+        if !missing_mods {
+            log::error!("Horizon: {error}");
+        }
         logging::flush();
         // The report's path is the last line on stderr (crash::SAVED_LINE).
         if !usage {
@@ -257,7 +276,10 @@ pub fn start<G>(
 pub(crate) fn install_client_hooks() {
     game::api_values::install_stack_hooks();
     if !crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
-        menu_slot_rules: game::api_values::menu_slot_rules,
+        menu_still_valid: game::api_values::menu_still_valid,
+        menu_still_valid_listens: |menu| {
+            mod_api::__private::menu_listens(mod_api::HookId::MenuStillValid, menu)
+        },
         item_stacked_on_other: |context, event, canceled| {
             game::api_values::stacked_on_other(context, event, canceled);
         },
@@ -374,6 +396,11 @@ pub(crate) fn install_client_hooks() {
         is_ladder: |context, entity, pos, state, ladder| {
             crate::game::is_ladder(context, entity, pos, state, ladder);
         },
+        makes_open_trapdoor_above_climbable:
+            crate::game::native_trapdoor_ladder::makes_open_trapdoor_above_climbable,
+        friction: |context, entity, kind, pos, state, friction| {
+            crate::game::native_surface::friction(context, entity, kind, pos, state, friction);
+        },
         player_stays_on_ground_surface: |context, entity, staying| {
             if !mod_api::__private::listened(mod_api::HookId::PlayerStaysOnGroundSurface) {
                 return;
@@ -398,6 +425,12 @@ pub(crate) fn install_client_hooks() {
             let context = reader.context();
             mod_api::dispatch_fluid_flow(&context, fluid, pos, flow);
         },
+        sound_type: |context, pos, state, entity, cause, sound| {
+            crate::game::native_block_sounds::sound_type(context, pos, state, entity, cause, sound);
+        },
+        can_grindstone_repair: crate::game::native_item_rules::can_grindstone_repair,
+        can_fit_inside_container_items:
+            crate::game::native_item_rules::can_fit_inside_container_items,
     }) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }
@@ -436,5 +469,22 @@ fn raise_open_file_limit() {
                 Err(e) => log::warn!("Open file limit stays at {:?}: {e}", limit.current),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod installation_tests {
+    #[test]
+    fn refused_install_names_all_mods_and_only_failed_targets() {
+        assert_eq!(
+            super::installation_refusals(&[
+                ("game::tick", &["first", "second"], false),
+                ("game::other", &["third"], true)
+            ]),
+            vec![
+                "Horizon: first, second: game::tick: a patched copy was already installed; the game was not started"
+            ]
+        );
+        assert!(super::installation_refusals(&[]).is_empty());
     }
 }

@@ -18,6 +18,7 @@ use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
 /// A guest's open workstation menu.
+#[derive(Clone)]
 pub(super) struct GuestStation {
     pub(super) window: i32,
     state: i32,
@@ -107,7 +108,7 @@ impl Game<'_> {
             menu.data = self.beacon_data(station.pos).to_vec();
         }
         if let Some(host) = self.lan.as_mut() {
-            host.play.entry(conn).or_default().station = Some(GuestStation {
+            *host.menus.entry(conn).or_default().station = Some(GuestStation {
                 window,
                 state: 0,
                 kind: station.kind,
@@ -118,6 +119,7 @@ impl Game<'_> {
             });
         }
         self.lan_send_station(conn);
+        self.player_menu_opening(conn);
         true
     }
 
@@ -133,7 +135,7 @@ impl Game<'_> {
         let Some(mut gs) = self
             .lan
             .as_mut()
-            .and_then(|host| host.play.get_mut(&conn))
+            .and_then(|host| host.menus.get_mut(&conn))
             .and_then(|p| p.station.take_if(|s| window.is_none_or(|w| s.window == w)))
         else {
             return false;
@@ -293,7 +295,7 @@ impl Game<'_> {
             }
         }
         if let Some(host) = self.lan.as_mut() {
-            host.play.entry(conn).or_default().station = Some(gs);
+            *host.menus.entry(conn).or_default().station = Some(gs);
         }
         self.lan_send_station(conn);
         true
@@ -302,7 +304,7 @@ impl Game<'_> {
     /// How many slots of its own the guest's open station menu has before the
     /// player's inventory (`slot_count - 36`), if one is open.
     pub(super) fn lan_station_own_slots(&self, conn: u32) -> Option<usize> {
-        let gs = self.lan.as_ref()?.play.get(&conn)?.station.as_ref()?;
+        let gs = self.lan.as_ref()?.menus.get(&conn)?.station.as_ref()?;
         Some(gs.menu.slot_count() - 36)
     }
 
@@ -331,6 +333,7 @@ impl Game<'_> {
             });
         }
         self.lan_send_lectern(conn, true);
+        self.player_menu_opening(conn);
     }
 
     /// The lectern's book and page for the client: everything (`all`), or
@@ -671,7 +674,7 @@ impl Game<'_> {
         let anvil = self
             .lan
             .as_ref()
-            .and_then(|host| host.play.get(&conn))
+            .and_then(|host| host.menus.get(&conn))
             .and_then(|p| p.station.as_ref())
             .is_some_and(|s| s.kind == StationKind::Anvil);
         if anvil
@@ -720,7 +723,7 @@ impl Game<'_> {
             let pos = menu.pos?;
             Some((
                 pos,
-                !g.spectator() && menu.slots.still_valid(&self.world, g, menu.pos),
+                !g.spectator() && menu.still_valid(&host.hub.loop_context, &self.world, g),
                 g.carried.clone(),
                 g.uuid,
                 g.entity_id,
@@ -770,7 +773,7 @@ impl Game<'_> {
         let kind = self
             .lan
             .as_ref()
-            .and_then(|host| host.play.get(&conn))
+            .and_then(|host| host.menus.get(&conn))
             .and_then(|p| p.station.as_ref())
             .filter(|s| s.window == window)
             .map(|s| s.kind);
@@ -799,7 +802,7 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        let Some(gs) = host.play.get_mut(&conn).and_then(|p| p.station.as_mut()) else {
+        let Some(gs) = host.menus.get_mut(&conn).and_then(|p| p.station.as_mut()) else {
             return;
         };
         gs.state = (gs.state + 1) & 0x7FFF;
@@ -886,13 +889,14 @@ impl Game<'_> {
                 }
             }
             if window.is_some() {
+                self.player_menu_closing(conn);
                 return true;
             }
         }
         let Some(gs) = self
             .lan
             .as_mut()
-            .and_then(|host| host.play.get_mut(&conn))
+            .and_then(|host| host.menus.get_mut(&conn))
             .and_then(|p| p.station.take_if(|s| window.is_none_or(|w| s.window == w)))
         else {
             return false;
@@ -924,6 +928,9 @@ impl Game<'_> {
         }
         if !back.is_empty() {
             self.lan_place_back(gi, back);
+        }
+        if window.is_some() {
+            self.player_menu_closing(conn);
         }
         true
     }
@@ -960,7 +967,7 @@ impl Game<'_> {
         let Some(pos) = self
             .lan
             .as_ref()
-            .and_then(|host| host.play.get(&conn))
+            .and_then(|host| host.menus.get(&conn))
             .and_then(|p| p.station.as_ref())
             .filter(|s| s.kind == StationKind::Beacon)
             .map(|s| s.pos)
@@ -1050,7 +1057,7 @@ impl Game<'_> {
             .lan
             .as_ref()
             .map(|host| {
-                host.play
+                host.menus
                     .iter()
                     .filter(|(_, p)| p.station.is_some())
                     .map(|(c, _)| *c)
@@ -1069,7 +1076,7 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let Some(gs) = host.play.get(&conn).and_then(|p| p.station.as_ref()) else {
+            let Some(gs) = host.menus.get(&conn).and_then(|p| p.station.as_ref()) else {
                 continue;
             };
             let (window, beacon, pos) = (gs.window, gs.kind == StationKind::Beacon, gs.pos);
@@ -1088,7 +1095,7 @@ impl Game<'_> {
                 if let Some(gs) = self
                     .lan
                     .as_mut()
-                    .and_then(|host| host.play.get_mut(&conn))
+                    .and_then(|host| host.menus.get_mut(&conn))
                     .and_then(|p| p.station.as_mut())
                     && gs.kind == StationKind::Beacon
                     && gs.menu.data[..] != data[..]

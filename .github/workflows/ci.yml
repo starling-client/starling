@@ -1,36 +1,41 @@
 name: checks
-# verify: every pull request and every push to the android branch, on GitHub's runners: the public-tree check, the
-# Python tests, rustfmt, clippy and the Rust tests, as in Horizon (a pull request that changes no Rust finishes in
-# seconds). Horizon's vanilla parity jobs need a runner holding a copy of the game and stay upstream; the Android APK
-# is built by android.yml.
+# Every pull request and every push to the branches below, on GitHub's runners, in two jobs side by side: lint (the
+# public-tree check, the Python tests, rustfmt and clippy) and verify (the Rust tests and the API signature audit), as
+# in Horizon (a pull request that changes no Rust finishes in seconds). Horizon's vanilla parity jobs need a runner
+# holding a copy of the game and stay upstream; the Android APK is built by android.yml.
 on:
   push:
-    # android in JuanLuci/starling; starling and integration in starling-client/starling.
-    branches: [android, starling, integration]
+    # starling and integration in starling-client/starling (android: Horizon Android's, and JuanLuci/starling's);
+    # sync-horizon-7, where Starling's pull requests go now, so its runs save the Rust cache they read.
+    branches: [android, starling, integration, sync-horizon-7]
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  # A new push to a pull request replaces its running checks; the android branch's runs all finish.
+  # A new push to a pull request replaces its running checks; a branch's pushed runs all finish.
   group: checks-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
   HORIZON_TELEMETRY_URL: "off"
 jobs:
-  # One job, not one per check: each job takes a runner from the organisation's shared pool, and with every pull request
-  # and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
+  # Two jobs, which build different things (clippy's checks, and the tests' builds) and so share no build output: side
+  # by side a run takes the longer of them, about half of the one job's 43-47 minutes it was. Horizon kept one job for
+  # its organisation's shared runner pool; starling-client's holds 20 at once with Compile's builds.
   #
   # Where: GitHub's runners. With the repository variable SELF_HOSTED_CI=all (for when that pool is full: their 4 CPUs
   # are about one GitHub runner, docs/ci-runners.md), main's pushes and this repository's own pull requests run on
   # playhorizon's checks runners (label playhorizon-ci); a fork's pull request never does (and the runners refuse it
   # themselves). There the build folder persists (CARGO_TARGET_DIR, outside the checkout), so the apt packages,
   # Python and the Rust cache steps are GitHub's only.
-  verify:
+  #
+  # The Rust cache of each job is saved by the pushes to android, starling and sync-horizon-7 (pull requests read the
+  # one of the branch they go to): before sync-horizon-7 saved one, its pull requests built their dependencies anew.
+  lint:
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playhorizon-ci"]') || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
         with:
@@ -71,23 +76,57 @@ jobs:
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
           fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      # Dependencies and the workspace's own build, saved from the android branch's runs (pull requests read its cache).
       - uses: Swatinem/rust-cache@v2
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
-          shared-key: verify
-          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' }}
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-horizon-7' }}
       - name: Check formatting and lint
         if: steps.rust.outputs.required != 'false'
         run: |
           cargo +stable fmt --all -- --check
           find crates/horizon-mod-api/src crates/horizon-mod-vocab/src -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --check --config skip_children=true
           find crates/horizon-client/src/game -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --config skip_children=true --check
-          rustup run stable rustfmt --edition 2024 --check crates/horizon-mod-api-gen/dispatch-tests/src/fixtures/*.rs
+          rustup run stable rustfmt --edition 2024 --check crates/horizon-mod-api-gen/dispatch-tests/src/fixtures/*.rs crates/horizon-mod-api-gen/dispatch-tests/src/fixtures/*/*.rs
+          rustup run stable rustfmt --edition 2024 --check crates/horizon-mod-wasm/wire-loopback/tests/wire_loopback/*.rs
           cargo +stable clippy --workspace --all-targets -- -D warnings
           # The server build (released as horizon-engine): the game without sound or controllers.
           cargo +stable clippy -p horizon-client -p horizon-game -p horizon-mod-host --all-targets --no-default-features -- -D warnings
-      # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which clippy above already
+  verify:
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playhorizon-ci"]') || 'ubuntu-latest' }}
+    # Since sync 7 a full run took 43-47 minutes on GitHub's runners, so 45 cancelled half of them.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        if: runner.environment == 'github-hosted'
+        with:
+          python-version: '3.12'
+      - name: Does this pull request need Rust checks?
+        if: github.event_name == 'pull_request'
+        id: rust
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/ci/rust_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      - name: Install Rust toolchain and the ALSA and udev headers the client links against
+        if: steps.rust.outputs.required != 'false'
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          if [ "$HOSTED" = true ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          fi
+          rustup toolchain install stable --profile minimal
+      # Dependencies and the workspace's own build (see the jobs' note above).
+      - uses: Swatinem/rust-cache@v2
+        if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
+        with:
+          shared-key: verify
+          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-horizon-7' }}
+      # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which clippy in lint already
       # type-checks and Horizon's parity jobs build and run (they were most of this step's build and link time).
       # cargo test, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
       # these 4-core runners it was no faster (#4978).

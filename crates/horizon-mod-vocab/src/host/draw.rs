@@ -12,7 +12,7 @@ pub trait DrawClientHost {
     /// Side: client.
     /// Entity model layer `layer` baked into its `ModelPart` tree, each part
     /// at its pose, as `EntityModelSet.bakeLayer` bakes it: one a native mod
-    /// registered (`native_register_layer_definitions`), or vanilla's, by the name
+    /// registered (`register_layer_definitions`), or vanilla's, by the name
     /// `entity-models.json` gives it (`minecraft:zombie#main`,
     /// `minecraft:player#main`). The tree is the caller's own copy: bake it
     /// once, as a renderer does, and set its parts' poses each frame. None
@@ -99,15 +99,26 @@ pub trait DrawContext {
     /// screen's `batch`, seen as `view` says: Create's Ponder scenes. Each
     /// block is drawn with its model, full bright and shaded by face, a face
     /// against a solid neighbour in the scene left out; a block with an
-    /// `entity` (a mod's) is drawn by `native_block_entity_submit` as in the
+    /// `entity` (a mod's) is drawn by `block_entity_submit` as in the
     /// world too, its `spin` parts turning with the game time. What lies
     /// outside the box is cut off, and the scene has a depth of its own, so
     /// it never covers the screen's other drawing or is covered by it but in
     /// the order drawn. Draw it from a screen's drawing hook
-    /// (`native_screen_draw`). A client's call; nothing is drawn on a server.
+    /// (`screen_draw`). A client's call; nothing is drawn on a server.
     /// API @API:scenes_in_screens@.
     fn draw_scene(&mut self, rect: [f32; 4], blocks: &[SceneBlock], view: SceneView) {
         unimplemented!("DrawContext::draw_scene")
+    }
+    /// Draws the living entity `entity` standing in `view.rect`, `view.size` GUI pixels a
+    /// block, turned as `view.look` says: vanilla's
+    /// `InventoryScreen.renderEntityInInventoryFollowsMouse` (`GuiEntityLook::At` the cursor)
+    /// and `renderEntityInInventory` (`GuiEntityLook::Turned`), as a mob page, an entity icon
+    /// or a carried mob shows one. It is drawn with its type's model, as in the world, full
+    /// bright and lit by the two lights of `Lighting.ENTITY_IN_UI`, with a depth of its own,
+    /// and cut off at the box. A client's call from a drawing hook (`screen_draw`,
+    /// `gui_render_post`); [`GuiEntityError`] says why nothing was drawn.
+    fn entity(&mut self, entity: &GuiEntity, view: GuiEntityView) -> Result<(), GuiEntityError> {
+        unimplemented!("DrawContext::entity")
     }
     /// `Screen.renderMenuBackground`: draws the tiled menu background (32x32) across `rect`
     /// (`[x, y, w, h]` in GUI pixels). If `in_world` is true, uses the dark translucent
@@ -176,10 +187,10 @@ pub trait BlockEntityDrawContext {
     fn scale(&mut self, by: [f32; 3]) {
         unimplemented!("BlockEntityDrawContext::draw_scale")
     }
-    /// Keeps what this call drew, with neither `native_block_entity_submit` nor
-    /// `native_block_entity_render_bounding_box` called until its state, block entity,
-    /// light or resource packs change. Parts marked with `spin` keep turning from the
-    /// game time; other geometry stays as submitted. Do not bake frame-dependent
+    /// Keeps what this call drew, with neither `block_entity_submit` nor
+    /// `block_entity_render_bounding_box` called until its state, block entity,
+    /// light or resource packs change. Parts marked with `spin` keep turning on the
+    /// animation clock (`animation_time`); other geometry stays as submitted. Do not bake frame-dependent
     /// values into kept vertices: item glint and time-dependent item models stop
     /// where they were, and neighboring blocks do not invalidate the cache.
     fn keep(&mut self) {
@@ -192,6 +203,14 @@ pub trait BlockEntityDrawContext {
     /// The level's game time, for animations.
     fn game_time(&self) -> i64 {
         unimplemented!("BlockEntityDrawContext::draw_game_time")
+    }
+    /// The frame on this client's animation clock, in ticks with the partial tick: what
+    /// turns `spin` parts. It counts the ticks this client's level has run (vanilla's
+    /// `TextureManager.tick` count): pausing and `/tick freeze` hold it, and the server's
+    /// time updates never set it back, unlike `game_time`. Each client counts from its
+    /// own start, so it means nothing on the server or to another client.
+    fn animation_time(&self) -> f64 {
+        unimplemented!("BlockEntityDrawContext::draw_animation_time")
     }
     /// The light the helpers draw with: the block's own
     /// (`LevelRenderer.getLightCoords`), 16 times sky light in bits 0..8 and
@@ -248,7 +267,7 @@ pub trait BlockEntityDrawContext {
     /// a campfire does. False for an empty stack or one with no model. The
     /// client's copy of a block entity has no item slots (`entity.items` is
     /// empty there): send the stacks you draw in
-    /// `native_block_entity_update_tag` and read them from `entity.nbt`.
+    /// `block_entity_update_tag` and read them from `entity.nbt`.
     fn item(
         &mut self,
         stack: &ItemStack,
@@ -258,11 +277,20 @@ pub trait BlockEntityDrawContext {
     ) -> bool {
         unimplemented!("BlockEntityDrawContext::draw_item")
     }
-    /// Begin time-based rotation using the surface's one implementation.
+    /// What is drawn next turns by itself: `degrees_per_tick` degrees each tick of the
+    /// animation clock (`animation_time`; a shaft at `rpm` turns `rpm * 0.3`), about `axis`
+    /// through `pivot`, both in blocks from the block's corner whatever the pose,
+    /// counterclockwise seen from the axis' positive end. Its angle is
+    /// `animation_time * degrees_per_tick + phase`: parts drawn with the same speed keep
+    /// their phases apart (a cog meshing with its neighbour). Draw the part at rest; the
+    /// game turns it each frame, and with `keep` without asking again until the block
+    /// entity changes. With a new speed, pass `old_angle - animation_time() * new_speed`
+    /// as the phase to keep the part where it was. Quads drawn while it is active are lit
+    /// where they turn to. Until `still` or the next `spin`. A mob's frame draws it at rest.
     fn spin(&mut self, axis: [f32; 3], pivot: [f32; 3], degrees_per_tick: f32, phase: f32) {
         unimplemented!("BlockEntityDrawContext::draw_spin")
     }
-    /// End time-based rotation for subsequent geometry.
+    /// What is drawn next stands still again, after `spin`.
     fn still(&mut self) {
         unimplemented!("BlockEntityDrawContext::draw_still")
     }
@@ -290,16 +318,20 @@ pub trait BlockEntityDrawContext {
     ) -> Result<(), TerrainModelError> {
         unimplemented!("BlockEntityDrawContext::draw_terrain_model")
     }
-    /// Draws `text` under `draw`'s pose as a sign draws its lines
-    /// (`Font.drawInBatch` in a `BlockEntityRenderer`): in the pose's x-y
-    /// plane, one unit a font pixel, y down, its left end at `at`, facing
-    /// +z. Scale the pose first as a sign does (`draw.scale([1.0 / 64.0,
-    /// -1.0 / 64.0, 1.0 / 64.0])` for its letters, 8 pixels high). Each span
-    /// is drawn in its own colour, the others in the 0xRRGGBB `color`;
-    /// `glowing` text is full bright (a glow ink sac's), the rest lit by
-    /// `draw.light`; a nonzero 0xRRGGBB `outline` rings each glyph, as glowing
-    /// sign text's. Returns the width drawn, in font pixels: centre a line
-    /// by starting it at minus half its width. API @API:draw_text@.
+    /// Draws `text` under `draw`'s pose as vanilla's `Font.drawInBatch` draws a component in
+    /// the world (a sign's line, a text display's): in the pose's x-y plane, one unit a font
+    /// pixel, y down, its left end at `at`, facing +z. Scale the pose first as a sign does
+    /// (`draw.scale([1.0 / 64.0, -1.0 / 64.0, 1.0 / 64.0])` for its letters, 8 pixels high).
+    /// Styles are drawn as name tags and text displays draw them: each span's colour (the
+    /// rest in the 0xRRGGBB `color`), bold, italic, underline, strikethrough, obfuscated, its
+    /// font, inline objects and `§` codes, right-to-left text in visual order. `glowing` text
+    /// is full bright (a glow ink sac's), the rest lit by `light`. With `outline`, a 0xRRGGBB
+    /// colour (`Some(0)` is black), each glyph is ringed with it as glowing sign text is
+    /// (`Font.drawInBatch8xOutline`; nine glyphs' worth of quads each). Returns the width
+    /// drawn, in font pixels (`Font.width`): centre a line by starting it at minus half its
+    /// width. Obfuscated glyphs change only when the block is drawn again: kept text stands
+    /// still. Clamp text read from NBT, and widen `block_entity_render_bounding_box`
+    /// for a long line. API @API:draw_text@.
     /// Refuses text deeper than 512 component nodes before applying any changes.
     fn text(
         &mut self,
@@ -307,13 +339,14 @@ pub trait BlockEntityDrawContext {
         at: [f32; 2],
         color: u32,
         glowing: bool,
-        outline: u32,
+        outline: Option<u32>,
     ) -> Result<f32, TextFormError> {
         unimplemented!("BlockEntityDrawContext::draw_text")
     }
-    /// The width of `text` in font pixels, as `draw_text` draws it, to centre a
-    /// line (`Font.width`).
-    fn text_width(&self, text: &str) -> f32 {
+    /// The width of `text` in font pixels, as `text` draws it, styles included
+    /// (`Font.width`), to lay a line out before drawing it.
+    /// Refuses text deeper than 512 component nodes.
+    fn text_width(&self, text: &Text) -> Result<f32, TextFormError> {
         unimplemented!("BlockEntityDrawContext::draw_text_width")
     }
     /// Draws model part `part` and the parts under it under `draw`'s pose, as
@@ -324,7 +357,7 @@ pub trait BlockEntityDrawContext {
     /// `entity/zombie/zombie`) times the 0xRRGGBB `tint`. A part that isn't
     /// `visible` draws nothing, one that skips drawing (`skip_draw`) only its
     /// children. A mob's model is built in the model's own frame (+y down,
-    /// its front towards -z, its feet 24 texels down): in `native_mob_submit`,
+    /// its front towards -z, its feet 24 texels down): in `render_living_pre`,
     /// `draw.scale([1.0, -1.0, -1.0])` then `draw.translate([0.0, -1.501,
     /// 0.0])` first, as `LivingEntityRenderer` does. False for an unknown
     /// sprite. API @API:model_layers@.
@@ -387,6 +420,18 @@ pub trait WorldDrawContext {
     /// Submit unlit, alpha-blended world quads atomically, using the white atlas texel.
     fn quads(&mut self, quads: &[WorldQuad]) -> Result<(), DrawError> {
         unimplemented!("WorldDrawContext::world_draw_quads")
+    }
+    /// Submit world quads drawn by the mod pipeline `pipeline`, atomically: its shader gets each
+    /// quad's texture coordinate and colour, and its blend and depth modes apply. The quads
+    /// count against the same per-view capacity as [`quads`](Self::quads), and within a stage
+    /// they draw after its plain quads and lines, in the order submitted. On `Err`, nothing
+    /// from this call is drawn.
+    fn pipeline_quads(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<(), PipelineDrawError> {
+        unimplemented!("WorldDrawContext::pipeline_quads")
     }
     /// Queued counts and fixed capacities, shared by both depth modes and all listeners.
     /// Capacity is allocated during setup, never grown during submission.

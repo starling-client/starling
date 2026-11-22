@@ -4,7 +4,8 @@
     python3 tools/pr_ready.py                       # on this machine, against origin/main
     python3 tools/pr_ready.py --base upstream/main  # a fork: against the main repository's main
     python3 tools/pr_ready.py --host macmini        # builds and harnesses on a fleet machine (~/fleet/rbuild)
-    python3 tools/pr_ready.py --quick               # without running the vanilla harnesses
+    python3 tools/pr_ready.py --harnesses           # also run the affected vanilla harnesses here
+    python3 tools/pr_ready.py --quick               # never run the vanilla harnesses
 
 From the files the branch changes since its merge base with --base (committed or not) it decides what to run:
 rustfmt, and clippy with warnings denied exactly as CI's verify job runs it (the whole workspace with the game's code
@@ -12,8 +13,10 @@ mods, plus the server build when horizon-client is affected); the tests of the t
 CI's workspace-wide run gives them; the launcher (its own workspace) the same way when CI's launcher job would run
 (tools/ci/rust_changes.py --launcher); crates/horizon-theme/tokens.css against horizon-theme; Cargo.lock changing
 only with a Cargo.toml; the Python tests (always, as in CI) and the public-tree check; and the vanilla harnesses the
-changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). Harnesses run where the
-vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
+changes can affect, picked as CI's parity job picks them (tools/parity.py --changed). As in CI (parity-scope in
+.github/workflows/ci.yml), the harnesses run only when the branch changes a harness, an oracle, a probe or the
+runner; otherwise they are listed and left to parity-main, which runs them on main. --harnesses runs them anyway.
+Harnesses run where the vanilla data is (a prepared .local/ here, or the Mac mini); elsewhere they are listed for CI.
 Tests select library, binary and integration targets explicitly, followed by doc tests, so unrelated example
 executables are not built and linked again.
 
@@ -30,6 +33,7 @@ from pathlib import Path
 import re
 import shlex
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -45,7 +49,7 @@ FLEET_SHARED = Path.home() / "code" / "horizon-parity" / "shared-local" / "parit
 if "PARITY_SHARED" not in os.environ and not (ROOT / ".local" / "minecraft").exists() and FLEET_SHARED.is_dir():
     # A fleet worktree without vanilla data still knows each harness's dependencies.
     os.environ["PARITY_SHARED"] = str(FLEET_SHARED)
-from tools import parity, release_train  # noqa: E402
+from tools import parity, process_tree, release_train  # noqa: E402
 from tools.ci import rust_changes  # noqa: E402
 
 RBUILD = Path.home() / "fleet" / "rbuild"
@@ -81,7 +85,7 @@ MOD_API_INPUTS = ("crates/horizon-mod-vocab/src/hooks/",)
 # own crate with its own suite; a `--manifest-path` run keeps both out of the workspace selection above.
 DISPATCH_TESTS = "crates/horizon-mod-api-gen/dispatch-tests/Cargo.toml"
 DISPATCH_TEST_INPUTS = ("crates/horizon-mod-api-gen/", "crates/horizon-mod-api-macros/",
-                        "crates/horizon-mod-point-shape/", "crates/horizon-mod-api/",
+                        "crates/horizon-mod-api/",
                         "crates/horizon-mod-vocab/", *MOD_API_INPUTS)
 MOD_REGISTRY = "crates/horizon-mod-registry/Cargo.toml"
 
@@ -160,6 +164,19 @@ def suggested_label(paths, exporter_paths=frozenset()):
     return "`skip-release`"
 
 
+# CI's parity-scope (.github/workflows/ci.yml): a pull request runs its harnesses itself only when it changes a
+# harness, an oracle, a probe or the runner. parity-main runs the others on main, a batch of merges at a time.
+PARITY_SCOPE = re.compile(
+    r"^(tools/test_[a-z0-9_]+_parity\.py|tools/(parity[a-z_]*|lab)\.py|tools/parity_hosts\.json|mods/horizon/src/test/"
+    r"|crates/[^/]+/examples/|crates/horizon-client/src/game/[a-z_]*(fixture|harness)\.rs"
+    r"|\.github/workflows/parity[a-z-]*\.yml)")
+
+
+def runs_parity(changed):
+    """Whether CI's parity job would run for a pull request that changes these files."""
+    return any(PARITY_SCOPE.match(path) for path in changed)
+
+
 def harness_names(names):
     """Harness names without shard suffixes, in order."""
     return list(dict.fromkeys(parity.base_name(name) for name in names))
@@ -189,6 +206,12 @@ def duration(seconds):
 
 def git(*arguments):
     return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, check=True).stdout.decode("utf-8")
+
+
+def shallow_clone():
+    """A checkout without full history (outside a repository, `git` fails and this says no)."""
+    return subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=ROOT, capture_output=True,
+                          text=True).stdout.strip() == "true"
 
 
 def line_counts(base, changed):
@@ -261,9 +284,9 @@ def tests_passed(output):
 
 
 def unittest_passed(output):
-    failed = re.search(r"^(FAILED \(.*\))$", output, re.M)
+    outcome = re.search(r"^((?:OK|FAILED) \(.*\))$", output, re.M)
     ran = re.search(r"^Ran (\d+) tests?", output, re.M)
-    return f"{ran.group(1) if ran else '?'} run, {failed.group(1)}" if failed else f"{ran.group(1)} passed" if ran else ""
+    return f"{ran.group(1) if ran else '?'} run, {outcome.group(1)}" if outcome else f"{ran.group(1)} passed" if ran else ""
 
 
 def parity_summary(output):
@@ -285,10 +308,9 @@ def parity_summary(output):
     return text
 
 
-# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
-# without sound or controllers).
-CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
-CI_CLIPPY_SERVER = "cargo clippy -p horizon-client -p horizon-game -p horizon-mod-host --all-targets --locked --no-default-features -- -D warnings"
+# CI's lint job (.github/workflows/dyna-ci.yml): collect warnings across the whole graph before rejecting them.
+CI_CLIPPY = "python3 tools/ci/check_warnings.py cargo clippy --keep-going --workspace --all-targets --locked"
+CI_CLIPPY_SERVER = "python3 tools/ci/check_warnings.py cargo clippy --keep-going -p horizon-client -p horizon-game -p horizon-mod-host --all-targets --locked --no-default-features"
 
 
 # CI installs the current stable each run (rustup toolchain install stable), and Rust ships one every six weeks
@@ -345,6 +367,10 @@ CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client-
                 "crates/horizon-mod-package/", "crates/horizon-assets/")
 CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client-lib --lib mod_content::tests:: -- --ignored"
 
+# holder::tests spawns target/<profile>/examples/holder_actor beside its test binary.
+# --tests does not build that executable; use the same explicit prerequisite as CI.
+HOLDER_ACTOR = "cargo build --locked -p horizon-mod-package --features runtime-process --example holder_actor"
+
 
 def plan(args, base, changed, crates_of, libraries, dependencies):
     """The checks for these changed files, in the order they run."""
@@ -362,7 +388,7 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     clippy_crates = dependent_crates(crates, dependencies)
     clippy = CI_CLIPPY
     if clippy_crates is None or "horizon-client" in clippy_crates:
-        clippy += f" && {CI_CLIPPY_SERVER}"
+        clippy = f'status=0\n{CI_CLIPPY} || status=$?\n{CI_CLIPPY_SERVER} || status=$?\nexit "$status"'
     test_skip = None if crates is None or crates else "no crate touched"
     doc_crates = sorted(libraries if crates is None else libraries.intersection(crates))
     doc_selection = "--workspace" if crates is None else " ".join(f"-p {shlex.quote(c)}" for c in doc_crates)
@@ -370,14 +396,25 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
     steps = [
         Step("Cargo.lock", where="git"),
         Step("Public tree", "python3 tools/check_public_tree.py", where="here"),
+        Step("Repository hygiene", "python3 tools/ci/check_repository_hygiene.py", where="here"),
         # docs/layers.md: a crate depends only on its own layer or a lower one, and the exceptions only shrink.
         Step("Layers", f"python3 tools/check_layers.py --base {shlex.quote(base)}", where="here"),
         Step("Addresses", f"python3 tools/check_addresses.py --base {shlex.quote(base)}", where="here"),
-        Step("File size", f"python3 tools/check_file_size.py --base {shlex.quote(base)}", where="here"),
+        # The provenance check needs full history and fails closed on a shallow clone; CI checks a full one.
+        Step("File size", f"python3 tools/check_file_size.py --base {shlex.quote(base)}", where="here",
+             skip="not checked on a shallow clone" if shallow_clone() else None),
+        # tools/hotspots/README.md: export brace lists stay at 12 names or under; longer ones only shrink.
+        Step("Export lists", "python3 tools/hotspots/check_lists.py", where="here"),
+        # tools/hotspots/check_stand_ins.py: test stand-ins keep up with the hooks and traits they mirror.
+        Step("Test stand-ins", "python3 tools/hotspots/check_stand_ins.py", where="here"),
         # Always, as in CI: some read the crates, the roadmap or the workflows.
         Step("Python tests", "python3 -m unittest discover -s tests", where="here", summary=unittest_passed),
-        Step("rustfmt", "cargo fmt --all -- --check", skip=None if rust else no_rust),
+        # CI's own scan (tools/ci/format_scan.py): cargo fmt, then the files no `mod` line reaches, by path.
+        Step("rustfmt", "python3 tools/ci/format_scan.py", skip=None if rust else no_rust),
         Step("clippy", clippy, skip=None if rust else no_rust),
+        Step("holder actor", HOLDER_ACTOR,
+             skip=None if crates is None or "horizon-mod-package" in crates or launcher
+             else "holder tests untouched"),
         Step("tests" + (": workspace" if crates is None else f": {', '.join(crates)}" if crates else ""),
              f"cargo test --locked {selection}{mod_features(crates)} --tests",
              skip=test_skip, summary=tests_passed),
@@ -398,22 +435,33 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
                                  ("mod registry tests", MOD_REGISTRY, registry_skip)):
         steps.extend([
             Step(f"{name} clippy",
-                 f"CARGO_BUILD_JOBS=${{CARGO_BUILD_JOBS:-4}} cargo clippy --manifest-path {manifest}"
-                 " --all-targets --locked -- -D warnings", skip=skip),
+                 f"CARGO_BUILD_JOBS=${{CARGO_BUILD_JOBS:-4}} python3 tools/ci/check_warnings.py cargo clippy --keep-going --manifest-path {manifest}"
+                 " --all-targets --locked", skip=skip),
             Step(f"{name} tests",
                  f"CARGO_BUILD_JOBS=${{CARGO_BUILD_JOBS:-4}} cargo test --manifest-path {manifest}"
                  " --locked -- --test-threads=4", skip=skip, summary=tests_passed),
         ])
     launcher_skip = None if launcher else "launcher untouched"
     for name, command in [("launcher rustfmt", "cargo fmt --check"),
-                          ("launcher clippy", "cargo clippy --all-targets --locked $features -- -D warnings"),
+                          ("launcher clippy", "python3 ../tools/ci/check_warnings.py cargo clippy --keep-going --all-targets --locked $features"),
                           ("launcher tests", "cargo test --locked --lib --bins $features")]:
         steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}\nin_shell {shlex.quote(command)}", skip=launcher_skip,
                           summary=tests_passed if name == "launcher tests" else None))
     harness = Step("Parity", summary=parity_summary)
     affected = affected_here(changed)
     local_data = (ROOT / ".local" / "minecraft").exists() and (ROOT / ".local" / "horizon-client").exists()
-    if args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
+    in_scope = args.harnesses or runs_parity(changed)
+    if not args.quick and not in_scope:
+        # What CI does with this pull request: nothing here, parity-main on main.
+        harness.status = "list"
+        why = "no harness, oracle, probe or runner change; --harnesses runs them here"
+        if affected is None:
+            harness.detail = f"not run ({why}): parity-main checks this on main"
+        elif not affected:
+            harness.detail = "no harness affected"
+        else:
+            harness.detail = f"{len(affected)} affected, left to parity-main on main ({why}): {short_list(affected)}"
+    elif args.quick or (args.host == "local" and not local_data) or (args.host != "local" and args.host not in HARNESS_SETUP):
         harness.status = "list"
         why = "--quick" if args.quick else "no vanilla data here"
         if affected is None:
@@ -434,19 +482,42 @@ cat > "$RUNNER_TEMP/changed" <<'PR_READY_CHANGED'
 {listing}
 PR_READY_CHANGED
 PARITY_HOSTS= python3 tools/parity.py --changed-files "$RUNNER_TEMP/changed" --timeout 1500"""
+    datafix = getattr(args, 'datafix', False)
+    harness.datafix_selected = datafix
+    if not datafix:
+        print('datafix parity not run: opt in with --datafix and a private HORIZON_DATAFIX_ROOT (default checkout .local/datafix).', file=sys.stderr)
+        if harness.command:
+            harness.command += ' --exclude datafix'
     steps.append(harness)
     return steps
+
+
+CLIPPY_CACHE_HINT = (
+    "pr_ready: the first clippy run builds the whole workspace once (cold, can take 20+ min); later runs are warm. "
+    "Set RUSTC_WRAPPER=sccache with CARGO_INCREMENTAL=0 to reuse dependency builds across branches and checkouts."
+)
 
 
 def run_script(steps, host, verbose):
     """Runs the steps in one shell on host (here for "local"), each between markers, reading results as they come."""
     if not steps:
         return
+    # Explicit local opt-in can select datafix even with unknown dependencies.
+    # Preserve the validated absolute path across the subprocess cwd change.
+    environment = os.environ.copy()
+    if host == 'local' and any(step.name == 'Parity' and getattr(step, 'datafix_selected', False) for step in steps):
+        from tools.datafix_paths import VARIABLE, writable_root
+        environment[VARIABLE] = str(writable_root())
     if host == "local" and os.name == "nt":
-        run_windows(steps, verbose)
+        run_windows(steps, verbose, environment)
         return
     parts = [HOST_SETUP.get(host, ""), "set +e"]
+    first_clippy = True
     for index, step in enumerate(steps):
+        if step.name.endswith("clippy") and first_clippy:
+            first_clippy = False
+            parts.append('case "${RUSTC_WRAPPER:-}" in sccache|*/sccache|sccache.exe|*/sccache.exe) ;; '
+                         f'*) printf \'%s\\n\' {shlex.quote("@@pr_ready:hint:" + CLIPPY_CACHE_HINT)} ;; esac')
         parts.append(f"echo '@@pr_ready:begin:{index}'; started=$(date +%s)\n( {step.command}\n) 2>&1 < /dev/null\n"
                      f"status=$?; echo; echo \"@@pr_ready:end:{index}:$status:$(( $(date +%s) - started ))\"")
     script = "\n".join(parts)
@@ -455,7 +526,7 @@ def run_script(steps, host, verbose):
     else:
         command = [str(RBUILD), host, "--", "bash", "-c", script]
     current = None
-    with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           errors="replace") as process:
         for line in process.stdout:
             marker = re.match(r"@@pr_ready:(begin|end):(\d+)(?::(\d+):(\d+))?$", line.strip())
@@ -468,6 +539,8 @@ def run_script(steps, host, verbose):
                 step.seconds = int(marker.group(4))
                 finish(step, verbose)
                 current = None
+            elif line.startswith("@@pr_ready:hint:"):
+                print(line.removeprefix("@@pr_ready:hint:"), end="", file=sys.stderr, flush=True)
             elif current is not None:
                 current.output += line
                 if verbose:
@@ -480,12 +553,14 @@ def run_script(steps, host, verbose):
             finish(step, verbose)
 
 
-def run_windows(steps, verbose):
-    """Run local checks directly on Windows without requiring a Unix shell."""
+def run_windows(steps, verbose, environment=None):
+    """Run local checks directly on Windows without requiring a Unix shell. Each runs in its own job
+    (tools/process_tree.py): what a check starts, a harness's game say, ends with it, or with this process."""
+    first_clippy = True
     for step in steps:
         command = shlex.split(step.command)
         cwd = ROOT
-        env = os.environ.copy()
+        env = (os.environ if environment is None else environment).copy()
         env["PYTHONUTF8"] = "1"
         if command and command[0].startswith("CARGO_BUILD_JOBS="):  # the shell form, with no shell to read it
             command.pop(0)
@@ -498,12 +573,16 @@ def run_windows(steps, verbose):
             command = [sys.executable, "tools/check_addresses.py", *command[2:]]
         elif step.name == "File size":
             command = [sys.executable, "tools/check_file_size.py", *command[2:]]
+        elif step.name == "Export lists":
+            command = [sys.executable, "tools/hotspots/check_lists.py"]
+        elif step.name == "Test stand-ins":
+            command = [sys.executable, "tools/hotspots/check_stand_ins.py"]
         elif step.name == "Python tests":
             command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
         elif step.name == "rustfmt":
-            command = ["cargo", "fmt", "--all", "--", "--check"]
+            command = [sys.executable, "tools/ci/format_scan.py"]
         elif step.name == "clippy":
-            command = shlex.split(CI_CLIPPY)  # the server build's clippy runs in CI (Linux)
+            command = [sys.executable, *shlex.split(CI_CLIPPY)[1:]]  # server clippy runs in CI (Linux)
         elif step.name.startswith("tests"):
             command = shlex.split(step.command)
         elif step.name == "tokens.css up to date":
@@ -512,7 +591,8 @@ def run_windows(steps, verbose):
             command = ["cargo", "fmt", "--check"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher clippy":
-            command = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
+            command = [sys.executable, "../tools/ci/check_warnings.py", "cargo", "clippy", "--keep-going",
+                       "--all-targets", "--locked"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher tests":
             command = ["cargo", "test", "--locked", "--lib", "--bins"]
@@ -527,16 +607,28 @@ def run_windows(steps, verbose):
         elif command and command[0] == "python3":
             command[0] = sys.executable
 
+        if step.name.endswith("clippy") and first_clippy:
+            first_clippy = False
+            if Path(env.get("RUSTC_WRAPPER", "")).name not in ("sccache", "sccache.exe"):
+                print(CLIPPY_CACHE_HINT, file=sys.stderr, flush=True)
         print(f"  {step.name}...", file=sys.stderr, flush=True)
         started = time.monotonic()
         try:
-            with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+            with process_tree.popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, errors="replace") as process:
+                def release(process):
+                    # The check's exit ends what it left running, which would otherwise hold the output open.
+                    process.wait()
+                    process_tree.ended(process)
+                # A daemon: interrupted, this process exits at once, and its jobs end the checks with it.
+                reaper = threading.Thread(target=release, args=(process,), daemon=True)
+                reaper.start()
                 for line in process.stdout:
                     step.output += line
                     if verbose:
                         print("    " + line, end="", file=sys.stderr)
-                status = process.wait()
+                reaper.join()
+                status = process.returncode
             step.status = "pass" if status == 0 else "fail"
         except OSError as error:
             step.status, step.detail = "fail", str(error)
@@ -583,13 +675,35 @@ def finish(step, verbose):
 MARK = {"pass": "✅", "fail": "❌", "skip": "➖", "list": "➖", "warn": "⚠️"}
 
 
-def block(args, base, merge_base, changed, counts, steps, label, elapsed):
+def revision_state():
+    """Snapshot before selection and after checks; ignored build output is excluded."""
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0")[:-1]
+    metadata = []
+    for path in untracked:
+        # Never open untracked content: symlinks can dangle or name directories,
+        # and FIFOs/devices must not be read. Dirty starts are uncertified anyway.
+        try:
+            info = (ROOT / path).lstat()
+            link = os.readlink(ROOT / path) if stat.S_ISLNK(info.st_mode) else None
+            metadata.append((path, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns, link))
+        except OSError:
+            metadata.append((path, "unavailable"))
+    return (git("rev-parse", "HEAD").strip(),
+            git("status", "--porcelain=v1", "--untracked-files=all"),
+            git("diff", "HEAD", "--binary") + repr(metadata))
+
+
+def block(args, base, merge_base, changed, counts, steps, label, elapsed, revision, changed_during_run=False):
     where = socket.gethostname().split(".")[0] if args.host == "local" else args.host
-    flags = "".join(f" --{flag}" for flag in ("quick",) if getattr(args, flag)) + \
+    head, status, _ = revision
+    dirty = bool(status)
+    flags = "".join(f" --{flag}" for flag in ("quick", "harnesses") if getattr(args, flag)) + \
         ("" if args.host == "local" else f" --host {args.host}") + ("" if base == "origin/main" else f" --base {base}")
     added, removed = (sum(count[i] for count in counts.values()) for i in (0, 1))
     warnings = scope_warnings(changed)
-    lines = [f"**pr_ready** (`tools/pr_ready.py{flags}` on {where}, against {base} at {merge_base[:9]}, "
+    lines = [f"**pr_ready** (`tools/pr_ready.py{flags}`, commit `{head}`{' dirty' if dirty else ''}, "
+             f"{'changed during run; checks do not certify the ending worktree, ' if changed_during_run else ''}"
+             f"host `{where}`, against {base} at {merge_base[:9]}, "
              f"{duration(elapsed)})", "", "| Check | Result |", "| --- | --- |",
              f"| Scope | {'⚠️' if warnings else '✅'} {len(changed)} files, +{added} −{removed}"
              + "".join(f"; {warning}" for warning in warnings) + " |"]
@@ -618,11 +732,15 @@ def main():
     parser.add_argument("--host", default="local", choices=sorted(HOST_SETUP),
                         help="where builds, tests and harnesses run: local, or a fleet machine through ~/fleet/rbuild")
     parser.add_argument("--quick", action="store_true", help="list the affected harnesses instead of running them")
+    parser.add_argument("--harnesses", action="store_true",
+                        help="run the affected harnesses even when the branch changes no harness, oracle, probe or runner")
     parser.add_argument("--verbose", action="store_true", help="show every check's output")
+    parser.add_argument('--datafix', action='store_true', help='opt in to datafix parity downloads in a private HORIZON_DATAFIX_ROOT')
     args = parser.parse_args()
     if args.host != "local" and not RBUILD.exists():
         parser.error(f"--host {args.host} needs {RBUILD}; without the fleet, run it here (no --host)")
     started = time.monotonic()
+    revision = revision_state()
     changed = parity.changed_files(args.base)
     if changed is None:
         parser.error(f"no merge base with {args.base} (git fetch?)")
@@ -644,7 +762,7 @@ def main():
 
     label = suggested_label(changed, release_train.exporters())
     print(block(args, args.base, merge_base, sorted(changed), counts, steps, label,
-                time.monotonic() - started))
+                time.monotonic() - started, revision, revision_state() != revision))
     return 1 if any(step.status == "fail" for step in steps) else 0
 
 

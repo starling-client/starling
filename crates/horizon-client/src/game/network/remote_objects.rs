@@ -214,13 +214,20 @@ impl Game<'_> {
                 match (index, value) {
                     (0, Value::Byte(flags)) => f.invisible = (*flags as u8 & 0x20) != 0,
                     (8, Value::Id(d)) => f.facing = (*d).clamp(0, 5) as u8,
-                    (10, Value::Int(r)) => f.rotation = r.rem_euclid(8) as u8,
+                    (10, Value::Int(r)) => f.rotation = r.rem_euclid(8) as i8,
                     _ => {}
                 }
                 if let Some(item) = item {
                     f.item = item;
                 }
             } else if self.paintings.iter().any(|p| p.id == id) {
+                // HangingEntity.DATA_DIRECTION, kept as the painting's 2D value; it is never vertical.
+                if let (8, Value::Id(direction)) = (index, value)
+                    && let Some(facing) = painting_facing(*direction)
+                    && let Some(p) = self.paintings.iter_mut().find(|p| p.id == id)
+                {
+                    p.facing = facing;
+                }
                 // Painting.DATA_PAINTING_VARIANT_ID: a registry holder (id + 1).
                 if let (9, Value::Id(holder)) = (index, value)
                     && let Some(v) = self.remote_painting_variant(holder - 1)
@@ -379,60 +386,88 @@ impl Game<'_> {
         mut turn: impl FnMut(u32, f32) -> f32,
         mut lerp_cart: impl FnMut(&mut super::minecarts::Minecart) -> bool,
     ) {
-        self.carts.for_each_mut(|c| {
-            c.previous = c.position;
-            c.previous_yaw = c.yaw;
-            c.previous_pitch = c.pitch;
-            if !lerp_cart(c) {
-                c.position = step(c.id, c.position);
-            }
-            c.accumulate_rotation();
-            // MinecartTNT.tick on the client: the fuse counts down in smoke.
-            if c.kind == super::minecarts::CartKind::Tnt && c.fuse > 0 {
-                c.fuse -= 1;
+        let mut cart = 0;
+        while cart < self.carts.len() {
+            let (id, from, to, kind, fuse, fuel) = self.carts.update(cart, |c| {
+                let from = c.position;
+                c.previous = c.position;
+                c.previous_yaw = c.yaw;
+                c.previous_pitch = c.pitch;
+                if !lerp_cart(c) {
+                    c.position = step(c.id, c.position);
+                }
+                c.accumulate_rotation();
+                // MinecartTNT.tick on the client: the fuse counts down in smoke.
+                let fuse = c.kind == super::minecarts::CartKind::Tnt && c.fuse > 0;
+                if fuse {
+                    c.fuse -= 1;
+                }
+                (c.id, from, c.position, c.kind, fuse, c.fuel)
+            });
+            if kind == super::minecarts::CartKind::Tnt && fuse {
                 self.particles.add(
                     &ParticleOptions::simple(ParticleType::Smoke),
-                    [c.position.x, c.position.y + 0.5, c.position.z],
+                    [to.x, to.y + 0.5, to.z],
                     [0.0; 3],
                 );
             }
-            if c.kind == super::minecarts::CartKind::Furnace
-                && c.fuel > 0
+            if kind == super::minecarts::CartKind::Furnace
+                && fuel > 0
                 && self.world.random.next_int_bound(4).unwrap_or(1) == 0
             {
                 self.particles.add(
                     &ParticleOptions::simple(ParticleType::LargeSmoke),
-                    [c.position.x, c.position.y + 0.8, c.position.z],
+                    [to.x, to.y + 0.8, to.z],
                     [0.0; 3],
                 );
             }
-            // MinecartTNT.tick: a primed cart counts its fuse down and sheds
-            // smoke. The server explodes it; this copy only shows the fuse
-            // (`TntMinecartRenderer`'s flash and swell).
-            if c.kind == super::minecarts::CartKind::Tnt && c.fuse > 0 {
-                c.fuse -= 1;
+            // MinecartTNT.tick: a primed cart counts its fuse down and sheds smoke.
+            if kind == super::minecarts::CartKind::Tnt && fuse {
                 self.particles.add(
                     &ParticleOptions::simple(ParticleType::Smoke),
-                    [c.position.x, c.position.y + 0.5, c.position.z],
+                    [to.x, to.y + 0.5, to.z],
                     [0.0; 3],
                 );
             }
-        });
+            if from != to {
+                self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+            }
+            cart += 1;
+        }
         // The boat the player drives moves here, not where the server says.
         let driven = self.riding.filter(|&id| self.controls_boat(id));
-        self.boats.for_each_mut(|b| {
-            if Some(b.id) == driven {
-                return;
+        let mut boat = 0;
+        while boat < self.boats.len() {
+            let (id, from, to) = self.boats.update(boat, |b| {
+                if Some(b.id) == driven {
+                    return (b.id, b.position, b.position);
+                }
+                let from = b.position;
+                b.previous = b.position;
+                b.previous_yaw = b.yaw;
+                // `LinearInterpolationHandler.interpolate`: the rotation moves a
+                // step toward the server's with the position.
+                b.yaw = turn(b.id, b.yaw);
+                b.position = step(b.id, b.position);
+                (b.id, from, b.position)
+            });
+            if from != to {
+                self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
             }
-            b.previous = b.position;
-            b.previous_yaw = b.yaw;
-            // `LinearInterpolationHandler.interpolate`: the rotation moves a
-            // step toward the server's with the position.
-            b.yaw = turn(b.id, b.yaw);
-            b.position = step(b.id, b.position);
-        });
-        for a in &mut self.armor_stands {
-            a.position = step(a.id, a.position);
+            boat += 1;
+        }
+        let mut stand = 0;
+        while stand < self.armor_stands.len() {
+            let (id, from, to) = {
+                let a = &mut self.armor_stands[stand];
+                let from = a.position;
+                a.position = step(a.id, a.position);
+                (a.id, from, a.position)
+            };
+            if from != to {
+                self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+            }
+            stand += 1;
         }
         self.tick_remote_boat_bubbles();
     }
@@ -527,6 +562,18 @@ impl Game<'_> {
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);
         self.bolts.retain(|b| b.id != id);
+    }
+}
+
+/// `Direction.get2DDataValue` of a 3D data value (south 3 to 0, west 4 to 1, north 2 to 2, east 5 to 3), the
+/// facing a painting keeps; None for up, down and anything else.
+fn painting_facing(direction: i32) -> Option<u8> {
+    match direction {
+        3 => Some(0),
+        4 => Some(1),
+        2 => Some(2),
+        5 => Some(3),
+        _ => None,
     }
 }
 

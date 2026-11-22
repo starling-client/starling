@@ -44,7 +44,7 @@ Existing codec constraints remain with their owners:
 | --- | --- |
 | `minecraft:brand` | UTF string codec, 32,767 UTF-16 code units, not 32,767 bytes |
 | `horizon:quiet_commands` | `quiet`, 32,767 body bytes, 256 lines with 256 characters each |
-| `horizon:mod_net` | `mod_net`, 30,000 data bytes plus bounded channel and framing |
+| `horizon:recipe_book_settings` (configuration) | exact private capability version byte `[1]` |
 | `horizon:mod_list` | `mod_list`, 128 entries, 64-character id and version fields on decode |
 | `horizon:attachment_sync` | `attachment_sync`, 1,048,576 body bytes |
 | `horizon:menu_extra` | `menu_extra`, 32,768 extra-data bytes plus window/position/framing |
@@ -54,6 +54,7 @@ Existing codec constraints remain with their owners:
 | `horizon:recipe_content` | `lan::recipes`, content parts at most 1,047,552 bytes |
 | `horizon:recipe_transfer` | `lan::recipes`, request has a VarInt window, a 512-character recipe id and at most one flag byte; reply is empty or a VarInt window and one result byte; no trailing bytes |
 | `horizon:recipe_book_settings` | `recipe_book::settings_codec`, 524,288 body bytes |
+| `horizon:levels` | `viewed_levels`, configuration both ways: exactly a 2-byte query and a 3-byte answer for a served revision (1 to 3), while another revision's bytes after its revision are ignored; play clientbound only: one level's packets, each of a level-scoped kind (from revision 3 also `Sound` and `SoundEntity`, a protocol error below it) and read exactly by its play codec; a serverbound play payload is refused |
 
 This finite engine-only classification is replaced, not extended, by mod payload
 registration. It does not authorize sending to an unnegotiated peer. The current

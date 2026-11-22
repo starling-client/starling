@@ -12,7 +12,7 @@ use ash::{ext, vk};
 use hashbrown::hash_map::Entry;
 use parking_lot::{Mutex, RwLock};
 
-use super::{conv, descriptor::DescriptorCounts, RawTlasInstance};
+use super::{RawTlasInstance, conv, descriptor::DescriptorCounts};
 use crate::TlasInstance;
 
 impl super::DeviceShared {

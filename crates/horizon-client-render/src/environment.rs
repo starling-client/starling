@@ -12,6 +12,8 @@ use serde_json::Value as Json;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
+mod noise;
+
 pub struct Environment {
     system: System,
     /// What the packs' expressions read; the frame sets it before sampling.
@@ -555,13 +557,9 @@ impl<'a> BlockHost<'a> {
     }
 }
 
-/// The simplex noise `r.noise(x, y)` reads, the same for blocks and particles.
-pub(crate) fn polytone_noise() -> &'static horizon_core::noise::SimplexNoise {
-    static NOISE: std::sync::OnceLock<horizon_core::noise::SimplexNoise> =
-        std::sync::OnceLock::new();
-    NOISE.get_or_init(|| {
-        horizon_core::noise::SimplexNoise::new(&mut horizon_core::random::LegacyRandom::new(0))
-    })
+/// The noise `r.noise(x, y)` reads, the same for blocks and particles.
+pub(crate) fn polytone_noise() -> &'static noise::PerlinSimplex {
+    noise::builtin()
 }
 
 impl horizon_polytone::expr::Host for BlockHost<'_> {
@@ -611,7 +609,7 @@ impl horizon_polytone::expr::Host for BlockHost<'_> {
             (V::Object(2), "noise") => {
                 let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
                 let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
-                num(f64::from(polytone_noise().get2(x, y)))
+                num(polytone_noise().get(x, y))
             }
             _ => Err(format!("{name} is not available to block colormaps")),
         }
@@ -816,23 +814,18 @@ fn biome_tag(
         .map_err(|e| e.to_string())
         .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).map_err(|e| e.to_string()))
     {
-        for value in json["values"].as_array().into_iter().flatten() {
-            let id = value
-                .as_str()
-                .or_else(|| value["id"].as_str())
-                .unwrap_or_default();
-            match id.strip_prefix('#') {
-                Some(inner) => out.extend(biome_tag(root, inner, cache)),
-                None if !id.is_empty() => {
-                    out.insert(if id.contains(':') {
-                        id.to_owned()
+        out.extend(
+            horizon_world::tag_layers::TagLayers::from_file(&json)
+                .build(|inner| biome_tag(root, inner, cache).into_iter().collect())
+                .into_iter()
+                .map(|id| {
+                    if id.contains(':') {
+                        id
                     } else {
                         format!("minecraft:{id}")
-                    });
-                }
-                None => {}
-            }
-        }
+                    }
+                }),
+        );
     }
     cache.insert(tag.to_owned(), out.clone());
     out
@@ -841,16 +834,22 @@ fn biome_tag(
 /// The timeline ids a dimension type's `timelines` names: an id, a `#tag` or a list,
 /// tags resolved through `tags/timeline/` (their entries may be `{"id", "required"}`).
 fn timeline_ids(root: &ResourceSource, json: &Json, out: &mut Vec<String>, depth: u32) {
+    // An entry's id and whether it removes (`TagLoader.EntryWithSource.remove`).
     let entry = |e: &Json| {
         e.as_str()
             .or_else(|| e.get("id").and_then(Json::as_str))
-            .map(str::to_owned)
+            .map(|id| {
+                (
+                    id.to_owned(),
+                    e.get("remove").and_then(Json::as_bool) == Some(true),
+                )
+            })
     };
-    let items: Vec<String> = match json {
+    let items: Vec<(String, bool)> = match json {
         Json::Array(list) => list.iter().filter_map(entry).collect(),
         other => entry(other).into_iter().collect(),
     };
-    for item in items {
+    for (item, removes) in items {
         if let Some(tag) = item.strip_prefix('#') {
             let (namespace, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
             let file = format!("data/{namespace}/tags/timeline/{path}.json");
@@ -862,8 +861,31 @@ fn timeline_ids(root: &ResourceSource, json: &Json, out: &mut Vec<String>, depth
                         serde_json::from_slice::<Json>(&bytes).map_err(|e| e.to_string())
                     })
             {
-                timeline_ids(root, &tag["values"], out, depth + 1);
+                let mut members = Vec::new();
+                members.extend(horizon_world::tag_layers::TagLayers::from_file(&tag).build(
+                    |inner| {
+                        let mut child = Vec::new();
+                        timeline_ids(
+                            root,
+                            &Json::String(format!("#{inner}")),
+                            &mut child,
+                            depth + 1,
+                        );
+                        child
+                    },
+                ));
+                if removes {
+                    out.retain(|kept| !members.contains(kept));
+                } else {
+                    for id in members {
+                        if !out.contains(&id) {
+                            out.push(id);
+                        }
+                    }
+                }
             }
+        } else if removes {
+            out.retain(|kept| kept != &item);
         } else if !out.contains(&item) {
             out.push(item);
         }

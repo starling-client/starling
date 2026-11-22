@@ -1,6 +1,7 @@
 //! `Mob.convertTo` with `ConversionType.SINGLE`: one mob turns into another
 //! of a different type in its place, keeping what the old one had.
 use super::Mob;
+use horizon_core::random::RandomSource;
 
 /// `ConversionParams` of a `SINGLE` conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +19,55 @@ impl Params {
         keep_equipment: true,
         preserve_can_pick_up_loot: true,
     };
+    /// `ConversionParams.single(mob, false, false)`: the old mob's gear stays
+    /// behind and the new mob keeps its own `canPickUpLoot` (`MushroomCow.shear`,
+    /// `Villager.thunderHit`).
+    pub const NONE: Self = Self {
+        keep_equipment: false,
+        preserve_can_pick_up_loot: false,
+    };
+}
+
+/// `ConversionParams.AfterConversion`: what the converting mob does once the
+/// new one exists (`MobEvent::Convert`'s `after`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum After {
+    /// No step: `Mob.convertTo` with a bare `ConversionParams.single`.
+    #[default]
+    None,
+    /// `AbstractPiglin.finishConversion` and `Hoglin.finishConversion`: the
+    /// new mob is nauseous for 10 seconds.
+    Nausea,
+    /// `Pig.thunderHit`: `populateDefaultEquipmentSlots` off the pig's own
+    /// random, then `setPersistenceRequired`.
+    ZombifiedPiglinGear,
+    /// `Villager.thunderHit`: `finalizeSpawn(CONVERSION)`, then
+    /// `setPersistenceRequired`.
+    Witch,
+    /// `Tadpole.ageUp`: `finalizeSpawn(CONVERSION)`, then
+    /// `setPersistenceRequired`.
+    Finalize,
+}
+
+impl After {
+    /// Whether the caller already asked `LivingConversionEvent.Pre`: the
+    /// lightning picks its outcome from the answer, so `convert_to` must not
+    /// ask again.
+    pub fn pre_checked(self) -> bool {
+        matches!(self, Self::ZombifiedPiglinGear | Self::Witch)
+    }
+}
+
+/// `Pig.thunderHit`'s completion after `single`: choose the converted pig's
+/// weapon from the source pig's RNG and prevent the result from despawning.
+pub fn pig_thunder_hit(from: &mut Mob, to: &mut Mob) {
+    let spear = from.random.next_int_bound(20).unwrap_or(1) == 0;
+    to.extra.set_main_hand(Some(if spear {
+        "minecraft:golden_spear".into()
+    } else {
+        "minecraft:golden_sword".into()
+    }));
+    to.persistent = true;
 }
 
 /// `ConversionType.SINGLE.convert` and `ConversionType.convertCommon`: `to`
@@ -233,6 +283,30 @@ mod tests {
                     && bare.extra.body_id().is_none()
             );
             assert_eq!(bare.custom_name.as_deref(), Some("Frosty"));
+        });
+    }
+    /// `ConversionType.convertCommon` copies absorption through the target's
+    /// setter, so it survives when the target's max absorption permits it.
+    #[test]
+    fn a_converting_mob_keeps_its_absorption() {
+        with_test_world(&[], |_, types| {
+            let mob = |id, kind: &str| {
+                Mob::new(
+                    id,
+                    Arc::new(types.types[kind].clone()),
+                    Vec3::new(3.5, 70.0, -2.5),
+                    0.0,
+                )
+            };
+            let mut z = mob(1, "minecraft:zombie");
+            z.absorption = 3.0;
+            let mut d = mob(2, "minecraft:drowned");
+            // LivingEntity.setAbsorptionAmount clamps to the new mob's maximum
+            // before effects are copied. An unmodified drowned has maximum 0.
+            Arc::make_mut(&mut Arc::make_mut(&mut d.kind).attributes)
+                .insert("minecraft:max_absorption".into(), 3.0);
+            single(&z, &mut d, Params::KEEP_ALL);
+            assert_eq!(d.absorption, 3.0, "the absorption crosses the conversion");
         });
     }
 }

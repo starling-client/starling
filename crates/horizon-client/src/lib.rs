@@ -4,22 +4,25 @@
 // launcher's horizon-mixins then rejects every native mod targeting this crate (#8169).
 #![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
 extern crate self as horizon_client;
+pub use horizon_client_lib::carrier_store;
 pub use horizon_client_lib::*;
 #[cfg(target_os = "android")]
 pub mod android;
+// Horizon Android 0.7.8's launcher, before the game (ha_launcher/mod.rs).
 #[doc(hidden)]
 pub mod entry;
+#[cfg(target_os = "android")]
+pub mod ha_launcher;
 
 // The game's allocator lives in the library, not the executable: the prebuilt game (#589) is this crate as a
-// dylib, and the allocator must be the one its code and the mods' executable share. The Windows archive builds
-// with `system-allocator`: std's DLL keeps its own allocator there, which everything then shares (#2394).
-#[cfg(not(any(feature = "system-allocator", feature = "alloc-census")))]
+// dylib, and the allocator must be the one its code and the mods' executable share. The Windows and macOS archives
+// build with `system-allocator`: their loaders bind each library to std's own allocator, which everything then
+// shares (#2394, #3877).
+#[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
-#[cfg(all(feature = "alloc-census", not(feature = "system-allocator")))]
-#[global_allocator]
-static ALLOCATOR: horizon_threads::CensusAllocator = horizon_threads::CensusAllocator;
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 pub mod game;
 
 pub mod diagnostics;
+pub mod orb_limits;
 pub mod performance;

@@ -18,11 +18,9 @@ impl Game<'_> {
         }
         self.perf.world_opening();
         if self.title.is_none() {
-            let title = Title::new(
-                std::env::current_dir()?.join("saves"),
-                &self.options.resources,
-            )
-            .with_user(|| self.options.player_name());
+            let title = self
+                .new_title(std::env::current_dir()?.join("saves"))
+                .with_user(|| self.options.player_name());
             self.show_title(title);
         }
         self.pending_entry = Some(entry);
@@ -111,7 +109,7 @@ impl Game<'_> {
                 })
                 .unwrap_or_default();
             let data_source = self.pack.data_changes.clone();
-            self.creation_job = std::thread::Builder::new()
+            let job = horizon_guest_stack::builder()
                 .name("world-creation".into())
                 .spawn(move || {
                     horizon_client::vanillagen::shared_data_from(
@@ -122,8 +120,20 @@ impl Game<'_> {
                     )
                     .map(|_| ())
                     .map_err(|e| e.to_string())
-                })
-                .ok();
+                });
+            match job {
+                Ok(job) => self.creation_job = Some(job),
+                Err(error) => {
+                    log::warn!("Horizon: world creation worker could not start: {error}");
+                    if let Some(title) = self.title.as_mut() {
+                        title.finish_preparing();
+                        title.failed(format!(
+                            "{}: {error}",
+                            horizon_client::lang::get("createWorld.preparing")
+                        ));
+                    }
+                }
+            }
             return;
         }
         if !self
@@ -158,6 +168,18 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    /// Waits until the world resources the title's start loads on a worker (`rest_loader`) are
+    /// in: the items, mobs and recipes `Resources::rest` holds.
+    pub(super) fn wait_world_rest(&mut self) -> Result<()> {
+        while self.rest_loader.is_some() {
+            self.poll_world_rest()?;
+            if self.rest_loader.is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn poll_world_rest(&mut self) -> Result<()> {
@@ -199,18 +221,6 @@ impl Game<'_> {
         }
     }
 
-    /// The world's packs' content files, none without packs.
-    /// The biome table the world plays with, `None` before a world opens.
-    pub(super) fn packed_biomes(&self) -> Option<Arc<Biomes>> {
-        let table = world_loading::packed_biomes(
-            &self.world_root,
-            &self.options.resources,
-            self.res.biomes(),
-            &self.level.enabled_features,
-            &self.pack.additional_data,
-        );
-        (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
-    }
     /// What the chunk and far-terrain workers mesh with: the pack's context,
     /// over the world's biomes when it has its own.
     pub(super) fn worker_context(&self) -> Arc<WorkerContext> {
@@ -225,13 +235,16 @@ impl Game<'_> {
     /// Load the world's data packs' content tables (`None`: the world has no
     /// packs, and `Resources.rest` stays in use). This re-reads the tables,
     /// so it runs once per world open and on `/reload`.
-    pub(super) fn build_world_tables(
+    pub(super) fn stage_world_tables(
         &mut self,
         stack: &functions::PackStack,
         reload: bool,
         root: &std::path::Path,
-        _data_switched: bool,
-    ) -> Result<(Option<WorldTables>, horizon_client::health::HealthResources)> {
+    ) -> Result<(
+        Option<WorldTables>,
+        horizon_client::health::HealthResources,
+        Option<mod_api::DatapackRegistrySet>,
+    )> {
         let phase = self.mod_phase.clone();
         let _reload = phase
             .reloading()
@@ -242,14 +255,13 @@ impl Game<'_> {
         self.native_data_pack_files(&mut contributed);
         let files = functions::overlay_files(stack, contributed);
         let inventory = horizon_mod_package::enabled::EnabledMods::read(root)?;
-        let conditions = horizon_world::conditions::LoadConditions::new(inventory.server_ids());
+        let conditions = self.registered_load_conditions(&inventory)?;
         let overlay = horizon_world::loot::PackOverlay {
             conditions: &conditions,
             files: &files,
         };
         let mut data_map_types = Vec::new();
         self.native_data_map_types(&mut data_map_types);
-        self.data_map_registries = native_data_maps::registries_of(&data_map_types);
         let base = if reload {
             &self.health_resources
         } else {
@@ -269,13 +281,14 @@ impl Game<'_> {
         api_values::resolve_enchantment_registry(&items)?;
         // Item damage predicates use the same frozen registry as player hurt.
         Arc::make_mut(&mut items.enchantments).bind_damage_catalog(&health.damage);
+        items.bind_component_damage_catalog(&health.damage);
         // The recipe tables, the stations and the recipe book read one folder:
         // hold its files so it is read once.
         let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let sources = if reload {
-            lan::prepare_server_sources(root, &self.res.core.item_data, &overlay)?
+            lan::sync::prepare_server_sources(root, &self.res.core.item_data, &overlay)?
         } else {
-            lan::load_sources(
+            lan::sync::load_sources(
                 root,
                 &self.res.core.item_data,
                 self.options.execution_role.data_load_origin(),
@@ -283,18 +296,49 @@ impl Game<'_> {
             )?
         };
         let recipes = Recipes::from_resolved(root, &items, &overlay, &sources)?;
-        let stations = horizon_client::stations::StationData::from_sources(
+        let mut stations = horizon_client::stations::StationData::from_sources(
             root,
             &items,
             &overlay,
             self.res.item_defaults(),
-            &sources,
+            (&sources, &recipes),
         );
-        let data_maps = native_data_maps::DataMaps::load(
-            &data_map_types,
+        self.prepare_professions(root, &items, &mut stations)?;
+        // The world's loaded datapack registries are a mod-declared registry's
+        // authority for the data maps' id checks, as the command ids are for
+        // the registries they list.
+        // Resolve membership against the very generation that will be published.
+        // In particular, generation exhaustion refuses preparation before any state changes.
+        let datapack_registries = self
+            .datapack_candidate(stack, &conditions)?
+            .map(
+                |candidate| match self.mods.datapack_registries.as_ref().filter(|_| reload) {
+                    Some(old) => old
+                        .reload(candidate)
+                        .map_err(|error| format!("datapack registry reload: {error:?}")),
+                    None => Ok(mod_api::DatapackRegistrySet::first(
+                        candidate,
+                        horizon_client::datapack_net::next_session(),
+                    )),
+                },
+            )
+            .transpose()?;
+        let received = horizon_client::datapack_net::received();
+        let datapack_set = if self.is_logical_server() {
+            datapack_registries.as_ref()
+        } else {
+            received.as_deref()
+        };
+        let registries = native_data_maps::WorldRegistries::new(
+            self.ui
+                .registries
+                .by_registry
+                .iter()
+                .map(|(registry, entries)| (registry.as_str(), entries.ids.as_slice())),
+            datapack_set,
+            &items,
+            root,
             &overlay,
-            &items.item_tags,
-            &items.block_tags,
         );
         let causes_suffocation = items
             .block_tags
@@ -309,7 +353,11 @@ impl Game<'_> {
         )?;
         // A registry whose pack tags don't load keeps the game's own tags
         // (`in_tag` falls back to them), rather than matching no tag at all.
-        let pack_tags = WorldTables::PACK_TAG_REGISTRIES
+        let pack_tags: HashMap<_, _> = WorldTables::PACK_TAG_REGISTRIES
+            .into_iter()
+            .chain(horizon_client::neoforge_mob_maps::MAPS.map(|definition| definition.directory))
+            .filter(|directory| *directory != "item")
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .filter_map(|registry| {
                 match horizon_client::items::load_tags(root, registry, &overlay) {
@@ -321,14 +369,59 @@ impl Game<'_> {
                 }
             })
             .collect();
-        let datapack_candidate = self.datapack_candidate(stack, &conditions)?;
-        self.mods.datapack_candidate = datapack_candidate;
+        // Items already decoded the root's command export. Block-state-only
+        // command metadata is not the registry universe, and professions and
+        // biomes belong to the live world candidate rather than that export.
+        for registry in ["minecraft:sound_event", "minecraft:game_event"] {
+            if items.component_registry.ids(registry).is_empty() {
+                return Err(format!(
+                    "builtin data maps require {registry} in command-registries.json"
+                )
+                .into());
+            }
+        }
+        let builtin = neoforge_mob_maps::load(
+            &overlay,
+            |directory| {
+                if directory == "item" {
+                    Some(&items.item_tags)
+                } else {
+                    pack_tags.get(directory)
+                }
+            },
+            |registry, id| match registry {
+                "minecraft:item" => items.items.contains_key(id),
+                "minecraft:villager_profession" => stations.professions.resolve(id).is_some(),
+                "minecraft:worldgen/biome" => self
+                    .world_biomes
+                    .as_ref()
+                    .unwrap_or_else(|| self.res.biomes())
+                    .contains(id),
+                "minecraft:entity_type" => {
+                    self.res.mob_types().contains_key(id)
+                        || items
+                            .component_registry
+                            .ids(registry)
+                            .binary_search_by(|known| known.as_str().cmp(id))
+                            .is_ok()
+                }
+                _ => items
+                    .component_registry
+                    .ids(registry)
+                    .binary_search_by(|known| known.as_str().cmp(id))
+                    .is_ok(),
+            },
+        )?;
+        let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
+            .with_builtins(builtin);
+        drop(registries);
+        conditions.check_errors()?;
         Ok((
             Some(WorldTables {
                 conditions,
                 suffocation,
                 files,
-                items,
+                items: Arc::new(items),
                 recipes,
                 stations,
                 reload_sources: reload.then_some(sources),
@@ -336,6 +429,7 @@ impl Game<'_> {
                 pack_tags,
             }),
             health,
+            datapack_registries,
         ))
     }
     /// The entries of the mods' datapack registries in the winning pack files: decoded with
@@ -360,36 +454,33 @@ impl Game<'_> {
         let packs: Vec<_> = std::iter::once(&stack.content)
             .chain(stack.enabled_packs())
             .collect();
-        let files: Vec<(String, Vec<Vec<u8>>)> =
-            horizon_client::datapack::registry_files(&packs, &keys)
-                .into_iter()
-                .map(|(path, versions)| {
-                    let versions = versions
-                        .into_iter()
-                        .filter_map(|bytes| {
-                            let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes)
-                            else {
-                                // Malformed: the decoder reports it, naming the file.
-                                return Some(bytes);
-                            };
-                            if !conditions.allows(&json) {
-                                return None;
-                            }
-                            if let Some(object) = json.as_object_mut() {
-                                object.remove("neoforge:conditions");
-                            }
-                            serde_json::to_vec(&json).ok()
-                        })
-                        .collect();
-                    (path, versions)
-                })
-                .collect();
+        let files: Vec<_> = horizon_client::datapack::registry_files(
+            &packs,
+            &keys,
+            !conditions.has_registered(),
+            |path, pack, bytes| {
+                !super::condition_reload_state::registry_versions(
+                    vec![(pack.to_owned(), bytes.to_vec())],
+                    conditions,
+                    path,
+                )
+                .is_empty()
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "datapack registry {} entry {} (pack {}, file {}): {:?}",
+                error.registry, error.entry, error.pack, error.file, error.reason
+            )
+        })?
+        .into_iter()
+        .collect();
         mod_api::DatapackCandidate::build(declarations, &files)
             .map(Some)
             .map_err(|error| {
                 format!(
-                    "datapack registry {} entry {} ({}): {:?}",
-                    error.registry, error.entry, error.file, error.reason
+                    "datapack registry {} entry {} (pack {}, file {}): {:?}",
+                    error.registry, error.entry, error.pack, error.file, error.reason
                 )
                 .into()
             })
@@ -400,14 +491,19 @@ impl Game<'_> {
         stack: &functions::PackStack,
         root: &std::path::Path,
     ) -> Result<()> {
-        (self.world_tables, self.health_resources) =
-            self.build_world_tables(stack, false, root, self.mods.data_switched)?;
-        self.mods.datapack_registries = self.mods.datapack_candidate.take().map(|candidate| {
-            Arc::new(mod_api::DatapackRegistrySet::first(
-                candidate,
-                horizon_client::datapack_net::next_session(),
-            ))
-        });
+        // A new world load: a saved base clamped into its bounds warns again (#3728).
+        horizon_client::living_attributes::LOAD_CLAMPS.begin_load();
+        let (tables, health, registries) = self.stage_world_tables(stack, false, root)?;
+        self.world_tables = tables;
+        self.health_resources = health;
+        self.mods.datapack_registries = registries.map(Arc::new);
+        self.data_map_registries = self
+            .world_tables
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.data_maps.registries());
+        self.install_block_maps();
+        self.install_profession_save_snapshots();
+        self.share_mob_maps();
         horizon_client::datapack_net::serve(self.mods.datapack_registries.clone());
         Ok(())
     }
@@ -434,12 +530,13 @@ impl Game<'_> {
         let PreparedWorldReload {
             structure_spawns,
             tables,
+            advancements,
             health,
             parts,
             wire,
             datapack_registries,
         } = prepared;
-        lan::forget_server_sources();
+        lan::sync::forget_server_sources();
         if let Some(tables) = &tables
             && let Some(sources) = &tables.reload_sources
         {
@@ -447,21 +544,33 @@ impl Game<'_> {
                 conditions: &tables.conditions,
                 files: &tables.files,
             };
-            lan::install_server_sources(
+            lan::sync::install_server_sources(
                 &self.options.resources,
                 &self.res.core.item_data,
                 &overlay,
                 sources.clone(),
             );
         }
-        self.world_tables = tables;
         self.mods.datapack_registries = datapack_registries.map(Arc::new);
+        self.health_resources = health;
+        self.world_tables = tables;
+        self.data_map_registries = self
+            .world_tables
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.data_maps.registries());
+        self.install_block_maps();
+        self.install_profession_save_snapshots();
+        self.share_mob_maps();
+        self.world.pois.clear();
+        for world in self.levels.parked_worlds() {
+            world.pois.clear();
+        }
         horizon_client::datapack_net::serve(self.mods.datapack_registries.clone());
         self.send_datapack_snapshots();
         self.refresh_recipe_property_context();
         self.structure_spawns = structure_spawns;
-        self.health_resources = health;
         self.server_items = None;
+        self.refresh_infiniburn();
         self.install_parts(parts);
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         self.forget_book();
@@ -472,7 +581,7 @@ impl Game<'_> {
         // PlayerList.reloadResources: the tags and recipes go to the players
         // and their advancements reload. The synchronized registries (the
         // dialogs, and the commands' ids of them) stay the hub's.
-        lan::install_wire_reload(
+        lan::sync::install_wire_reload(
             &self.options.resources,
             &self.res.core.item_data,
             &self.pack_files(),
@@ -483,13 +592,10 @@ impl Game<'_> {
         {
             self.with_advancement_hub(|hub, owners| hub.reload_resources(sync, owners));
         }
-        let overlay = pack_files(&self.world_tables);
-        self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(
-            &self.options.resources.join("data"),
-            &overlay,
-        ));
+        self.adv.tree = advancements;
         self.adv.reset_tree();
-        self.native_tags_updated(mod_api::TagsUpdateCause::ServerDataLoad { reload: true });
+        self.announce_data_bound(mod_api::TagsUpdateCause::ServerDataLoad { reload: true });
+        self.resolve_enchant_particles();
         self.announce_data_maps_updated(mod_api::DataMapsUpdateCause::ServerReload);
         self.build_screen();
     }
@@ -540,7 +646,7 @@ impl Game<'_> {
                 self.res.item_defaults(),
             ) {
                 Ok(mut loot) => {
-                    let context = match lan::server_data_load(
+                    let context = match lan::sync::server_data_load(
                         &self.options.resources,
                         &self.res.core.item_data,
                     ) {
@@ -551,7 +657,11 @@ impl Game<'_> {
                             return;
                         }
                     };
-                    loot.apply_native_table_loads(&context);
+                    if let Err(error) = loot.apply_native_table_loads(&context) {
+                        log::warn!("Horizon: native loot tables refused: {error}");
+                        self.server_loot.set(None);
+                        return;
+                    }
                     Some(Arc::new(loot))
                 }
                 Err(e) => {
@@ -573,7 +683,7 @@ impl Game<'_> {
     pub(super) fn prepare_parts(&self, items: &Items) -> Result<PreparedParts> {
         let registry = self.pack.assets.registry;
         let block_tags = &items.block_tags;
-        let tags = native_world_read::prepare_block_tags(block_tags);
+        let tags = self.block_tag_sets(items);
         let parts = mod_api::__private::prepare_parts(
             block_tags,
             &items.item_tags,
@@ -597,7 +707,9 @@ impl Game<'_> {
             _ => "Mod parts refused".to_owned(),
         })?;
         let block_states = api_values::prepare_block_states(registry)?;
+        let cauldrons = self.prepare_cauldron_interactions(items)?;
         Ok(PreparedParts {
+            cauldrons,
             block_states,
             tags,
             parts,
@@ -609,23 +721,8 @@ impl Game<'_> {
         &mut self,
         stack: &functions::PackStack,
         root: &std::path::Path,
-        data_switched: bool,
     ) -> Result<PreparedWorldReload> {
-        let (tables, health) = self.build_world_tables(stack, true, root, data_switched)?;
-        let datapack_registries = self
-            .mods
-            .datapack_candidate
-            .take()
-            .map(|candidate| match &self.mods.datapack_registries {
-                Some(old) => old
-                    .reload(candidate)
-                    .map_err(|error| format!("datapack registry reload: {error:?}")),
-                None => Ok(mod_api::DatapackRegistrySet::first(
-                    candidate,
-                    horizon_client::datapack_net::next_session(),
-                )),
-            })
-            .transpose()?;
+        let (tables, health, datapack_registries) = self.stage_world_tables(stack, true, root)?;
         let items = tables
             .as_ref()
             .map_or_else(|| self.res.items(), |tables| &tables.items);
@@ -635,23 +732,37 @@ impl Game<'_> {
             .lan
             .as_ref()
             .map(|host| host.hub.lan.shared.sync())
-            .or_else(lan::cached_reload_sync);
+            .or_else(lan::sync::cached_reload_sync);
         let wire = if let Some(kept) = kept {
             let sources = match tables
                 .as_ref()
                 .and_then(|tables| tables.reload_sources.clone())
             {
                 Some(sources) => sources,
-                None => lan::prepare_server_sources(root, &self.res.core.item_data, &overlay)?,
+                None => {
+                    lan::sync::prepare_server_sources(root, &self.res.core.item_data, &overlay)?
+                }
             };
             Some(
-                lan::prepare_wire_reload(root, &self.res.core.item_data, &overlay, &kept, &sources)
-                    .map_err(|error| format!("wire reload: {error}"))?,
+                lan::sync::prepare_wire_reload(
+                    root,
+                    &self.res.core.item_data,
+                    &overlay,
+                    &kept,
+                    &sources,
+                )
+                .map_err(|error| format!("wire reload: {error}"))?,
             )
         } else {
             None
         };
+        let advancements = Arc::new(horizon_client::advancements::Tree::load_with(
+            &root.join("data"),
+            &overlay,
+        ));
+        overlay.conditions.check_errors()?;
         Ok(PreparedWorldReload {
+            advancements,
             structure_spawns: horizon_client::mobs::spawn_selection::StructureSpawns::load(root),
             tables,
             health,
@@ -666,22 +777,40 @@ impl Game<'_> {
     pub(super) fn resolve_parts(&self) -> Result<()> {
         let prepared = self.prepare_parts(self.items())?;
         self.install_parts(prepared);
+        self.resolve_enchant_particles();
         Ok(())
     }
     /// Ask the parts of each block `isPathfindable` once per state and type: the answer depends
-    /// on nothing else, so path finding and spawning read it with no dispatch.
+    /// on nothing else, so path finding and spawning read it with no dispatch. A server also
+    /// publishes its parts for its world generation.
     pub(super) fn install_parts(&self, prepared: PreparedParts) {
+        cauldron_interactions::install(prepared.cauldrons);
+        if self.is_logical_server() {
+            native_worldgen_parts::publish(
+                prepared.parts.as_ref(),
+                &prepared.block_states,
+                self.pack.assets.registry,
+            );
+        }
         api_values::install_block_states(prepared.block_states);
         native_world_read::install_block_tags(prepared.tags);
         mod_api::__private::install_resolved_parts(prepared.parts);
-        self.resolve_pathfindable();
+        self.resolve_block_paths();
+        self.resolve_piston_reactions();
     }
-    pub(super) fn resolve_pathfindable(&self) {
-        let asked = mod_api::__private::has_scoped_hook(mod_api::HookId::IsPathfindable);
-        let data = &self.res.rest().mob_data;
-        data.set_pathfindable(asked, |state, kind, mut pathfindable| {
-            self.native_is_pathfindable(state, kind, &mut pathfindable);
-            pathfindable
-        });
+    pub(super) fn resolve_block_paths(&self) {
+        use horizon_client::mobs::data::PartAnswers;
+        use mod_api::{__private::has_scoped_hook, HookId, PathComputationType};
+        let pathfindable: &dyn Fn(BlockStateId, PathComputationType, bool) -> bool =
+            &|state, kind, mut pathfindable| {
+                self.native_is_pathfindable(state, kind, &mut pathfindable);
+                pathfindable
+            };
+        self.res.mob_data().resolve_parts(
+            self.res.facts(),
+            &PartAnswers {
+                pathfindable: has_scoped_hook(HookId::IsPathfindable).then_some(pathfindable),
+            },
+        );
     }
 }

@@ -116,12 +116,11 @@ impl Game<'_> {
             self.sculk_actor(),
             Some(max_age),
         );
+        self.trigger_block("minecraft:item_used_on_block", pos, stack);
         self.damage_held(1);
         // ItemStack.useOn: an item interaction counts as a use.
         self.award_stat("used", &stack.item, 1);
         self.swing_arm();
-        // ServerPlayerGameMode.useItemOn: a consuming useOn reports it.
-        self.trigger_block("minecraft:item_used_on_block", pos, stack);
         Ok(true)
     }
 }
@@ -261,7 +260,7 @@ mod tests {
         heard().clear();
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new("meal", Box::new(meal))].into();
         let mut out = None;
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world.chunks.insert(
@@ -354,7 +353,7 @@ mod tests {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 let stack = ItemStack::new("minecraft:bone_meal", 3);
                 *game.held_mut() = Some(stack.clone());

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 /// A one-thread HTTP/1.1 server answering GETs from `files` (path → body); it counts requests,
 /// and closes the next `drops` connections unanswered, as a network that drops.
@@ -154,13 +155,13 @@ fn the_official_layout_is_checked_and_resumable() {
     let f = fake();
     let root = std::env::temp_dir().join(format!("starling-files-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let last = Mutex::new(Progress::default());
+    let progress = Mutex::new(Vec::new());
     let got = download(
         &sources(&f),
         &f.pins,
         &root,
         ALL,
-        &|p| *last.lock().unwrap() = p,
+        &|p| progress.lock().unwrap().push(p),
         &|| false,
     )
     .unwrap();
@@ -185,12 +186,31 @@ fn the_official_layout_is_checked_and_resumable() {
             .join(&h1)
             .is_file()
     );
-    let p = *last.lock().unwrap();
+    let samples = progress.into_inner().unwrap();
+    let p = samples.last().unwrap();
     assert_eq!((p.files, p.files_total), (5, 5));
+    assert_eq!((p.bytes, p.downloaded_bytes), (65, 65));
+    assert!(
+        samples
+            .windows(2)
+            .all(|pair| pair[0].files <= pair[1].files && pair[0].bytes <= pair[1].bytes)
+    );
     // Again: everything is there with its hash, so only nothing is fetched.
     let before = f.hits.load(Ordering::Relaxed);
-    download(&sources(&f), &f.pins, &root, ALL, &|_| {}, &|| false).unwrap();
+    let resumed = Mutex::new(Progress::default());
+    download(
+        &sources(&f),
+        &f.pins,
+        &root,
+        ALL,
+        &|p| *resumed.lock().unwrap() = p,
+        &|| false,
+    )
+    .unwrap();
     assert_eq!(f.hits.load(Ordering::Relaxed), before);
+    let p = resumed.into_inner().unwrap();
+    assert_eq!((p.files, p.bytes, p.downloaded_bytes), (5, 65, 0));
+    assert!(p.transfer_started.is_none());
     // A damaged file is fetched again; no `.part` file stays behind.
     std::fs::write(root.join("libraries/a/a/1/a.jar"), b"damaged").unwrap();
     download(&sources(&f), &f.pins, &root, ALL, &|_| {}, &|| false).unwrap();

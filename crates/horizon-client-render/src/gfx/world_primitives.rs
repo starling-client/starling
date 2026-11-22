@@ -13,6 +13,10 @@ pub const DEFAULT_CAPACITY: u32 = 4096;
 
 /// The stages a frame draws primitives at, in frame order (`RenderLevelStage`).
 pub const STAGES: usize = 5;
+/// world_primitives.wgsl after what it shares with the frame's other shaders (`frame_stored`).
+pub(super) fn shader() -> String {
+    include_str!("../hdr_light.wgsl").to_owned() + include_str!("world_primitives.wgsl")
+}
 
 /// A frame's primitives, camera-relative, as the game tessellated them: quads of 4 vertices
 /// from the shared atlas (plain colours on its white texel, text on its glyphs, beams on the
@@ -28,11 +32,14 @@ pub struct Batch<'a> {
     /// lines through walls: each slice holds its stages in frame order, and what follows the
     /// last end is the last stage's. All zero, everything draws at the last stage.
     pub stage_ends: [[u32; 4]; STAGES - 1],
+    /// The quads mods draw with their own pipelines (`gfx::mod_pipelines`), with their stages.
+    pub pipelines: super::mod_pipelines::Batch<'a>,
 }
 
 impl Batch<'_> {
     pub fn is_empty(&self) -> bool {
-        self.quads.is_empty()
+        self.pipelines.runs.is_empty()
+            && self.quads.is_empty()
             && self.quads_through.is_empty()
             && self.lines.is_empty()
             && self.lines_through.is_empty()
@@ -66,6 +73,8 @@ pub struct WorldPrimitives {
     counts: [u32; 4],
     /// The batch's `stage_ends`, clamped to `counts`.
     stage_ends: [[u32; 4]; STAGES - 1],
+    /// Mods' own pipelines and their quads, drawn after each stage's primitives.
+    pub(super) pipelines: super::mod_pipelines::ModPipelines,
 }
 
 struct AtlasGroup {
@@ -78,11 +87,12 @@ struct AtlasGroup {
 pub type Upload<'u> = &'u mut dyn FnMut(&wgpu::Buffer, &[u8]);
 
 impl WorldPrimitives {
-    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth.
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth, decoding their
+    /// colours where the frame holds linear light (`linear`).
+    pub fn new(device: &wgpu::Device, (color_format, linear): (wgpu::TextureFormat, bool)) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("World primitives"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("world_primitives.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World primitives"),
@@ -171,7 +181,10 @@ impl WorldPrimitives {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry[1]),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &super::linear_blend::frame_constants(color_format, linear),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: color_format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -237,6 +250,7 @@ impl WorldPrimitives {
             index_data: Vec::new(),
             counts: [0; 4],
             stage_ends: [[0; 4]; STAGES - 1],
+            pipelines: super::mod_pipelines::ModPipelines::new(device, color_format),
         }
     }
 
@@ -263,6 +277,11 @@ impl WorldPrimitives {
             quads as u64 * 4 * std::mem::size_of::<Vertex>() as u64,
         );
         grow(&mut self.lines, lines as u64 * 32);
+        self.reserve_indices(device, upload, quads);
+    }
+
+    /// Reserves the shared quad indices for `quads` quads; growth uploads the full array.
+    fn reserve_indices(&mut self, device: &wgpu::Device, upload: Upload<'_>, quads: u32) {
         if quads > self.index_quads {
             let capacity = quads.next_power_of_two();
             self.index_data.extend(
@@ -270,7 +289,14 @@ impl WorldPrimitives {
             );
             self.index_quads = capacity;
             let bytes: &[u8] = bytemuck::cast_slice(&self.index_data);
-            grow(&mut self.indices, bytes.len() as u64);
+            if self.indices.size() < bytes.len() as u64 {
+                self.indices = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("World primitives"),
+                    size: (bytes.len() as u64).next_power_of_two(),
+                    usage: self.indices.usage(),
+                    mapped_at_creation: false,
+                });
+            }
             upload(&self.indices, bytes);
         }
     }
@@ -292,11 +318,17 @@ impl WorldPrimitives {
         let lines = [batch.lines, batch.lines_through].map(|l| l.len() as u32);
         self.counts = [quads[0], quads[1], lines[0], lines[1]];
         self.stage_ends = clamped_ends(batch.stage_ends, self.counts);
+        // Before the empty check, which counts the pipeline runs this queues; the pipelines
+        // themselves were built with the renderer (`Renderer::build_mod_pipelines`).
+        let pipeline_quads =
+            self.pipelines
+                .prepare(device, upload, &batch.pipelines, view_proj, viewport);
         if batch.is_empty() {
             return false;
         }
         let total_quads = quads[0] + quads[1];
         self.reserve(device, upload, total_quads, lines[0] + lines[1]);
+        self.reserve_indices(device, upload, pipeline_quads);
         if total_quads > 0 {
             self.quad_vertices.clear();
             for q in [batch.quads, batch.quads_through] {
@@ -346,8 +378,9 @@ impl WorldPrimitives {
     /// Draws the stages from `*next` to `stage` that [`Self::prepare`] uploaded into a pass
     /// over the world's colour and depth, and moves `next` past them: a stage the frame did
     /// not reach in this pass draws here, after those before it. Within the stages, the
-    /// depth-tested quads and lines, then those seen through walls over everything. Leaves
-    /// the pass with its own pipeline, bind group 0 and buffers.
+    /// depth-tested quads and lines, then those seen through walls over everything, then the
+    /// mods' pipeline quads in the order queued. Leaves the pass with its own pipeline, bind
+    /// group 0 and buffers.
     pub fn draw_through(&self, pass: &mut wgpu::RenderPass<'_>, next: &mut usize, stage: usize) {
         let (first, last) = (*next, stage.min(STAGES - 1));
         if first > last {
@@ -359,14 +392,13 @@ impl WorldPrimitives {
         };
         let [quads, quads_through, lines, lines_through] =
             spans(self.counts, &self.stage_ends, first, last);
-        if quads.is_empty()
+        if !(quads.is_empty()
             && quads_through.is_empty()
             && lines.is_empty()
-            && lines_through.is_empty()
+            && lines_through.is_empty())
         {
-            return;
+            pass.set_bind_group(0, group, &[]);
         }
-        pass.set_bind_group(0, group, &[]);
         for (through, (quad_range, line_range)) in [(quads, lines), (quads_through, lines_through)]
             .into_iter()
             .enumerate()
@@ -383,6 +415,7 @@ impl WorldPrimitives {
                 pass.draw(0..4, line_range);
             }
         }
+        self.pipelines.draw(pass, &self.indices, first, last);
     }
 }
 
@@ -510,6 +543,7 @@ mod tests {
 
     #[test]
     fn uploads_preserve_ranges_and_reuse_high_water_storage() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -529,7 +563,8 @@ mod tests {
             view_formats: &[],
         });
         let atlas_view = atlas.create_view(&Default::default());
-        let mut primitives = WorldPrimitives::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut primitives =
+            WorldPrimitives::new(&device, (wgpu::TextureFormat::Rgba8Unorm, false));
         let view_proj = Mat4::IDENTITY;
         let red = quad(view_proj, [0.0, 0.0, 32.0, 32.0], 2.0, RED);
         let blue = quad(view_proj, [32.0, 32.0, 64.0, 64.0], 2.0, BLUE);
@@ -689,6 +724,7 @@ mod tests {
     /// depth-tested quad in front of the wall shows.
     #[test]
     fn depth_tested_primitives_hide_behind_walls_and_see_through_ones_do_not() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -769,7 +805,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut primitives = WorldPrimitives::new(&device, format);
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
         let atlas_view = atlas.create_view(&Default::default());
         assert!(primitives.prepare(
             &device,

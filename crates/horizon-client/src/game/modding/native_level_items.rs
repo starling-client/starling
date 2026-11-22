@@ -42,16 +42,16 @@ impl Game<'_> {
     /// `pos` (three draws from the level random, made for an empty stack and
     /// with `block_drops` off too), with its own random motion and the
     /// default pickup delay of 10 ticks. None, with nothing spawned, for an
-    /// empty stack or an unknown item, with the `block_drops` rule off, on a
-    /// client, for a stale handle, a level not in place, or an item a mod
-    /// kept out (`native_entity_join_level`).
+    /// empty stack or an unknown item, with the `block_drops` rule off, on a client,
+    /// for a stale handle, a level not in place, once the entity ids run out (the level random is
+    /// not drawn from), or an item a mod kept out (`native_entity_join_level`).
     pub(super) fn level_pop_resource(
         &mut self,
         level: LevelRef,
         pos: [i32; 3],
         stack: ItemStack,
     ) -> Option<EntityRef> {
-        if !self.level_in_place(level) {
+        if !self.level_in_place(level) || self.entity_ids_exhausted() {
             return None;
         }
         let at = spill::pop_position(&mut self.world.random, pos);
@@ -113,6 +113,9 @@ impl Game<'_> {
         motion: Option<[f64; 3]>,
         pickup_delay: u32,
     ) -> Option<EntityRef> {
+        if self.entity_ids_exhausted() {
+            return None;
+        }
         let finite = [x, y, z]
             .into_iter()
             .chain(motion.into_iter().flatten())
@@ -204,7 +207,12 @@ mod tests {
         let popped = game
             .level_pop_resource(level, [4, 64, -2], stone())
             .unwrap();
-        assert_eq!(game.entity_kind(popped).as_deref(), Some("minecraft:item"));
+        assert_eq!(
+            game.entity_kind(popped)
+                .map(|kind| kind.id(&game))
+                .as_deref(),
+            Some("minecraft:item")
+        );
         assert_eq!(game.entity_position(popped), Some(at));
         let item = game.dropped.last().unwrap();
         assert_eq!((item.pickup_delay, item.stack.count), (10, 3));
@@ -313,12 +321,13 @@ mod tests {
         }
         let mods: mod_api::Mods =
             vec![mod_api::ModEntry::new("level-item-awards", Box::new(Award))].into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 let orb = |id, x, value, ticks| {
                     let p = Vec3::new(x, 70.0, 0.5);
                     ExperienceOrb {
                         attachment_lifetime: Default::default(),
+                        fall_distance: 0.0,
                         rotation: [0.0, 0.0],
                         join: Default::default(),
                         id,
@@ -331,6 +340,7 @@ mod tests {
                         count: 1,
                         ticks,
                         health: 5,
+                        air: 300,
                         no_gravity: true,
                         following: None,
                     }

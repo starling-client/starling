@@ -78,6 +78,10 @@ impl DrawContext for GameDrawContext<'_, '_> {
         self.game
             .native_draw_scene(&mut *self.surface, rect, &blocks, view)
     }
+    fn entity(&mut self, entity: &GuiEntity, view: GuiEntityView) -> Result<(), GuiEntityError> {
+        self.game
+            .native_gui_entity(&mut *self.surface, entity, view)
+    }
     fn draw_menu_background(&mut self, rect: [f32; 4], in_world: bool) {
         self.game
             .native_draw_menu_background(&mut *self.surface, rect, in_world)
@@ -141,6 +145,9 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
     fn game_time(&self) -> i64 {
         self.game.native_draw_game_time(&*self.surface)
     }
+    fn animation_time(&self) -> f64 {
+        self.game.native_draw_animation_time(&*self.surface)
+    }
     fn light(&self) -> u32 {
         self.game.native_draw_light(&*self.surface)
     }
@@ -200,7 +207,7 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
         at: [f32; 2],
         color: u32,
         glowing: bool,
-        outline: u32,
+        outline: Option<u32>,
     ) -> Result<f32, mod_api::text::TextFormError> {
         let text = text.try_into_engine(&())?;
         Ok(self
@@ -215,8 +222,9 @@ impl BlockEntityDrawContext for GameBlockEntityDrawContext<'_, '_> {
         self.game
             .native_draw_terrain_model(&mut *self.surface, model, options)
     }
-    fn text_width(&self, text: &str) -> f32 {
-        self.game.native_draw_text_width(&*self.surface, text)
+    fn text_width(&self, text: &Text) -> Result<f32, mod_api::text::TextFormError> {
+        let text = text.try_into_engine(&())?;
+        Ok(self.game.native_draw_text_width(&*self.surface, &text))
     }
     fn model_part(&mut self, part: &ModelPart, sprite: &str, tint: u32) -> bool {
         self.game
@@ -261,6 +269,14 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
     }
     fn quads(&mut self, quads: &[WorldQuad]) -> Result<(), DrawError> {
         self.game.native_world_draw_quads(&mut *self.surface, quads)
+    }
+    fn pipeline_quads(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<(), PipelineDrawError> {
+        self.game
+            .native_world_draw_pipeline_quads(&mut *self.surface, pipeline, quads)
     }
     fn usage(&self) -> WorldDrawUsage {
         self.game.native_world_draw_usage(&*self.surface)

@@ -3,14 +3,21 @@
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
 #[path = "persist/display.rs"]
 mod display;
+#[path = "persist/entity_uuids.rs"]
+mod entity_uuids;
+pub(super) use entity_uuids::EntityUuids;
 #[path = "persist/loaded_pass.rs"]
 mod loaded_pass;
 #[path = "persist/object_memory.rs"]
 mod object_memory;
+#[path = "persist/unload_sweep.rs"]
+mod unload_sweep;
 
 #[cfg(test)]
 #[path = "persist/anger_tests.rs"]
 mod anger_tests;
+#[path = "persist/hurt_by_refs.rs"]
+mod hurt_by_refs;
 #[cfg(test)]
 #[path = "persist/lookup_order_tests.rs"]
 mod lookup_order_tests;
@@ -48,6 +55,39 @@ pub(super) enum OffLevel {
     Mob(Mob),
     Boat(super::boats::Boat),
     Cart(super::minecarts::Minecart),
+}
+
+/// Formerly resident vehicles kept solely by surviving passenger edges.
+pub(super) enum RemovedVehicle {
+    Boat(super::boats::Boat),
+    Cart(super::minecarts::Minecart),
+}
+
+impl RemovedVehicle {
+    pub(super) fn position(&self) -> Vec3 {
+        match self {
+            Self::Boat(boat) => boat.position,
+            Self::Cart(cart) => cart.position,
+        }
+    }
+
+    pub(super) fn retire_attachment_registration(&self) {
+        match self {
+            Self::Boat(boat) => {
+                boat.attachment_lifetime.retire();
+            }
+            Self::Cart(cart) => {
+                cart.attachment_lifetime.retire();
+            }
+        }
+    }
+
+    pub(super) fn kind(&self) -> String {
+        match self {
+            Self::Boat(boat) => boat.entity_type(),
+            Self::Cart(cart) => cart.kind.id().into(),
+        }
+    }
 }
 
 impl OffLevel {
@@ -89,6 +129,13 @@ impl OffLevel {
     }
 }
 
+/// The UUID an entity loads with: the saved one, else the one its constructor made.
+/// `Entity.<init>` always draws it from the entity's own random, so the draw is taken
+/// whether or not the tag has a UUID (as `load_item_transferred` and `load_mob` do).
+fn with_constructor_uuid(saved: Option<[i32; 4]>) -> Option<[i32; 4]> {
+    let made = horizon_client::save::insecure_uuid(&mut random_source::entity());
+    Some(saved.unwrap_or(made))
+}
 /// `Entity.saveWithoutId`: materialize the mandatory fields of an entity
 /// whose simulation state is still represented by its loaded compound.
 pub(super) fn write_static_entity_fields(tag: &mut Tag) {
@@ -128,18 +175,29 @@ pub(super) fn write_static_entity_fields(tag: &mut Tag) {
 pub struct EntityMemory {
     /// UUIDs of entities by Horizon entity ID: the one each was loaded with,
     /// or made up once something needed it (a save, a native mod's attachment).
-    pub(super) uuids: HashMap<u32, [i32; 4]>,
+    pub(super) uuids: EntityUuids,
     /// The compound each mob or item entity was loaded with.
     pub(super) raw: HashMap<u32, Tag>,
     /// Full rejected passenger objects, not resident entities or frozen NBT copies.
     /// Kept with the level while any live object graph still refers to them.
     pub(super) off_level: HashMap<u32, OffLevel>,
+    /// Removed boat/cart objects are never part of level residency.
+    pub(super) removed_vehicles: HashMap<u32, RemovedVehicle>,
     /// Destruction callbacks already consumed for geometry retained after removal.
     score_destroyed: HashSet<u32>,
     /// Mount notifications currently on the callback stack, keyed by object IDs.
     pub(super) mount_notifications: HashSet<(u32, u32, bool)>,
+    /// Deferred native removals already notified their passenger edges.
+    pub(super) notified_vehicle_removals: HashSet<u32>,
+    /// Vehicle destruction is logically visible before its passenger callbacks.
+    pub(super) destroying_vehicles: HashSet<super::commands::Target>,
     /// Synched entity-data entries dirtied by forced writes since the last sync.
     pub(super) forced_meta: HashMap<u32, [u64; 4]>,
+    /// `Entity.noPhysics` a native mod wrote for a kind whose own struct keeps
+    /// no field for it (the dragon, an area-effect cloud, an ominous item
+    /// spawner, a shulker bullet): the value replaces the kind's constructor
+    /// default and is never saved.
+    pub(super) no_physics: HashMap<u32, bool>,
     /// Passengers that ride a vehicle, in load order: live entity IDs or unspawned tags.
     /// Entities of types Horizon does not simulate, kept per chunk and
     /// written back unchanged.
@@ -335,7 +393,11 @@ pub(super) fn with_raw(mut modelled: Tag, raw: Option<&Tag>) -> Tag {
 fn read_attachments(
     tag: &Tag,
     id: u32,
-    maps: &mut HashMap<u32, horizon_mod_runtime::attachments::Attachments>,
+    maps: &mut HashMap<
+        u32,
+        horizon_mod_runtime::attachments::Attachments,
+        impl std::hash::BuildHasher,
+    >,
     live: bool,
 ) {
     if let Ok(Some(data)) = attachment_compound(tag.get(ATTACHMENTS_KEY)) {
@@ -357,7 +419,7 @@ fn read_attachments(
 pub(super) fn write_attachments(
     tag: &mut Tag,
     id: u32,
-    maps: &HashMap<u32, horizon_mod_runtime::attachments::Attachments>,
+    maps: &HashMap<u32, horizon_mod_runtime::attachments::Attachments, impl std::hash::BuildHasher>,
 ) {
     if let Tag::Compound(root) = tag
         && let Some(map) = maps.get(&id)
@@ -380,7 +442,7 @@ fn painting_center(p: &horizon_client::entities::Painting) -> Vec3 {
         (lo[2] + hi[2]) / 2.0,
     )
 }
-fn block_entity_pos(tag: &Tag) -> [i32; 3] {
+pub(in crate::game) fn block_entity_pos(tag: &Tag) -> [i32; 3] {
     [tag.get("x"), tag.get("y"), tag.get("z")]
         .map(|v| horizon_client::save::number(v).unwrap_or(0) as i32)
 }
@@ -584,7 +646,7 @@ impl Game<'_> {
                 .retain(|tag| block_entity_pos(tag) != [p.x, p.y, p.z]);
             extras
                 .block_entities
-                .push(self.moving_piston_to_nbt(*p, piston));
+                .push(self.saved_moving_piston(*p, piston));
         }
         // TheEndGatewayBlockEntity saves its Age (the server copy's).
         for tag in &mut extras.block_entities {
@@ -678,7 +740,7 @@ impl Game<'_> {
             return;
         }
         for &(pos, piston) in &pistons {
-            self.block_ticks.load_moving_piston(pos, piston);
+            self.restore_moving_piston(pos, piston, saved.as_deref());
         }
         if let Some(c) = self.world.chunks.get_mut(&key) {
             let c = Arc::make_mut(c);
@@ -689,22 +751,6 @@ impl Game<'_> {
                 });
             }
         }
-    }
-    /// `PistonMovingBlockEntity.saveAdditional`.
-    pub(super) fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
-        let flag = |b: bool| Tag::Byte(i8::from(b));
-        Tag::compound([
-            ("id", Tag::String("minecraft:piston".into())),
-            ("x", Tag::Int(pos.x)),
-            ("y", Tag::Int(pos.y)),
-            ("z", Tag::Int(pos.z)),
-            ("blockState", self.state_to_nbt(piston.moved_state)),
-            // Direction.LEGACY_ID_CODEC: the 3D data value as a byte.
-            ("facing", Tag::Byte(piston.direction as i8)),
-            ("progress", Tag::Float(piston.progress_o.to_bits())),
-            ("extending", flag(piston.extending)),
-            ("source", flag(piston.source)),
-        ])
     }
     /// `PistonMovingBlockEntity.loadAdditional`, for a `minecraft:piston`
     /// entity whose block is still a moving piston.
@@ -758,6 +804,7 @@ impl Game<'_> {
         match kind {
             "minecraft:area_effect_cloud" => {
                 if let Some(id) = self.load_potion_cloud(&tag) {
+                    let uuid = with_constructor_uuid(uuid);
                     self.remember(id, uuid, tag);
                 }
             }
@@ -774,6 +821,7 @@ impl Game<'_> {
                         delay,
                         owner,
                     );
+                    let uuid = with_constructor_uuid(uuid);
                     self.remember(id, uuid, tag);
                 }
             }
@@ -950,15 +998,12 @@ impl Game<'_> {
         }
     }
 
-    /// A saved painting, or its compound when its variant is unknown.
+    /// A saved painting, or its compound when its block position is unreadable.
     pub(super) fn load_painting(&mut self, tag: Tag, uuid: Option<[i32; 4]>, key: ChunkKey) {
-        // Painting.defineSynchedData: a painting without a saved variant keeps
-        // VariantUtils.getAny, the registry's first one.
+        // Painting.readAdditionalSaveData: a `variant` that does not resolve
+        // leaves Painting.defineSynchedData's VariantUtils.getAny in place.
         if let Some((pos, facing, variant)) = entity_nbt::painting_from_nbt(&tag)
-            && let Some(v) = match variant {
-                Some(variant) => self.painting_variants.get(&variant).cloned(),
-                None => self.painting_variants.all.first().cloned(),
-            }
+            && let Some(v) = self.painting_variants.saved_or_default(variant.as_deref())
         {
             self.next_entity += 1;
             let id = self.next_entity;
@@ -978,17 +1023,6 @@ impl Game<'_> {
             self.paintings.push(painting);
         } else {
             self.persist.unknown.entry(key).or_default().push(tag);
-        }
-    }
-    pub(super) fn warn_missing_profession(&mut self, mob: &horizon_client::mobs::Mob) {
-        if let horizon_client::mobs::villager::ProfessionState::Unresolved(id) =
-            &mob.extra.profession
-            && self.missing_professions.insert(id.clone())
-        {
-            log::warn!(
-                "Unknown villager profession {id} at {:?}; preserving its saved identity",
-                mob.position
-            );
         }
     }
 
@@ -1087,12 +1121,17 @@ impl Game<'_> {
 
     /// An entity of a type Horizon does not simulate, kept as its compound.
     fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
+        // A missing mod's record is opaque, not a vanilla fallback entity to normalize.
+        let quarantined = super::general::quarantined_kind(kind).then(|| tag.clone());
         strip_finalize(&mut tag);
         let id = self.next_entity + 1;
         let other = Self::other_from_nbt(&tag, id, kind)?;
         self.next_entity = id;
-        let uuid = entity_nbt::uuid(&tag);
+        let uuid = with_constructor_uuid(entity_nbt::uuid(&tag));
         self.remember(id, uuid, tag);
+        if let Some(original) = quarantined {
+            self.persist.raw.insert(id, original);
+        }
         self.others.push(other);
         Some(id)
     }
@@ -1167,7 +1206,7 @@ impl Game<'_> {
         {
             entity_nbt::fill_common_defaults(&mut tag);
         }
-        tag
+        with_raw(tag, None) // Entity.saveWithoutId's flags, as booleans.
     }
     /// The root of a stack of riders (`Entity.getRootVehicle`).
     fn mob_root(&self, mut object: MobObject) -> MobObject {
@@ -1197,7 +1236,10 @@ impl Game<'_> {
         if let Some(object) = self.mob_object_slot(root) {
             return Some(self.mob_object_tree_nbt(object));
         }
-        if self.boat_object(root).is_some() {
+        if self.boats.iter().any(|b| b.id == root)
+            && self
+                .resident_source_target_visible(self.dim.key(), super::commands::Target::Boat(root))
+        {
             let uuid = self.uuid_for(root);
             let b = self.boat_object(root)?;
             let mut tag = b.to_nbt(uuid, self.persist.raw.get(&root));
@@ -1205,7 +1247,12 @@ impl Game<'_> {
             write_attachments(&mut tag, root, &self.entity_attachments);
             return Some(tag);
         }
-        self.cart_object(root)?;
+        if !self.carts.iter().any(|c| c.id == root)
+            || !self
+                .resident_source_target_visible(self.dim.key(), super::commands::Target::Cart(root))
+        {
+            return None;
+        }
         let uuid = self.uuid_for(root);
         let c = self.cart_object(root)?;
         let mut tag = c.to_nbt(uuid, self.persist.raw.get(&root));
@@ -1255,8 +1302,16 @@ impl Game<'_> {
         self.persist.uuids.iter().find_map(|(&id, &found)| {
             (found == uuid
                 && (self.mobs.iter().any(|mob| mob.id == id && !mob.removed)
-                    || self.boats.iter().any(|boat| boat.id == id)
-                    || self.carts.iter().any(|cart| cart.id == id)))
+                    || (self.boats.iter().any(|boat| boat.id == id)
+                        && self.resident_source_target_visible(
+                            self.dim.key(),
+                            super::commands::Target::Boat(id),
+                        ))
+                    || (self.carts.iter().any(|cart| cart.id == id)
+                        && self.resident_source_target_visible(
+                            self.dim.key(),
+                            super::commands::Target::Cart(id),
+                        ))))
             .then_some(id)
         })
     }
@@ -1294,7 +1349,7 @@ impl Game<'_> {
                 (at.z.floor() as i32).div_euclid(16),
             );
             self.persist.restored.insert(root_uuid);
-            self.world.loaded_entities.push((key, vec![tag]));
+            self.world.queue_entity_nbt(key, vec![tag]);
             self.spawn_loaded_entities();
         }
         self.persist.restored.insert(uuid);
@@ -1327,43 +1382,6 @@ impl Game<'_> {
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
         self.mob_object_tree_nbt(MobObject::Resident(i))
     }
-
-    /// `LivingEntity.addAdditionalSaveData`'s `last_hurt_by_mob` and
-    /// `ticks_since_last_hurt_by_mob`, a PARTIAL projection at save time: both
-    /// from `ai.last_hurt_by` while the attacker is a living mob in the level
-    /// with a registered UUID and at most 100 ticks have passed (`baseTick`
-    /// drops the record after that, or once the attacker is dead). Otherwise
-    /// both keys go, a copy read from loaded data included. A player attacker
-    /// is not written. This is not `baseTick`'s cleanup itself, the AI's
-    /// record, `#no_anger`, or reading the keys back.
-    pub(super) fn put_last_hurt_by_mob(&self, m: &horizon_client::mobs::Mob, tag: &mut Tag) {
-        let Tag::Compound(c) = tag else { return };
-        let since = i64::from(m.age) - i64::from(m.ai.last_hurt_by_time);
-        let reference = match m.ai.last_hurt_by {
-            Some(horizon_client::mobs::Who::Mob(attacker))
-                if (0..=100).contains(&since)
-                    && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
-            {
-                self.persist.uuid_of(attacker)
-            }
-            _ => None,
-        };
-        match reference {
-            Some(uuid) => {
-                c.insert("last_hurt_by_mob".into(), Tag::IntArray(uuid.to_vec()));
-                c.insert(
-                    "ticks_since_last_hurt_by_mob".into(),
-                    Tag::Int(since as i32),
-                );
-            }
-            None => {
-                c.remove(&horizon_core::nbt::JavaString::from("last_hurt_by_mob"));
-                c.remove(&horizon_core::nbt::JavaString::from(
-                    "ticks_since_last_hurt_by_mob",
-                ));
-            }
-        }
-    }
     /// Forget an entity that left the world (its UUID and loaded compound).
     pub(super) fn forget_entity(&mut self, id: u32) {
         self.persist.uuids.remove(&id);
@@ -1371,6 +1389,7 @@ impl Game<'_> {
         self.forget_entity_initialization(mod_api::Holder::Entity(id));
         self.entity_attachments.remove(&id);
         self.persist.raw.remove(&id);
+        self.persist.no_physics.remove(&id);
     }
     /// Detach a travelling entity without discarding its in-memory attachments.
     pub(super) fn detach_entity(&mut self, id: u32) {
@@ -1386,33 +1405,22 @@ impl Game<'_> {
             .get(&anon_key(kind, p))
             .map(|(_, raw)| raw)
     }
+    /// `Entity.applyEffectsFromBlocks` on a fire-immune entity that is not
+    /// burning (`EndCrystal.tick`): the loaded `Fire` is reset to
+    /// `-getFireImmuneTicks()`, which is 0.
+    pub(super) fn clear_crystal_fire(&mut self) {
+        for c in &self.crystals {
+            let key = anon_key("minecraft:end_crystal", c.position);
+            if let Some((_, Tag::Compound(raw))) = self.persist.anon.get_mut(&key)
+                && let Some(fire) = raw.get_mut(&"Fire".into())
+            {
+                *fire = Tag::Short(0);
+            }
+        }
+    }
     /// The compound an entity was loaded with (and commands have edited).
     pub(super) fn persist_raw(&self, id: u32) -> Option<&Tag> {
         self.persist.raw.get(&id)
-    }
-    /// A loaded chest minecart with a loot table and no items: the table
-    /// rolled now, as generated containers are (Horizon does not unpack on
-    /// first open), and kept to save it again while unchanged.
-    pub(in crate::game) fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
-        let Some(table) = horizon_client::save::text(tag.get("LootTable")) else {
-            return;
-        };
-        if cart.items.is_empty() || cart.items.iter().any(Option::is_some) {
-            return;
-        }
-        let loot = self.server_loot.get();
-        let p = cart.position;
-        let pos = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-        let biome = self.biome_name_at(p).unwrap_or_default();
-        let seed = horizon_client::structure_blocks::loot_seed(tag);
-        cart.loot = Some(horizon_client::structure_blocks::roll_container(
-            &mut cart.items,
-            loot.as_deref(),
-            table,
-            seed,
-            pos,
-            &biome,
-        ));
     }
     /// An entity Horizon keeps no compound for (orbs, projectiles, the
     /// crystals and the dragon) still keeps its `Tags`, by entity id, so
@@ -1520,7 +1528,7 @@ impl Game<'_> {
         if let Some(uuid) = self.known_resident_entity_uuid_at(self.dim.key(), id) {
             return uuid;
         }
-        *self.persist.uuids.entry(id).or_insert_with(random_uuid)
+        self.persist.uuids.get_or_insert_with(id, random_uuid)
     }
     /// `BlockState.CODEC`: a block name or `{id, properties}` (or legacy `{Name, Properties}`).
     pub(super) fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
@@ -1679,15 +1687,23 @@ impl Game<'_> {
                 .push((c.id, c.join_seq(), tag));
         }
         for o in &self.others {
-            if keys.contains(&chunk_of(o.position)) {
+            // EntityType.noSave: Entity.getEncodeId is null, so the chunk never stores it.
+            if keys.contains(&chunk_of(o.position)) && o.kind.as_str() != "minecraft:leash_knot" {
                 let uuid = self
                     .persist
                     .uuids
                     .get(&o.id)
                     .copied()
                     .unwrap_or_else(random_uuid);
-                let mut tag = self.other_to_nbt(o, uuid);
-                write_attachments(&mut tag, o.id, &self.entity_attachments);
+                let tag = if super::general::quarantined_kind(&o.kind)
+                    && let Some(raw) = self.persist.raw.get(&o.id)
+                {
+                    raw.clone()
+                } else {
+                    let mut tag = self.other_to_nbt(o, uuid);
+                    write_attachments(&mut tag, o.id, &self.entity_attachments);
+                    tag
+                };
                 roots
                     .entry(chunk_of(o.position))
                     .or_default()
@@ -1721,153 +1737,7 @@ impl Game<'_> {
             }
         }
         if remove {
-            let gone = |p: Vec3| keys.contains(&chunk_of(p));
-            let mut removed: Vec<u32> = Vec::new();
-            let riding = self.riding;
-            self.boats.retain(|b| {
-                let keep = !gone(b.position) || Some(b.id) == riding;
-                if !keep {
-                    removed.push(b.id);
-                }
-                keep
-            });
-            self.crystals.retain(|c| !gone(c.position));
-            self.ominous_spawners
-                .retain(|s| !gone(Vec3::new(s.position[0], s.position[1], s.position[2])));
-            if self.dragon.as_ref().is_some_and(|d| gone(d.position)) {
-                self.dragon.discard();
-            }
-            self.carts.retain(|c| {
-                let keep = !gone(c.position) || Some(c.id) == riding;
-                if !keep {
-                    removed.push(c.id);
-                }
-                keep
-            });
-            self.fangs.list.retain(|f| {
-                let keep = !gone(Vec3::new(f.pos[0], f.pos[1], f.pos[2]));
-                if !keep {
-                    removed.push(f.id);
-                }
-                keep
-            });
-            self.others.retain(|o| {
-                let keep = !gone(o.position);
-                if !keep {
-                    removed.push(o.id);
-                }
-                keep
-            });
-            self.armor_stands.retain(|a| {
-                let keep = !gone(a.position);
-                if !keep {
-                    removed.push(a.id);
-                }
-                keep
-            });
-            self.item_frames.retain(|f| {
-                let (lo, hi) = f.bounds();
-                let keep = !gone(Vec3::new(
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ));
-                if !keep {
-                    removed.push(f.id);
-                }
-                keep
-            });
-            self.paintings.retain(|p| {
-                let keep = !gone(painting_center(p));
-                if !keep {
-                    removed.push(p.id);
-                }
-                keep
-            });
-            self.cushions.retain(|c| {
-                let keep = !gone(c.position);
-                if !keep {
-                    removed.push(c.id);
-                }
-                keep
-            });
-            // The potion clouds written above leave with their chunk; a
-            // dragon's breath (no potion) was not written and stays.
-            self.breath_clouds.retain(|c| {
-                let keep = c.potion.is_none() || !gone(Vec3::new(c.at[0], c.at[1], c.at[2]));
-                if !keep {
-                    removed.push(c.id);
-                }
-                keep
-            });
-            // Riders leave with their root vehicle, a boat's with the boat.
-            let leaving: HashSet<u32> = self
-                .mob_object_slots()
-                .filter(|&object| {
-                    let root = self.mob_at(self.mob_root(object));
-                    match root.extra.mount {
-                        Some(v) if removed.contains(&v) => true,
-                        Some(v) if self.boats.iter().any(|b| b.id == v) => false,
-                        _ => gone(root.position),
-                    }
-                })
-                .map(|object| self.mob_at(object).id)
-                .collect();
-            self.mobs.retain(|m| {
-                let keep = !leaving.contains(&m.id);
-                if !keep {
-                    removed.push(m.id);
-                }
-                keep
-            });
-            self.persist.off_level.retain(|id, _| {
-                let keep = !leaving.contains(id);
-                if !keep {
-                    removed.push(*id);
-                }
-                keep
-            });
-            if !self.persist.off_level.is_empty() {
-                // A retained boat or cart root is in no section and never saved:
-                // it lives only while a passenger or player still rides it.
-                let ridden: HashSet<u32> = self
-                    .mob_objects()
-                    .filter_map(|m| m.extra.mount)
-                    .chain(riding)
-                    .collect();
-                self.persist.off_level.retain(|id, object| {
-                    let keep = object.as_mob().is_some() || ridden.contains(id);
-                    if !keep {
-                        removed.push(*id);
-                    }
-                    keep
-                });
-            }
-            self.dropped.retain(|e| {
-                let keep = !gone(e.position);
-                if !keep {
-                    removed.push(e.id);
-                }
-                keep
-            });
-            self.orbs.retain(|o| !gone(o.position));
-            // Unloaded with their chunk: PersistentEntitySectionManager.stopTracking.
-            self.native_leaves_flush();
-            // the ones saved with the chunk go with it (a trident too, unsaved).
-            self.creatures.projectiles.retain(|p| {
-                let leaves = entity_nbt::saved_with_chunk(p) || p.arrow.is_some();
-                !leaves || !gone(p.position)
-            });
-            self.falling.retain(|f| !gone(f.position));
-            self.rockets.retain(|r| !gone(r.position));
-            self.tridents.retain(|t| !gone(t.position));
-            self.tnts.retain(|t| !gone(t.position));
-            self.persist
-                .anon
-                .retain(|_, (at, _)| !keys.contains(&chunk_of(*at)));
-            for id in removed {
-                self.forget_entity(id);
-            }
+            self.unload_removed_entities(keys);
         }
         out.into_iter().collect()
     }
@@ -1886,6 +1756,16 @@ impl Game<'_> {
             self.save.save_entities_later(chunks)
         }
     }
+    /// Complete a removed vehicle's scoreboard callback at logical removal,
+    /// even when physical removal waits for the native-removal sweep.
+    pub(super) fn score_destroyed_vehicle_once(&mut self, id: u32) {
+        if self.persist.score_destroyed.insert(id)
+            && let Some(uuid) = self.persist.uuids.get(&id)
+        {
+            self.score.board.entity_removed(&uuid_text(*uuid));
+        }
+    }
+
     /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
     /// for every kind of entity: a mob's body once it is removed, an item
     /// picked up or killed, an expired cloud, a discarded projectile leaves
@@ -1903,6 +1783,13 @@ impl Game<'_> {
                 {
                     self.score.board.entity_removed(&uuid_text(*uuid));
                 }
+            }
+        }
+        for &id in self.persist.removed_vehicles.keys() {
+            if self.persist.score_destroyed.insert(id)
+                && let Some(uuid) = self.persist.uuids.get(&id)
+            {
+                self.score.board.entity_removed(&uuid_text(*uuid));
             }
         }
         let board = &self.score.board;
@@ -1947,8 +1834,8 @@ impl Game<'_> {
         }
     }
     pub(super) fn prune_entity_memory(&mut self) {
-        if !self.persist.off_level.is_empty()
-            && self.persist.off_level.values().any(OffLevel::is_removed)
+        if !self.persist.removed_vehicles.is_empty()
+            || self.persist.off_level.values().any(OffLevel::is_removed)
         {
             // Complete the former resident's destruction before graph GC can
             // forget the UUID retained solely for dismount geometry.
@@ -1956,7 +1843,7 @@ impl Game<'_> {
         }
         // Forget entities that no longer exist.
         let mut alive = self.live_entity_ids();
-        if !self.persist.off_level.is_empty() {
+        if !self.persist.off_level.is_empty() || !self.persist.removed_vehicles.is_empty() {
             self.retain_off_level_objects(&mut alive);
         }
         for id in self.persist.uuids.keys() {
@@ -2043,12 +1930,13 @@ impl Game<'_> {
         keys.contains(&chunk_of(at)).then(|| {
             let id = self.dropped[i].id;
             let uuid = self.uuid_for(id);
-            let tag = entity_nbt::item_entity_to_nbt_with_items(
+            let mut tag = entity_nbt::item_entity_to_nbt_with_items(
                 &self.dropped[i],
                 uuid,
                 self.persist.raw.get(&id),
                 self.items(),
             );
+            self.save_portal_cooldown(id, &mut tag);
             (chunk_of(at), tag)
         })
     }
@@ -2196,6 +2084,7 @@ impl Game<'_> {
         self.put_mob_passengers(&mut tag, id);
         // AbstractBoat.addAdditionalSaveData: the lead's holder.
         self.write_boat_leash(&mut tag, i);
+        self.save_portal_cooldown(id, &mut tag);
         Some((chunk_of(at), tag))
     }
     pub(super) fn save_cart(
@@ -2210,6 +2099,7 @@ impl Game<'_> {
         let uuid = self.saved_uuid_or_random(id);
         let mut tag = self.carts[i].to_nbt(uuid, self.persist.raw.get(&id));
         self.put_mob_passengers(&mut tag, id);
+        self.save_portal_cooldown(id, &mut tag);
         Some((chunk_of(at), tag))
     }
     pub(super) fn save_armor_stand(
@@ -2767,7 +2657,7 @@ mod item_display_saved_transform_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -2830,7 +2720,7 @@ mod item_display_saved_transform_tests {
         assert!(
             game.run_command("summon pig 13.5 200 2.5 {UUID:[I;132,0,0,99],NoAI:1b,NoGravity:1b}")
         );
-        game.world.random = LegacyRandom::new(132);
+        game.world.random.set_seed(132);
         test(&mut game);
     }
     const IDENTITY: &str = "{translation:[0f,0f,0f],left_rotation:[0f,0f,0f,1f],scale:[1f,1f,1f],right_rotation:[0f,0f,0f,1f]}";
@@ -3077,6 +2967,7 @@ mod baby_modifier_mutation_tests {
             assert!(game.run_command("forceload add 0 0"));
             assert!(game.run_command("difficulty normal"));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
             game.creative = true;
             test(game);
         });
@@ -3357,6 +3248,7 @@ mod attribute_instance_save_tests {
                 .unwrap();
             assert!(game.run_command("forceload add 0 0"));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
             game.creative = true;
             test(game);
         });
@@ -3544,6 +3436,7 @@ mod mob_inventory_merge_tests {
                 .unwrap();
             assert!(game.run_command("forceload add 0 0"));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
             game.creative = true;
             test(game);
         });
@@ -3783,6 +3676,7 @@ mod invalid_passenger_tests {
                 .unwrap();
             assert!(game.run_command("forceload add 0 0"));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
             game.creative = true;
             let time = game.world.game_time;
             test(game);
@@ -3935,7 +3829,7 @@ mod h262_enderman_absolute_anger_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, load_resources};
     use horizon_client::motion::PlayerMotion;
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
     pub(super) fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -3986,7 +3880,8 @@ mod h262_enderman_absolute_anger_tests {
         assert!(
             game.run_command("summon pig 13.5 200 2.5 {UUID:[I;262,0,0,99],NoAI:1b,NoGravity:1b}")
         );
-        game.world.random = LegacyRandom::new(262);
+        game.world.random.set_seed(262);
+        game.load_ticking_neighbourhood(0, 0);
         test(&mut game);
     }
     fn load(game: &mut Game<'_>, n: i32, end: Option<i64>) -> (u32, usize) {
@@ -4225,6 +4120,7 @@ mod sulfur_body_attribute_tests {
         assert!(game.run_command("scoreboard objectives add h192 dummy"));
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
         game.creative = true;
+        game.load_ticking_neighbourhood(0, 0);
         test(&mut game);
     }
     /// `/attribute <cube> <attribute> get 1000`, read back through a score.
@@ -4250,9 +4146,9 @@ mod sulfur_body_attribute_tests {
                 (2, ""),
             ] {
                 assert!(game.run_command(&format!(
-                    "summon minecraft:sulfur_cube {}.5 200 4.5 {{UUID:[I;192,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1{body}}}",
-                    3 * n
-                )));
+                        "summon minecraft:sulfur_cube {}.5 200 4.5 {{UUID:[I;192,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1{body}}}",
+                        3 * n
+                    )));
             }
             let attrs = [
                 "knockback_resistance",
@@ -4296,8 +4192,8 @@ mod sulfur_body_attribute_tests {
     fn a_bodiless_cube_keeps_its_command_knockback_resistance_effect() {
         with_game(|game| {
             assert!(game.run_command(
-                "summon minecraft:sulfur_cube 4.5 200 8.5 {UUID:[I;192,0,0,9],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1}"
-            ));
+                    "summon minecraft:sulfur_cube 4.5 200 8.5 {UUID:[I;192,0,0,9],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1}"
+                ));
             let sel = "@e[type=minecraft:sulfur_cube,nbt={UUID:[I;192,0,0,9]},limit=1]";
             let cached = |game: &Game<'_>| {
                 let m = game
@@ -4403,9 +4299,9 @@ mod sulfur_body_attribute_tests {
                 (11, ",equipment:{body:{id:\"minecraft:oak_planks\"}}"),
             ] {
                 assert!(game.run_command(&format!(
-                    "summon minecraft:sulfur_cube {}.5 200 8.5 {{UUID:[I;192,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1{body}}}",
-                    n - 8
-                )));
+                        "summon minecraft:sulfur_cube {}.5 200 8.5 {{UUID:[I;192,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Size:1{body}}}",
+                        n - 8
+                    )));
             }
             game.tick_world(true).unwrap();
             let cached = |game: &Game<'_>, n: i32| {
@@ -4459,7 +4355,7 @@ mod summoned_knot_tests {
     use super::*;
     use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};
-    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
     fn with_game(test: impl FnOnce(&mut Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
@@ -4520,7 +4416,8 @@ mod summoned_knot_tests {
         assert!(
             game.run_command("summon pig 13.5 200 2.5 {UUID:[I;129,0,0,99],NoAI:1b,NoGravity:1b}")
         );
-        game.world.random = LegacyRandom::new(129);
+        game.world.random.set_seed(129);
+        game.load_ticking_neighbourhood(0, 0);
         test(&mut game);
     }
     fn knot_id(game: &Game<'_>, n: i32) -> u32 {
@@ -4651,12 +4548,8 @@ mod summoned_knot_tests {
     #[ignore = "prepared resources; negative fractional registered position"]
     fn negative_fractional_knot_position_uses_floor_before_centering() {
         with_game(|game| {
-            game.world
-                .chunks
-                .insert((-1, -1), Arc::new(Chunk::empty(-1, -1)));
-            game.block_ticks
-                .add_empty_chunk(ChunkPos::new(-1, -1))
-                .unwrap();
+            // Chunk (-1, -1) is already loaded by the fixture's neighbourhood.
+            assert!(game.world.chunks.contains_key(&(-1, -1)));
             assert!(game.run_command("setblock -2 199 -3 stone strict"));
             assert!(game.run_command("setblock -2 200 -3 oak_fence strict"));
             assert!(game.run_command("summon leash_knot -1.2 200.8 -2.1 {UUID:[I;129,0,0,5]}"));
@@ -4796,7 +4689,20 @@ mod camel_pose_saved_tests {
         game.block_ticks
             .add_empty_chunk(ChunkPos::new(0, 0))
             .unwrap();
-        assert!(game.run_command("forceload add 0 0"));
+        // A mob only ticks with its whole 5x5 chunk neighbourhood loaded.
+        for x in -2..=2 {
+            for z in -2..=2 {
+                if (x, z) != (0, 0) {
+                    game.world
+                        .chunks
+                        .insert((x, z), Arc::new(Chunk::empty(x, z)));
+                    game.block_ticks
+                        .add_empty_chunk(ChunkPos::new(x, z))
+                        .unwrap();
+                }
+            }
+        }
+        assert!(game.run_command("forceload add -32 -32 32 32"));
         assert!(game.run_command("tick freeze"));
         let initial = game.world.game_time;
         assert!(game.run_command("tick step 128"));
@@ -4866,6 +4772,33 @@ mod camel_pose_saved_tests {
                 game.tick_server(false).unwrap();
             }
         }
+        // Unload and reload the chunk, then let time pass: the saved game time
+        // stays what it was (`Camel.addAdditionalSaveData` writes it unchanged).
+        let written: Vec<Tag> = game
+            .entity_chunks(&HashSet::from([(0, 0)]), true)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .collect();
+        game.world
+            .loaded_entities
+            .push(((0, 0), written.into_iter().map(Into::into).collect()));
+        game.spawn_loaded_entities();
+        for step in 0..8 {
+            for number in 1..=cases.len() as i32 {
+                let index = game
+                    .mobs
+                    .iter()
+                    .position(|m| game.persist.uuids.get(&m.id) == Some(&[94, 0, 0, number]))
+                    .unwrap();
+                let value = actors[number as usize - 1].1;
+                assert_eq!(
+                    game.mob_tree_nbt(index).get("LastPoseTick"),
+                    Some(&Tag::Long(value)),
+                    "reloaded timestamp {value} after {step} steps"
+                );
+            }
+            game.tick_server(false).unwrap();
+        }
     }
 }
 
@@ -4891,6 +4824,7 @@ mod mob_hurt_cooldown_tests {
             assert!(game.run_command("forceload add 0 0"));
             assert!(game.run_command("difficulty normal"));
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+            game.load_ticking_neighbourhood(0, 0);
             game.creative = true;
             test(game);
         });
@@ -5170,6 +5104,7 @@ mod trader_llama_discard_tests {
         game.block_ticks
             .add_empty_chunk(ChunkPos::new(0, 0))
             .unwrap();
+        game.load_ticking_neighbourhood(0, 0);
         assert!(game.run_command("forceload add 0 0"));
         assert!(game.run_command("difficulty normal"));
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());

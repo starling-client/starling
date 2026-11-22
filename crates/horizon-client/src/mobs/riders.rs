@@ -308,8 +308,7 @@ pub fn stop_riding(m: &mut Mob, at: Option<Vec3>) {
     m.extra.passenger = false;
     m.extra.boarding_cooldown = BOARDING_COOLDOWN;
     if let Some(at) = at {
-        m.position = at;
-        m.previous = at;
+        super::living::teleports::snap_to(m, at);
     }
 }
 /// `Animal.getDismountLocationForPassenger` for a standing passenger of
@@ -753,7 +752,7 @@ mod tests {
             .ai
             .goals
             .add(0, UnwindGoal(calls.clone(), payload.clone()));
-        let seen = [rider.seen(None)];
+        let seen = [rider.seen(None, &crate::items::Items::empty())];
         let mut vehicle = Mob::new(71, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
         vehicle.extra.rider = Some(72);
         vehicle.ai.nav.speed_modifier = 9.25;
@@ -803,7 +802,7 @@ mod tests {
         let mut rider = of(72, Species::Skeleton);
         rider.extra.mount = Some(vehicle.id);
         vehicle.extra.rider = Some(rider.id);
-        let retained = [rider.seen(None)];
+        let retained = [rider.seen(None, &crate::items::Items::empty())];
         let root = std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required");
         assert!(crate::mobs::world::with_resource_test_world(
             std::path::Path::new(&root),

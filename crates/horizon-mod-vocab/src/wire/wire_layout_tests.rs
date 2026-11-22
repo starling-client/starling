@@ -3,7 +3,30 @@ use super::*;
 use crate::*;
 use horizon_core::nbt::{Compound, JavaString};
 
+pub(super) fn install_layout_resources() {
+    let _ = crate::wire::install_resource_access(crate::wire::ResourceAccess {
+        intern: |value| {
+            if value.len() > crate::wire::MAX_STATIC_STRING_BYTES {
+                return Err(WireError::Invalid("static string too long"));
+            }
+            Ok(Box::leak(value.to_owned().into_boxed_str()))
+        },
+        store: |value| {
+            let provider = value
+                .downcast::<std::sync::Arc<dyn std::any::Any + Send + Sync>>()
+                .map_err(|_| WireError::Invalid("no resource context"))?;
+            if provider.downcast_ref::<u32>() != Some(&73) {
+                return Err(WireError::Invalid("no resource context"));
+            }
+            Ok(crate::wire::Id(0x100000007))
+        },
+        load: |_, _| Err(WireError::Invalid("no resource context")),
+        refused: |_| {},
+    });
+}
+
 fn fields<T: Wire, F: Wire + std::fmt::Debug + PartialEq>(value: T, expected: F) {
+    install_layout_resources();
     assert_eq!(decode::<T, F>(value), expected);
 }
 fn id(s: &str) -> Identifier {
@@ -155,10 +178,13 @@ fn handle_records_have_declared_field_bytes() {
     let entity = EntityRef::new(epoch, 29);
     let player = crate::__private::game::player_ref(entity, 0x1234);
     let pos = BlockPos { x: 7, y: -8, z: 9 };
-    fields(level, (epoch, DimensionKey::OVERWORLD));
+    fields(level, (epoch, DimensionKey::OVERWORLD, 0u32));
+    let reopened = LevelRef::with_generation(epoch, DimensionKey::NETHER, 5);
+    fields(reopened, (epoch, DimensionKey::NETHER, 5u32));
     fields(ChunkRef::new(level, [3, -4]), (level, [3i32, -4]));
     fields(RaidRef::new(level, 53), (level, 53i32));
     fields(RaidRef::new(level, -1), (level, -1i32));
+    fields(WaterTicket::new(level, 59), (level, 59u64));
     fields(player, (entity, 0x1234u128));
     fields(
         GlobalPos::new(id("example:moon"), pos),
@@ -190,6 +216,7 @@ fn handle_records_have_declared_field_bytes() {
     fields(UnspawnedMobRef::new(epoch, 61), (epoch, 61u64));
     fields(ModelRef::from_parts(31, 7).unwrap(), (31u64, 7u32));
     fields(InstanceGroupRef::from_parts(37, 9).unwrap(), (37u64, 9u32));
+    fields(RenderPipelineRef::from_parts(41, 5).unwrap(), (41u64, 5u32));
     fields(AttachmentHolder::Entity(entity), (0u32, entity));
     fields(AttachmentHolder::Player(player), (1u32, player));
     fields(
@@ -438,7 +465,15 @@ fn registration_and_attribute_records_have_declared_field_bytes() {
             PackageKind::Code,
             Side::Both,
             vec!["example".into()],
-            vec!["library".into()],
+            vec![PackageDependency::new(
+                "library".into(),
+                "^1".into(),
+                crate::DependencyKind::Optional,
+                crate::DependencyOrder::After,
+                crate::Side::Both,
+                None,
+                None,
+            )],
         ),
         (
             "example".to_owned(),
@@ -446,7 +481,89 @@ fn registration_and_attribute_records_have_declared_field_bytes() {
             PackageKind::Code,
             Side::Both,
             vec!["example".to_owned()],
-            vec!["library".to_owned()],
+            // Nested tuples flatten into one field list.
+            (
+                vec![PackageDependency::new(
+                    "library".into(),
+                    "^1".into(),
+                    crate::DependencyKind::Optional,
+                    crate::DependencyOrder::After,
+                    crate::Side::Both,
+                    None,
+                    None,
+                )],
+                PackageDetails::default(),
+            ),
+        ),
+    );
+    fields(PropertyValue::Integer(3), (1u32, 3i64));
+    let dependency = PackageDependency::new(
+        "library".into(),
+        "^1".into(),
+        crate::DependencyKind::Optional,
+        crate::DependencyOrder::After,
+        crate::Side::Both,
+        None,
+        None,
+    );
+    fields(
+        dependency.clone(),
+        (
+            "library".to_owned(),
+            "^1".to_owned(),
+            crate::DependencyKind::Optional,
+            crate::DependencyOrder::After,
+            crate::Side::Both,
+            (None::<String>, None::<String>),
+        ),
+    );
+    // Independently check actual enum discriminants, not just a round trip
+    // through the same enum codec: Optional = 1, After = 0, Both = 1.
+    let mut bytes = Writer::new();
+    bytes.put(&dependency);
+    let raw = Reader::decode::<(
+        String,
+        String,
+        u32,
+        u32,
+        u32,
+        (Option<String>, Option<String>),
+    )>(bytes.bytes())
+    .unwrap();
+    assert_eq!(
+        raw,
+        (
+            "library".to_owned(),
+            "^1".to_owned(),
+            1u32,
+            0u32,
+            1u32,
+            (None::<String>, None::<String>)
+        )
+    );
+    let details = PackageDetails {
+        name: "Example".into(),
+        icon_path: Some("icon.png".into()),
+        runtime: Some(PackageRuntime::Native),
+        properties: [("ratio".into(), PropertyValue::Float(0.5))].into(),
+        ..Default::default()
+    };
+    fields(
+        details.clone(),
+        (
+            (
+                "Example".to_owned(),
+                String::new(),
+                Vec::<String>::new(),
+                String::new(),
+                None::<String>,
+            ),
+            (
+                None::<String>,
+                Some("icon.png".to_owned()),
+                Some(PackageRuntime::Native),
+                details.properties.clone(),
+            ),
         ),
     );
     let spawners = vec![
@@ -495,35 +612,6 @@ fn registration_and_attribute_records_have_declared_field_bytes() {
             key: 37,
         },
         (8u32, "example:bag".to_owned(), 37u64),
-    );
-}
-
-#[test]
-fn erased_provider_record_uses_active_resource_scope() {
-    struct Codec;
-    impl crate::wire::ResourceCodec for Codec {
-        fn store(&self, value: Box<dyn std::any::Any>) -> Result<crate::wire::Id, WireError> {
-            let provider = value
-                .downcast::<std::sync::Arc<dyn std::any::Any + Send + Sync>>()
-                .unwrap();
-            assert_eq!(provider.downcast_ref::<u32>(), Some(&73));
-            Ok(crate::wire::Id(0x100000007))
-        }
-        fn load(
-            &self,
-            _: crate::wire::Id,
-            _: std::any::TypeId,
-        ) -> Result<Box<dyn std::any::Any>, WireError> {
-            Err(WireError::Invalid("not used by byte-field test"))
-        }
-    }
-    let _scope = crate::wire::ResourceScope::new(std::rc::Rc::new(Codec));
-    fields(
-        OwnProvider {
-            handler: "example:handler".into(),
-            provider: std::sync::Arc::new(73u32),
-        },
-        ("example:handler".to_owned(), 0x100000007u64),
     );
 }
 
@@ -651,8 +739,8 @@ fn newtype_widths_and_unit_enum_tags_match_their_layouts() {
     fields(BlockKey::from_slot(0).unwrap(), (0u32,));
     fields(ItemKey::from_slot(0).unwrap(), (0u32,));
     fields(FluidKey::from_slot(0).unwrap(), (0u32,));
-    let fluid = crate::block::unresolved_fluid::intern("example:unresolved").unwrap();
-    fields(fluid, (fluid.0,));
+    // Issuance is platform-owned; this layer pins the encoded 64-bit field only.
+    fields(crate::UnresolvedFluid(0x100000003), (0x100000003u64,));
     fields(WorldEpoch::new(47), (47u64,));
     fields(TickId::new(19), (19u64,));
     fields(SoundRef { id: 71 }, (71u64,));
@@ -661,6 +749,7 @@ fn newtype_widths_and_unit_enum_tags_match_their_layouts() {
     fields(crate::wire::wire_slots::Id(0x100000003), (0x100000003u64,));
     fields(BlockUpdateFlags(17), (17u32,));
     fields(PackageKind::Code, (0u32,));
+    fields(PackageRuntime::Wasm, (1u32,));
     fields(Side::Both, (1u32,));
     fields(Reduction::Armor, (1u8,));
     fields(SpawnerKind::Patrol, (1u32,));
@@ -745,6 +834,17 @@ fn every_item_place_case_has_declared_tag_and_field_types() {
             slot: EquipmentSlot::Saddle,
         },
         (9u32, 29u32, EquipmentSlot::Saddle),
+    );
+    fields(ItemPlace::Scratch(41), (10u32, 41u64));
+    let parent = Box::new(ItemPlace::ItemEntity { id: 71 });
+    fields(ItemPlace::Strict(parent.clone()), (11u32, parent.clone()));
+    fields(ItemPlace::OneByOne(parent.clone()), (12u32, parent.clone()));
+    fields(
+        ItemPlace::InfiniteMaterials {
+            player: 0x1234,
+            inner: parent.clone(),
+        },
+        (13u32, 0x1234u128, parent),
     );
     // The other four holder cases are exercised in handle_records above.
     fields(AttachmentHolder::Level(level), (4u32, level));
@@ -906,4 +1006,23 @@ fn every_attachment_error_and_write_case_has_declared_tag_type() {
     fields(AttachmentWrite::Decoded, (0u32,));
     fields(AttachmentWrite::Default, (1u32,));
     fields(AttachmentWrite::Set, (2u32,));
+}
+
+#[test]
+fn erased_provider_record_uses_active_resource_scope() {
+    // Pin the layout at this layer; platform tests own active codec lifetimes.
+    fields(
+        OwnProvider {
+            handler: "example:handler".into(),
+            provider: std::sync::Arc::new(73u32),
+        },
+        ("example:handler".to_owned(), 0x100000007u64),
+    );
+}
+
+#[test]
+fn original_player_identity_and_attachment_selector_cross_the_boundary() {
+    let original = crate::__private::game::original_player_ref(0x1234_5678);
+    fields(original, (0x1234_5678u64,));
+    fields(Holder::OriginalPlayer(0x1234_5678), (5u32, 0x1234_5678u64));
 }

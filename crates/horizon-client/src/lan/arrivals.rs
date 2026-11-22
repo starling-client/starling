@@ -880,6 +880,11 @@ mod hub_tests {
             horizon_protocol::registry::Ids::from_names(vec!["minecraft:player".to_string()]),
         );
         let sync = std::sync::Arc::new(sync);
+        // No listener: these tests drive the hub directly and never connect.
+        let config = NetConfig {
+            listen: false,
+            ..config
+        };
         let lan = Lan::start_with(sync.clone(), config).unwrap();
         let encoder = ChunkEncoder::new(
             [] as [(std::sync::Arc<str>, bool); 0],
@@ -1278,22 +1283,21 @@ mod hub_tests {
         let before = hub.guests.update(0, |g| {
             g.unacknowledged = 3;
             let before = g.position;
-            g.inbox.push_back((
-                Serverbound::MovePlayerPos(MovePlayerPos {
-                    x: before[0] + 40.0,
-                    y: before[1],
-                    z: before[2],
-                    flags: 1,
-                }),
-                10,
-            ));
-            g.inbox.push_back((
-                Serverbound::ChunkBatchReceived(ChunkBatchReceived {
-                    chunks_per_tick: 12.0,
-                }),
-                5,
-            ));
-            g.inbox_bytes = 15;
+            g.inbox
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::MovePlayerPos(MovePlayerPos {
+                        x: before[0] + 40.0,
+                        y: before[1],
+                        z: before[2],
+                        flags: 1,
+                    }),
+                ));
+            g.inbox
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::ChunkBatchReceived(ChunkBatchReceived {
+                        chunks_per_tick: 12.0,
+                    }),
+                ));
             before
         });
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
@@ -1305,7 +1309,6 @@ mod hub_tests {
         assert_eq!(g.position, before, "a held player does not move");
         assert_eq!(g.unacknowledged, 2, "its acknowledgement was handled");
         assert_eq!(g.chunks_per_tick, 12.0);
-        assert_eq!(g.inbox_bytes, 0);
     }
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
@@ -1818,22 +1821,21 @@ mod hub_tests {
         let before = hub.guests[i].position;
         hub.guests.update(i, |g| {
             g.unacknowledged = 2;
-            g.inbox.push_back((
-                Serverbound::MovePlayerPos(MovePlayerPos {
-                    x: before[0] + 30.0,
-                    y: before[1],
-                    z: before[2],
-                    flags: 1,
-                }),
-                10,
-            ));
-            g.inbox.push_back((
-                Serverbound::ChunkBatchReceived(ChunkBatchReceived {
-                    chunks_per_tick: 9.0,
-                }),
-                5,
-            ));
-            g.inbox_bytes = 15;
+            g.inbox
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::MovePlayerPos(MovePlayerPos {
+                        x: before[0] + 30.0,
+                        y: before[1],
+                        z: before[2],
+                        flags: 1,
+                    }),
+                ));
+            g.inbox
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::ChunkBatchReceived(ChunkBatchReceived {
+                        chunks_per_tick: 9.0,
+                    }),
+                ));
         });
         let mut world = crate::world::World::new(horizon_world::registry::BlockStateId(0), 0);
         let border = crate::worldborder::WorldBorder::default();
@@ -1935,27 +1937,27 @@ mod hub_tests {
             g.last_seen
                 .add_pending(&[7; horizon_protocol::secure_chat::SIGNATURE_BYTES]);
             g.inbox
-                .push_back((Serverbound::ChatAck(ChatAck { offset: 1 }), 2));
-            g.inbox.push_back((
-                Serverbound::Chat(Chat {
-                    message: "hello".into(),
-                    timestamp: 0,
-                    salt: 0,
-                    signature: None,
-                    last_seen: LastSeenUpdate {
-                        offset: 0,
-                        acknowledged: [0, 0, 0b1000],
-                        checksum: 0,
-                    },
-                }),
-                10,
-            ));
-            g.inbox_bytes = 12;
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::ChatAck(ChatAck { offset: 1 }),
+                ));
+            g.inbox
+                .push_back(horizon_client::lan::guest::InboxItem::uncredited(
+                    Serverbound::Chat(Chat {
+                        message: "hello".into(),
+                        timestamp: 0,
+                        salt: 0,
+                        signature: None,
+                        last_seen: LastSeenUpdate {
+                            offset: 0,
+                            acknowledged: [0, 0, 0b1000],
+                            checksum: 0,
+                        },
+                    }),
+                ));
         });
         hub.keep_acknowledgements(i, &mut Vec::new());
         // Both were handled here, in the order they came; nothing is left for the inbox.
         assert!(hub.guests[i].inbox.is_empty());
-        assert_eq!(hub.guests[i].inbox_bytes, 0);
         assert!(hub.guests[i].left_reason.is_empty(), "not kicked");
         assert_eq!(hub.guests[i].last_seen.tracked_count(), 20);
     }
@@ -2325,13 +2327,35 @@ mod hub_tests {
     }
 
     /// What the game does with a request (`game/interface/dedicated/transfer.rs`), without the disk: the
-    /// import, then the placing unless `"place": false`.
+    /// import, then the placing unless `"place": false`. The catalog has vanilla's bounds of the
+    /// attributes the record's values are checked against.
     fn import_player(
         hub: &mut Hub,
         uuid: u128,
         request: &serde_json::Value,
     ) -> Result<crate::lan::import::Imported, String> {
-        let done = crate::lan::import::import_player(hub, uuid, request)?;
+        import_player_with(hub, 1024.0, uuid, request)
+    }
+
+    /// [`import_player`] with `max_health` bounded at `max_health`, as a mod
+    /// that widened it leaves the catalog (#3728).
+    fn import_player_with(
+        hub: &mut Hub,
+        max_health: f64,
+        uuid: u128,
+        request: &serde_json::Value,
+    ) -> Result<crate::lan::import::Imported, String> {
+        let bits = |v: f64| format!("{:016x}", v.to_bits());
+        let attributes = horizon_world::attributes::entity::Catalog::from_json(&serde_json::json!({
+            "data_version": horizon_world::DATA_VERSION,
+            "attributes": [
+                {"id": "minecraft:max_health", "default": bits(20.0), "min": bits(1.0), "max": bits(max_health), "syncable": true},
+                {"id": "minecraft:max_absorption", "default": bits(0.0), "min": bits(0.0), "max": bits(2048.0), "syncable": true},
+            ],
+            "entities": {},
+        }))
+        .unwrap();
+        let done = crate::lan::import::import_player(hub, &attributes, uuid, request)?;
         if done.place {
             hub.confirm_arrival(uuid, done.handover)?;
         }
@@ -3029,6 +3053,22 @@ mod hub_tests {
             assert!(hub.guests[1].held && !hub.guests[1].imported, "{what}");
             assert_eq!(ids(&seen), Vec::<i32>::new(), "{what}");
         }
+    }
+
+    /// #3728: a player whose health is past vanilla's 1024, as a mod that
+    /// widened `max_health` lets one be, is imported where that mod widened it
+    /// too, and refused where it did not.
+    #[test]
+    fn a_record_past_vanillas_health_imports_where_the_bounds_are_widened() {
+        let (mut source, i) = exported_guest();
+        source.guests.update(i, |g| g.health = 5000.0);
+        let record = super::export_record(&mut source, i, true, Default::default()).unwrap();
+        let request = serde_json::json!({ "record": record });
+        let (_, mut hub, _seen, _mine) = held_in_a_second_hub();
+        assert!(import_player(&mut hub, UUID_N, &request).is_err());
+        let (_, mut hub, _seen, _mine) = held_in_a_second_hub();
+        import_player_with(&mut hub, 1e6, UUID_N, &request).unwrap();
+        assert_eq!(hub.guests[1].health, 5000.0);
     }
 
     /// The record must be a hand-over's, and the held player takes one hand-over's record.

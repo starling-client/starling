@@ -95,6 +95,8 @@ pub struct Editor {
     pub save_dialog_open: bool,
     /// A naming field was tapped: the game opens the system keyboard.
     pub keyboard_request: bool,
+    /// Hint Label tapped: keyboard text goes to the selected button's label.
+    pub editing_label: bool,
     /// True when Option B (Create a new preset as...) is selected in the Save Dialog.
     pub save_create_new_mode: bool,
     /// True when the Back confirmation dialog (`[ Save ]` / `[ Back ]`) is open.
@@ -148,6 +150,7 @@ impl TouchControls {
             editing_save_desc: false,
             save_dialog_open: false,
             keyboard_request: false,
+            editing_label: false,
             save_create_new_mode: is_default,
             back_confirm_open: false,
         });

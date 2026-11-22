@@ -2,7 +2,7 @@
 //!
 //! Slice 1 of the moving structures design (board issue 1, "Carrier data
 //! model and bounded codec", in
-//! `docs/modding/src/concepts/moving-structures.md`): versioned
+//! `docs/design/mod-api/moving-structures.md`): versioned
 //! persistence of [`Carrier`] using the crate's existing Java Edition
 //! NBT (`horizon_core::nbt`), with no gameplay integration. The design's
 //! save contract applies: "Persist versioned cells, canonical registry
@@ -38,7 +38,7 @@ const ROOT_NAME: &str = "horizon_carrier";
 /// names and properties: a carrier whose encoded form passes it refuses at
 /// the door, before the tree is
 /// parsed.
-const MAX_INPUT_BYTES: usize = 24 * 1024 * 1024;
+pub const MAX_INPUT_BYTES: usize = 24 * 1024 * 1024;
 /// Node ceiling, a chosen bound rather than one the byte budget implies:
 /// an unnamed element of a byte list costs one wire byte, so hostile input
 /// could pack far more nodes into 24 MiB, and this ceiling, not the byte
