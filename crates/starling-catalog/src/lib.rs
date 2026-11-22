@@ -15,9 +15,9 @@ pub use launcher::browser;
 pub mod list;
 
 use browser::{
-    sunrise::Registry,
     installed::{self, Entry, Installed},
     modrinth::Modrinth,
+    sunrise::Registry,
     Kind, Project, Query, Source, SourceId, Support, Version, GAME,
 };
 use serde_json::Value;

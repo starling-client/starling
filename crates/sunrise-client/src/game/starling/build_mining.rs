@@ -4,8 +4,8 @@
 //! digs at it: dirt gives at once, stone takes two, ore three. Ore shows once it is beside the way
 //! in, and what was found stays counted. When there is nothing left, a new level comes.
 use super::setup::fishing::Sound;
-use sunrise_client::ui_theme::{Face, Ui, color};
 use std::time::{Duration, Instant};
+use sunrise_client::ui_theme::{Face, Ui, color};
 
 /// A block, in dp.
 const CELL: f32 = 44.0;

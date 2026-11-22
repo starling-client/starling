@@ -12,12 +12,12 @@
 //! scrolls or drags as the pointer does elsewhere.
 use super::super::input_trace::InputOrigin;
 use super::super::{Game, Screen, event_loop::EventLoopCtl};
+use std::time::{Duration, Instant};
 use sunrise_client::{
     creative::Creative,
     hud::{HudBatch, rgba},
     items::ItemStack,
 };
-use std::time::{Duration, Instant};
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseButton, Touch, TouchPhase, WindowEvent},

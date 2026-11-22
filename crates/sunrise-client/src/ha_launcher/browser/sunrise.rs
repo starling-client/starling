@@ -8,12 +8,12 @@ use super::{
     details::{Details, Link},
     download, installed, java,
 };
-use sunrise_mod_package::index::{self, Index, Trust};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use sunrise_mod_package::index::{self, Index, Trust};
 
 /// Where the registry publishes its index: Sunrise's (GitHub Pages of sunrise-org/sunrise-mods),
 /// whose `.smod` packages are what this game reads since the move to Sunrise.
@@ -483,7 +483,12 @@ impl Source for Registry {
                     .project(&r.id)
                     .and_then(|m| Some((m, m.versions.iter().find(|w| w.version == r.version)?)));
                 let Some((m, w)) = found else { continue };
-                let may: Vec<&str> = w.capabilities.known().iter().map(|c| c.describe()).collect();
+                let may: Vec<&str> = w
+                    .capabilities
+                    .known()
+                    .iter()
+                    .map(|c| c.describe())
+                    .collect();
                 let may = match may.is_empty() {
                     true => String::new(),
                     false => format!(": may {}", may.join(", ")),

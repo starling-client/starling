@@ -910,7 +910,10 @@ impl Game<'_> {
                     chest,
                     camera,
                     alpha as f32,
-                    (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed),
+                    (
+                        self as &dyn sunrise_client::mobs::render::RenderDataSource,
+                        packed,
+                    ),
                     out,
                 );
             }
@@ -1056,7 +1059,8 @@ impl Game<'_> {
         let body = self.own_body_visible() || self.spectator();
         // Starling: the title screen's player comes before the world's mob data: its own stands
         // in (`MobData` is a source too, without the world's equipment).
-        let data: &dyn sunrise_client::mobs::render::RenderDataSource = if in_world { self } else { data };
+        let data: &dyn sunrise_client::mobs::render::RenderDataSource =
+            if in_world { self } else { data };
         let armour = if in_world {
             self.player_armor_layers()
         } else {

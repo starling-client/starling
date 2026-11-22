@@ -671,7 +671,6 @@ fn an_adapter_that_cannot_draw_into_depth32float_is_skipped() {
 /// PowerVR Rogue starts on OpenGL ES with Auto; the B-Series keeps Vulkan (#381).
 #[test]
 fn auto_leaves_vulkan_on_powervr_rogue_only() {
-    
     assert!(rogue_vulkan_crashes("PowerVR Rogue GE8320"));
     assert!(rogue_vulkan_crashes("PowerVR Rogue GE8322"));
     assert!(

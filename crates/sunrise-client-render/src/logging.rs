@@ -389,10 +389,8 @@ impl Writer {
                     if let Some(latest) = &mut self.file
                         && let Err(e) = latest.archive_last_run()
                     {
-                        let _ = writeln!(
-                            stderr,
-                            "Sunrise: could not archive the last run's log: {e}"
-                        );
+                        let _ =
+                            writeln!(stderr, "Sunrise: could not archive the last run's log: {e}");
                     }
                     if date != self.date {
                         if let Some(latest) = &mut self.file

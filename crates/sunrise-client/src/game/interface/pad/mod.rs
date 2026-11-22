@@ -207,8 +207,8 @@ mod hardware {
 #[cfg(not(any(feature = "controllers", target_os = "android")))]
 mod hardware {
     use super::{super::Game, Pads};
-    use sunrise_client::gamepad::{PadState, Pulse, Rumble};
     use serde_json::{Value, json};
+    use sunrise_client::gamepad::{PadState, Pulse, Rumble};
 
     impl Pads {
         pub(super) fn read(&mut self) -> PadState {

@@ -2061,7 +2061,6 @@ fn display_name(id: &str) -> String {
         .unwrap_or_default()
 }
 
-
 /// What a live content mod switch changes on the server (`Game::apply_mods_reload`).
 pub(super) struct ModsReload {
     root: PathBuf,

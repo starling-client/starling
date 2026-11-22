@@ -663,10 +663,7 @@ impl Game<'_> {
 }
 
 /// Starling: says in the log when a background save's files are written, from a thread of its own.
-fn log_when_written(
-    saves: Vec<std::sync::Arc<sunrise_client::save::SaveDir>>,
-    started: Instant,
-) {
+fn log_when_written(saves: Vec<std::sync::Arc<sunrise_client::save::SaveDir>>, started: Instant) {
     let waiter = std::thread::Builder::new()
         .name("Save waiter".into())
         .spawn(move || {

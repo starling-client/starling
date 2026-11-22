@@ -76,7 +76,10 @@ pub(crate) fn get_from_hosts(url: &str, hosts: &[&str]) -> Result<Option<ureq::R
         );
         match agent
             .get(address)
-            .set("User-Agent", "starling-client/starling (github.com/starling-client/starling)")
+            .set(
+                "User-Agent",
+                "starling-client/starling (github.com/starling-client/starling)",
+            )
             .call()
         {
             Ok(response) => Ok(Some(response)),
@@ -109,7 +112,6 @@ fn follow(
     }
     Err("Too many redirects".into())
 }
-
 
 fn checked_url(address: &str, hosts: &[&str]) -> Result<url::Url, String> {
     let url = url::Url::parse(address).map_err(|e| e.to_string())?;
@@ -300,4 +302,3 @@ fn say(what: &str) {
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
-

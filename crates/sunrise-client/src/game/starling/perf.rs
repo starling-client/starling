@@ -1,6 +1,8 @@
 //! The Stats overlay's numbers from the game (sunrise_client::stats_overlay), its panel over the
 //! HUD, and the `perf` and `overlay` control commands.
 use super::Game;
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 use sunrise_client::{
     Result,
     hud::HudBatch,
@@ -8,8 +10,6 @@ use sunrise_client::{
     system_stats::Sampler,
     ui_theme::Ui,
 };
-use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 
 pub(super) const HELP: &[&str] = &[
     "perf                           frames (1% low), CPU/GPU time, memory, chunks, meshing, draws, temperatures, throttling",

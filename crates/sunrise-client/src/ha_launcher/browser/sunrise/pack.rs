@@ -6,11 +6,11 @@
 //! packs, a mod's saved settings) are copied in once, when it is installed.
 use super::{Index, fetch, index, install_version, local, newest};
 use crate::ha_launcher::browser::{FileRef, java};
-use sunrise_mod_package::{index as idx, modpack::Modpack};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use sunrise_mod_package::{index as idx, modpack::Modpack};
 
 const RECORD: &str = "pack.json";
 

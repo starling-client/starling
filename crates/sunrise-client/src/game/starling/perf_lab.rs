@@ -20,14 +20,14 @@
 //! beats the device's own by [`WORTH_IT`], deletes the world and opens its page again with what
 //! it found. Nothing is sent: what it measured stays in `perf-lab.json`.
 use super::{Game, Screen};
-use sunrise_client::benchmark::{self, Control};
-use sunrise_client::{lang, options_ui::Page, text::Text};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use sunrise_client::benchmark::{self, Control};
+use sunrise_client::{lang, options_ui::Page, text::Text};
 
 const SESSIONS: &str = "perf-sessions.json";
 const CHOICES: &str = "perf-lab.json";
@@ -1778,8 +1778,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod calibration_tests {
     use super::*;
-    use sunrise_client::control::Request;
     use std::sync::mpsc;
+    use sunrise_client::control::Request;
 
     /// A phone that draws flat by default and takes every other way, the sky early, occlusion
     /// culling and hidden faces skipped.

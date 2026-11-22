@@ -249,7 +249,10 @@ impl Game<'_> {
                     chest,
                     camera,
                     alpha as f32,
-                    (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed),
+                    (
+                        self as &dyn sunrise_client::mobs::render::RenderDataSource,
+                        packed,
+                    ),
                     out,
                 );
             }

@@ -3,8 +3,8 @@
 //! their motors through the activity (StarlingActivity.vibratePad). The desktop's are gilrs'
 //! (pad/hardware.rs).
 use super::{super::Game, Pads};
-use sunrise_client::gamepad::{GlyphStyle, PadState, Pulse, Rumble};
 use serde_json::{Value, json};
+use sunrise_client::gamepad::{GlyphStyle, PadState, Pulse, Rumble};
 
 /// The controllers used so far and the one playing.
 #[derive(Default)]

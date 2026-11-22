@@ -8,13 +8,13 @@ use crate::ha_launcher::{
         library::{Kind, Library},
     },
 };
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 use sunrise_client::{
     hud::HudBatch,
     options_ui::AccountCape,
     own_skin::{CapeChoice, Cloud, SkinChoice, Upload},
 };
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 
 const LOCAL_CAPE: &str = "capes/starling-local";
 const ACCOUNT_CAPE: &str = "capes/starling-account";

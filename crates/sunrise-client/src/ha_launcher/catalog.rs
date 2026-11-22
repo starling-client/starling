@@ -1745,7 +1745,10 @@ impl Catalog {
             "No Sunrise shader packs match this search. Try another query or import a .sshader."
                 .into()
         } else if self.page == Page::Mods {
-            format!("{} mods available - select Install to download", items.len())
+            format!(
+                "{} mods available - select Install to download",
+                items.len()
+            )
         } else {
             format!("{} results - select Install to download", items.len())
         };

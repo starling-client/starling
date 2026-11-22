@@ -44,9 +44,9 @@ pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
 /// The overlays' palette (`menu_style`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
 pub mod color {
-    use sunrise_theme::DARK as P;
     pub use menu_style::hud_colour as hex;
     use sunrise_client_render::menu_style::{self, OverlayColours};
+    use sunrise_theme::DARK as P;
     fn p() -> &'static OverlayColours {
         &menu_style::get().overlay
     }

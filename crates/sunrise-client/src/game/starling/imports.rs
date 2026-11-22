@@ -4,14 +4,14 @@
 //! arrives, a spinner turning while it installs, then says what each file added with a chime (or
 //! what went wrong, lower), its bar running out before it goes back up. Its sounds are made here,
 //! as the fishing's are: the game's own may not be there yet.
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use sunrise_client::{
     hud::{HudAtlas, HudBatch},
     import::{self, Event, Inbox, Kind, Places},
     ui_theme::{Face, Ui, color},
 };
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(400);
 /// How long a finished import's banner stays down.

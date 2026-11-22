@@ -12,8 +12,6 @@ pub mod curseforge;
 pub mod details;
 #[path = "browser/download.rs"]
 pub mod download;
-#[path = "browser/sunrise.rs"]
-pub mod sunrise;
 #[path = "browser/images.rs"]
 pub mod images;
 #[path = "browser/installed.rs"]
@@ -22,6 +20,8 @@ pub mod installed;
 pub mod java;
 #[path = "browser/modrinth.rs"]
 pub mod modrinth;
+#[path = "browser/sunrise.rs"]
+pub mod sunrise;
 
 use serde::{Deserialize, Serialize};
 

@@ -6,6 +6,12 @@
 //! it to its profile and an Ely.by account changes its own on ely.by, as in Sunrise Android's
 //! wardrobe.
 use super::Game;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    mpsc::{Receiver, channel},
+};
+use std::time::{Duration, Instant};
 use sunrise_client::{
     hud::HudBatch,
     mobs::{Mob, MobData, MobType},
@@ -17,12 +23,6 @@ use sunrise_client::{
     ui,
 };
 use sunrise_core::geometry::Vec3;
-use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, channel},
-};
-use std::time::{Duration, Instant};
 
 #[cfg(target_os = "android")]
 #[path = "own_skin/wardrobe.rs"]

@@ -118,7 +118,13 @@ impl State {
 
     /// The chunk under the player is lit or not this tick: a long wait is logged, with what the
     /// connection holds (`chunks`, `skipped` packets).
-    pub(super) fn waited_for_chunk(&mut self, lit: bool, at: (i32, i32), chunks: usize, skipped: u32) {
+    pub(super) fn waited_for_chunk(
+        &mut self,
+        lit: bool,
+        at: (i32, i32),
+        chunks: usize,
+        skipped: u32,
+    ) {
         if lit {
             if self.waiting_ticks >= 100 {
                 log::info!(
@@ -143,7 +149,14 @@ impl State {
 
     /// A server teleport that took the player back `back` blocks (a correction): counted, and
     /// the first ones logged with what tells the causes apart.
-    fn setback(&mut self, back: f64, to: [f64; 3], teleport: i32, last_sent: [f64; 3], state: &str) {
+    fn setback(
+        &mut self,
+        back: f64,
+        to: [f64; 3],
+        teleport: i32,
+        last_sent: [f64; 3],
+        state: &str,
+    ) {
         self.setbacks += 1;
         if self.setbacks > 5 && self.setbacks % 50 != 0 {
             return;
@@ -156,7 +169,8 @@ impl State {
             to[1],
             to[2],
             self.setbacks,
-            self.moved_at.map_or(-1, |at| at.elapsed().as_millis() as i64)
+            self.moved_at
+                .map_or(-1, |at| at.elapsed().as_millis() as i64)
         );
         if self.setbacks == 1 || self.setbacks % 50 == 0 {
             let now = Instant::now();
@@ -294,7 +308,10 @@ impl Game<'_> {
     /// A server teleport of the player from `from` to `to`: a short way back is a correction
     /// (the server would not take the move), logged, and counted against the stick's mode.
     pub(super) fn remote_setback(&mut self, from: [f64; 3], to: [f64; 3], teleport: i32) {
-        let back = (0..3).map(|i| (from[i] - to[i]).powi(2)).sum::<f64>().sqrt();
+        let back = (0..3)
+            .map(|i| (from[i] - to[i]).powi(2))
+            .sum::<f64>()
+            .sqrt();
         if !(back > 0.0 && back < 8.0) {
             return;
         }

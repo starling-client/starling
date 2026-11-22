@@ -8,9 +8,9 @@
 //! Installing copies the carried-over folder mod into `sunrise-mods/<mod id>/` beside
 //! `options.txt` and turns it on in `sunrise-mods.txt`, where the game's Options > Mods reads it.
 use super::{FileRef, Kind, Project, Source, Support, Version, installed::Entry, pick};
-use sunrise_port_pack::check::{self, Check, Verdict};
 use std::fs;
 use std::path::{Path, PathBuf};
+use sunrise_port_pack::check::{self, Check, Verdict};
 
 /// Where the checks are kept, under the game folder. Its name changes when the check finds
 /// more, so older answers are checked again.

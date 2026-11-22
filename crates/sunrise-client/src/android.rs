@@ -950,6 +950,8 @@ pub fn hide_text_mirror() {
 /// (a pad's sticks become a finger, its buttons unknown keys; the mouse's hover, wheel and buttons
 /// are lost), taken from each input event before it does (`set_input_hook`, third_party/winit).
 mod input {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use sunrise_client::{
         gamepad::{
             PadState,
@@ -957,8 +959,6 @@ mod input {
         },
         input_mode,
     };
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use winit::event::MouseButton;
     use winit::platform::android::activity::{
         InputStatus,
@@ -1813,7 +1813,9 @@ fn adopt_horizon_names(dir: &std::path::Path) -> Vec<String> {
                     mods += 1;
                 }
             }
-            notes.push(format!("Starling: {mods} mods of {name} brought to sunrise{rest}"));
+            notes.push(format!(
+                "Starling: {mods} mods of {name} brought to sunrise{rest}"
+            ));
         }
     }
     notes

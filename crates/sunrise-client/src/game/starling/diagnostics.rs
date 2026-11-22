@@ -1,11 +1,11 @@
 //! Sunrise Android's diagnostic reports, integrated with Starling's game settings.
 use super::Game;
-use sunrise_client::{lang, logging};
 use serde_json::{Value, json};
 use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
+use sunrise_client::{lang, logging};
 
 static EXPORTING: AtomicBool = AtomicBool::new(false);
 static EXPORTED: Mutex<Option<Result<std::path::PathBuf, String>>> = Mutex::new(None);

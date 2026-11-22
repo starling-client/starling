@@ -195,11 +195,11 @@ pub fn camera(settings: &Settings) -> Shadow {
 /// `settings` with the resolution `device` can make.
 pub fn fitted(device: &wgpu::Device, settings: &Settings) -> Settings {
     Settings {
-        resolution: settings
-            .resolution
-            .min(sunrise_render_shaderpack::pack_shadow::shadow_side_limit(
+        resolution: settings.resolution.min(
+            sunrise_render_shaderpack::pack_shadow::shadow_side_limit(
                 device.limits().max_texture_dimension_2d,
-            )),
+            ),
+        ),
         ..settings.clone()
     }
 }

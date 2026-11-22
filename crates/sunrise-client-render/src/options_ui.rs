@@ -440,9 +440,15 @@ impl Opt {
             Opt::TouchVerticalMargin => unit(f64::from(s.touch.vertical_margin), 0.0, 0.12),
             Opt::AndroidGyroSensitivity => unit(f64::from(s.touch.gyro_sensitivity), 0.1, 3.0),
             Opt::TouchSensitivity => unit(f64::from(s.touch.sensitivity), 0.1, 3.0),
-            Opt::TouchSensitivityHorizontal => unit(f64::from(s.touch.sensitivity_horizontal), 0.1, 3.0),
-            Opt::TouchSensitivityVertical => unit(f64::from(s.touch.sensitivity_vertical), 0.1, 3.0),
-            Opt::TouchMouseSensitivity => unit(f64::from(s.touch.virtual_mouse_sensitivity), 0.25, 3.0),
+            Opt::TouchSensitivityHorizontal => {
+                unit(f64::from(s.touch.sensitivity_horizontal), 0.1, 3.0)
+            }
+            Opt::TouchSensitivityVertical => {
+                unit(f64::from(s.touch.sensitivity_vertical), 0.1, 3.0)
+            }
+            Opt::TouchMouseSensitivity => {
+                unit(f64::from(s.touch.virtual_mouse_sensitivity), 0.25, 3.0)
+            }
             Opt::TouchButtonScale => unit(f64::from(s.touch.button_scale), 0.5, 2.0),
 
             Opt::ModSetting(i, j) => {
@@ -1152,13 +1158,21 @@ impl Opt {
             Opt::TouchCircleSize => s.touch.circle_size = (step(16.0, 64.0)) as f32,
             Opt::TouchDynamicAreaX => s.touch.dynamic_area_x = ((v * 100.0).round() / 100.0) as f32,
             Opt::TouchDynamicAreaY => s.touch.dynamic_area_y = ((v * 100.0).round() / 100.0) as f32,
-            Opt::TouchHorizontalMargin => s.touch.horizontal_margin = ((v * 120.0).round() / 1000.0) as f32,
-            Opt::TouchVerticalMargin => s.touch.vertical_margin = ((v * 120.0).round() / 1000.0) as f32,
+            Opt::TouchHorizontalMargin => {
+                s.touch.horizontal_margin = ((v * 120.0).round() / 1000.0) as f32
+            }
+            Opt::TouchVerticalMargin => {
+                s.touch.vertical_margin = ((v * 120.0).round() / 1000.0) as f32
+            }
             Opt::AndroidGyroSensitivity => s.touch.gyro_sensitivity = (0.1 + v * 2.9) as f32,
             Opt::TouchSensitivity => s.touch.sensitivity = (0.1 + v * 2.9) as f32,
-            Opt::TouchSensitivityHorizontal => s.touch.sensitivity_horizontal = (0.1 + v * 2.9) as f32,
+            Opt::TouchSensitivityHorizontal => {
+                s.touch.sensitivity_horizontal = (0.1 + v * 2.9) as f32
+            }
             Opt::TouchSensitivityVertical => s.touch.sensitivity_vertical = (0.1 + v * 2.9) as f32,
-            Opt::TouchMouseSensitivity => s.touch.virtual_mouse_sensitivity = (0.25 + v * 2.75) as f32,
+            Opt::TouchMouseSensitivity => {
+                s.touch.virtual_mouse_sensitivity = (0.25 + v * 2.75) as f32
+            }
             Opt::TouchButtonScale => s.touch.button_scale = (0.5 + v * 1.5) as f32,
 
             Opt::ChatDelay => s.chat_delay = values::from_slider(v),
@@ -6084,10 +6098,7 @@ impl OptionsUi {
         if let Some(shell) = self.shell_mut() {
             return shell.pressable_at(s, size, cursor);
         }
-        if matches!(
-            self.page(),
-            Page::Packs | Page::HdrCalibration
-        ) {
+        if matches!(self.page(), Page::Packs | Page::HdrCalibration) {
             return false;
         }
         let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);

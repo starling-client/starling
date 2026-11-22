@@ -14,6 +14,13 @@
 //! Rust libraries takes a library per mod from the store into the folder the game opens at its
 //! start (Compile v2, below).
 use super::Game;
+use sha2::{Digest, Sha256};
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use sunrise_client::{
     hud::HudBatch,
     lang::tr,
@@ -22,13 +29,6 @@ use sunrise_client::{
     starling_store as store,
     ui_theme::{Face, Ui, color},
 };
-use sha2::{Digest, Sha256};
-use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
 use winit::event::{Touch, TouchPhase};
 
 /// The mod build service (packaging/android/mod_build_server.py), while the file that says where it

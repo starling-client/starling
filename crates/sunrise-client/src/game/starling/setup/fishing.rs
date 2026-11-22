@@ -4,9 +4,9 @@
 //! too late and it gets away, and another comes while the finger stays down. What to do is written
 //! until the first catch. Its sounds are made here, soft: the game's own are part of what is being
 //! set up.
-use sunrise_client::ui_theme::{Face, Ui, color};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use sunrise_client::ui_theme::{Face, Ui, color};
 
 /// The water's pixel art: one cell, in dp, and its four shades, darkest first.
 const CELL: f32 = 12.0;

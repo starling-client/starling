@@ -11,14 +11,14 @@ mod onboarding;
 use account_form::{Form, Kind};
 
 use super::{Audio, Loading, UiResources};
+use std::cell::Cell;
+use std::time::Instant;
 use sunrise_client::{
     accounts::{self, Files, State},
     hud::HudBatch,
     preparer::{self, Stage},
     ui_theme::{Face, Ui, color},
 };
-use std::cell::Cell;
-use std::time::Instant;
 use winit::event::{Touch, TouchPhase};
 
 /// What the screen offers now.
@@ -1094,10 +1094,12 @@ impl Loading {
                 let known = match accounts::state() {
                     State::OfflineProfile(name) => name,
                     State::SignedIn(account) => account.name,
-                    _ => crate::ha_launcher::catalog::Config::load(
-                        &crate::ha_launcher::backend::data_dir(),
-                    )
-                    .name,
+                    _ => {
+                        crate::ha_launcher::catalog::Config::load(
+                            &crate::ha_launcher::backend::data_dir(),
+                        )
+                        .name
+                    }
                 };
                 self.setup.form = Some(Form::new(Kind::Offline).with_first(known.trim()));
                 self.setup.provider = Some(Kind::Offline);

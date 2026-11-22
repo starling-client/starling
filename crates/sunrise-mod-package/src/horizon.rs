@@ -13,8 +13,8 @@ pub const MANIFEST: &str = "horizon-mod.toml";
 /// The crates a mod may name, by what follows `horizon_` or `horizon-` in their names. Anything
 /// else that says "horizon" (a mod's own id, a namespace, a comment) stays as written.
 const CRATES: [&str; 14] = [
-    "mod", "client", "core", "world", "items", "protocol", "assets", "hooks", "platform",
-    "shader", "render", "threads", "look", "optifine",
+    "mod", "client", "core", "world", "items", "protocol", "assets", "hooks", "platform", "shader",
+    "render", "threads", "look", "optifine",
 ];
 
 /// Whether the file at `path` is a Horizon package: a ZIP with Horizon's manifest and not
@@ -137,7 +137,8 @@ mod tests {
 
     #[test]
     fn the_native_pin_takes_sunrises_key() {
-        let text = "id = \"x\"\nhorizon = \"kept\"\n\n[native]\ngame = \"26.3\"\nhorizon = \"abc\"\n";
+        let text =
+            "id = \"x\"\nhorizon = \"kept\"\n\n[native]\ngame = \"26.3\"\nhorizon = \"abc\"\n";
         assert_eq!(
             manifest(text),
             "id = \"x\"\nhorizon = \"kept\"\n\n[native]\ngame = \"26.3\"\nsunrise = \"abc\"\n"

@@ -10,6 +10,8 @@ mod text_mirror;
 
 use super::input_trace::InputOrigin;
 use super::{Game, Screen, event_loop::EventLoopCtl};
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 use sunrise_client::debug_keys::KeyAction;
 use sunrise_client::gamepad::ServerStick;
 use sunrise_client::input_mode::InputMode;
@@ -23,8 +25,6 @@ use sunrise_client::{
     },
     ui_theme::{Face, Ui, color},
 };
-use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 use winit::{
     event::{ElementState, KeyEvent, TouchPhase, WindowEvent},
     keyboard::{Key, KeyCode, NamedKey},

@@ -1341,20 +1341,6 @@ mod mobile_controls;
 mod mod_catalog;
 #[path = "game/starling/native_builds.rs"]
 mod native_builds;
-#[path = "game/starling/own_skin.rs"]
-mod own_skin;
-#[path = "game/starling/perf.rs"]
-mod perf;
-#[path = "game/starling/perf_lab.rs"]
-mod perf_lab;
-#[path = "game/starling/setup/mod.rs"]
-mod setup;
-#[path = "game/starling/touch/mod.rs"]
-mod touch;
-#[path = "game/starling/update_offer.rs"]
-mod update_offer;
-#[path = "game/starling/world_content.rs"]
-mod world_content;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
 #[cfg(test)]
@@ -1807,6 +1793,8 @@ mod orb_score_store_tests;
 mod ordered_tick;
 #[path = "game/modding/original_player.rs"]
 mod original_player;
+#[path = "game/starling/own_skin.rs"]
+mod own_skin;
 #[path = "game/world/owner_link.rs"]
 mod owner_link;
 #[cfg(test)]
@@ -1843,6 +1831,10 @@ mod passengers;
 mod payload_transport;
 #[path = "game/mobs/pending_births.rs"]
 mod pending_births;
+#[path = "game/starling/perf.rs"]
+mod perf;
+#[path = "game/starling/perf_lab.rs"]
+mod perf_lab;
 #[path = "game/interface/perf_link.rs"]
 mod perf_link;
 #[path = "game/interface/perf_remote.rs"]
@@ -2104,6 +2096,8 @@ mod server_travel;
 #[cfg(test)]
 #[path = "game/administration/setblock_order_tests.rs"]
 mod setblock_order_tests;
+#[path = "game/starling/setup/mod.rs"]
+mod setup;
 #[path = "game/interface/shader_packs.rs"]
 mod shader_packs;
 #[cfg(test)]
@@ -2274,6 +2268,8 @@ mod tnt;
 mod tool_modification;
 #[path = "game/items/totem.rs"]
 mod totem;
+#[path = "game/starling/touch/mod.rs"]
+mod touch;
 #[path = "game/items/trading.rs"]
 mod trading;
 #[cfg(test)]
@@ -2298,6 +2294,8 @@ mod ui_control;
 #[cfg(test)]
 #[path = "game/runtime/ui_core_shader_tests.rs"]
 mod ui_core_shader_tests;
+#[path = "game/starling/update_offer.rs"]
+mod update_offer;
 #[path = "game/interface/upload_pace.rs"]
 mod upload_pace;
 #[path = "game/items/use_hand.rs"]
@@ -2360,6 +2358,8 @@ mod wither;
 #[cfg(test)]
 #[path = "game/mobs/wither_star_tests.rs"]
 mod wither_star_tests;
+#[path = "game/starling/world_content.rs"]
+mod world_content;
 #[path = "game/world/world_entry.rs"]
 mod world_entry;
 #[cfg(test)]

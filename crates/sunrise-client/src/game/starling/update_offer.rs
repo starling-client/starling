@@ -8,11 +8,6 @@
 //! and the release could not install over it (`STARLING_UPDATE_TEST=<version>` makes one ask as
 //! that version, to try the prompt).
 use super::Game;
-use sunrise_client::{
-    hud::HudBatch,
-    starling_releases::{self as releases, Update as Release},
-    ui_theme::{Face, Ui, color},
-};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::io::{Read, Write};
@@ -20,6 +15,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sunrise_client::{
+    hud::HudBatch,
+    starling_releases::{self as releases, Update as Release},
+    ui_theme::{Face, Ui, color},
+};
 use winit::event::{Touch, TouchPhase};
 
 /// How long Tomorrow keeps the prompt away.

@@ -1,7 +1,7 @@
 use super::*;
+use std::path::Path;
 use sunrise_client::chunk::ColumnLayout;
 use sunrise_core::geometry::Vec3;
-use std::path::Path;
 
 #[test]
 fn vanilla_models_and_animations_stay_inside_the_precheck_envelope() {

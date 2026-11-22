@@ -6,10 +6,6 @@
 //! `starling_catalog::list`, where they have tests.
 use super::Game;
 use super::native_builds::{density, wrapped};
-use sunrise_client::{
-    hud::HudBatch,
-    ui_theme::{Face, Ui, color},
-};
 use starling_catalog::{
     Done, Shelf,
     browser::{Kind, Project, installed::Entry},
@@ -19,6 +15,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use sunrise_client::{
+    hud::HudBatch,
+    ui_theme::{Face, Ui, color},
+};
 use winit::event::{Touch, TouchPhase};
 
 const SHELVES: [(Shelf, &str); 3] = [

@@ -9,13 +9,13 @@
 //! Android is installed, until they answer it (Bring them over, then Done; or Not now).
 use super::Game;
 use super::setup::{SUNRISE_LATER, sunrise_answered};
+use std::cell::Cell;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use sunrise_client::{
     hud::HudBatch,
     ui_theme::{Face, Ui, color},
 };
-use std::cell::Cell;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
 use winit::event::{Touch, TouchPhase};
 
 /// How often the setting is looked at while the player is away in it.

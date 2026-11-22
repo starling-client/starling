@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors
 // SPDX-License-Identifier: MIT
 //! Opt-in local performance reports. No account, chat, world names or positions.
-use sunrise_client::{control::FrameStats, spans};
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -13,6 +12,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use sunrise_client::{control::FrameStats, spans};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SECONDS: u64 = 1800;
