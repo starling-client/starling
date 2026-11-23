@@ -245,7 +245,11 @@ pub fn whole_game_only(index: &Index) -> BTreeSet<String> {
         .failed
         .values()
         .filter(|f| {
-            f.error.contains(WHOLE_GAME) && !f.id.is_empty() && !built.contains(f.id.as_str())
+            // Starling: and those that failed for good in this build (a mod written for Horizon's
+            // API that neither compiles here nor has a port): offering one ends in an error.
+            (f.settled || f.error.contains(WHOLE_GAME))
+                && !f.id.is_empty()
+                && !built.contains(f.id.as_str())
         })
         .map(|f| f.id.clone())
         .collect()
@@ -575,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogs_leave_out_only_mods_the_whole_game_compile_alone_builds() {
+    fn the_catalogs_leave_out_mods_that_fail_for_good_in_this_build() {
         let built = library("zoom", &"a".repeat(64), BUILD);
         let failed = |job: &str, id: &str, error: &str| serde_json::json!({"job": job, "id": id, "error": error, "settled": true});
         let text = serde_json::json!({
@@ -587,7 +591,7 @@ mod tests {
                 failed("o", "oritech", "This mod uses the crate serde_json: it needs the whole-game Compile."),
                 // Another version of a mod the store built still plays.
                 failed("z", "zoom", "This mod has [native.mixin]: it needs the whole-game Compile."),
-                // Failed for another reason: Compile says so, and the mod stays listed.
+                // Its code doesn't compile on this game, for good: left out too.
                 failed("b", "broken", "error[E0425]: cannot find value"),
             ],
         })
@@ -595,7 +599,7 @@ mod tests {
         let hidden = whole_game_only(&index(&text, BUILD).unwrap());
         assert_eq!(
             hidden.into_iter().collect::<Vec<_>>(),
-            ["freecam_plus", "oritech"]
+            ["broken", "freecam_plus", "oritech"]
         );
     }
 
