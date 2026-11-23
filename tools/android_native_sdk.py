@@ -249,12 +249,15 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work))
         own_crates(work, cargo)
         # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
-        # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The four-word identity of
-        # Starling's Horizon-based game made every library refused on the phone ("native mods left out").
-        identity = f"{commit} {mod_id} {version} {release} unwind"
+        # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The entry template adds the
+        # panic strategy itself (`sunrise_native_build`), so the library carries the first four words and
+        # native-mods.json all five. A four-word record made every library refused on the phone, and five words
+        # in the library too gave it "unwind unwind" ("native mods left out").
+        built_as = f"{commit} {mod_id} {version} {release}"
+        identity = f"{built_as} unwind"
         side = SIDES.get(manifest.get("side", "both"), "Both")
         rows = {
-            "NATIVE_BUILD": identity,
+            "NATIVE_BUILD": built_as,
             "MOD_ENTRIES": f'"{mod_id}" => {hooks_path(work / "src")},',
             "BUILT_MODS": f'mod_api::__private::native::BuiltMod {{ id: "{mod_id}", version: "{version}", '
                           f"side: mod_api::Side::{side} }},",
