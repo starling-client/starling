@@ -35,6 +35,10 @@ on:
         description: Also build packaging/android/wasm-probe, a wasm mod that says its hooks ran, as an artifact (arm64)
         type: boolean
         default: false
+      fast_profile:
+        description: Build with the fast profile, as releases and the mod store's bases (store-base.yml) do; a mod store library only links against a game built with the profile its base had
+        type: boolean
+        default: false
       game_build_id:
         description: The game build the APK names to native mods (a full commit; empty, this one). A fix outside the mod API keeps the store's libraries of that build
         type: string
@@ -97,7 +101,7 @@ jobs:
       # The fast profile's 16 codegen units of the game's crate took more than the runner's 16 GB, and the runner
       # went: swap, on the large temporary disk where there is one, and three units at a time instead of four.
       - name: Make room for the release build
-        if: env.RELEASE_BUILD == 'true'
+        if: env.RELEASE_BUILD == 'true' || inputs.fast_profile
         run: |
           sudo swapoff -a || true
           where=/mnt size=20G
@@ -139,7 +143,7 @@ jobs:
           SUNRISE_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           SUNRISE_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
           MODS: ${{ inputs.native_mods }}
-          PROFILE: ${{ env.RELEASE_BUILD == 'true' && 'fast' || 'quick' }}
+          PROFILE: ${{ (env.RELEASE_BUILD == 'true' || inputs.fast_profile) && 'fast' || 'quick' }}
           VARIANT: ${{ env.PREVIEW == 'true' && '--preview' || '' }}
         # Releases with the fast profile (fewer codegen units: a little quicker in game). With native mods, the APK
         # native_build.sh makes, named after them.
