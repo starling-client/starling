@@ -1672,7 +1672,7 @@ fn register_block_entity_types(
             .collect::<sunrise_client::Result<_>>()?
     };
     if additions.is_empty() {
-        block_entity_types::install(types)?;
+        keep_or_install(types);
         return Ok(());
     }
     // Empty registration needs no block IDs or class data; requested additions do.
@@ -1724,8 +1724,17 @@ fn register_block_entity_types(
         }
         types.add_valid(block, kind)?;
     }
-    block_entity_types::install(types)?;
+    keep_or_install(types);
     Ok(())
+}
+
+/// Starling: the table is installed once per process. A later build that differs (a resource
+/// reload, like turning a shader pack on, with a content mod in the world) keeps the one in use,
+/// as its refusal says a restart is what changes it, instead of failing the whole reload.
+fn keep_or_install(types: sunrise_client::block_entity_types::BlockEntityTypes) {
+    if let Err(error) = sunrise_client::block_entity_types::install(types) {
+        log::warn!("Sunrise: {error}; keeping the block entity types in use until a restart");
+    }
 }
 
 /// Manifest identity for the configuration-phase mod check.
