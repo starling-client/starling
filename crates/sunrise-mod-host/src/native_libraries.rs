@@ -86,7 +86,10 @@ fn check_image(id: &str, bytes: &[u8], game_std: Option<&str>) -> Result<(), Str
     use object::Object;
     let needed =
         needed_libraries(bytes).map_err(|e| format!("mod {id}: unreadable library: {e}"))?;
-    if std_library(&needed) != game_std || game_std.is_none() {
+    // Starling's Android game builds its std into libsunrise_core (build-std, no libstd-<hash>.so):
+    // there the game and its mods need none, and share the one in libsunrise_core.
+    let shared_in_core = cfg!(target_os = "android") && game_std.is_none();
+    if std_library(&needed) != game_std || (game_std.is_none() && !shared_in_core) {
         return Err(format!(
             "mod {id}: its libstd is {:?}, not the game's {game_std:?}: build the mod against this game's SDK, which shares one std",
             std_library(&needed)

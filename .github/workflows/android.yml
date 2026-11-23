@@ -35,6 +35,10 @@ on:
         description: Also build packaging/android/wasm-probe, a wasm mod that says its hooks ran, as an artifact (arm64)
         type: boolean
         default: false
+      game_build_id:
+        description: The game build the APK names to native mods (a full commit; empty, this one). A fix outside the mod API keeps the store's libraries of that build
+        type: string
+        default: ''
 permissions:
   contents: read
 env:
@@ -117,6 +121,13 @@ jobs:
       # Compile v2: the arm64 APK's game is a set of Rust libraries (the mod API's crates and the mod host among
       # them), so a native mod plays from a small library of its own beside them, which mod-builds' store builds
       # for this commit and profile (its store-base.yml runs this same build). The other ABIs have no store.
+      - name: The game build native mods are made for
+        if: inputs.game_build_id != ''
+        env:
+          GAME_BUILD_ID: ${{ inputs.game_build_id }}
+        run: |
+          [[ "$GAME_BUILD_ID" =~ ^[0-9a-f]{40}$ ]] || { echo "Not a full commit: $GAME_BUILD_ID"; exit 1; }
+          echo "SUNRISE_GAME_BUILD_ID=$GAME_BUILD_ID" >> "$GITHUB_ENV"
       - name: The game and the mod API as dylibs
         if: matrix.abi == 'arm64-v8a' && !inputs.native_mods
         run: python3 tools/android_native_sdk.py prepare
