@@ -205,16 +205,10 @@ mod tests {
 
     #[test]
     fn a_webassembly_mod_is_told_apart() {
-        assert!(runs_as_wasm("id = \"zoom\"
-
-[wasm]
-sha512 = \"ab\"
-"));
-        assert!(!runs_as_wasm("id = \"x\"
-
-[native]
-horizon = \"abc\"
-"));
+        let wasm = "id = \"zoom\"\n\n[wasm]\nsha512 = \"ab\"\n";
+        let native = "id = \"x\"\n\n[native]\nhorizon = \"abc\"\n";
+        assert!(runs_as_wasm(wasm));
+        assert!(!runs_as_wasm(native));
     }
 
     #[test]
