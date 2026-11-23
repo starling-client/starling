@@ -2806,23 +2806,14 @@ fn native_game_rows(s: &Settings) -> Vec<Row> {
 /// to choose the mods): which game runs and its buttons (Android), then every mod's switch. A
 /// native mod is a box ticked when it is chosen for the next build (the buttons' Compile builds
 /// with those); one chosen and not in this game says so beside it, and one in it with settings
-/// has Settings there. Details opens upstream's Mods screen (`Page::Mods`).
+/// has Settings there. Upstream's Mods screen (`Page::Mods`) has no way in from here: it has no
+/// Compile, and players who found it saw their mods "not in this game yet" with nothing to do.
 fn native_game_page_rows(s: &Settings) -> Vec<Row> {
     let mut rows = native_game_rows(s);
     if s.mods.installed.is_empty() {
         rows.push(Row::Header("sunrise.mods.empty"));
         return rows;
     }
-    rows.push(Row::Buttons(
-        button(
-            0.0,
-            0.0,
-            310.0,
-            tr("starling.mods.details"),
-            Act::Push(Page::Mods),
-        ),
-        None,
-    ));
     let mods = s.mods.installed.iter().enumerate().map(|(i, installed)| {
         let on = s.mods.is_on(i);
         let not_built = installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT);

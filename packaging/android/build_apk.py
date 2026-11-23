@@ -170,6 +170,9 @@ def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",)):
     try:
         env["SUNRISE_ANDROID_BUILD_COMMIT"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+        # The identity native mod libraries name (sunrise-mod-host's build.rs): the store builds them for this
+        # commit (android_native_sdk.py), and without it the game is `local` and refuses every one.
+        env.setdefault("SUNRISE_GAME_BUILD_ID", env["SUNRISE_ANDROID_BUILD_COMMIT"])
         env["SUNRISE_ANDROID_BUILD_DIRTY"] = str(bool(subprocess.check_output(
             ["git", "status", "--porcelain"], cwd=ROOT, text=True))).lower()
     except (OSError, subprocess.CalledProcessError):
