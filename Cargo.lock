@@ -4392,11 +4392,15 @@ name = "sunrise-android"
 version = "0.1.0"
 dependencies = [
  "jni 0.21.1",
+ "log",
  "sunrise-client",
+ "sunrise-hooks",
  "sunrise-mod-api",
  "sunrise-mod-host",
  "sunrise-mod-package",
  "sunrise-mod-render",
+ "sunrise-perf-overlay",
+ "sunrise-reconnect",
  "winit",
 ]
 
@@ -4690,6 +4694,7 @@ dependencies = [
  "sunrise-optifine",
  "sunrise-perf",
  "sunrise-perf-format",
+ "sunrise-perf-overlay",
  "sunrise-polytone",
  "sunrise-protocol",
  "sunrise-render-core",
