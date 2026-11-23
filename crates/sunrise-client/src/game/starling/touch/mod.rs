@@ -1807,9 +1807,9 @@ impl Game<'_> {
         let ink = sunrise_client::hud::rgba(255, 255, 255, 255);
         for (i, r) in self.chat_bar(batch).iter().enumerate() {
             let sprite = if lit == Some(i) {
-                "gui/sprites/widget/button_highlighted"
+                "widget/button_highlighted"
             } else {
-                "gui/sprites/widget/button"
+                "widget/button"
             };
             sunrise_client::ui::nine_slice(batch, atlas, sprite, r[0], r[1], r[2], r[3], u32::MAX);
             let c = [(r[0] + r[2] / 2.0).floor(), (r[1] + r[3] / 2.0).floor()];

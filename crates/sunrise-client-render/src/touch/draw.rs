@@ -12,8 +12,8 @@ use crate::gamepad::{Button, PadState};
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::lang;
 
-const BUTTON: &str = "gui/sprites/widget/button";
-const BUTTON_HELD: &str = "gui/sprites/widget/button_highlighted";
+const BUTTON: &str = "widget/button";
+const BUTTON_HELD: &str = "widget/button_highlighted";
 
 impl TouchControls {
     /// Draws every visible control, then the tap marker in the tap schemes.
@@ -174,8 +174,16 @@ fn button(
 ) {
     let [x, y, w, h] = bounds;
     let [r, g, blue, opacity] = color.to_le_bytes();
-    if a.sprites.contains_key(BUTTON) {
-        let sprite = if pressed && a.sprites.contains_key(BUTTON_HELD) {
+    // Starling: by its GUI id, as the atlas names the sprites now (`widget/button`, where the
+    // old lookup asked for `gui/sprites/widget/button`, which no atlas has, and drew a plain frame).
+    let present = |id: &str| {
+        matches!(
+            a.gui_lookup(id),
+            Some(crate::hud::GuiSprite::Present { .. })
+        )
+    };
+    if present(BUTTON) {
+        let sprite = if pressed && present(BUTTON_HELD) {
             BUTTON_HELD
         } else {
             BUTTON
