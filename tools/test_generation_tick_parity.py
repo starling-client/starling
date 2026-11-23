@@ -91,9 +91,9 @@ def main():
     report_path = build / 'report.json'; report_path.unlink(missing_ok=True)
     if args.prepare: lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaGenerationTickOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/horizon-core/Cargo.toml',
-               *sorted((lab.ROOT / 'crates/horizon-core/src').rglob('*.rs')), lab.ROOT / 'crates/horizon-core/examples/generation_tick_fixture.rs']
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaGenerationTickOracle.java'
+    sources = [oracle, Path(__file__), lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/sunrise-core/Cargo.toml',
+               *sorted((lab.ROOT / 'crates/sunrise-core/src').rglob('*.rs')), lab.ROOT / 'crates/sunrise-core/examples/generation_tick_fixture.rs']
     tested_sources = base.source_hashes(sources)
     commands = list(corpus()); inputs = build / 'inputs.txt'; inputs.write_text('\n'.join(commands) + '\n')
     tested_fixtures = base.source_hashes([inputs]); classes = build / 'classes'; classes.mkdir(exist_ok=True)
@@ -101,14 +101,14 @@ def main():
     def run(command, name, **kwargs):
         with (build / (name + '.log')).open('w') as log:
             subprocess.run(list(map(str, command)), cwd=lab.ROOT, check=True, timeout=3600, stderr=log, **({'stdout': log} | kwargs))
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'), '-cp', str(jars['server']) + os.pathsep + dependencies, '-d', classes, oracle], 'compile-java')
-    run(['cargo', 'build', '--release', '-p', 'horizon-core', '--example', 'generation_tick_fixture'], 'compile-rust')
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'), '-cp', str(jars['server']) + os.pathsep + dependencies, '-d', classes, oracle], 'compile-java')
+    run(['cargo', 'build', '--release', '-p', 'sunrise-core', '--example', 'generation_tick_fixture'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'release/examples' / ('generation_tick_fixture.exe' if os.name == 'nt' else 'generation_tick_fixture')
     with inputs.open('rb') as source, (build / 'rust.txt').open('wb') as output: run([binary], 'rust', stdin=source, stdout=output)
     references = []
     for side, jar in jars.items():
-        run(['java', '-Xmx512M', '-cp', os.pathsep.join([str(classes), str(jar), dependencies]), 'dev.horizonlab.parity.VanillaGenerationTickOracle', inputs, build / (side + '.txt')], side)
+        run(['java', '-Xmx512M', '-cp', os.pathsep.join([str(classes), str(jar), dependencies]), 'dev.sunriselab.parity.VanillaGenerationTickOracle', inputs, build / (side + '.txt')], side)
         matched = base.compare(build / (side + '.txt'), build / 'rust.txt')
         references.append({'side': side, 'jar_sha256': lab.digest(jar, 'sha256'), 'output_sha256': lab.digest(build / (side + '.txt'), 'sha256'), 'matched_output_lines': matched})
         print(f'{side}: {matched:,} generation-tick lines match Rust', flush=True)

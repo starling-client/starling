@@ -1,11 +1,11 @@
-//! The native mod the "Your first native mod" page builds: `cargo horizon-mod new greeter --template native`.
+//! The native mod the "Your first native mod" page builds: `cargo sunrise-mod new greeter --template native`.
 // ANCHOR: mod
 use mod_api::{self, Hooks, PlayerLoggedInEvent, ServerHost, Text};
 
 #[derive(Default)]
 struct Mod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     /// A player joined the server: greet them.
     fn player_logged_in(&self, host: &mut dyn ServerHost, event: &mut PlayerLoggedInEvent<'_>) {

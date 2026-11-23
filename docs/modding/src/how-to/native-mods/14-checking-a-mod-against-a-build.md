@@ -1,20 +1,20 @@
 # Checking a mod against a build's surface
 
-In a mod folder, `cargo horizon-mod` does this for you from the SDK it fetched into `.horizon/sdk/`:
+In a mod folder, `cargo sunrise-mod` does this for you from the SDK it fetched into `.sunrise/sdk/`:
 
-- `cargo horizon-mod check` runs `cargo check` for this computer and for wasm32, checks the package rules,
+- `cargo sunrise-mod check` runs `cargo check` for this computer and for wasm32, checks the package rules,
   and prints what the mod uses: `Greeter uses 14 items of the API (6 hooks, 5 methods, 3 types). Made for
   nightly-2026-11-13 (afe471c).` With `--uses` it lists each item with the line that brought it in.
-- `cargo horizon-mod build` packs the list into the package as `uses.json`, with each item's fingerprint at the
+- `cargo sunrise-mod build` packs the list into the package as `uses.json`, with each item's fingerprint at the
   pinned build. A mod with a `[native.*]` table or internals is made for exactly one build and gets no list.
-- `cargo horizon-mod fits` says, one line per build, whether the mod fits the current Nightly, or each build
-  `--build` names. `cargo horizon-mod fits greeter.hmod --build nightly-2026-11-20` asks the same of a package.
+- `cargo sunrise-mod fits` says, one line per build, whether the mod fits the current Nightly, or each build
+  `--build` names. `cargo sunrise-mod fits greeter.smod --build nightly-2026-11-20` asks the same of a package.
   It exits 0 when every build fits, 1 when one does not, and 2 when it cannot tell or the question does not
   apply (a mod made for one build, a content mod, or a package made by an older tool).
-- `cargo horizon-mod update` prints what moving the pin breaks in this mod, item by item with the line that uses
+- `cargo sunrise-mod update` prints what moving the pin breaks in this mod, item by item with the line that uses
   it and the closest item in the new build, then moves the pin.
-- `cargo horizon-mod hooks <text>` searches the pinned build's hooks by id, doc and their NeoForge, Fabric and
-  Paper names, offline; `--all` searches every item. `cargo horizon-mod sdk diff <build> <build>` prints what
+- `cargo sunrise-mod hooks <text>` searches the pinned build's hooks by id, doc and their NeoForge, Fabric and
+  Paper names, offline; `--all` searches every item. `cargo sunrise-mod sdk diff <build> <build>` prints what
   changed between two builds, from their small files alone, so it works for builds whose game files are pruned.
 
 Every command and its exit codes are in [Commands](../../reference/sdk/05-commands.md), and the rule the check
@@ -26,8 +26,8 @@ of the build a mod was made for and the mod's folder, write the mod's uses table
 another build's surface:
 
 ```sh
-horizon-stage uses MADE_FOR_SURFACE MOD_DIR --json uses.json --made-for BUILD
-horizon-stage fits uses.json TARGET_SURFACE
+sunrise-stage uses MADE_FOR_SURFACE MOD_DIR --json uses.json --made-for BUILD
+sunrise-stage fits uses.json TARGET_SURFACE
 ```
 
 `uses` prints each API item the mod uses with the place that brought it in, then how the mod builds each struct

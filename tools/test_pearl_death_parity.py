@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An ender pearl in flight when its thrower dies, on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator in survival. LocatorBarClient (a player made of vanilla's protocol
 code) throws an ender pearl straight up (ServerboundUseItemPacket), runs /kill on itself while the pearl flies,
 presses the death screen's button (PERFORM_RESPAWN) and waits for the pearl to come down, with the rule

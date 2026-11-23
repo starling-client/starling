@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-GAME = ROOT / "crates/horizon-client/src/game"
+GAME = ROOT / "crates/sunrise-client/src/game"
 
 
 def lift(path, start, end):
@@ -44,7 +44,7 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (p, y) = (f64::from(pitch).to_radians(), f64::from(-yaw).to_radians());
     [y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
 }
-mod horizon_world {
+mod sunrise_world {
     pub mod view_direction {
         pub fn view_vector(pitch: f32, yaw: f32) -> crate::Vec3 {
             let [x, y, z] = crate::view_vector(yaw, pitch);
@@ -54,22 +54,22 @@ mod horizon_world {
 }
 // Storage is not the subject of this physics fixture. Real numbered-list
 // identity and restoration have separate production tests.
-mod horizon_client {
+mod sunrise_client {
     pub mod join_seq { pub enum RestoreOrder { SurvivorsFirst } }
 }
 trait Lift: Default + Sized {
     fn lift(&mut self) -> Self { std::mem::take(self) }
-    fn restore(&mut self, taken: Self, order: horizon_client::join_seq::RestoreOrder);
+    fn restore(&mut self, taken: Self, order: sunrise_client::join_seq::RestoreOrder);
 }
 impl<T> Lift for Vec<T> {
-    fn restore(&mut self, taken: Self, _: horizon_client::join_seq::RestoreOrder) {
+    fn restore(&mut self, taken: Self, _: sunrise_client::join_seq::RestoreOrder) {
         assert!(self.is_empty(), "this physics fixture injects no nested spawn");
         *self = taken;
     }
 }
 struct ItemStack { item: String }
 struct Remote { entity_id: i32 }
-mod horizon_core {
+mod sunrise_core {
     pub mod random {
         // Gaussians in turn from a list.
         pub struct LegacyRandom(pub Vec<f64>);
@@ -78,7 +78,7 @@ mod horizon_core {
         }
     }
 }
-struct World { random: horizon_core::random::LegacyRandom }
+struct World { random: sunrise_core::random::LegacyRandom }
 enum ParticleType { Firework }
 struct ParticleOptions;
 impl ParticleOptions { fn simple(_: ParticleType) -> Self { Self } }
@@ -124,7 +124,7 @@ fn game(runs: bool) -> Game {
             Rocket { attached_to: None, position: Vec3::new(4.0, 5.0, 6.0), ..Rocket::default() },
         ],
         yaw: 90.0, pitch: 0.0,
-        world: World { random: horizon_core::random::LegacyRandom(vec![3.0, -2.0, 3.0, -2.0]) },
+        world: World { random: sunrise_core::random::LegacyRandom(vec![3.0, -2.0, 3.0, -2.0]) },
         particles: Particles::default(),
     }
 }

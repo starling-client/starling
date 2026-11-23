@@ -25,9 +25,9 @@ except ImportError:
 TEST = 'game::potions::arrow_contents::actual_arrow_contents_match_pinned_methods'
 ORACLE = 'VanillaArrowContentsExpiryOracle'
 PRODUCTION = [
-    'crates/horizon-client-render/src/brewing.rs',
-    'crates/horizon-client/src/arrows.rs',
-    'crates/horizon-client/src/game/potions.rs',
+    'crates/sunrise-client-render/src/brewing.rs',
+    'crates/sunrise-client/src/arrows.rs',
+    'crates/sunrise-client/src/game/potions.rs',
 ]
 
 
@@ -56,7 +56,7 @@ def main():
     p.add_argument('--resources', type=Path, default=lab.RESOURCES)
     a=p.parse_args()
     root=lab.ROOT
-    if a.resources.resolve()!=lab.RESOURCES.resolve() and (root/'.local/horizon-client').exists():
+    if a.resources.resolve()!=lab.RESOURCES.resolve() and (root/'.local/sunrise-client').exists():
         p.error('default prepared resources must remain absent for this explicit fixture')
     build=a.work_dir.resolve(); build.mkdir(parents=True,exist_ok=True)
     if a.lab_root:
@@ -67,8 +67,8 @@ def main():
     if a.phase=='fixed' and inputs.read_bytes()!=input_bytes:
         p.error('input changed since the pinned Java oracle run')
     inputs.write_bytes(input_bytes)
-    source=root/f'mods/horizon/src/test/java/dev/horizonlab/parity/{ORACLE}.java'
-    native=root/'crates/horizon-client/src/game/potions.rs'
+    source=root/f'mods/sunrise/src/test/java/dev/sunriselab/parity/{ORACLE}.java'
+    native=root/'crates/sunrise-client/src/game/potions.rs'
     provenance=dict(source_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
                     phase=a.phase,rows=len(rows),input_sha256=sha(input_bytes),
                     oracle_source_sha256=sha(source.read_bytes()),native_source_sha256=sha(native.read_bytes()),
@@ -87,18 +87,18 @@ def main():
         classes=build/'classes'; classes.mkdir(exist_ok=True)
         cp=os.pathsep.join(map(str,[jars['server'],*libraries]))
         expected.unlink(missing_ok=True)
-        with tempfile.TemporaryDirectory(prefix='horizon-arrow-java-') as scratch:
-            homes={k:Path(scratch)/k for k in ('HORIZON_HOME','HORIZON_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
+        with tempfile.TemporaryDirectory(prefix='sunrise-arrow-java-') as scratch:
+            homes={k:Path(scratch)/k for k in ('SUNRISE_HOME','SUNRISE_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
             env=lab.game_env(os.environ,**homes)
             env.pop('JAVA_TOOL_OPTIONS',None)
             run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-cp',cp,'-d',classes,source,source.parent/'ParityData.java'],'compile-java',env,cwd=scratch,timeout=180)
-            run(['java','-Xmx512M','-Duser.home='+scratch,'-cp',str(classes)+os.pathsep+cp,'dev.horizonlab.parity.'+ORACLE,inputs,expected],'java',env,cwd=scratch,timeout=240)
+            run(['java','-Xmx512M','-Duser.home='+scratch,'-cp',str(classes)+os.pathsep+cp,'dev.sunriselab.parity.'+ORACLE,inputs,expected],'java',env,cwd=scratch,timeout=240)
         assert expected.exists(), 'oracle did not write a fresh reference'
         observed=json.loads(expected.read_text(encoding='utf-8'))
         assert len(observed)==len(rows) and [r['id'] for r in observed]==[r['id'] for r in rows]
         provenance['reference_sha256']=sha(expected.read_bytes())
         (build/'oracle-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n',encoding='utf-8')
-        print(f'{len(rows)} isolated pinned-method rows recorded; no Horizon execution yet',flush=True)
+        print(f'{len(rows)} isolated pinned-method rows recorded; no Sunrise execution yet',flush=True)
         if a.phase=='oracle':
             return
     reference=json.loads((build/'oracle-provenance.json').read_text(encoding='utf-8'))
@@ -106,15 +106,15 @@ def main():
         assert reference[key]==provenance[key], f'provenance changed: {key}'
     assert reference['reference_sha256']==sha(expected.read_bytes()), 'pinned output changed'
     # Override every location even if the parent process has a real home set.
-    with tempfile.TemporaryDirectory(prefix='horizon-arrow-methods-') as scratch:
-        homes={k:Path(scratch)/k for k in ('HORIZON_HOME','HORIZON_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
-        env=lab.game_env(os.environ,**homes,HORIZON_TEST_RESOURCES=a.resources.resolve(),
-                         HORIZON_POTION_INPUT=inputs,HORIZON_POTION_EXPECTED=expected,
-                         HORIZON_POTION_OUTPUT=build/'fixed.json',CARGO_BUILD_JOBS='2',RUST_TEST_THREADS='2')
+    with tempfile.TemporaryDirectory(prefix='sunrise-arrow-methods-') as scratch:
+        homes={k:Path(scratch)/k for k in ('SUNRISE_HOME','SUNRISE_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')}
+        env=lab.game_env(os.environ,**homes,SUNRISE_TEST_RESOURCES=a.resources.resolve(),
+                         SUNRISE_POTION_INPUT=inputs,SUNRISE_POTION_EXPECTED=expected,
+                         SUNRISE_POTION_OUTPUT=build/'fixed.json',CARGO_BUILD_JOBS='2',RUST_TEST_THREADS='2')
         def native_run(label):
             (build/(label+'.log')).unlink(missing_ok=True)
             provenance['production_source_sha256']={path:sha((root/path).read_bytes()) for path in PRODUCTION}
-            command=['cargo','test','-p','horizon-client','--lib','--no-run','--message-format=json']
+            command=['cargo','test','-p','sunrise-client','--lib','--no-run','--message-format=json']
             run(command,label+'-build',env)
             artifacts=[]
             for line in (build/(label+'-build.log')).read_text(encoding='utf-8',errors='replace').splitlines():
@@ -122,7 +122,7 @@ def main():
                     continue
                 message=json.loads(line)
                 target=message.get('target',{})
-                if message.get('reason')=='compiler-artifact' and message.get('executable') and Path(target.get('src_path','')).resolve()==(root/'crates/horizon-client/src/lib.rs').resolve():
+                if message.get('reason')=='compiler-artifact' and message.get('executable') and Path(target.get('src_path','')).resolve()==(root/'crates/sunrise-client/src/lib.rs').resolve():
                     artifacts.append(Path(message['executable']).resolve())
             assert len(set(artifacts))==1, ('expected exactly one gameplay library test artifact',artifacts)
             binary=artifacts[0]

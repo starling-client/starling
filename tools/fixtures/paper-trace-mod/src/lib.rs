@@ -15,7 +15,7 @@ static CONFIG: OnceLock<serde_json::Value> = OnceLock::new();
 fn config() -> &'static serde_json::Value {
     CONFIG.get_or_init(|| {
         serde_json::from_slice(
-            &std::fs::read(std::env::var_os("HORIZON_PAPER_TRACE_CONFIG").expect("trace config"))
+            &std::fs::read(std::env::var_os("SUNRISE_PAPER_TRACE_CONFIG").expect("trace config"))
                 .expect("read config"),
         )
         .expect("parse config")
@@ -31,7 +31,7 @@ fn emit(name: &str, fields: serde_json::Value) {
 fn record(name: &str, fields: serde_json::Value, cancelled: bool) {
     let output = OUTPUT.get_or_init(|| {
         Mutex::new(
-            File::create(std::env::var_os("HORIZON_PAPER_TRACE").expect("HORIZON_PAPER_TRACE"))
+            File::create(std::env::var_os("SUNRISE_PAPER_TRACE").expect("SUNRISE_PAPER_TRACE"))
                 .expect("create trace"),
         )
     });
@@ -49,7 +49,7 @@ fn record(name: &str, fields: serde_json::Value, cancelled: bool) {
 #[derive(Default)]
 struct Mod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn server_tick(&self, host: &mut dyn ServerHost, e: &mut mod_api::ServerTickEvent<'_>) {
         if !matches!(e.phase, mod_api::ServerTickPhase::ServerTickStart { .. }) {

@@ -144,7 +144,7 @@ impl CommandArgumentType for Machine {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         r.register_command_argument("machine", Machine);
@@ -209,14 +209,14 @@ is never `@a`, and an unregistered word still fails with
 and `_`, one of `p a r s e n`, or already registered by any mod refuses the mods at
 startup. The base is evaluated once at registration; a panic or zero limit refuses
 registration. Token names and tooltip keys must fit the protocol string boundary
-(32767 ASCII bytes for names, 32767 UTF-16 units for tooltip keys). Horizon also
+(32767 ASCII bytes for names, 32767 UTF-16 units for tooltip keys). Sunrise also
 bounds the complete encoded metadata to 256 KiB and refuses the token that would exceed
 that total by name, without changing earlier records. The payload's revision is 1; an
 unsupported revision disables token metadata for that connection with one log line.
 
-The server sends frozen token metadata alongside each command tree to connected Horizon
+The server sends frozen token metadata alongside each command tree to connected Sunrise
 clients, including the single-player window. Their command parser and completion use the
 server's names, tooltip keys, base limits and sort order, even without the server's mod
 installed locally. This replaces the previous server's inventory at connection startup.
-Vanilla clients do not receive this Horizon-specific metadata and can still send commands
+Vanilla clients do not receive this Sunrise-specific metadata and can still send commands
 containing the token without local completion.

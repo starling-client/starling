@@ -3,7 +3,7 @@
 #[derive(Default)]
 struct Mod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl mod_api::Hooks for Mod {}
 
 /// Called by a helper: a helper may use its mod's crate.

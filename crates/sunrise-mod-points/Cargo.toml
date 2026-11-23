@@ -1,0 +1,46 @@
+[package]
+name = "sunrise-mod-points"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The game's injection points for mods that listen at them: typed function records and listener slots"
+
+[lib]
+name = "mod_points"
+
+[features]
+# Shared listener integration fixture only; never enabled by gameplay crates.
+listener-fixture = ["sunrise-mod-api-gen/listener-fixture", "sunrise-engine-slots/listener-fixture"]
+wasm-guest = ["sunrise-mod-api/wasm-guest", "sunrise-engine-slots/wasm-guest"]
+
+[dependencies]
+sunrise-mod-api = { path = "../sunrise-mod-api" }
+sunrise-engine-slots = { path = "../sunrise-engine-slots" }
+
+[build-dependencies]
+sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
+sunrise-mod-point-shape = { path = "../sunrise-mod-point-shape" }
+syn = "2"
+quote = "1"
+
+[dev-dependencies]
+sunrise-mod-api = { path = "../sunrise-mod-api", features = ["testing"] }
+sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
+serde_json = "1"
+
+# These call the places' dispatch themselves, so they need a build whose table has sites.
+[[test]]
+name = "registry"
+required-features = ["listener-fixture"]
+
+[[test]]
+name = "replace"
+required-features = ["listener-fixture"]
+
+[[test]]
+name = "order"
+required-features = ["listener-fixture"]
+
+[lints]
+workspace = true

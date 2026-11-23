@@ -16,7 +16,7 @@ The merge began with 80 conflicts. Resolution areas were mobs/entities (23), gam
 
 ## Conflict policy
 
-Keep fork typed ownership, attachment and join lifetimes, generated module discovery, canonical hook moments, native/wasm contracts and the launcher's repository/update route. Take upstream vanilla fixes and retain the restored Horizon layer, including telemetry, cosmetics, shop and Horizon extras. Do not revive deleted monoliths or add compatibility aliases when upstream extractions overlap existing fork modules.
+Keep fork typed ownership, attachment and join lifetimes, generated module discovery, canonical hook moments, native/wasm contracts and the launcher's repository/update route. Take upstream vanilla fixes and retain the restored Sunrise layer, including telemetry, cosmetics, shop and Sunrise extras. Do not revive deleted monoliths or add compatibility aliases when upstream extractions overlap existing fork modules.
 
 ### Mobs and entities
 
@@ -58,7 +58,7 @@ Keep fork typed ownership, attachment and join lifetimes, generated module disco
 
 - `AGENTS.md`: retain the fork package name and document the actual extras child paths.
 - `server_perf/samples.rs`: take upstream's Linux-only explanatory comment; retain the existing Linux cfg and all calibration/ratio/progress behavior.
-- `horizon-threads/stack_dump.rs`: one Release readiness store inside the busy frame, Acquire readiness wait using `yield_now`. Production capture is unchanged.
+- `sunrise-threads/stack_dump.rs`: one Release readiness store inside the busy frame, Acquire readiness wait using `yield_now`. Production capture is unchanged.
 - The independently merged sampler span-count fix remains unchanged.
 
 ## Maintainer-ratified query limit

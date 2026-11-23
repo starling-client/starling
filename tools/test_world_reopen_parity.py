@@ -3,7 +3,7 @@
 
 Vanilla's integrated server unloads every entity with the level when the player saves
 and quits (`MinecraftServer.stopServer`), so a world reopened in the same session holds
-each entity once. Horizon kept non-mob entities (minecarts, boats, armor stands...) in
+each entity once. Sunrise kept non-mob entities (minecarts, boats, armor stands...) in
 memory after Save and Quit to Title; opening the world loaded them again from disk and
 the next save wrote both copies, doubling them each time, until the game crawled.
 
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-RESOURCES = ROOT / '.local' / 'horizon-client' / '26.3'
+RESOURCES = ROOT / '.local' / 'sunrise-client' / '26.3'
 RUN = ROOT / '.local' / 'world-reopen'
 CYCLES = 3
 
@@ -49,12 +49,12 @@ def game_env():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client and horizon-ctl (default: build them with the fast profile)')
+    parser.add_argument('--bin-dir', help='prebuilt sunrise-client and sunrise-ctl (default: build them with the fast profile)')
     parser.add_argument('--keep', action='store_true', help='keep the run folder')
     args = parser.parse_args()
     bin_dir = Path(args.bin_dir).resolve() if args.bin_dir else None
     if bin_dir is None:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib', '--bins'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib', '--bins'], cwd=ROOT, check=True)
         bin_dir = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / 'fast'
     shutil.rmtree(RUN, ignore_errors=True)
     RUN.mkdir(parents=True)
@@ -62,10 +62,10 @@ def main():
     env, extra = game_env()
 
     def ctl(*words, check=True):
-        result = subprocess.run([str(bin_dir / 'horizon-ctl'), '--socket', str(socket), '--timeout', '600', *words],
+        result = subprocess.run([str(bin_dir / 'sunrise-ctl'), '--socket', str(socket), '--timeout', '600', *words],
                                 cwd=RUN, env=env, capture_output=True, text=True)
         if check and result.returncode:
-            sys.exit(f'horizon-ctl {" ".join(words)} failed: {result.stdout}{result.stderr}')
+            sys.exit(f'sunrise-ctl {" ".join(words)} failed: {result.stdout}{result.stderr}')
         return json.loads(result.stdout) if result.stdout.strip().startswith('{') else result.stdout
 
     def carts():

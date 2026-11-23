@@ -71,7 +71,7 @@ class RunnerPauseTests(unittest.TestCase):
         machine.job_until = 1200
         machine.run()
         self.assertIn((1005, True), machine.throttles)  # the game started: the job slows down at once,
-        self.assertIn((1005, ("stop", "horizon-parity-worker-*.scope")), machine.calls)  # other machines' work goes
+        self.assertIn((1005, ("stop", "sunrise-parity-worker-*.scope")), machine.calls)  # other machines' work goes
         stop = machine.first("stop", after=300)
         self.assertGreaterEqual(stop, 1200)  # and the runner stops once it ends, not before
         self.assertLess(stop, 1215)

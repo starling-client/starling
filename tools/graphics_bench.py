@@ -166,9 +166,9 @@ def main():
     if args.compare:
         compare(*args.compare)
         return
-    ctl = Path(args.build).resolve() / "horizon-ctl"
+    ctl = Path(args.build).resolve() / "sunrise-ctl"
     if not ctl.exists():
-        sys.exit(f"{ctl} missing: cargo build --release -p horizon-game -p horizon-client-lib --bins")
+        sys.exit(f"{ctl} missing: cargo build --release -p sunrise-game -p sunrise-client-lib --bins")
     cwd = ROOT / ".local/graphics-bench"
     shutil.rmtree(cwd / "saves" / WORLD, ignore_errors=True)
     cwd.mkdir(parents=True, exist_ok=True)

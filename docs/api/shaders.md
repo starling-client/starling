@@ -1,20 +1,20 @@
 # Shader API
 
-Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before it runs. This
-page is the **Horizon shader API**. A separate clean-room loader reads the existing `shaders/` pack format (its own
+Sunrise has its own shader packs: WGSL written against stages of Sunrise's renderer, checked before it runs. This
+page is the **Sunrise shader API**. A separate clean-room loader reads the existing `shaders/` pack format (its own
 spec, not part of this API); both sit on the same renderer hooks. The earlier implementation was removed on
 2026-10-24; this API was written from scratch after it.
 
 ## Overview: what a shader author will be able to do
 
-Write WGSL against documented stages of Horizon's renderer, with typed inputs, options the player can change, a
+Write WGSL against documented stages of Sunrise's renderer, with typed inputs, options the player can change, a
 reload as soon as a file is saved and an overlay that shows what each pass costs and draws. The renderer keeps
 everything that makes it fast (culling, batching, LOD, the mesher); a pack changes how surfaces and light look, not
 how the world is fed to the GPU.
 
 ## The design
 
-- **A pack** is a folder or a zip with `horizon-shaders.toml` (id, name, version, the `api` line, the stages it
+- **A pack** is a folder or a zip with `sunrise-shaders.toml` (id, name, version, the `api` line, the stages it
   uses, its options) and WGSL files. No preprocessor and no other shading language: WGSL is what wgpu validates and
   compiles for Vulkan, Metal and DirectX 12.
 - **Stages, not pipelines.** A stage is a function with a fixed signature that the renderer calls inside its own pass,
@@ -37,9 +37,9 @@ how the world is fed to the GPU.
 
 ## The pack format (schema 1)
 
-A pack is a folder, or the same files zipped as a `.hshader`, with `horizon-shaders.toml` at its root
-(crate `horizon-shader-api`; the sample with every key is
-`crates/horizon-shader-api/tests/samples/schema-1/`):
+A pack is a folder, or the same files zipped as a `.sshader`, with `sunrise-shaders.toml` at its root
+(crate `sunrise-shader-api`; the sample with every key is
+`crates/sunrise-shader-api/tests/samples/schema-1/`):
 
 ```toml
 schema = 1                 # the manifest's format; a reader refuses schemas newer than it knows
@@ -59,7 +59,7 @@ stars = true               # optional: false when the pack draws its own stars
 [material]
 file = "material.wgsl"
 files = ["pbr.wgsl"]       # optional, on any stage: WGSL put after `shared`, before this stage's file
-fog = false                # optional: the pack fogs its surfaces itself (Horizon does when absent or true)
+fog = false                # optional: the pack fogs its surfaces itself (Sunrise does when absent or true)
 
 [vertex]                   # needs [material]: where corners of terrain are drawn, for the world and the shadow map; shares the material's module
 file = "vertex.wgsl"
@@ -149,44 +149,44 @@ so a parallax effect fades out where the geometry took over.
 
 An option's `override` has the type of its kind: `bool`, `f32`, `i32`, or `u32` for a choice (the index of the
 value). The pack holds only the manifest, the `.wgsl` files it names (each used, UTF-8, 256 KiB at most),
-`README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.hshader` is built
+`README.md`, `LICENSE` (`.md`, `.txt`) and `icon.png`, under plain paths, 8 MiB in all. A `.sshader` is built
 the same way every time (files in path order, fixed dates), so a pack's SHA-256 depends only on its files.
 
-Native selections are saved as `horizon:<id>`; option values live in
-`shaderpacks/.horizon-options/<id>.txt`. Updates and file renames keep both. Existing filename
+Native selections are saved as `sunrise:<id>`; option values live in
+`shaderpacks/.sunrise-options/<id>.txt`. Updates and file renames keep both. Existing filename
 selections and sidecars are imported without deleting the originals; after an update has removed
-the old file, migration recognizes the launcher's `<id>-<version>.hshader` names. An arbitrary
+the old file, migration recognizes the launcher's `<id>-<version>.sshader` names. An arbitrary
 removed filename cannot be mapped back to an ID. If several installed packs share an ID, the first
-filename in lexical order is used and listed. The `HORIZON_SHADER_PACK` development override still
+filename in lexical order is used and listed. The `SUNRISE_SHADER_PACK` development override still
 names an exact filesystem path; `shaders/` packs still use filenames.
 
 ## Shader API 0.2 (experimental)
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
-`api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
-`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a 0.2 pack draws the world
+`api = "0.2"`. `sunrise-shader check` and `pack` take it; **the game draws 0.2 packs only with
+`SUNRISE_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a 0.2 pack draws the world
 into a float frame where the device can (else the 8-bit one): the frame follows the picked pack,
 rebuilding the renderer and remeshing the world when needed. A refused or missing pack, or one whose owner mod is off,
 uses the no-pack frame. What it changes from 0.1:
 
-- **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
+- **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Sunrise
   decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
   `emission`, the LabPBR maps and `[[textures]]` stay data. `[[lights]]` and `[[particle_lights]]` colours are still
-  written in vanilla's gamma, and Horizon decodes them. Alpha is coverage only, and a post pass's alpha is ignored.
+  written in vanilla's gamma, and Sunrise decodes them. Alpha is coverage only, and a post pass's alpha is ignored.
 - **The display in `Frame`:** `hdr`, `headroom`, `paper_white`, `peak` and `black_level`, after `shadow_center_texel`.
   With HDR on, where the device keeps the HUD on a layer of its own, they are the display's, and the pack's picture is
   shown in HDR, with the HUD laid over it as without a pack. Otherwise they are SDR's (`hdr` 0, `headroom` 1,
   `paper_white` and `peak` 80, `black_level` 0), and the picture ends on an 8-bit frame before the camera overlays
-  and the HUD. Horizon lifts the shadows onto `black_level` after `[tonemap]`.
+  and the HUD. Sunrise lifts the shadows onto `black_level` after `[tonemap]`.
 - **`[tonemap]`**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's picture in, the picture for the
-  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Horizon's curve, the
+  display out, from 0 to `frame.headroom`, once per pixel of the window. Without it a pack gets Sunrise's curve, the
   one HDR uses without a pack; one or the other runs, never both.
 - **`[frame] blend`**: `"gamma"` (the default) or `"linear"`, what the frame stores and so how see-through draws
-  blend. Under `"linear"` the frame holds linear light: the stages' results are stored as they are and Horizon's own
+  blend. Under `"linear"` the frame holds linear light: the stages' results are stored as they are and Sunrise's own
   draws are decoded, so glass, water and smoke blend as light does and solid surfaces look as under `"gamma"`. A stage
   sees the same values either way. Where the device can't draw a float frame the pack draws on an 8-bit one, in
   gamma. Resource packs' `core/sky`, `core/stars` and `core/rendertype_lines` shaders write gamma, so under
-  `"linear"` Horizon's own sky, stars and block outline draw in their place.
+  `"linear"` Sunrise's own sky, stars and block outline draw in their place.
 - **`[entity]`**, `fn entity(input: EntityInput) -> Surface`: the lit colour of what is no block terrain (entities,
   block entities, dropped and framed items, particles; `input.kind` says which), from its texture, tint, vanilla's
   shade and hurt flash, its light and a normal, with the material stage's shadow maps and coloured lights. It returns
@@ -212,11 +212,11 @@ primaries = "bt709"        # optional: bt709 (default) or bt2020, which needs bl
 ```
 
 0.1 is unchanged: the same prelude, entries and reference, and a 0.1 pack that names `[tonemap]`, `[entity]` or
-`[frame]` is refused. The example's port is `crates/horizon-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
+`[frame]` is refused. The example's port is `crates/sunrise-shader-api/packs/golden_hour_0_2`, a test pack of the SDK.
 
 ## Testing a pack frame by frame
 
-`horizon-ctl screenshot-sequence FRAMES STEP_MS PATH`, under `HORIZON_STILL`, starts the running pack over and draws
+`sunrise-ctl screenshot-sequence FRAMES STEP_MS PATH`, under `SUNRISE_STILL`, starts the running pack over and draws
 its first FRAMES frames on a set clock: frame n has `frame_index` n, `time` (n - 1) × STEP_MS / 1000 and `delta_time`
 STEP_MS / 1000 (0 on frame 1; STEP_MS may be a decimal, `16.666667` for 60 fps), and `history` and the eased values
 start as in a pack just loaded. The last frame is written as a PNG, the same bytes every run on the same build, GPU
@@ -226,15 +226,15 @@ it: [the guide](../shaders.md#testing-a-pack-frame-by-frame).
 ## Guide, reference and examples
 
 - [shaders-reference.md](shaders-reference.md): every stage's signature, input and output structs, resources and
-  helpers, the frame's fields with their units, option types and limits, generated from `crates/horizon-shader-api`.
+  helpers, the frame's fields with their units, option types and limits, generated from `crates/sunrise-shader-api`.
   0.2's is [shaders-reference-0.2.md](shaders-reference-0.2.md).
-- [The guide](../shaders.md): making a pack with `horizon-shader new`, `check` and `pack`; the templates and the
-  example pack (`crates/horizon-shader-api/packs/golden_hour`).
+- [The guide](../shaders.md): making a pack with `sunrise-shader new`, `check` and `pack`; the templates and the
+  example pack (`crates/sunrise-shader-api/packs/golden_hour`).
 
 ## Stability
 
 Experimental (API 0.1). The stages ship in the game behind pack selection; see [stability.md](stability.md). API
-0.2 is experimental too, and the game draws it only with `HORIZON_HDR_FRAME=float`.
+0.2 is experimental too, and the game draws it only with `SUNRISE_HDR_FRAME=float`.
 While the API is experimental, a line is served until the next one is on by default: 0.1 ends when 0.2 is
 ([hdr-linear-light.md](../design/hdr-linear-light.md), step 5).
 
@@ -248,11 +248,11 @@ draws them itself (the material stage covers terrain only). The first-person han
 
 - 2026-11-10: API 0.2 (additions, experimental): the `[entity]` stage, `fn entity(input: EntityInput) -> Surface`,
   for entities, block entities, items and particles, with the material stage's shadow maps and coloured lights. The
-  reference gives vanilla's own as the stage's function. `horizon-shader check` takes it; the game refuses a pack
+  reference gives vanilla's own as the stage's function. `sunrise-shader check` takes it; the game refuses a pack
   that has it until it draws the stage. `[shadow]`, `[[lights]]` and `[[particle_lights]]` take `[entity]` as the
   stage that reads them. A pack without `[entity]` is unchanged, and so is API 0.1.
 - 2026-11-10: API 0.2 (additions, experimental): `[frame] primaries`, `"bt709"` (the default) or `"bt2020"`, and
-  `Frame.primaries` and `luminance` after `black_level`. `horizon-shader check` takes `"bt2020"` with
+  `Frame.primaries` and `luminance` after `black_level`. `sunrise-shader check` takes `"bt2020"` with
   `blend = "linear"` only, and the game refuses it for now. The reference's "Room to grow" gains the rule for new
   names: a later release adds a name to a stage's prelude only under a manifest key the pack sets or in a new stage,
   and a test holds each prelude to its list of names. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 16
@@ -260,24 +260,24 @@ draws them itself (the material stage covers terrain only). The first-person han
 - 2026-11-09: API 0.2 (change, experimental): the game draws `[frame] blend = "linear"` packs instead of refusing
   them: the frame holds linear light, so see-through draws blend as light does, and a stage sees the same values
   as under `"gamma"`. API 0.1 is unchanged.
-- 2026-11-08: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float` and HDR on, where the device keeps the
+- 2026-11-08: API 0.2 (change, experimental): with `SUNRISE_HDR_FRAME=float` and HDR on, where the device keeps the
   HUD on a layer of its own, a 0.2 pack is shown in HDR: `Frame`'s display fields are the display's, its `[tonemap]`
-  or else Horizon's no-pack curve maps the light once, the HUD is laid over it as without a pack, and F2 writes the
+  or else Sunrise's no-pack curve maps the light once, the HUD is laid over it as without a pack, and F2 writes the
   same SDR screenshot and `-hdr.png` as without one. With HDR off or no HUD layer the fields stay SDR's and the
-  picture ends on an 8-bit frame before the camera overlays and the HUD. The reference says Horizon lifts the shadows
+  picture ends on an 8-bit frame before the camera overlays and the HUD. The reference says Sunrise lifts the shadows
   onto `black_level` after `[tonemap]`. API 0.1 is unchanged.
-- 2026-11-08: API 0.2 (change, experimental): `horizon-shader check` refuses a 0.2 pack that constructs `Frame`, a
+- 2026-11-08: API 0.2 (change, experimental): `sunrise-shader check` refuses a 0.2 pack that constructs `Frame`, a
   stage input (`PostInput(...)`) or `SurfaceData`, which may gain fields; reading and passing them along are
   unchanged, and `Surface` is still constructed. The reference says `[tonemap]` runs once per pixel per output. API
   0.1 is unchanged.
 - 2026-11-08: API 0.2 (fix, experimental): the world a post pass reads holds coverage in its alpha, as the
-  reference says, instead of Horizon's light-source marks. API 0.1 is unchanged.
-- 2026-11-07: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its
+  reference says, instead of Sunrise's light-source marks. API 0.1 is unchanged.
+- 2026-11-07: API 0.2 (change, experimental): with `SUNRISE_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its
   frame at once instead of at the next start. API 0.1 is unchanged.
-- 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a
+- 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `SUNRISE_HDR_FRAME=float` set, on a
   float frame where the device can; `[frame] blend = "linear"` is still refused. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and
-  `[frame] blend`, with its own reference. `horizon-shader` checks and packs it; the game and the registry refuse it
+  `[frame] blend`, with its own reference. `sunrise-shader` checks and packs it; the game and the registry refuse it
   for now. API 0.1 is unchanged: the uploaded `Frame` buffer grows by 32 bytes after the fields 0.1 declares.
 - 2026-11-04: API 0.1 (change, experimental): the post stage's `scene_surface` is `texture_2d<u32>`, the bits of
   the stored floats (RGBA32F is not renderable on OpenGL). Read it through `surface_at`, or
@@ -338,11 +338,11 @@ draws them itself (the material stage covers terrain only). The first-person han
   water and glass can see what lies behind them (depth under water, refraction).
 - 2026-10-26: the material stage in the game: terrain's surfaces through the pack's `material`.
 - 2026-10-26: the sky stage in the game: the pack's `sky` gets vanilla's colour along each ray.
-- 2026-10-26: the post stage in the game (`HORIZON_SHADER_PACK`, hot reload with the last good pack kept).
-- 2026-10-25: `horizon-shader` (`new`, `check`, `pack`), three templates, the example pack and the guide.
+- 2026-10-26: the post stage in the game (`SUNRISE_SHADER_PACK`, hot reload with the last good pack kept).
+- 2026-10-25: `sunrise-shader` (`new`, `check`, `pack`), three templates, the example pack and the guide.
 - 2026-10-25: the check (naga validation, signatures, options, budgets, SPIR-V/Metal/HLSL translation).
 - 2026-10-25: the stages of API 0.1 (sky, material, post), their inputs and the generated reference.
-- 2026-10-25: the pack format, schema 1: `horizon-shaders.toml` and the `.hshader` package.
+- 2026-10-25: the pack format, schema 1: `sunrise-shaders.toml` and the `.sshader` package.
 - 2026-10-24: the earlier shader pack code was removed; this API is designed from scratch.
 - 2026-11-01: API 0.1 (additions): a stage's `files`.
 - 2026-11-01: API 0.1 (additions): `[material] fog`.

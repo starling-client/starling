@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Levels a data pack or a native mod adds, end to end in the real game (#1042).
 
-The game runs headless and horizon-ctl drives it, on single player's server thread: the window is a
+The game runs headless and sunrise-ctl drives it, on single player's server thread: the window is a
 client of that server, so a block is read from both sides.
 
 - pack: a world's data pack adds a level of a custom build height. `execute in ... run tp` takes the
   player there, onto terrain; a block below y=0 reaches the client and the server; the level saves and
   the player comes back to it. A second level names a generator nobody registered: the trips into it
   fail, for a player and for an entity, and the game plays on.
-- mod: crates/horizon-mod-dimension-game, built as the launcher's generated `main` is, with one native mod,
-  `dimprobe`, and its `horizon-native-mods/dimprobe` package beside the executable, and no data pack.
+- mod: crates/sunrise-mod-dimension-game, built as the launcher's generated `main` is, with one native mod,
+  `dimprobe`, and its `sunrise-native-mods/dimprobe` package beside the executable, and no data pack.
   `host.commands().run_command("execute in ... run tp ...")` takes the player into a `register_dimension`
   level from inside a mod's command, then into a `register_chunk_generator` level from a server tick.
   Both save and come back.
@@ -22,7 +22,7 @@ client of that server, so a block is read from both sides.
     python3 tools/mod_dimensions_e2e.py --scenario mod
     python3 tools/mod_dimensions_e2e.py --bin-dir target/fast
 
-Needs the prepared resources in .local/horizon-client. Each game gets fresh HORIZON_HOME, launcher and XDG
+Needs the prepared resources in .local/sunrise-client. Each game gets fresh SUNRISE_HOME, launcher and XDG
 folders, a scratch game directory and no audio; only the logs in --out outlive the run.
 """
 import argparse
@@ -43,7 +43,7 @@ from test_dedicated_server_parity import Server  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = 42
-# horizon-mod-dimension-game: the gold block over each chunk's corner, from the seed.
+# sunrise-mod-dimension-game: the gold block over each chunk's corner, from the seed.
 MARKER_Y = 1 + SEED % 16
 PACK_META = {'pack': {'description': 'levels', 'min_format': [121, 0], 'max_format': [121, 0]}}
 NOISE = {'type': 'minecraft:noise', 'settings': 'minecraft:overworld',
@@ -60,7 +60,7 @@ side = 'both'
 capabilities = ['registries']
 [native]
 game = '26.3'
-horizon = '{'a' * 40}'
+sunrise = '{'a' * 40}'
 mixins = '{'b' * 40}'
 """
 
@@ -77,23 +77,23 @@ class Session:
         self.game_dir = self.root / 'game'
         self.game_dir.mkdir()
         self.bins, self.out, self.name = bins, out, name
-        self.binary = bins / 'horizon-client'
+        self.binary = bins / 'sunrise-client'
         self.socket = self.root / 'ctl.sock'
         self.env = lab.game_env({k: v for k, v in os.environ.items()
-                                 if k not in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME',
+                                 if k not in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME',
                                               'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
         self.failures = []
 
     def run(self, *words, timeout=30):
-        return subprocess.run([str(self.bins / 'horizon-ctl'), '--socket', str(self.socket), *map(str, words)],
+        return subprocess.run([str(self.bins / 'sunrise-ctl'), '--socket', str(self.socket), *map(str, words)],
                               cwd=self.game_dir, env=self.env, capture_output=True, text=True,
                               timeout=timeout)
 
     def ctl(self, *words, timeout=30):
-        """A horizon-ctl command's JSON answer; a refused one raises."""
+        """A sunrise-ctl command's JSON answer; a refused one raises."""
         done = self.run(*words, timeout=timeout)
         if done.returncode:
-            raise Failed(f'horizon-ctl {" ".join(map(str, words))}: {done.stdout}{done.stderr}')
+            raise Failed(f'sunrise-ctl {" ".join(map(str, words))}: {done.stdout}{done.stderr}')
         return json.loads(done.stdout)
 
     def launch(self):
@@ -106,13 +106,13 @@ class Session:
     def use_mod_game(self):
         """Run the game with the mod, from a scratch folder that holds its package."""
         folder = self.root / 'bin'
-        package = folder / 'horizon-native-mods/dimprobe'
+        package = folder / 'sunrise-native-mods/dimprobe'
         (package / 'src').mkdir(parents=True)
-        (package / 'horizon-mod.toml').write_text(MANIFEST)
+        (package / 'sunrise-mod.toml').write_text(MANIFEST)
         (package / 'Cargo.toml').write_text("[package]\nname = 'dimprobe'\nversion = '1.0.0'\n")
         (package / 'src/lib.rs').write_text('// Built into the executable.\n')
-        self.binary = folder / 'horizon-client'
-        shutil.copy2(self.bins / 'horizon-mod-dimension-game', self.binary)
+        self.binary = folder / 'sunrise-client'
+        shutil.copy2(self.bins / 'sunrise-mod-dimension-game', self.binary)
 
     def quit(self):
         """Quit, saving, and wait until the game has gone."""
@@ -175,12 +175,12 @@ class Session:
             self.failures.append(what)
 
     def log(self):
-        path = Path(self.env['HORIZON_HOME']) / 'logs/latest.log'
+        path = Path(self.env['SUNRISE_HOME']) / 'logs/latest.log'
         return path.read_text(errors='replace') if path.is_file() else ''
 
     def close(self):
         self.quit()
-        logs = Path(self.env['HORIZON_HOME']) / 'logs'
+        logs = Path(self.env['SUNRISE_HOME']) / 'logs'
         if logs.is_dir():
             shutil.copytree(logs, self.out / self.name, dirs_exist_ok=True)
         shutil.rmtree(self.root, ignore_errors=True)
@@ -326,7 +326,7 @@ def dedicated_scenario(s):
         with (s.root / 'client.log').open('a') as log:
             run_game([str(s.binary), '--resources', str(lab.RESOURCES), '--render-distance', '2',
                       '--server', f'127.0.0.1:{port}', '--name', PLAYER], cwd=home,
-                     env=dict(os.environ, HORIZON_NET_REPORT=str(report), HORIZON_NET_QUIET=''),
+                     env=dict(os.environ, SUNRISE_NET_REPORT=str(report), SUNRISE_NET_QUIET=''),
                      stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
         reports.append(json.loads(report.read_text()) if report.is_file() else {'error': 'no report'})
 
@@ -394,8 +394,8 @@ SCENARIOS = {'pack': pack_scenario, 'mod': mod_scenario, 'replace': replace_scen
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', help='a build with horizon-client, horizon-ctl and '
-                                          'horizon-mod-dimension-game (default: build them, fast profile)')
+    parser.add_argument('--bin-dir', help='a build with sunrise-client, sunrise-ctl and '
+                                          'sunrise-mod-dimension-game (default: build them, fast profile)')
     parser.add_argument('--scenario', choices=list(SCENARIOS), action='append')
     parser.add_argument('--out', default=str(ROOT / '.local/mod-dimensions-e2e'), help='logs go here')
     args = parser.parse_args()
@@ -404,9 +404,9 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib',
-                        '-p', 'horizon-mod-dimension-game', '--bin', 'horizon-client', '--bin', 'horizon-ctl',
-                        '--bin', 'horizon-mod-dimension-game'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib',
+                        '-p', 'sunrise-mod-dimension-game', '--bin', 'sunrise-client', '--bin', 'sunrise-ctl',
+                        '--bin', 'sunrise-mod-dimension-game'], cwd=ROOT, check=True)
         bins = Path(lab.cargo_target()).resolve() / 'fast'
     failures = []
     for name in args.scenario or SCENARIOS:

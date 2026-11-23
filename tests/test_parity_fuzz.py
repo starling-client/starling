@@ -13,10 +13,10 @@ class SnbtDiffTests(unittest.TestCase):
     def test_a_difference_names_its_field_and_key_order_is_not_one(self):
         vanilla = record('Pig has the following entity data: {Motion: [0.0d, 0.1d, 0.0d], Tags: ["a b"], '
                          'UUID: [I; 1, 2, 3, 4], Brain: {memories: {}}, OnGround: 1b}')
-        horizon = record('Pig has the following entity data: {OnGround: 0b, Brain: {memories: {}}, '
+        sunrise = record('Pig has the following entity data: {OnGround: 0b, Brain: {memories: {}}, '
                          'UUID: [I; 1, 2, 3, 4], Tags: ["a b"], Motion: [0.0d, 0.1d, 0.0d]}')
         self.assertEqual(fuzz.compare(vanilla, vanilla), [])
-        self.assertEqual(fuzz.compare(vanilla, horizon), [('OnGround', '1b', '0b')])
+        self.assertEqual(fuzz.compare(vanilla, sunrise), [('OnGround', '1b', '0b')])
 
     def test_list_lengths_names_and_missing_data_differ(self):
         self.assertEqual(fuzz.diff({'Items': ['1', '2']}, {'Items': ['1']}), [('Items[#]', 2, 1)])

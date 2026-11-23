@@ -44,9 +44,9 @@ def function(source, name):
 
 class WorldInputCaptureTests(unittest.TestCase):
     def test_loading_completion_wiring(self):
-        game = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+        game = "".join((ROOT / "crates/sunrise-client/src" / path).read_text(encoding="utf-8")
                        for path in ("game/world/player_spawn.rs", "game/runtime/window_handler.rs", "game.rs"))
-        remote_dir = next(ROOT.glob('crates/horizon-client/src/game/*/remote'))
+        remote_dir = next(ROOT.glob('crates/sunrise-client/src/game/*/remote'))
         remote = (remote_dir / "mod.rs").read_text(encoding="utf-8")
         level_tick = (remote_dir / "client_level_tick.rs").read_text(encoding="utf-8")
         spawn = method(game, "spawn_player")
@@ -67,9 +67,9 @@ class WorldInputCaptureTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_capture_lifecycle(self):
-        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/sunrise-client/src" / path).read_text(encoding="utf-8")
                          for path in ("game.rs", "game/interface/pointer_capture.rs"))
-        mouse = (ROOT / "crates/horizon-client-input/src/mouse.rs").read_text(encoding="utf-8")
+        mouse = (ROOT / "crates/sunrise-client-input/src/mouse.rs").read_text(encoding="utf-8")
         fixture = r'''
 use std::cell::Cell;
 #[derive(Clone, Copy, PartialEq)]
@@ -467,7 +467,7 @@ fn main() {
 }
 '''
         capture = method(source, "capture").replace(
-            "horizon_client::mouse::mouse_position_after_grab_change",
+            "sunrise_client::mouse::mouse_position_after_grab_change",
             "mouse_position_after_grab_change")
         # The free check `settle_after_run` asks whether to grab again (#467, #499).
         regrab = source[source.index("fn regrab_after_run("):]
@@ -479,7 +479,7 @@ fn main() {
                                   method(source, "regrab_on_refocus") + "\n" +
                                   method(source, "internal_grab") + "\n" +
                                   method(source, "settle_after_run"))
-        with tempfile.TemporaryDirectory(prefix="horizon-input-") as folder:
+        with tempfile.TemporaryDirectory(prefix="sunrise-input-") as folder:
             folder = Path(folder)
             rust = folder / "capture.rs"
             binary = folder / ("capture.exe" if os.name == "nt" else "capture")
@@ -491,7 +491,7 @@ fn main() {
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_native_split_mouse_turns_only_its_owner(self):
-        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/sunrise-client/src" / path).read_text(encoding="utf-8")
                           for path in ("game/runtime/window_handler.rs", "game/interface/pointer_capture.rs", "game.rs"))
         fixture = r'''
 use std::time::Instant;
@@ -556,14 +556,14 @@ fn main() {
     }
 }
 '''
-        fixture = fixture.replace("MOUSE_PATH", (ROOT / "crates/horizon-client-input/src/mouse.rs").as_posix())
+        fixture = fixture.replace("MOUSE_PATH", (ROOT / "crates/sunrise-client-input/src/mouse.rs").as_posix())
         fixture = fixture.replace("METHOD", method(source, "grabbed_mouse_motion") + "\n" +
                                   method(source, "device_event"))
         self.run_fixture(fixture, "native-mouse")
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_split_layout_keeps_capture_in_the_same_window(self):
-        source = (next(ROOT.glob('crates/horizon-client/src/game/*/split/windows.rs'))).read_text(encoding="utf-8")
+        source = (next(ROOT.glob('crates/sunrise-client/src/game/*/split/windows.rs'))).read_text(encoding="utf-8")
         body = function(source.replace("pub(super) fn", "pub fn"), "into_window").replace("Game<'_>", "Game")
         fixture = r'''
 use std::sync::Arc;
@@ -585,7 +585,7 @@ fn main() {
         self.run_fixture(fixture, "split-window")
 
     def run_fixture(self, fixture, name):
-        with tempfile.TemporaryDirectory(prefix="horizon-input-") as folder:
+        with tempfile.TemporaryDirectory(prefix="sunrise-input-") as folder:
             folder = Path(folder)
             rust = folder / f"{name}.rs"
             binary = folder / (name + (".exe" if os.name == "nt" else ""))

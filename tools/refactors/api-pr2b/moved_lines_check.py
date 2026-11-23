@@ -46,7 +46,7 @@ def lines(source):
 def main():
     base = sys.argv[1]
     old = Counter()
-    names = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', base, 'crates/horizon-mod-api/src/part_table/'], text=True).splitlines()
+    names = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', base, 'crates/sunrise-mod-api/src/part_table/'], text=True).splitlines()
     for name in names:
         old.update(lines(subprocess.check_output(['git', 'show', f'{base}:{name}'], text=True)))
     new = Counter()

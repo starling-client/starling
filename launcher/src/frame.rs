@@ -6,8 +6,8 @@ use super::*;
 use crate::glass_ui::{self as ui, white, Tone};
 use crate::instances_page::java_line;
 use gpui::{anchored, canvas, deferred, point};
-use horizon_launcher::instances::{Icon, Instance, Kind as InstanceKind};
-use horizon_theme::glass::{fill, ink, radius};
+use sunrise_launcher::instances::{Icon, Instance, Kind as InstanceKind};
+use sunrise_theme::glass::{fill, ink, radius};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -40,13 +40,13 @@ fn measure(rows: &Rc<RefCell<HashMap<String, Bounds<Pixels>>>>, id: String) -> i
 }
 
 impl Launcher {
-    /// An instance's icon (`InstanceIcon`), `size` square with no frame: Horizon's mark tile for
-    /// Horizon's own instance; else its picture or the block chosen for it, round at 26 %; else
+    /// An instance's icon (`InstanceIcon`), `size` square with no frame: Sunrise's mark tile for
+    /// Sunrise's own instance; else its picture or the block chosen for it, round at 26 %; else
     /// its loader's or Minecraft's mark; else its initial on its colour (the accent when none was
     /// chosen), as `ColorTile` draws it.
     pub(super) fn glass_instance_icon(&mut self, i: &Instance, size: f32) -> AnyElement {
         if i.kind == InstanceKind::Default && i.icon.is_none() {
-            return self.horizon_mark(size);
+            return self.sunrise_mark(size);
         }
         if let Some(picture) = self.instance_picture(i, size) {
             return instance_icons::centred(picture, size, self.scale).into_any_element();
@@ -83,9 +83,9 @@ impl Launcher {
             .rounded(r)
             .bg(ui::color(colour))
             .font_family(if letter >= 40. {
-                horizon_theme::glass::DISPLAY_FONT
+                sunrise_theme::glass::DISPLAY_FONT
             } else {
-                horizon_theme::glass::HEADING_FONT
+                sunrise_theme::glass::HEADING_FONT
             })
             .font_weight(FontWeight::SEMIBOLD)
             .text_size(px(letter))
@@ -120,7 +120,7 @@ impl Launcher {
                     ),
                     (None, None, None) => (Tone::Off, tr("No version installed").into()),
                     // Following the launcher's version, which has a newer one waiting.
-                    (None, Some(_), None) if self.updates.horizon.is_some() => (
+                    (None, Some(_), None) if self.updates.sunrise.is_some() => (
                         Tone::Accent(self.look.accent_soft),
                         tr("Update available").into(),
                     ),
@@ -131,7 +131,7 @@ impl Launcher {
                             Tone::Live,
                             trf(
                                 "Native build · {version}",
-                                &[("version", &build.horizon_short())],
+                                &[("version", &build.sunrise_short())],
                             ),
                         )
                     }
@@ -147,7 +147,7 @@ impl Launcher {
                     summary.map_or_else(|| tr("Modpack").into(), |p| p.summary()),
                 )
             }
-            InstanceKind::Pack => (Tone::Off, tr("From Horizon's registry").into()),
+            InstanceKind::Pack => (Tone::Off, tr("From Sunrise's registry").into()),
         }
     }
 
@@ -521,8 +521,8 @@ impl Launcher {
                     .px(px(12.))
                     .py(px(8.))
                     .rounded(px(radius::ROW))
-                    .bg(ui::color(horizon_theme::glass::DISCORD))
-                    .hover(|s| s.bg(ui::color(horizon_theme::glass::DISCORD_HOVER)))
+                    .bg(ui::color(sunrise_theme::glass::DISCORD))
+                    .hover(|s| s.bg(ui::color(sunrise_theme::glass::DISCORD_HOVER)))
                     .cursor_pointer()
                     .child(ui::icon("discord", 18., gpui::white()))
                     .child(
@@ -556,7 +556,7 @@ impl Launcher {
                         .child(
                             div()
                                 .relative()
-                                .font_family(horizon_theme::glass::FONT)
+                                .font_family(sunrise_theme::glass::FONT)
                                 .text_size(px(14.))
                                 .child(label),
                         )
@@ -1018,7 +1018,7 @@ impl Launcher {
                     },
                 )),
             );
-        // Horizon's own instance can't be deleted, nor one while a game runs.
+        // Sunrise's own instance can't be deleted, nor one while a game runs.
         let can_delete = instance.kind != InstanceKind::Default
             && self.client.is_none()
             && self.starting_client.is_none();

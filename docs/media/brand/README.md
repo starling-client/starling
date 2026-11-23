@@ -1,6 +1,6 @@
-# Horizon's mark and icons
+# Sunrise's mark and icons
 
-**The mark.** An H whose crossbar is the horizon: the line runs edge to edge in Horizon's violet,
+**The mark.** An H whose crossbar is the sunrise: the line runs edge to edge in Sunrise's violet,
 the stems above it in full strength and their reflection below at a third. It is drawn on whole
 units of a 16-unit grid, so it is sharp at 16 px and holds at 1024 px. `docs/design-system.md`
 places it in the design system; `candidates/` keeps the two alternatives that were shown with it.
@@ -21,11 +21,11 @@ places it in the design system; `candidates/` keeps the two alternatives that we
 
 | Output | Used by |
 |--------|---------|
-| `packaging/icons/hicolor/<size>/apps/horizon.png` (16–512) and `scalable/apps/horizon.svg` | Linux: copy the tree into `~/.local/share/icons/hicolor` (or `/usr/share/icons/hicolor`) |
-| `packaging/linux/horizon-launcher.desktop`, `horizon.desktop` (hand-written) | Linux: the launcher installs both and the hicolor icons itself, under `$XDG_DATA_HOME` (`~/.local/share`), with its own path in `Exec` (`launcher/src/desktop.rs`; `horizon-launcher desktop-entry --remove` takes them out). Wayland matches the windows' app ids `horizon-launcher` and `horizon` |
-| `packaging/icons/horizon.ico` | Windows: embedded in `horizon-client.exe`, its tools and `horizon-launcher.exe` as icon resource 1 (`build.rs` of each, Windows builds only) |
-| `packaging/icons/horizon.icns` | macOS: `Horizon.app/Contents/Resources/horizon.icns`, packaged with the .dmg by `packaging/macos/package.sh` |
-| `crates/horizon-theme/icons/horizon-64.png` | the game window's icon at run time (X11 and Windows title bars, `window::icon`) |
+| `packaging/icons/hicolor/<size>/apps/sunrise.png` (16–512) and `scalable/apps/sunrise.svg` | Linux: copy the tree into `~/.local/share/icons/hicolor` (or `/usr/share/icons/hicolor`) |
+| `packaging/linux/sunrise-launcher.desktop`, `sunrise.desktop` (hand-written) | Linux: the launcher installs both and the hicolor icons itself, under `$XDG_DATA_HOME` (`~/.local/share`), with its own path in `Exec` (`launcher/src/desktop.rs`; `sunrise-launcher desktop-entry --remove` takes them out). Wayland matches the windows' app ids `sunrise-launcher` and `sunrise` |
+| `packaging/icons/sunrise.ico` | Windows: embedded in `sunrise-client.exe`, its tools and `sunrise-launcher.exe` as icon resource 1 (`build.rs` of each, Windows builds only) |
+| `packaging/icons/sunrise.icns` | macOS: `Sunrise.app/Contents/Resources/sunrise.icns`, packaged with the .dmg by `packaging/macos/package.sh` |
+| `crates/sunrise-theme/icons/sunrise-64.png` | the game window's icon at run time (X11 and Windows title bars, `window::icon`) |
 | `web/favicon.svg`, `web/favicon-32.png`, `web/apple-touch-icon.png` | the website (its `npm run assets` copies them into its `public/`) |
 | `icon-1024.png`, `icon-macos-1024.png` | previews, store listings |
 | `social/github-avatar-500.png` | GitHub: the organisation or account avatar |
@@ -39,7 +39,7 @@ NODE_PATH="$d/node_modules" node -e 'const {chromium}=require("playwright");(asy
 
 ## The README banner
 
-`docs/media/banner.webp` (1600x600) is the website's hero, a screenshot of playhorizon.dev in its
+`docs/media/banner.webp` (1600x600) is the website's hero, a screenshot of playsunrise.net in its
 dark theme. The navbar, the hero's buttons, its version line and its lede are hidden first, so the
 banner carries no launcher version and no harness count (the README's prose owns the count), and
 nothing in it goes stale. The crop starts 56 px above the kicker and ends at the hero's bottom
@@ -47,14 +47,14 @@ edge. With Playwright, from the repository's root:
 
 ```sh
 d=$(mktemp -d) && npm install --prefix "$d" playwright && npx --prefix "$d" playwright install chromium
-NODE_PATH="$d/node_modules" node -e 'const {chromium}=require("playwright");(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1600,height:1000}});await p.goto("https://playhorizon.dev/",{waitUntil:"networkidle"});await p.click(".theme-toggle");await p.waitForTimeout(1200);await p.evaluate(()=>{for(const s of ["header",".hero-actions",".download-meta",".lede"]){const e=document.querySelector(s);if(e)e.style.display="none"}});await p.waitForTimeout(400);await p.screenshot({path:"docs/media/banner.webp",clip:{x:0,y:136,width:1600,height:600}});await b.close()})()'
+NODE_PATH="$d/node_modules" node -e 'const {chromium}=require("playwright");(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1600,height:1000}});await p.goto("https://playsunrise.net/",{waitUntil:"networkidle"});await p.click(".theme-toggle");await p.waitForTimeout(1200);await p.evaluate(()=>{for(const s of ["header",".hero-actions",".download-meta",".lede"]){const e=document.querySelector(s);if(e)e.style.display="none"}});await p.waitForTimeout(400);await p.screenshot({path:"docs/media/banner.webp",clip:{x:0,y:136,width:1600,height:600}});await b.close()})()'
 ```
 
 ## Drawn in code
 
 | Where | What |
 |-------|------|
-| `crates/horizon-client-render/src/title_edition.rs` | the R, U and S of "RUST EDITION" under the classic title screen's logo: Horizon's own glyphs (MIT), rectangles in that file. The banner is rebuilt at load time from the player's own `textures/gui/title/edition.png` (its "EDITION" and "T" carried over, its shades sampled), so no Mojang pixels are in the repository; a resource pack's banner is left as drawn |
+| `crates/sunrise-client-render/src/title_edition.rs` | the R, U and S of "RUST EDITION" under the classic title screen's logo: Sunrise's own glyphs (MIT), rectangles in that file. The banner is rebuilt at load time from the player's own `textures/gui/title/edition.png` (its "EDITION" and "T" carried over, its shades sampled), so no Mojang pixels are in the repository; a resource pack's banner is left as drawn |
 
 ## Uploading (the accounts are Ludovic's)
 

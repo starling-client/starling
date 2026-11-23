@@ -1,7 +1,7 @@
 # Velocity player information forwarding
 
-How `horizon-server` joins a network behind a Velocity proxy (`crates/horizon-client/src/lan/forwarding.rs`,
-the owner's steps in [hosting.md](hosting.md#behind-a-velocity-proxy)). Horizon-only: vanilla has no such
+How `sunrise-server` joins a network behind a Velocity proxy (`crates/sunrise-client/src/lan/forwarding.rs`,
+the owner's steps in [hosting.md](hosting.md#behind-a-velocity-proxy)). Sunrise-only: vanilla has no such
 thing, so there is no vanilla reference and no parity harness.
 
 ## Where this comes from
@@ -24,7 +24,7 @@ was opened, and every detail here was checked against the recording.)
 5. `data`: `version` (VarInt), `address` (string), `uuid` (16 bytes), `name` (string), then the profile
    `properties` (VarInt count, each a name, a value, a bool, and the signature string when the bool is set).
 
-Horizon asks for version 1 and accepts only version 1.
+Sunrise asks for version 1 and accepts only version 1.
 
 ## What was observed
 

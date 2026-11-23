@@ -54,22 +54,22 @@ def corpus(states, definitions):
 
 def main():
     lock,jars,libraries=base.verify_artifacts();build=lab.LOCAL/'rust-block-landing-parity';build.mkdir(exist_ok=True);report_path=build/'report.json';report_path.unlink(missing_ok=True)
-    root=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity'
+    root=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity'
     oracles=[root/(n+'.java') for n in ['VanillaBlockLandingOracle','VanillaMovementRegistryOracle','VanillaHeightmapOracle','VanillaCollisionOracle']]
-    sources=[*oracles,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-world/examples/probe/block_landing_fixture.rs']
-    for crate in ['horizon-core','horizon-world']:sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
+    sources=[*oracles,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-world/examples/probe/block_landing_fixture.rs']
+    for crate in ['sunrise-core','sunrise-world']:sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
     tested=base.source_hashes(sources);classes=build/'classes';classes.mkdir(exist_ok=True);dependencies=os.pathsep.join(map(str,libraries))
     def run(command,name):
         with (build/(name+'.log')).open('w') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=3600,stdout=log,stderr=subprocess.STDOUT)
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
-    def java(side,mode):run(['java','-Xmx768M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.horizonlab.parity.VanillaBlockLandingOracle',mode,build],side+'-'+mode)
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
+    def java(side,mode):run(['java','-Xmx768M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.sunriselab.parity.VanillaBlockLandingOracle',mode,build],side+'-'+mode)
     java('server','export');states=json.loads((build/'landing-states.json').read_text());definitions=json.loads((build/'landing-definitions.json').read_text())
     if len(states)!=35723 or len(definitions)!=1286:raise AssertionError('Incomplete pinned registry')
     count=0
     with (build/'inputs.txt').open('w') as output:
         for f in corpus(states,definitions):output.write(json.dumps(f,separators=(',',':'))+'\n');count+=1
     fixture_paths=[build/n for n in ['inputs.txt','landing-states.json','landing-definitions.json','movement-properties.nbt','block-registry.nbt','cached-collision.nbt']];fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--locked','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--locked','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version','1'],cwd=lab.ROOT));binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'block_landing_fixture',build],'rust');references=[]
     for side,jar in jars.items():

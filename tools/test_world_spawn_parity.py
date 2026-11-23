@@ -11,9 +11,9 @@ A new overworld's spawn comes from two steps (MinecraftServer.setInitialSpawn):
    block under open sky, no liquid on top) gives the world spawn.
 
 Origins: VanillaWorldSpawnOracle calls NoiseSpawnFinder.findSpawnPosition and
-getOrigin for every seed; the spawn_origin example asks Horizon's generator.
+getOrigin for every seed; the spawn_origin example asks Sunrise's generator.
 World spawns: the pinned vanilla dedicated server creates each world and
-stops; Horizon's (`horizon-client --dedicated --nogui`) creates its own from
+stops; Sunrise's (`sunrise-client --dedicated --nogui`) creates its own from
 the same server.properties and stops; the `spawn` position of both
 level.dat files is compared.
 
@@ -22,15 +22,15 @@ placed first depends on the order the chunks are decorated. With several
 worker threads vanilla's order changes from run to run (seed
 -2080727421395798566 spawned at Y 64, 66 or 72), so its server runs with one
 (`-Dmax.bg.threads`, Util.maxAllowedExecutorThreads): the chunks are then
-decorated in its scheduler's order, the one Horizon follows
+decorated in its scheduler's order, the one Sunrise follows
 (decoration_order::vanilla_order), and every run gives the same spawn.
 
-Seeds: the player report's seed (1891623539983467248: Horizon spawned at
+Seeds: the player report's seed (1891623539983467248: Sunrise spawned at
 -48 -48, vanilla at 152 145), the chunk generation harness's seeds and
 --random seeds from a fixed generator.
 
 tools/parity.py runs it in PARITY_SHARDS parts, each creating the worlds of
-every PARITY_SHARDS-th seed: each seed is a vanilla and a Horizon server start,
+every PARITY_SHARDS-th seed: each seed is a vanilla and a Sunrise server start,
 ~15 s, and 60 seeds in one run were the longest harness (~25 min).
 
 Under tools/parity.py's oracle reuse (not --fresh or --all) a seed's vanilla
@@ -83,7 +83,7 @@ def target_dir(profile='release'):
 
 def origins(build, classes, dependencies, all_seeds):
     vanilla_out = build / 'origins-vanilla.txt'
-    oh.run_logged(['java', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaWorldSpawnOracle',
+    oh.run_logged(['java', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaWorldSpawnOracle',
                    vanilla_out, *all_seeds], build, 'origins-vanilla')
     rust = subprocess.run([target_dir() / 'examples/world_probe', 'spawn_origin', RESOURCES, *map(str, all_seeds)],
                           capture_output=True, text=True, check=True, cwd=lab.ROOT).stdout
@@ -149,27 +149,27 @@ def main():
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     oh.run_logged(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies,
-                   '-d', classes, lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWorldSpawnOracle.java'],
+                   '-d', classes, lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaWorldSpawnOracle.java'],
                   build, 'compile-java')
-    oh.run_logged(['cargo', 'build', '--release', '-p', 'horizon-world', '--example', 'world_probe'], build, 'compile-probe')
+    oh.run_logged(['cargo', 'build', '--release', '-p', 'sunrise-world', '--example', 'world_probe'], build, 'compile-probe')
     all_seeds = parity_shard.shard(args.seed or seeds(args.random))
     started = time.time()
 
     vanilla, rust = origins(build, classes, dependencies, all_seeds)
     origin_diffs = [s for s in all_seeds if vanilla.get(s) != rust.get(s)]
     for s in origin_diffs:
-        print(f'origin {s}: vanilla column {vanilla.get(s)} / horizon {rust.get(s)}')
+        print(f'origin {s}: vanilla column {vanilla.get(s)} / sunrise {rust.get(s)}')
     print(f'Origins: {len(all_seeds) - len(origin_diffs)}/{len(all_seeds)} seeds match '
           f'(column x z, chunk x z) in {time.time() - started:.0f}s', flush=True)
     if args.origins_only:
         sys.exit(1 if origin_diffs else 0)
 
-    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], build,
+    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], build,
                   'compile-rust', timeout=3600)
-    binary = target_dir('fast') / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = target_dir('fast') / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     # One worker thread: the chunks decorated in a fixed order (see above).
     vanilla_server = ['java', '-Xmx2g', '-Dmax.bg.threads=1', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', RESOURCES, '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', RESOURCES, '--dedicated', '--nogui']
     os.environ.update(lab.game_env())
     cached = vanilla_cache(lock, vanilla_server, dependencies)
     reused = []
@@ -189,7 +189,7 @@ def main():
     def one(seed):
         t0 = time.time()
         a = vanilla_spawn(seed)
-        b = world_spawn(horizon_server, build / f'horizon-{seed}', seed, f'horizon-{seed}')
+        b = world_spawn(sunrise_server, build / f'sunrise-{seed}', seed, f'sunrise-{seed}')
         return seed, a, b, time.time() - t0
 
     spawn_diffs = []
@@ -198,7 +198,7 @@ def main():
             ok = a == b
             if not ok:
                 spawn_diffs.append(seed)
-            print(f'{"ok  " if ok else "DIFF"} {seed}: vanilla {a[0]} {a[1]} {a[2]} / horizon {b[0]} {b[1]} {b[2]} '
+            print(f'{"ok  " if ok else "DIFF"} {seed}: vanilla {a[0]} {a[1]} {a[2]} / sunrise {b[0]} {b[1]} {b[2]} '
                   f'(origin chunk {vanilla[seed][2]} {vanilla[seed][3]}; {took:.0f}s)', flush=True)
             if ok:
                 for path in build.glob(f'*-{seed}*'):

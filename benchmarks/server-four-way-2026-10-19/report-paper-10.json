@@ -1,5 +1,5 @@
 {
-  "kind": "horizon-server-benchmark",
+  "kind": "sunrise-server-benchmark",
   "date": "2026-10-19T06:03:34+00:00",
   "machine": {
     "system": "Linux",
@@ -27,7 +27,7 @@
     "out": "/home/ludovic/sh10/out/mixed-equal-paper-10.json",
     "nice": 19,
     "bots_via": "ssh macmini",
-    "bots_bin": "/Users/ludovicmarie/code/horizon/.claude/worktrees/sh10-bench/target/release/horizon-bots",
+    "bots_bin": "/Users/ludovicmarie/code/sunrise/.claude/worktrees/sh10-bench/target/release/sunrise-bots",
     "connect": "the ThinkPad's tailnet address",
     "properties": {
       "level-seed": "12345",

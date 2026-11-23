@@ -21,7 +21,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = 'crates/horizon-client/src/crafting/ingredient/builtin_kinds_tests.rs'
+SOURCE = 'crates/sunrise-client/src/crafting/ingredient/builtin_kinds_tests.rs'
 FAMILIES = ROOT / Path(SOURCE).with_suffix('') / 'families'
 
 

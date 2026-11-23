@@ -2,15 +2,15 @@
 //! Home.
 //!
 //! An accent is a hue, and the player may pick any of them; seven hues have names, as shortcuts.
-//! Horizon's violet is the default. Another hue turns the violet tokens (`horizon_theme::Blocks`'
+//! Sunrise's violet is the default. Another hue turns the violet tokens (`sunrise_theme::Blocks`'
 //! accent and the main action's face, bevel and lip) to it, keeping their saturation and
 //! lightness, then darkens or lightens each just enough to read as well as the violet does: white
 //! on the face at 4.5:1, the accent at 3:1 on every background.
-use horizon_theme::night::{Night, SkyArt};
-use horizon_theme::{contrast, Blocks};
+use sunrise_theme::night::{Night, SkyArt};
+use sunrise_theme::{contrast, Blocks};
 use std::path::{Path, PathBuf};
 
-/// An accent: a hue in degrees, or none for Horizon's violet, whose tokens are the palette's own
+/// An accent: a hue in degrees, or none for Sunrise's violet, whose tokens are the palette's own
 /// and stay untouched; and for a colour typed as hex, that colour (the glass look wears it as
 /// is, the light look takes its hue).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -135,10 +135,10 @@ pub const NORD: Theme = Theme {
     palette: Some((&NORD_DARK, &NORD_LIGHT)),
 };
 
-/// The launcher themes past Horizon's own sky.
+/// The launcher themes past Sunrise's own sky.
 pub const THEMES: [Theme; 2] = [FIRST_LIGHT, NORD];
 
-/// The theme named `id` (`Settings::theme`); None for Horizon's own sky or a name this launcher
+/// The theme named `id` (`Settings::theme`); None for Sunrise's own sky or a name this launcher
 /// doesn't know.
 pub fn theme(id: Option<&str>) -> Option<&'static Theme> {
     THEMES.iter().find(|t| Some(t.id) == id)

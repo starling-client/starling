@@ -203,9 +203,9 @@ def main():
     checkpoint_path=build/'run-state.json'
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBlockSurvivalOracle.java'
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaBlockSurvivalOracle.java'
     helpers=[oracle.with_name(name+'.java') for name in ['VanillaBlockPropertiesOracle','VanillaBlockSupportOracle','VanillaBlockStateCodecOracle','VanillaCollisionOracle','VanillaHeightmapOracle']]
-    sources=[oracle,*helpers,lab.ROOT/'tools/test_worldgen_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/block_survival_fixture.rs']
+    sources=[oracle,*helpers,lab.ROOT/'tools/test_worldgen_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/block_survival_fixture.rs']
     tested_sources=base.source_hashes(sources)
     environment={'minecraft':lock['minecraft']['version'],'manifest_sha1':lock['minecraft']['manifest_sha1'],'platform':platform.platform(),'java':subprocess.check_output(['java','--version'],text=True).splitlines()[0],'rustc':subprocess.check_output(['rustc','--version'],text=True).strip(),'dependencies':{str(path):lab.digest(path,'sha256') for path in [*jars.values(),*libraries]}}
     checkpoint=load_checkpoint(checkpoint_path,tested_sources,environment) if args.resume else None
@@ -214,7 +214,7 @@ def main():
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,stdout=log,stderr=subprocess.STDOUT,timeout=3600)
     dependency_path=os.pathsep.join(map(str,libraries))
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaBlockSurvivalOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaBlockSurvivalOracle',mode,path],side+'-'+mode)
     if checkpoint is None:
         checkpoint_path.unlink(missing_ok=True)
         tags=worldgen.tag_resources(jars['server'])
@@ -223,7 +223,7 @@ def main():
         fluid_tags=fluid_tag_resources(jars['server'])
         if fluid_tags!=fluid_tag_resources(jars['client']):raise ValueError('client/server fluid tags differ')
         (build/'fluid-tags.json').write_text(json.dumps(fluid_tags,separators=(',',':')))
-        run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
+        run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
         java('server','export',build)
         facts=json.loads((build/'facts.json').read_text());definition_classes=json.loads((build/'survival-classes.json').read_text())
         definitions=bind_definitions(definition_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()))
@@ -236,7 +236,7 @@ def main():
                 output.write(json.dumps(fixture,separators=(',',':'))+'\n');fixture_count+=1
         fixture_paths=[inputs,build/'survival-extra-definitions.json',build/'fluid-tags.json',build/'survival-placement-classes.json',build/'survival-support-tags.json',build/'facts.json',build/'survival-classes.json',build/'survival-rules.json',build/'tags.json',build/'block-registry.nbt',build/'cached-collision.nbt',build/'block-properties.nbt',build/'cached-support.nbt']
         tested_fixtures=base.source_hashes(fixture_paths)
-        run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+        run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
         metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
         binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
         base.ensure_sources_unchanged(sources,tested_sources)

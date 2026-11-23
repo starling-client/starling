@@ -1,10 +1,10 @@
 # Release flow
 
 How a change gets from a pull request to players: the checks a pull request passes, how it merges, and the
-automatic releases that follow. Releases are automatic and frequent so the latest Horizon is always playable.
-Since 2026-10-28 Horizon ships only the **Nightly** (Ludovic's decision; the Team proposed it): the batch train builds
+automatic releases that follow. Releases are automatic and frequent so the latest Sunrise is always playable.
+Since 2026-10-28 Sunrise ships only the **Nightly** (Ludovic's decision; the Team proposed it): the batch train builds
 a Nightly instead of a `vX.Y.Z` release, it is published once its smoke test passed and no `release-blocker` is open,
-and every launcher and `horizon-server update` install it ([Nightly only](#nightly-only)).
+and every launcher and `sunrise-server update` install it ([Nightly only](#nightly-only)).
 
 ## Pull request checks
 
@@ -13,8 +13,8 @@ reopened; labels never start it):
 
 | Job | Runs on | What | Time |
 | --- | --- | --- | --- |
-| `verify` | Our checks runners (label `horizon-checks`, the desktop's) for this repository's own pull requests whose number ends in 0 or 1; GitHub `ubuntu-latest` for the others, forks' pull requests (they see no repository variable, so no switch could move them off a machine that is off) and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Three jobs side by side: the public-tree check and Python tests (`verify (tree and tools)`), rustfmt and clippy with warnings denied (`verify (format and lint)`), the Rust tests (`verify (Rust tests)`); `verify` waits for them and passes when each passed or had nothing to do. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
-| `parity / parity` | A runner with the label `horizon-game`: the Mac mini's and playhorizon's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
+| `verify` | Our checks runners (label `sunrise-checks`, the desktop's) for this repository's own pull requests whose number ends in 0 or 1; GitHub `ubuntu-latest` for the others, forks' pull requests (they see no repository variable, so no switch could move them off a machine that is off) and main's pushes. `SELF_HOSTED_CI` moves them: `all` all to ours, `light` or `off` all to GitHub ([CI runners](ci-runners.md)) | Three jobs side by side: the public-tree check and Python tests (`verify (tree and tools)`), rustfmt and clippy with warnings denied (`verify (format and lint)`), the Rust tests (`verify (Rust tests)`); `verify` waits for them and passes when each passed or had nothing to do. Dependencies and the workspace build come from a cache saved by main's runs (GitHub) or the runner's own build folder (ours) | ~8 min |
+| `parity / parity` | A runner with the label `sunrise-game`: the Mac mini's and playsunrise's (below) | Only for a change to a harness, an oracle, a probe or the runner (or the `run-parity` label): the vanilla harnesses the change can affect (`tools/parity.py --changed <base>`). Other pull requests skip it: [parity-main](#parity-on-main) checks them on main | seconds when nothing is affected; minutes per affected harness |
 
 Pushes to main run `verify` only; the nightly audit covers main's harnesses.
 
@@ -31,7 +31,7 @@ repository, `run-parity.yml` for a fork's pull request a maintainer labels `run-
 
 A pull request every harness reaches (a crate split moves files every probe links: #2160 ran all 352 harnesses, 71
 minutes on a Mac mini runner, while five other pull requests' jobs queued behind it) carries the `full-parity` label:
-its job runs on playhorizon's runner only (4 harnesses at a time), and waits for it while that runner is busy
+its job runs on playsunrise's runner only (4 harnesses at a time), and waits for it while that runner is busy
 instead of taking the Mac mini's. Labels don't start `checks`: add it when opening the pull request
 (`gh pr create --label full-parity`), or before the next push.
 
@@ -39,8 +39,8 @@ A pull request that must leave the picture alone (HDR, shader packs) carries the
 runs `frame_identity` ([parity-workflow.md](parity-workflow.md)), which no automatic selection picks, since it fails
 any change that moves the picture on purpose. Like `full-parity`, it is read when the job starts.
 
-Horizon never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
-copy is: the Mac mini and playhorizon (below). Their runners run as the maintainer's account and keep their checkout
+Sunrise never downloads the game, so harnesses that compare with vanilla run only where the maintainer's own
+copy is: the Mac mini and playsunrise (below). Their runners run as the maintainer's account and keep their checkout
 between runs (`clean: false`), so the probes build incrementally into `.local/parity-target` and earlier passes
 stand.
 
@@ -54,15 +54,15 @@ alone, with a warning. The check is still reported on the head.
    (Homebrew and `java_home` on the Mac; on Linux what `linux-runner.sh` pinned, else nixpkgs), and sccache when
    the machine has it.
 2. `tools/ci/vanilla-data.sh` links `.local/` to the runner's copy of the vanilla data, cloned once from
-   `~/code/horizon-parity/shared-local` into `~/.actions-runners/horizon/_work/horizon/shared-local`, and
-   prepares `.local/horizon-client` with the pull request's own `horizon-prepare` once per preparer version
-   (its sources, the exporters in `mods/horizon/src/test/java` and `research-lock.json`). The game's sounds, which
+   `~/code/sunrise-parity/shared-local` into `~/.actions-runners/sunrise/_work/sunrise/shared-local`, and
+   prepares `.local/sunrise-client` with the pull request's own `sunrise-prepare` once per preparer version
+   (its sources, the exporters in `mods/sunrise/src/test/java` and `research-lock.json`). The game's sounds, which
    depend only on the Minecraft version, are kept once in `shared-local/sounds/<version>/` (copied from a folder
-   `horizon-prepare sounds` made from the maintainer's own game; the Mac mini has no official launcher of its own)
+   `sunrise-prepare sounds` made from the maintainer's own game; the Mac mini has no official launcher of its own)
    and cloned into each preparation (not linked: vanilla's packs refuse symbolic links), for the audio harnesses.
-   `tools/prepare_output.py check` then compares what was prepared with `crates/horizon-prepare/output-versions.txt`:
+   `tools/prepare_output.py check` then compares what was prepared with `crates/sunrise-prepare/output-versions.txt`:
    launchers keep a player's prepared resources across releases whose preparer declares the same `OUTPUT_VERSION`
-   (`crates/horizon-prepare/src/lib.rs`), so a change to the prepared files fails here until it bumps the number
+   (`crates/sunrise-prepare/src/lib.rs`), so a change to the prepared files fails here until it bumps the number
    and appends the new digest (the error gives both lines).
 3. `tools/parity.py --changed <base sha>` picks the harnesses whose traced dependencies (their script, Python
    modules, Java oracles and every Rust source their probes compile) changed since the merge base, plus any
@@ -72,10 +72,10 @@ alone, with a warning. The check is still reported on the head.
 Failed harnesses' logs are uploaded as the `parity-logs` artifact.
 
 **Platform-specific harnesses.** A harness listed under `linux_only` in `tools/parity_hosts.json` gives
-different results on macOS for a reason that is not a Horizon bug (the reason is printed). `parity.py` skips it on
+different results on macOS for a reason that is not a Sunrise bug (the reason is printed). `parity.py` skips it on
 other platforms unless it is named on the command line. Today it holds only `save_roundtrip` (it needs `vscreen`):
 `options`, `chunk_generation`, `world_border_render` and `mob_ai`, which once differed on macOS through the
-platform's libm, pass on the Mac mini since `horizon_core::jmath` computes what HotSpot computes (checked
+platform's libm, pass on the Mac mini since `sunrise_core::jmath` computes what HotSpot computes (checked
 2026-10-14).
 
 **Pull requests from forks** never run code on the Mac mini by themselves. A maintainer who has read the change
@@ -83,15 +83,15 @@ adds the `run-parity` label: that runs the job once, on the commit the pull requ
 after new pushes, remove the label and add it again.
 
 **Two runners.** The Mac mini has two runners for this repository, `ludovics-mac-mini`
-(`~/.actions-runners/horizon`, `CARGO_BUILD_JOBS=10`) and `ludovics-mac-mini-2` (`~/.actions-runners/horizon-2`,
+(`~/.actions-runners/sunrise`, `CARGO_BUILD_JOBS=10`) and `ludovics-mac-mini-2` (`~/.actions-runners/sunrise-2`,
 `CARGO_BUILD_JOBS=6`), with the same labels, so the 30-minute nightly audit or a long parity job never holds a
 release's macOS build back. Each keeps its own checkout, `target/` and Rust install; the second's
-`_work/horizon/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
+`_work/sunrise/shared-local` links to the first's, so they share the vanilla data, the preparations (one at a
 time, under a lock) and the parity passes and slots.
 
-**The desktop's runner.** Since 2026-11-03 (the maintainer's decision) `ludodesktop-horizon` takes pull requests'
-parity jobs too, beside the Mac mini and playhorizon: labels `self-hosted`, `X64`, `horizon-game`, `ludodesktop`, and no
-`Linux`, so ci.yml's by-hand `[self-hosted, linux, horizon-game]` jobs stay on playhorizon. It is declared in the
+**The desktop's runner.** Since 2026-11-03 (the maintainer's decision) `ludodesktop-sunrise` takes pull requests'
+parity jobs too, beside the Mac mini and playsunrise: labels `self-hosted`, `X64`, `sunrise-game`, `ludodesktop`, and no
+`Linux`, so ci.yml's by-hand `[self-hosted, linux, sunrise-game]` jobs stay on playsunrise. It is declared in the
 maintainer's NixOS configuration (`services.github-runners`, his private fleet repo), not installed by
 `tools/ci/linux-runner.sh`. A fork's job reaches it only through `run-parity`, so it runs as a system user, `gha`, with
 no sudo, SSH keys or logins; its service sees no `/home` and no device (no GPU: Vulkan is Mesa's lavapipe, on an Xvfb
@@ -105,17 +105,17 @@ night, so it stays on one platform, and a parity-main job stopped because he cam
 merges for nothing. The desktop is no parity host for `tools/parity.py --hosts` any more (its `tools/parity_hosts.json`
 entry points at the 10-26 setup, whose pause file stays set, so it refuses work).
 
-**playhorizon's runner.** `playhorizon-horizon` runs on a server a hosting partner lends the project (Ubuntu, 8
+**playsunrise's runner.** `playsunrise-sunrise` runs on a server a hosting partner lends the project (Ubuntu, 8
 AMD EPYC threads, 30 GB, in Detroit; reachable only through the maintainer's tailnet). Nobody sits at it, so the
 watcher never pauses it except by hand. It gets half the machine: `RUNNER_MEMORY=24`, `CARGO_BUILD_JOBS` and the
-harness slots at 4, and a drop-in (`~/.config/systemd/user/horizon-runner.service.d/cpus.conf`) that starts it under
+harness slots at 4, and a drop-in (`~/.config/systemd/user/sunrise-runner.service.d/cpus.conf`) that starts it under
 `taskset -c 4-7` (the user slice can't set `AllowedCPUs`: systemd doesn't delegate the cpuset controller to it).
 Agents' `tools/remote.sh` runs and benchmarks share CPUs 0-3, so they never slow a pull request's job.
 Without Nix, `linux-runner.sh` takes the build libraries, the JDK, sccache, Xvfb and Mesa's software Vulkan
 (lavapipe; there is no GPU) from apt, and Python 3.13 from uv. The partner can reach the machine, so gh is not
 logged in there: the registration token comes from another machine (`RUNNER_TOKEN`), and no job with secrets may
-run there (parity has none). It is also a parity host (`playhorizon` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
-2026-10-26 it has the `horizon-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
+run there (parity has none). It is also a parity host (`playsunrise` in `tools/parity_hosts.json`, 3 jobs on CPUs 0-3). Since
+2026-10-26 it has the `sunrise-game` label: pull requests' parity jobs run there, on the Mac mini or on the desktop, and
 `full-parity` ones only there.
 
 ## Merging
@@ -125,7 +125,7 @@ requires `verify` for everyone, and Ludovic's review for the files `.github/CODE
 and ships releases). Branches don't have to be up to date with main: main's own `checks` run catches the rare
 semantic conflict.
 
-**Who merges.** The Horizon Team (GitHub team `horizon-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
+**Who merges.** The Sunrise Team (GitHub team `sunrise-team`: kacpherek, levzzz5154, rdbtCVS, Online5277, dezer-x) and
 Ludovic. The orchestrator's agents prove only the risky pull requests (below), so a contributor's ordinary pull
 request doesn't wait for them.
 
@@ -146,7 +146,7 @@ paths, `lan_e2e`, a screenshot for anything visible) before it merges. Risky mea
 
 - it changes what is saved or loaded (`save.rs`, `entity_nbt.rs`, `block_entity_nbt.rs`, `region.rs`, `datafix/`):
   a bug there damages players' worlds;
-- the network or the server thread: `horizon-protocol`, `net.rs`, `remote*.rs`, `lan/`, `lan*.rs`,
+- the network or the server thread: `sunrise-protocol`, `net.rs`, `remote*.rs`, `lan/`, `lan*.rs`,
   `integrated.rs`, `levels.rs`, `dedicated*`;
 - world generation (`worldgen/`): seeds must keep generating the same terrain;
 - the launcher's installs and updates, or the mod runtime;
@@ -190,7 +190,7 @@ which runs them on main a batch of merges at a time, on the Mac mini's runner:
   also starts when a parity-main run finishes. A forced run (`force=true`) doesn't wait for parity-main.
 
 A pull request still runs its own parity job when it changes a harness script, an oracle
-(`mods/horizon/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
+(`mods/sunrise/src/test/`), a probe (`crates/*/examples/`, `game/*_fixture.rs`, `game/*_harness.rs`), the runner
 (`tools/parity*.py`, `tools/lab.py`, `tools/parity_hosts.json`, `parity*.yml`), or carries the `run-parity` label
 (`run-parity.yml` runs it when the label is added).
 
@@ -223,7 +223,7 @@ commit on main. In order:
    `sdk-<sha>` already exists) and `snapshot-sdk-publish` signs and publishes it as `sdk-<sha>` from this run's
    artifacts through `sdk-publish.yml`, the one workflow that publishes an SDK (the daily run and `prebuilt-game.yml` call it too).
 3. `snapshot` starts `nightly build` with `kind=snapshot` and that commit. It re-checks the gate and the SDK, builds
-   the commit alone (no picked pull requests, no build branch, no nightly-state), as `HORIZON_VERSION`
+   the commit alone (no picked pull requests, no build branch, no nightly-state), as `SUNRISE_VERSION`
    `snapshot-<date>` so the game calls itself "Snapshot <date> · <short>", signs it for the `snapshot` channel and
    for `snapshot-<date>-<short>` (`SHA256SUMS.sig`, `SHA256SUMS.v2.sig`, the Nightly's key), checks the smoke test
    and publishes the pre-release `snapshot-<date>-<short>` titled "Snapshot <date> · <short>". A snapshot of a
@@ -235,7 +235,7 @@ It never touches the `nightly` tag or channel, its rotation, its `nightly-source
 (the default for a dispatch, and any run off main) builds, indexes and signs the SDK with a throwaway key
 (`sdk-publish.yml` with `publish: false`, run only when `sdk-<sha>` does not exist yet), builds the game (a
 `nightly build` dry run, signed with a throwaway key) and publishes nothing; its summary names what a real run would publish. No launcher lists a
-snapshot or updates to one; a developer installs one with `horizon-launcher install snapshot-<date>-<short>`, which
+snapshot or updates to one; a developer installs one with `sunrise-launcher install snapshot-<date>-<short>`, which
 looks the tag up on its own and checks its signature for exactly that version.
 
 ### Daily run
@@ -290,8 +290,8 @@ flowchart LR
 commits) since the commit the published Nightly was built on:
 
 - A pull request counts when it changed what players run: `crates/` (not `examples/`, `tests/`, `benches/`),
-  `xtask/`, `packaging/`, `Cargo.toml`, `Cargo.lock`, `research-lock.json`, or an exporter `horizon-prepare`
-  compiles (the `mods/horizon/src/test/java/dev/horizonlab/parity/*.java` files its sources name). Markdown never
+  `xtask/`, `packaging/`, `Cargo.toml`, `Cargo.lock`, `research-lock.json`, or an exporter `sunrise-prepare`
+  compiles (the `mods/sunrise/src/test/java/dev/sunriselab/parity/*.java` files its sources name). Markdown never
   counts.
 - It goes in batches, so players get a few Nightlies a day rather than one per merge: once 5 pull requests count
   and the newest of them merged at least 5 minutes ago (a wave of merges becomes one Nightly), or once the oldest has
@@ -309,7 +309,7 @@ commits) since the commit the published Nightly was built on:
 
 ### Nightly only
 
-Ludovic decided on 2026-10-28 that Horizon ships only the Nightly. No `vX.Y.Z` game release is made any more:
+Ludovic decided on 2026-10-28 that Sunrise ships only the Nightly. No `vX.Y.Z` game release is made any more:
 the last one stays GitHub's *latest*, so launchers and servers from before the switch (which don't read Nightlies)
 keep a working build until they update themselves. `.github/release-line.txt` still numbers the launcher's releases
 (`launcher@X.Y.Z`).
@@ -320,7 +320,7 @@ keep a working build until they update themselves. `.github/release-line.txt` st
   instance stays. Worlds are in the game's folder, never in a version's, so nothing touches them. The "Nightly
   builds" setting is gone. The last week's Nightlies (`nightly-<date>`) and the old releases stay on the Versions
   page.
-- **Servers** (#3331): `horizon-server update`, `install.sh` and `install.ps1` follow the Nightly the same way.
+- **Servers** (#3331): `sunrise-server update`, `install.sh` and `install.ps1` follow the Nightly the same way.
 - **Kira** posts each Nightly in #releases; the bug template asks for the version the game shows.
 - **Everyone gets the reviewers' picks.** A Nightly is main plus the pull requests the trusted reviewers picked
   ([below](#trusted-reviewers-pick-the-nightlys-pull-requests)), so a pick reaches every player with the next
@@ -334,7 +334,7 @@ keep a working build until they update themselves. `.github/release-line.txt` st
 | `release-now` | A Nightly as soon as main's checks and parity-main pass, past the batch rule and the day's cap |
 | `skip-release` | Doesn't trigger a Nightly or a launcher release and isn't listed in the notes |
 | `run-parity` | Runs the parity job once on a fork's pull request |
-| `full-parity` | Runs the pull request's parity job on playhorizon's runner only (a change every harness reaches) |
+| `full-parity` | Runs the pull request's parity job on playsunrise's runner only (a change every harness reaches) |
 | `parity-regression` | Opened by the nightly audit for a harness that fails on main |
 | `release-blocker` | On an issue: no Nightly is published while it is open ([When it releases](#when-it-releases)) |
 
@@ -345,15 +345,15 @@ the notes.
 
 | Archive | Runs on | Checks |
 | --- | --- | --- |
-| `horizon-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
-| `horizon-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
-| `horizon-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `horizon-server`, `horizon-prepare` and the game built with `--no-default-features` as `horizon-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
-| `horizon-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
-| `horizon-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |
-| `horizon-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
-| `horizon-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `horizon-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
+| `sunrise-linux-x86_64.tar.gz` | GitHub `ubuntu-22.04` (an older glibc, so it runs on any recent distribution) | the standard loader and libraries only (`tools/check_imports.py`) |
+| `sunrise-linux-musl-x86_64.tar.gz` | Alpine 3.22 in Docker on GitHub `ubuntu-22.04`, targeting `x86_64-unknown-linux-musl` | musl loader and libraries only (`tools/check_imports.py --musl`), CPU baseline and every program's startup checked inside Alpine |
+| `sunrise-server-linux-x86_64.tar.gz` | the same Linux job, after the client archive: `sunrise-server`, `sunrise-prepare` and the game built with `--no-default-features` as `sunrise-engine` (docs/server.md) | as above, and neither `libasound.so.2` nor `libudev.so.1` (`tools/check_imports.py --server`) |
+| `sunrise-windows-x64.zip` | GitHub `windows-latest`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is x64 |
+| `sunrise-windows-arm64.zip` | GitHub `windows-11-vs2026-arm`, built for `aarch64-pc-windows-msvc`, C runtime linked in | system DLLs only (`tools/check_imports.py`); PE machine is ARM64 and binaries start on the native runner |
+| `sunrise-macos-arm64.zip` | The Mac mini's runner (`vars.MAC_RUNNER=macos-latest` sends it to GitHub) | system libraries only (`otool -L`); a 1500-frame offscreen run of a new world (about 12 s; 300 frames end before the world has loaded) with resources prepared from the runner's own Minecraft (`--offscreen --world smoke --frames 1500 --smoke-report`: frames drawn, chunks generated and meshed, a player, no error) |
+| `sunrise-macos-x64.zip` | The same runner, cross-built for `x86_64-apple-darwin` (#1161) | as `sunrise-macos-arm64.zip`, every program and the 1500-frame run under Rosetta 2; only the arm64 build's `smoke-test.json` is published |
 
-Each builds `horizon-client`, `horizon-ctl`, `horizon-prepare` and `horizon-server` in release mode, checks they
+Each builds `sunrise-client`, `sunrise-ctl`, `sunrise-prepare` and `sunrise-server` in release mode, checks they
 exist, verifies Windows PE architectures, checks the `--help` and `--version` entry points, packages the folder with
 `cargo run -p xtask -- package` and archives it. The
 GitHub jobs keep their Cargo caches (`Swatinem/rust-cache`); the Mac mini keeps its `target/`. Only the Mac
@@ -364,9 +364,9 @@ The musl archive is an optional manual download for musl-based Linux desktops; s
 standard glibc archive. The musl client and tools keep audio and controllers enabled and link musl dynamically
 (`-C target-feature=-crt-static`) to load graphics and window libraries at runtime. A failed musl build does
 not block other platforms: signing and publication omit the missing archive with a warning. The dedicated
-server archive remains glibc; the bundled musl `horizon-server` refuses automatic updates to glibc archives.
+server archive remains glibc; the bundled musl `sunrise-server` refuses automatic updates to glibc archives.
 
-Musl gameplay parity is not yet validated. On x86-64, `horizon-core::jmath` uses the platform libm for several
+Musl gameplay parity is not yet validated. On x86-64, `sunrise-core::jmath` uses the platform libm for several
 functions, so musl may round differently from glibc or HotSpot. Values near a simulation threshold could
 therefore change world generation or mob behaviour for the same seed. This build has no musl parity results;
 CLI startup checks do not establish gameplay parity. Before merging the platform support, record a successful
@@ -406,18 +406,18 @@ so a signed list can't be reused under another tag.
   runs, which sign with a throwaway key). No code from the repository runs beside the key, so no pull request
   can read it by changing what a build compiles; the key is in no file, no log and no password vault, and nobody
   needs to read it.
-- The publish job then checks the signature the way launchers do (`horizon-release-sign verify --publishing`,
-  crates/horizon-release-sign), against the public keys built in from
-  `crates/horizon-release-sign/release-keys.txt`. While that file lists no key, releases go out with SHA256SUMS
+- The publish job then checks the signature the way launchers do (`sunrise-release-sign verify --publishing`,
+  crates/sunrise-release-sign), against the public keys built in from
+  `crates/sunrise-release-sign/release-keys.txt`. While that file lists no key, releases go out with SHA256SUMS
   alone and a warning (today's releases keep working). Once it lists one, a missing secret or a key it doesn't
   list fails the release before anything is published, instead of publishing something launchers would refuse.
-- Making the key: `tools/ci/new_release_key.sh` pipes a new key from `horizon-release-sign keygen` straight into
+- Making the key: `tools/ci/new_release_key.sh` pipes a new key from `sunrise-release-sign keygen` straight into
   `gh secret set RELEASE_SIGNING_KEY --env release` and prints only the public key, which then goes into
   release-keys.txt by pull request.
 
-**Releases from before signing.** The launcher and `horizon-server update` install only signed releases, with
+**Releases from before signing.** The launcher and `sunrise-server update` install only signed releases, with
 one exception, so a player or a server can still go back to an older version: every release published before
-signing began has its archives' SHA-256 pinned in `crates/horizon-release-sign/legacy-releases.txt`, built into
+signing began has its archives' SHA-256 pinned in `crates/sunrise-release-sign/legacy-releases.txt`, built into
 both. Those releases install only with exactly those files, whatever GitHub serves for them later. The file was
 written once by `tools/ci/legacy_releases.py` from the SHA-256s GitHub computed at upload; it lists no signed
 release and never changes again (`--check` says whether it is complete).
@@ -460,7 +460,7 @@ open `release-blocker`. The reviewers' `/nightly` and the 20:17 UTC build still 
 To stop the next Nightlies while a problem is fixed, label an issue about it `release-blocker`. The way out is
 forward: revert the pull request (or `/nightly remove` a pick), label the revert `release-now`, and a fixed Nightly
 is out as soon as main's checks and parity-main pass. Meanwhile a player can pick an earlier build on the launcher's
-Versions page (the last week's `nightly-<date>`, or a `vX.Y.Z`), and `horizon-server update --version <tag>` does
+Versions page (the last week's `nightly-<date>`, or a `vX.Y.Z`), and `sunrise-server update --version <tag>` does
 the same for a server.
 
 ## Prebuilt SDK retention design (arismoko/horizon, #3011)
@@ -478,7 +478,7 @@ publication. A complete SDK means a published, non-draft `sdk-<40 lowercase hex 
 `build-data.tar.xz` and the `runtime`, `api` and `engine` slices of the four packages (Linux client, Linux server,
 Windows GNU and macOS ARM64); its `sdk.json` must match those sums and name that build and this package format. The
 Nightly carries that `sdk.json` in its own signed sums. The SDK signature's message names `sdk-<sha>`, so it never
-passes for a game release, nor a game release's for an SDK (`horizon-release-sign`: `signed_digest`, `sdk_digest`).
+passes for a game release, nor a game release's for an SDK (`sunrise-release-sign`: `signed_digest`, `sdk_digest`).
 One publish step ([sdk-publish.yml](../.github/workflows/sdk-publish.yml)), called by the daily run (`sdk-publish`
 in [daily.yml](../.github/workflows/daily.yml)), by a [snapshot](#snapshot) and by the [SDK workflow](../.github/workflows/prebuilt-game.yml)'s
 hand dispatch, publishes those exact-SHA releases without pruning; it signs through the `release` environment on
@@ -498,7 +498,7 @@ availability, not a promise to retain compiled SDKs forever.
 Once SDKs publish as `sdk-<sha>` releases, each asset's `kind` is listed in the release's signed `sdk.json`.
 Pruning deletes only assets whose `kind` is `runtime`, `api` or `engine`, never the release, its small files or
 its signature. An evicted build keeps `sdk.json`, `surface.json`, `build-data.tar.xz`, `api-source.tar.xz`,
-`SHA256SUMS` and `SHA256SUMS.sig`, so `cargo horizon-mod sdk diff` and the fit test keep working for it; only
+`SHA256SUMS` and `SHA256SUMS.sig`, so `cargo sunrise-mod sdk diff` and the fit test keep working for it; only
 building against it needs the compiled assets back.
 
 ### Keep set and bound
@@ -611,7 +611,7 @@ No SDK compilation is needed to evaluate this design.
 ## Launcher releases
 
 `.github/workflows/launcher.yml` releases the launcher the same way. It starts on a push to main that changes
-`launcher/`, `crates/horizon-prepare/` or `crates/horizon-theme/` (what the launcher builds in), every hour at :47,
+`launcher/`, `crates/sunrise-prepare/` or `crates/sunrise-theme/` (what the launcher builds in), every hour at :47,
 and by hand; pushes to `launcher` and `launcher-*` branches only build.
 
 - `tools/release_train.py decide --kind launcher` counts the pull requests merged since the last published
@@ -621,8 +621,8 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
   patches separately). Without `.github/release-line.txt`, `launcher-vX.Y.Z`: the patch after the last launcher tag,
   or the next minor (`X.Y+1.0`) when one of those pull requests is labelled `feature`. `launcher-v0.2.0` was taken
   long before 0.2, hence the new prefix.
-- No version-bump commits: the build gets the version in `HORIZON_LAUNCHER_VERSION` and the tag in
-  `HORIZON_LAUNCHER_TAG`, which `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s),
+- No version-bump commits: the build gets the version in `SUNRISE_LAUNCHER_VERSION` and the tag in
+  `SUNRISE_LAUNCHER_TAG`, which `launcher/src/backend.rs` reads with `option_env!` (falling back to `Cargo.toml`'s),
   so `--version`, the window, the User-Agent and the self-update comparison all use them. Each build checks
   `--version` says it.
 - Linux on GitHub `ubuntu-22.04`, Windows x64 on `windows-latest`, Windows ARM64 on `windows-11-vs2026-arm`, and
@@ -631,15 +631,15 @@ and by hand; pushes to `launcher` and `launcher-*` branches only build.
   available yet, and Windows ARM64 installs the x64 build (under emulation) from a Nightly without an ARM64 one.
 - Published with `--latest=false`: the repository's latest release stays a game release. Notes list the pull
   requests under New and Fixed; Kira posts launcher releases without pinging.
-- Windows also publishes `horizon-launcher-setup.exe` (x64) and `horizon-launcher-setup-arm64.exe`, the launcher's
+- Windows also publishes `sunrise-launcher-setup.exe` (x64) and `sunrise-launcher-setup-arm64.exe`, the launcher's
   binary under another name: with no
   arguments it opens the per-user setup (`launcher/src/installer.rs`) instead of Home, and
-  `horizon-launcher.exe uninstall` removes it again. Both files are in the release's signed `SHA256SUMS`.
+  `sunrise-launcher.exe uninstall` removes it again. Both files are in the release's signed `SHA256SUMS`.
 
-Making a launcher release GitHub's latest instead would break servers: every `horizon-server` already installed,
+Making a launcher release GitHub's latest instead would break servers: every `sunrise-server` already installed,
 `install.sh` and `install.ps1` ask for `releases/latest` and expect the game's archives there, and a server that
 can't update can't fetch the fix either. So the game release stays the latest, and it sends people to the launcher
-(#1647): its notes open with a "Want to play? Download the Horizon launcher" block (`PLAYERS` in
+(#1647): its notes open with a "Want to play? Download the Sunrise launcher" block (`PLAYERS` in
 `tools/release_train.py`: raw HTML, which GitHub shows and launchers' notes skip; the site's Releases page leaves
 it out too), which `PLAYERS_FOOTER` repeats above the disclaimer at the end, and its archives carry labels ("Game files the
 launcher installs: Linux (…)") that GitHub shows in place of the file names. Everything that downloads matches
@@ -668,7 +668,7 @@ CODEOWNERS-guarded files alone, the sets and builds stay capped, `paused` stops 
 sticks, and the build runs without secrets. Each pull request is built at the head it was picked at; a push after
 the pick waits until someone picks it again (`/nightly add`).
 
-Every Nightly ships its exact source. Its notes name the commit; `horizon-source.tar.gz` on the release is that
+Every Nightly ships its exact source. Its notes name the commit; `sunrise-source.tar.gz` on the release is that
 commit's `git archive`, signed with the builds in `SHA256SUMS`; and `nightly.py keep-source` tags the commit
 `nightly-source/<date>-<short>`. That tag is never pruned, unlike the `nightly-<date>` release and the
 `nightly/build-*` branch (7 days each), because native mods pin a Nightly's commit and the launcher downloads that
@@ -755,7 +755,7 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   Fixed, as a release's notes), then each picked pull request with its title, author and who picked it, the known
   issues and the thanks. `build` is
   `game-build.yml`, the same builds and smoke test as a release, with the version `nightly-<date>` and
-  `HORIZON_NIGHTLY="<date> <short sha>"` built in, macOS signed ad hoc. `sign` signs SHA256SUMS for the channel
+  `SUNRISE_NIGHTLY="<date> <short sha>"` built in, macOS signed ad hoc. `sign` signs SHA256SUMS for the channel
   (the message says `horizon release nightly`, so a nightly's signature never passes for a release's). `publish`
   checks the signature, the smoke test and that no `release-blocker` is open (as a release; a dry run only warns, so
   `/nightly dry-run <pr>` still tries a blocker's fix), renames the
@@ -767,13 +767,13 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   merge with a read-only token that isn't kept in the checkout and no secrets; the runner's Developer ID keychain
   stays locked. `sign` is the only job with the key, and checks out only main's `tools/ci/sign_release.sh`, which
   hashes the archives with the runner's `sha256sum` and signs with its OpenSSL: it never runs what `build` made.
-  `publish` runs main's `horizon-release-sign`, never the archives. Nothing a nightly's build leaves reaches a
+  `publish` runs main's `sunrise-release-sign`, never the archives. Nothing a nightly's build leaves reaches a
   release either: `game-build.yml`'s `trusted` input is true only for `release.yml`. An untrusted build runs its
-  macOS jobs on the Mac mini's nightly runner (`horizon-nightly`, its own so a nightly never waits behind pull
-  requests' parity queue; same machine and trust as the `horizon-game` runner), never the release runner
+  macOS jobs on the Mac mini's nightly runner (`sunrise-nightly`, its own so a nightly never waits behind pull
+  requests' parity queue; same machine and trust as the `sunrise-game` runner), never the release runner
   (`MAC_RUNNER`), and its Rust cache has its own key and is never saved. A trusted build doesn't use the machine's
-  shared sccache, which pull requests' jobs write (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`).
-- **Players.** Every launcher and `horizon-server update` install the `nightly` pre-release
+  shared sccache, which pull requests' jobs write (`SUNRISE_NO_SCCACHE`, `tools/ci/runner-env.sh`).
+- **Players.** Every launcher and `sunrise-server update` install the `nightly` pre-release
   ([Nightly only](#nightly-only)). It is never GitHub's latest: the last `vX.Y.Z` stays that, for launchers,
   servers and `install.sh` from before the switch.
 
@@ -805,7 +805,7 @@ Releases ship often, so nothing they leave behind may grow without bound.
 
 - **Artifacts:** every upload keeps 3 days (nightly parity logs 7); a release's assets live on the release itself.
 - **Mac runners:** `tools/ci/runner-gc.sh` runs every 30 minutes from launchd (`StartInterval` 1800) on the Mac mini, as a copy taken from main
-  (`~/.actions-runners/runner-gc.sh`, plist `dev.horizon.runner-gc`), never from a pull request's checkout. It skips a
+  (`~/.actions-runners/runner-gc.sh`, plist `dev.sunrise.runner-gc`), never from a pull request's checkout. It skips a
   runner in a job, removes a checkout's cargo build folders past 12 GB (`MAX_TARGET_GB`) and harness work folders
   under `.local/` untouched for 3 days (`STALE_DAYS`), and keeps the 2 newest shared preparations (`KEEP_PREPARED`)
   while no runner works. It also stops harness JVMs (vanilla servers, oracles) left orphaned for 3 hours

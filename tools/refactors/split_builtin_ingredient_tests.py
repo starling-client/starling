@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE = ROOT / 'crates/horizon-client/src/crafting/ingredient'
+BASE = ROOT / 'crates/sunrise-client/src/crafting/ingredient'
 OLD = BASE / 'builtin_kinds_tests.rs'
 DEST = BASE / 'builtin_kinds_tests'
 

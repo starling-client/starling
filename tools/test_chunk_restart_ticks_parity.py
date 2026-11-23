@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A chunk's saved ticks and block entities after a restart and after a frozen reload.
 
-Real dedicated servers, vanilla and Horizon, on the same scene: in a forceloaded chunk of a frozen
+Real dedicated servers, vanilla and Sunrise, on the same scene: in a forceloaded chunk of a frozen
 world, repeaters of delay 1 to 4 are powered and a water source is placed, so their block and fluid
 ticks are pending (due 2, 4, 6, 8 and 5 ticks on). Then either
 
@@ -19,7 +19,7 @@ the furnace does not burn in the first tick; after the frozen reload it does. Af
 (`isPositionTickingWithEntitiesLoaded`), which can still be pending on the second tick, so the delay-1
 repeater (due on the second tick) is left out of that comparison.
 
-  test_chunk_restart_ticks_parity.py [--binary HORIZON] [--out DIR]
+  test_chunk_restart_ticks_parity.py [--binary SUNRISE] [--out DIR]
 """
 import argparse
 import json
@@ -187,34 +187,34 @@ def run_case(command, out, label, case, jar):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon server (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise server (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'chunk-restart-ticks-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
     results = {label: {case: run_case(command, out, label, case, jars['server']) for case in EXPECTED}
                for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     failures = []
     for case, keys in EXPECTED.items():
-        expected, actual = results['vanilla'][case], results['horizon'][case]
+        expected, actual = results['vanilla'][case], results['sunrise'][case]
         for key in keys:
             assert expected[key] == keys[key], f'vanilla {case} {key}: {expected[key]}, not {keys[key]}'
             if actual[key] != expected[key]:
-                failures.append({'case': case, 'tick': key, 'vanilla': expected[key], 'horizon': actual[key]})
+                failures.append({'case': case, 'tick': key, 'vanilla': expected[key], 'sunrise': actual[key]})
         matched = len(keys) - sum(f['case'] == case for f in failures)
         print(f'{case}: {matched}/{len(keys)} observations match', flush=True)
     lab.write_json(out / 'report.json', {'schema': 1, 'minecraft': lock['minecraft']['version'],

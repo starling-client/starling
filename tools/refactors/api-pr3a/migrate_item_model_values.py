@@ -8,13 +8,13 @@ from pathlib import Path
 
 names = ("item_model_property", "item_model_range_property", "item_model_select_property", "item_tint_source")
 for name in names:
-    path = Path(f"crates/horizon-client/src/game/native_hooks/{name}.rs")
+    path = Path(f"crates/sunrise-client/src/game/native_hooks/{name}.rs")
     text = path.read_text().replace("stack: &StackView,", "stack: &mod_api::ItemStack,\n        bundle_selected: i32,")
     text = text.replace("property, stack, value", "property, stack, bundle_selected, value")
     text = text.replace("source, config, stack, color", "source, config, stack, bundle_selected, color")
     path.write_text(text)
 
-path = Path("crates/horizon-client/src/game/interface/item_draw.rs")
+path = Path("crates/sunrise-client/src/game/interface/item_draw.rs")
 text = path.read_text().replace("use super::{Dim, Game};", "use super::{Dim, Game};\nuse super::api_values::TryIntoApi;")
 for name, default in zip(names, ("false", "0.0", "None", "-1")):
     start = text.index(f"    fn {name}(")

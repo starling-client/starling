@@ -41,13 +41,13 @@ else:
     import prebuilt_game
 
 ROOT = Path(__file__).resolve().parent.parent
-API = "horizon-mod-api"
+API = "sunrise-mod-api"
 WASM = "wasm32-unknown-unknown"
 GENERATED = "generated"
-ROOT_TOKEN = "{horizon-api-source-root}"
-TEMPLATE = ROOT / "crates/cargo-horizon-mod/template/native"
-# Where a mod finds the API source (design: the SDK fetched into the mod's `.horizon/sdk/`).
-MOD_PATH = ".horizon/sdk/api"
+ROOT_TOKEN = "{sunrise-api-source-root}"
+TEMPLATE = ROOT / "crates/cargo-sunrise-mod/template/native"
+# Where a mod finds the API source (design: the SDK fetched into the mod's `.sunrise/sdk/`).
+MOD_PATH = ".sunrise/sdk/api"
 # Marks a scratch folder `check` made, which a later check may empty.
 SCRATCH_MARK = ".sdk-api-source-check"
 # The build script of a crate whose generated files come with it. Paths become `/`-separated, valid in Rust
@@ -115,7 +115,7 @@ def closure(metadata: dict, root: str = API) -> list[Crate]:
         build = any("custom-build" in target["kind"] for target in package["targets"])
         directory = Path(package["manifest_path"]).parent.relative_to(workspace).as_posix()
         if build and not any(dependency["kind"] == "build" and dependency.get("path")
-                             and dependency["name"] == "horizon-mod-api-gen" for dependency in package["dependencies"]):
+                             and dependency["name"] == "sunrise-mod-api-gen" for dependency in package["dependencies"]):
             raise Refusal("E_BUILD_SCRIPT", f"{package['name']} has a build script that is not the generator")
         if build and directory.count("/") != 1:
             # The build script names the workspace root as `../..` from the crate.
@@ -518,14 +518,14 @@ def archive_sizes(folder: Path) -> dict[str, int]:
 
 
 def starter_mod(folder: Path) -> None:
-    """The native template as `cargo horizon-mod new` writes it, with the API dependency in the path form."""
+    """The native template as `cargo sunrise-mod new` writes it, with the API dependency in the path form."""
     def fill(text: str) -> str:
         return text.replace("{id}", "starter").replace("{name}", "Starter")
 
-    manifest, count = re.subn(r"^horizon-mod-api = .*$", f'horizon-mod-api = {{ path = "{MOD_PATH}/crates/{API}" }}',
+    manifest, count = re.subn(r"^sunrise-mod-api = .*$", f'sunrise-mod-api = {{ path = "{MOD_PATH}/crates/{API}" }}',
                               fill((TEMPLATE / "api.toml").read_text()), flags=re.MULTILINE)
     if count != 1:
-        raise Refusal("E_TEMPLATE", "the template names horizon-mod-api once")
+        raise Refusal("E_TEMPLATE", "the template names sunrise-mod-api once")
     # Its own workspace: cargo must not climb to a folder above it.
     (folder / "src").mkdir(parents=True)
     (folder / "Cargo.toml").write_text(manifest + "\n[workspace]\n")
@@ -605,7 +605,7 @@ def main() -> None:
         if args.command == "build":
             build(args.out.resolve())
         elif args.command == "archive":
-            # The package's own archive form: a mod's `.horizon/sdk/api` is this folder unpacked.
+            # The package's own archive form: a mod's `.sunrise/sdk/api` is this folder unpacked.
             prebuilt_game.tar_xz(args.out, prebuilt_game.tree(args.out), args.archive)
         else:
             target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))

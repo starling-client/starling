@@ -1,7 +1,7 @@
 //! The Wardrobe's player in 3D: the account's skin wearing its items (or the one a card's hover
-//! tries on), drawn on the CPU by `horizon_cosmetics::preview` into an image, again only when
-//! `horizon_cosmetics::viewer::Stage` says so. Dragging turns it, the wheel zooms, items
-//! animate while the window is in front (not under reduced motion; `HORIZON_LAUNCHER_MOTION=always`
+//! tries on), drawn on the CPU by `sunrise_cosmetics::preview` into an image, again only when
+//! `sunrise_cosmetics::viewer::Stage` says so. Dragging turns it, the wheel zooms, items
+//! animate while the window is in front (not under reduced motion; `SUNRISE_LAUNCHER_MOTION=always`
 //! keeps them moving behind other windows), and an emote plays once
 //! (`Viewer::play`).
 //!
@@ -15,9 +15,9 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollDelta, ScrollEvent, Stateful,
     Subscription, Window,
 };
-use horizon_cosmetics::preview::{self, Camera};
-use horizon_cosmetics::viewer::{BodyMotion, Shot, Stage};
-use horizon_cosmetics::{Item, Part, Texture};
+use sunrise_cosmetics::preview::{self, Camera};
+use sunrise_cosmetics::viewer::{BodyMotion, Shot, Stage};
+use sunrise_cosmetics::{Item, Part, Texture};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -201,7 +201,7 @@ impl Render for Viewer {
         if let Some(m) = self.again.as_ref().filter(|_| !self.stage.playing()) {
             self.stage.play(m.clone(), Instant::now());
         }
-        // As the sky: `HORIZON_LAUNCHER_MOTION=always` keeps it moving in the background.
+        // As the sky: `SUNRISE_LAUNCHER_MOTION=always` keeps it moving in the background.
         let front = window.is_window_active() || crate::sky::motion() == crate::sky::Motion::Always;
         let frame = self.stage.frame(Instant::now(), scale, front);
         if let Some(shot) = &frame.shot {

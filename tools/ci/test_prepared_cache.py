@@ -19,15 +19,15 @@ class PreparedCacheTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / "target") as directory:
             root = Path(directory)
             source, cache, work, tmp = [root / x for x in ("source", "cache", "work", "temp")]
-            for path in (source / "minecraft/26.3", source / "horizon-client/26.3", source / "tools", cache, work, tmp):
+            for path in (source / "minecraft/26.3", source / "sunrise-client/26.3", source / "tools", cache, work, tmp):
                 path.mkdir(parents=True)
             (source / "minecraft/26.3/prepared.json").write_text("{}")
-            (source / "horizon-client/26.3/extra").write_text("shared")
-            (source / "horizon-client/26.3/generated").write_text("old")
-            sounds = source / "horizon-client/26.3/assets/minecraft/sounds"
+            (source / "sunrise-client/26.3/extra").write_text("shared")
+            (source / "sunrise-client/26.3/generated").write_text("old")
+            sounds = source / "sunrise-client/26.3/assets/minecraft/sounds"
             sounds.mkdir(parents=True)
             (sounds / "fixture.ogg").write_bytes(b"sound fixture")
-            (source / "horizon-client/26.3/horizon-data.bin").write_bytes(b"stale runtime cache")
+            (source / "sunrise-client/26.3/sunrise-data.bin").write_bytes(b"stale runtime cache")
             (work / "research-lock.json").write_text('{"version": "26.3"}')
             (work / "tools/ci").mkdir(parents=True)
             shutil.copyfile(ROOT / "tools/prepare_output.py", work / "tools/prepare_output.py")
@@ -35,28 +35,28 @@ class PreparedCacheTest(unittest.TestCase):
             shutil.copyfile(ROOT / "tools/ci/preparation_step.py", work / "tools/ci/preparation_step.py")
             target = work / "target/release"
             target.mkdir(parents=True)
-            prepare = target / "horizon-prepare"
-            prepare.write_text('#!/bin/sh\nmkdir -p .local/horizon-client/26.3 .local/datagen\nprintf new > .local/horizon-client/26.3/generated\nprintf "{}" > .local/horizon-client/26.3/horizon-resources.json\n')
+            prepare = target / "sunrise-prepare"
+            prepare.write_text('#!/bin/sh\nmkdir -p .local/sunrise-client/26.3 .local/datagen\nprintf new > .local/sunrise-client/26.3/generated\nprintf "{}" > .local/sunrise-client/26.3/sunrise-resources.json\n')
             prepare.chmod(0o755)
             binary = work / "bin"
             binary.mkdir()
             cargo = binary / "cargo"
             cargo.write_text('#!/bin/sh\nexit 0\n')
             cargo.chmod(0o755)
-            env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", HORIZON_DYNA_CACHE="true",
-                       HORIZON_PREPARED_CACHE=str(cache), HORIZON_SHARED_SOURCE=str(source),
-                       HORIZON_PREPARE_KEY="fixture", HORIZON_PREPARE_EXPORT_DIGEST=str(tmp / "export.digest"),
+            env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", SUNRISE_DYNA_CACHE="true",
+                       SUNRISE_PREPARED_CACHE=str(cache), SUNRISE_SHARED_SOURCE=str(source),
+                       SUNRISE_PREPARE_KEY="fixture", SUNRISE_PREPARE_EXPORT_DIGEST=str(tmp / "export.digest"),
                        RUNNER_TEMP=str(tmp), CARGO_TARGET_DIR=str(work / "target"))
             def run():
                 return subprocess.run(["bash", SCRIPT], cwd=work, env=env, text=True,
                                       capture_output=True, check=True).stdout
             self.assertIn("prepared key fixture stale", run())
-            self.assertFalse((work / ".local/horizon-client/26.3/extra").exists())
-            self.assertFalse((work / ".local/horizon-client/26.3/horizon-data.bin").exists())
-            self.assertEqual((work / ".local/horizon-client/26.3/assets/minecraft/sounds/fixture.ogg").read_bytes(), b"sound fixture")
-            self.assertEqual((work / ".local/horizon-client/26.3/generated").read_text(), "new")
+            self.assertFalse((work / ".local/sunrise-client/26.3/extra").exists())
+            self.assertFalse((work / ".local/sunrise-client/26.3/sunrise-data.bin").exists())
+            self.assertEqual((work / ".local/sunrise-client/26.3/assets/minecraft/sounds/fixture.ogg").read_bytes(), b"sound fixture")
+            self.assertEqual((work / ".local/sunrise-client/26.3/generated").read_text(), "new")
             seeded = subprocess.check_output(["python3", ROOT / "tools/prepare_output.py", "digest",
-                                              work / ".local/horizon-client/26.3"], text=True).strip()
+                                              work / ".local/sunrise-client/26.3"], text=True).strip()
             self.assertEqual((tmp / "export.digest").read_text().strip(), seeded)
             self.assertTrue(run().startswith("prepared key fixture fresh (manifest "))
             lock = cache / "prepared/.lock-file"
@@ -74,7 +74,7 @@ class PreparedCacheTest(unittest.TestCase):
             self.assertEqual(waiter.returncode, 0, err)
             self.assertTrue(out.startswith("prepared key fixture fresh (manifest "))
             # A job dying during seed leaves no completion marker; the next job rebuilds.
-            other = dict(env, HORIZON_PREPARE_KEY="interrupted", SEED_STARTED=str(root / "seed-started"),
+            other = dict(env, SUNRISE_PREPARE_KEY="interrupted", SEED_STARTED=str(root / "seed-started"),
                          REAL_PYTHON=sys.executable)
             python = binary / "python3"
             python.write_text('#!/bin/sh\nif [ "$1" = -m ]; then touch "$SEED_STARTED"; exec sleep 60; fi\nexec "$REAL_PYTHON" "$@"\n')

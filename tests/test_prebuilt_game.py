@@ -25,8 +25,8 @@ def write_build_data(root: Path, identity: dict | None = None, commit: str = COM
         (root / name).write_text(json.dumps({"schema": 1, "build": {"commit": commit}}))
     so, exe = prebuilt_game.dylib_suffix(), ".exe" if sys.platform == "win32" else ""
     lib = prebuilt_game.dylib_prefix()
-    members = {"runtime": [f"bin/horizon-client{exe}",
-                           f"deps/{lib}horizon_mod_host{so}", f"deps/{lib}horizon_mod_wasm{so}",
+    members = {"runtime": [f"bin/sunrise-client{exe}",
+                           f"deps/{lib}sunrise_mod_host{so}", f"deps/{lib}sunrise_mod_wasm{so}",
                            *[f"deps/{lib}{crate}{so}" for crate in ("mod_api", "mod_vocab", "mod_points")]],
                "api": [prebuilt_game.NATIVE_MODS_TEMPLATE, "deps/libmod_api-1.rmeta", "deps/libmod_points-1.rmeta"]}
     for name in members["runtime"] + members["api"]:
@@ -46,7 +46,7 @@ class StageToolTests(unittest.TestCase):
             source.mkdir()
             committed = b"fn first() {}\nfn second() {}\n"
             (source / "tracked.rs").write_bytes(committed)
-            manifest = source / "crates/horizon-mod-wasm/Cargo.toml"
+            manifest = source / "crates/sunrise-mod-wasm/Cargo.toml"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("[package]\nname = 'fixture'\n")
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
@@ -59,7 +59,7 @@ class StageToolTests(unittest.TestCase):
             (source / "tracked.rs").write_bytes(committed.replace(b"\n", b"\r\n") + b"fn edited() {}\r\n")
             (source / "untracked.rs").write_text("not copied")
             target = root / "output"
-            tool = root / "unused" / ".." / "horizon-stage"
+            tool = root / "unused" / ".." / "sunrise-stage"
             calls = []
             real_run = prebuilt_game.run
 
@@ -128,7 +128,7 @@ class RegistryPatchTests(unittest.TestCase):
             declared = patch / "Cargo.toml"
             declared.write_text("manifest")
             (sdk / "deps").mkdir()
-            for crate in ("horizon_mod_wasm", "horizon_mod_host"):
+            for crate in ("sunrise_mod_wasm", "sunrise_mod_host"):
                 (sdk / "deps" / f"lib{crate}.so").write_bytes(b"")
             write_build_data(sdk, {"patch_files": {
                 "patches/allocator-sys/Cargo.toml": prebuilt_game.sha256(declared)}})
@@ -148,10 +148,10 @@ class RegistryPatchTests(unittest.TestCase):
 
 
 class SdkAssetTests(unittest.TestCase):
-    RUNTIME = ["deps/libhorizon_mod_host.so", "deps/libhorizon_mod_wasm.so", "bin/horizon-client",
+    RUNTIME = ["deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so", "bin/sunrise-client",
                "deps/libmod_api.so", "deps/libmod_vocab.so", "deps/libmod_points.so"]
     API = ["deps/libmod_api-1.rmeta", "deps/libmod_points-1.rmeta", "host/libserde_derive.so"]
-    ENGINE = ["deps/libhorizon_client-1.rmeta", "native/libwindows.a"]
+    ENGINE = ["deps/libsunrise_client-1.rmeta", "native/libwindows.a"]
 
     def out(self, root: Path, mtime: int) -> Path:
         out = root / "prebuilt"
@@ -172,7 +172,7 @@ class SdkAssetTests(unittest.TestCase):
             self.assertEqual(command[-3:], ["surface", str(prebuilt_game.ROOT), str(dist / "surface.json")])
             (dist / "surface.json").write_text('{"hash": "ab"}')
         with patch.object(prebuilt_game, "head", return_value=COMMIT), patch.object(prebuilt_game, "run", side_effect=run):
-            prebuilt_game.pack(out, dist, stage_tool=Path("horizon-stage"))
+            prebuilt_game.pack(out, dist, stage_tool=Path("sunrise-stage"))
 
     def test_pack_writes_three_archives_that_split_the_package_and_the_same_every_run(self):
         import lzma
@@ -212,7 +212,7 @@ class SdkAssetTests(unittest.TestCase):
     def test_check_refuses_slices_naming_absent_or_shared_files(self):
         api = [*self.API, *prebuilt_game.API_BUILD_DATA, prebuilt_game.NATIVE_MODS_TEMPLATE]
         for change, why in (({"api": [*api, "deps/libgone-1.rmeta"]}, "absent files"),
-                            ({"api": [*api, "deps/libhorizon_mod_host.so"]}, "overlap"),
+                            ({"api": [*api, "deps/libsunrise_mod_host.so"]}, "overlap"),
                             # Each slice holds the members the required inputs name (so neither is empty).
                             ({"api": []}, "lack required members"),
                             ({"runtime": [prebuilt_game.IDENTITY, *self.RUNTIME[:2]]}, "lack required members"),
@@ -239,36 +239,36 @@ class SdkAssetTests(unittest.TestCase):
             return ({"id": name, "name": name, "targets": [{"kind": [kind]}]},
                     {"id": name, "deps": [{"pkg": dep, "dep_kinds": [{"kind": dep_kind}]} for dep, dep_kind in deps]})
         packages, nodes = zip(
-            package("horizon-mod-api", deps=[("vocab", None), ("macros", None), ("tool", "build")]),
-            package("horizon-mod-points", deps=[("vocab", None)]),
+            package("sunrise-mod-api", deps=[("vocab", None), ("macros", None), ("tool", "build")]),
+            package("sunrise-mod-points", deps=[("vocab", None)]),
             package("vocab", deps=[("serde", None)]),
             package("serde"),
             package("macros", "proc-macro", deps=[("syn", None)]),
             package("syn"),
             package("tool"),
-            package("horizon-mod-host", "dylib", deps=[("horizon-mod-api", None), ("engine", None)]),
-            package("horizon-mod-wasm", "dylib"),
+            package("sunrise-mod-host", "dylib", deps=[("sunrise-mod-api", None), ("engine", None)]),
+            package("sunrise-mod-wasm", "dylib"),
             package("engine"),
         )
         metadata = {"packages": list(packages), "resolve": {"nodes": list(nodes)}}
         self.assertEqual(prebuilt_game.api_closure(metadata),
-                         {"horizon-mod-api", "horizon-mod-points", "vocab", "serde", "macros"})
-        copied = {name: [f"deps/lib{name}-1.rmeta"] for name in ("horizon-mod-api", "horizon-mod-points", "vocab",
+                         {"sunrise-mod-api", "sunrise-mod-points", "vocab", "serde", "macros"})
+        copied = {name: [f"deps/lib{name}-1.rmeta"] for name in ("sunrise-mod-api", "sunrise-mod-points", "vocab",
                                                                   "serde", "syn", "tool", "engine")}
         copied["macros"] = ["host/libmacros-1.so"]
-        copied["horizon-mod-host"] = ["deps/libhorizon_mod_host.so"]
-        copied["horizon-mod-wasm"] = ["deps/libhorizon_mod_wasm.so"]
-        sliced = prebuilt_game.slices(metadata, copied, ["bin/horizon-client"])
-        self.assertEqual(sliced["runtime"], sorted([prebuilt_game.IDENTITY, "bin/horizon-client",
-                                                    "deps/libhorizon_mod_host.so", "deps/libhorizon_mod_wasm.so"]))
+        copied["sunrise-mod-host"] = ["deps/libsunrise_mod_host.so"]
+        copied["sunrise-mod-wasm"] = ["deps/libsunrise_mod_wasm.so"]
+        sliced = prebuilt_game.slices(metadata, copied, ["bin/sunrise-client"])
+        self.assertEqual(sliced["runtime"], sorted([prebuilt_game.IDENTITY, "bin/sunrise-client",
+                                                    "deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so"]))
         self.assertEqual(sliced["api"], sorted([
-            "deps/libhorizon-mod-api-1.rmeta", "deps/libhorizon-mod-points-1.rmeta", "deps/libvocab-1.rmeta",
+            "deps/libsunrise-mod-api-1.rmeta", "deps/libsunrise-mod-points-1.rmeta", "deps/libvocab-1.rmeta",
             "deps/libserde-1.rmeta", "host/libmacros-1.so", *prebuilt_game.API_BUILD_DATA,
             prebuilt_game.NATIVE_MODS_TEMPLATE]))
         # Each slice unpacks to its own folder, so a game library inside the API closure is refused.
-        nodes[1]["deps"].append({"pkg": "horizon-mod-wasm", "dep_kinds": [{"kind": None}]})
-        with self.assertRaisesRegex(SystemExit, "horizon-mod-wasm"):
-            prebuilt_game.slices(metadata, copied, ["bin/horizon-client"])
+        nodes[1]["deps"].append({"pkg": "sunrise-mod-wasm", "dep_kinds": [{"kind": None}]})
+        with self.assertRaisesRegex(SystemExit, "sunrise-mod-wasm"):
+            prebuilt_game.slices(metadata, copied, ["bin/sunrise-client"])
 
     def test_gather_takes_every_legs_archives_once_and_one_build_data_that_all_copies_match(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(sys, "platform", "linux"):
@@ -324,7 +324,7 @@ class SdkAssetTests(unittest.TestCase):
             self.assertFalse((root / "dist").exists())
 
     def test_the_rust_reader_fixture_is_what_pack_writes(self):
-        # crates/horizon-mod-package/src/sdk/fixture.tar.xz is unpacked by the Rust reader's test: the two agree.
+        # crates/sunrise-mod-package/src/sdk/fixture.tar.xz is unpacked by the Rust reader's test: the two agree.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "deps").mkdir()
@@ -332,7 +332,7 @@ class SdkAssetTests(unittest.TestCase):
             for path in (root / "deps", root / "deps/a.rmeta"):
                 os.utime(path, (0, 0))
             prebuilt_game.tar_xz(root, prebuilt_game.tree(root), root / "fixture.tar.xz")
-            fixture = prebuilt_game.ROOT / "crates/horizon-mod-package/src/sdk/fixture.tar.xz"
+            fixture = prebuilt_game.ROOT / "crates/sunrise-mod-package/src/sdk/fixture.tar.xz"
             self.assertEqual((root / "fixture.tar.xz").read_bytes(), fixture.read_bytes())
 
 
@@ -355,7 +355,7 @@ class AllocatorSelectionTests(unittest.TestCase):
     def test_package_format_comes_from_its_one_place(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            number = root / "crates/horizon-mod-package/src/sdk/package-format"
+            number = root / "crates/sunrise-mod-package/src/sdk/package-format"
             number.parent.mkdir(parents=True)
             for good in ("7\n", "7\r\n", "7"):
                 number.write_bytes(good.encode())
@@ -385,7 +385,7 @@ class AllocatorSelectionTests(unittest.TestCase):
             if command[:2] == ["cargo", "metadata"]:
                 return json.dumps({"packages": [], "resolve": {"nodes": []}})
             self.assertEqual(command[command.index("--target") + 1], "fixture-host")
-            self.assertEqual(kwargs["env"]["HORIZON_GAME_BUILD_ID"], "fixture-commit")
+            self.assertEqual(kwargs["env"]["SUNRISE_GAME_BUILD_ID"], "fixture-commit")
             self.assertIn("-C prefer-dynamic", kwargs["env"]["RUSTFLAGS"])
             self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", kwargs["env"])
             raise Captured
@@ -411,10 +411,10 @@ class ExecutableLinkPolicyTests(unittest.TestCase):
             # Isolate unrelated code generation/resource compilation, but execute the actual
             # engine build script and its real shared link policy, as the SDK build does.
             stubs = {
-                "horizon_game_discovery": 'pub fn declarations(_: &std::path::Path, _: &[&str]) '
+                "sunrise_game_discovery": 'pub fn declarations(_: &std::path::Path, _: &[&str]) '
                     '-> std::io::Result<String> { Ok(String::new()) } '
                     'pub fn folder_modules(_: &std::path::Path)->Result<String,String>{Ok(String::new())}',
-                "horizon_mod_api_gen": 'pub enum Target { Client } '
+                "sunrise_mod_api_gen": 'pub enum Target { Client } '
                     'pub fn generate(_: &std::path::Path, _: &std::path::Path, _: Target) '
                     '-> std::io::Result<()> { Ok(()) }',
                 "winresource": 'pub struct WindowsResource; impl WindowsResource { '
@@ -432,7 +432,7 @@ class ExecutableLinkPolicyTests(unittest.TestCase):
                 externs.extend(["--extern", f"{name}={library}"])
             binary = root / ("producer.exe" if sys.platform == "win32" else "producer")
             subprocess.run([compiler, "--edition=2024",
-                            str(prebuilt_game.ROOT / "crates/horizon-client/build.rs"),
+                            str(prebuilt_game.ROOT / "crates/sunrise-client/build.rs"),
                             *externs, "-o", str(binary)], check=True)
             for target_os, env, expected in [("windows", "msvc", ["/STACK:142606336"]),
                                       ("windows", "gnu", ["-Wl,--stack,142606336"]),
@@ -441,8 +441,8 @@ class ExecutableLinkPolicyTests(unittest.TestCase):
                     output = root / "output"
                     output.write_text(subprocess.check_output([str(binary)], text=True, env={
                         **os.environ,
-                        "CARGO_MANIFEST_DIR": str(prebuilt_game.ROOT / "crates/horizon-client"),
-                        "OUT_DIR": str(root), "CARGO_PKG_NAME": "horizon-client",
+                        "CARGO_MANIFEST_DIR": str(prebuilt_game.ROOT / "crates/sunrise-client"),
+                        "OUT_DIR": str(root), "CARGO_PKG_NAME": "sunrise-client",
                         "CARGO_CFG_TARGET_OS": target_os, "CARGO_CFG_TARGET_ENV": env,
                     }))
                     identity = {"link_args": prebuilt_game.executable_link_args(output)}
@@ -464,7 +464,7 @@ class PrebuiltContentsTests(unittest.TestCase):
             "cache/host/release/deps/libshared-target.rmeta",
             "cache/host/release/deps/libshared-second-version.rmeta",
             "cache/host/release/deps/libshared-target.rlib",
-            "cache/host/release/deps/libhorizon_client.so",
+            "cache/host/release/deps/libsunrise_client.so",
         )
         output, macros = root / "sdk/deps", root / "sdk/host"
         output.mkdir(parents=True)
@@ -478,18 +478,18 @@ class PrebuiltContentsTests(unittest.TestCase):
             artifact("cache/host/release/deps/libshared-target.rmeta", "lib"),
             artifact("cache/host/release/deps/libshared-second-version.rmeta", "lib"),
             artifact("cache/host/release/deps/libshared-target.rlib", "lib"),
-            artifact("cache/host/release/deps/libhorizon_client.so", "dylib"),
+            artifact("cache/host/release/deps/libsunrise_client.so", "dylib"),
             {"reason": "build-finished", "success": True},
         ], output, macros, root / "cache/host")
         self.assertEqual({path.name for path in output.iterdir()}, {
-            "libshared-target.rmeta", "libshared-second-version.rmeta", "libhorizon_client.so",
+            "libshared-target.rmeta", "libshared-second-version.rmeta", "libsunrise_client.so",
         })
         self.assertEqual({path.name for path in macros.iterdir()}, {"libderive.so"})
         # Each copied file is recorded under its package, as the slices read them.
         self.assertEqual(copied, {"libderive.so": ["host/libderive.so"],
                                   "libshared-target.rmeta": ["deps/libshared-target.rmeta"],
                                   "libshared-second-version.rmeta": ["deps/libshared-second-version.rmeta"],
-                                  "libhorizon_client.so": ["deps/libhorizon_client.so"]})
+                                  "libsunrise_client.so": ["deps/libsunrise_client.so"]})
         # Multiple legitimate target versions remain available to rustc's transitive lookup.
         # Only explicit extern/facade lookup must reject ambiguous names.
         with self.assertRaises(ValueError):
@@ -519,30 +519,30 @@ class PrebuiltContentsTests(unittest.TestCase):
             ]}
 
         metadata = {
-            "packages": [package("horizon-mod-host", "dylib"), package("horizon-client"),
-                         package("horizon-mod-wasm", "rlib"), package("point_shape"), package("horizon_core"),
+            "packages": [package("sunrise-mod-host", "dylib"), package("sunrise-client"),
+                         package("sunrise-mod-wasm", "rlib"), package("point_shape"), package("sunrise_core"),
                          package("build_tool"), package("derive", "proc-macro"), package("macro_helper")],
             "resolve": {"nodes": [
-                node("horizon-mod-host", ("horizon-client", None), ("horizon-mod-wasm", None),
-                     ("build_tool", "build")), node("horizon-mod-wasm"),
-                node("horizon-client", ("point_shape", None), ("horizon_core", None), ("derive", None)),
-                node("point_shape"), node("horizon_core"), node("build_tool"),
+                node("sunrise-mod-host", ("sunrise-client", None), ("sunrise-mod-wasm", None),
+                     ("build_tool", "build")), node("sunrise-mod-wasm"),
+                node("sunrise-client", ("point_shape", None), ("sunrise_core", None), ("derive", None)),
+                node("point_shape"), node("sunrise_core"), node("build_tool"),
                 node("derive", ("macro_helper", None)), node("macro_helper"),
             ]},
         }
-        runtime = prebuilt_game.runtime_crates(metadata, "horizon-mod-host")
-        self.assertEqual(runtime, {"horizon_mod_host", "horizon_mod_wasm", "horizon_client", "point_shape", "horizon_core"})
+        runtime = prebuilt_game.runtime_crates(metadata, "sunrise-mod-host")
+        self.assertEqual(runtime, {"sunrise_mod_host", "sunrise_mod_wasm", "sunrise_client", "point_shape", "sunrise_core"})
         deps = self.folder("libpoint_shape-host.rmeta", "libpoint_shape-target.rmeta",
-                           "libhorizon_core-one.rmeta", "libbuild_tool-one.rmeta", "libmacro_helper-one.rmeta",
-                           "libhorizon_mod_host.so", "libhorizon_mod_wasm-one.rmeta", "libhorizon_client-one.rmeta")
+                           "libsunrise_core-one.rmeta", "libbuild_tool-one.rmeta", "libmacro_helper-one.rmeta",
+                           "libsunrise_mod_host.so", "libsunrise_mod_wasm-one.rmeta", "libsunrise_client-one.rmeta")
         eligible = prebuilt_game.facade_crates(deps, runtime)
-        self.assertEqual(eligible, ["horizon_client", "horizon_core", "horizon_mod_host", "horizon_mod_wasm"])
+        self.assertEqual(eligible, ["sunrise_client", "sunrise_core", "sunrise_mod_host", "sunrise_mod_wasm"])
 
     def test_native_link_inventory_uses_package_identity_not_a_same_named_host_variant(self):
         def package(package_id, version, library=None):
-            return {"id": package_id, "name": "native-sys" if library else "horizon-mod-host",
+            return {"id": package_id, "name": "native-sys" if library else "sunrise-mod-host",
                     "version": version, "links": library,
-                    "targets": [{"name": "native_sys" if library else "horizon_client", "kind": ["lib"]}]}
+                    "targets": [{"name": "native_sys" if library else "sunrise_client", "kind": ["lib"]}]}
         metadata = {
             "packages": [package("game", "1.0.0"), package("target", "1.0.0", "native"),
                          package("host", "2.0.0", "native")],
@@ -552,29 +552,29 @@ class PrebuiltContentsTests(unittest.TestCase):
                 {"id": "target", "deps": []}, {"id": "host", "deps": []},
             ]},
         }
-        self.assertEqual(prebuilt_game.native_links(metadata, "horizon-mod-host"), [
+        self.assertEqual(prebuilt_game.native_links(metadata, "sunrise-mod-host"), [
             {"name": "native-sys", "version": "1.0.0", "library": "native"},
         ])
 
     def test_sdk_assertion_refuses_a_duplicate_eligible_facade_on_every_os(self):
-        root = self.folder("deps/libhorizon_core-one.rmeta", "deps/libmod_api-one.rmeta",
-                           "deps/libhorizon_mod_package-one.rmeta")
-        prebuilt_game.assert_externs(root, ["horizon_core"])
-        (root / "deps/libhorizon_core-two.rmeta").write_bytes(b"")
-        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for horizon_core"):
-            prebuilt_game.assert_externs(root, ["horizon_core"])
+        root = self.folder("deps/libsunrise_core-one.rmeta", "deps/libmod_api-one.rmeta",
+                           "deps/libsunrise_mod_package-one.rmeta")
+        prebuilt_game.assert_externs(root, ["sunrise_core"])
+        (root / "deps/libsunrise_core-two.rmeta").write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for sunrise_core"):
+            prebuilt_game.assert_externs(root, ["sunrise_core"])
 
     def test_native_extern_lookup_refuses_a_second_package_variant(self):
-        root = self.folder("libhorizon_mod_package-runtime.rmeta")
-        self.assertEqual(prebuilt_game.extern_args(root, "horizon_mod_package"), [
-            "--extern", f"horizon_mod_package={root / 'libhorizon_mod_package-runtime.rmeta'}",
+        root = self.folder("libsunrise_mod_package-runtime.rmeta")
+        self.assertEqual(prebuilt_game.extern_args(root, "sunrise_mod_package"), [
+            "--extern", f"sunrise_mod_package={root / 'libsunrise_mod_package-runtime.rmeta'}",
         ])
-        (root / "libhorizon_mod_package-build.rmeta").write_bytes(b"")
-        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for horizon_mod_package"):
-            prebuilt_game.extern_args(root, "horizon_mod_package")
+        (root / "libsunrise_mod_package-build.rmeta").write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for sunrise_mod_package"):
+            prebuilt_game.extern_args(root, "sunrise_mod_package")
 
     def test_host_macros_pass_but_host_dependency_metadata_is_refused(self):
-        root = self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so", "deps/libhorizon_mod_host.so",
+        root = self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so", "deps/libsunrise_mod_host.so",
                            "host/libderive.so", "host/derive.dll", "host/libderive.dylib")
         write_build_data(root)
         prebuilt_game.check(root)
@@ -583,23 +583,23 @@ class PrebuiltContentsTests(unittest.TestCase):
             prebuilt_game.check(root)
 
     def test_unrelated_multiversion_dependencies_do_not_break_named_externs(self):
-        root = self.folder("deps/libmod_api-one.rmeta", "deps/libhorizon_mod_package-one.rmeta",
+        root = self.folder("deps/libmod_api-one.rmeta", "deps/libsunrise_mod_package-one.rmeta",
                            "deps/libshared-v1.rmeta", "deps/libshared-v2.rmeta",
                            "host/libmod_api-host.so")
         prebuilt_game.assert_externs(root, [])
 
     def test_compiler_outputs_pass(self):
         root = self.folder(
-            "horizon-prebuilt.json", "Cargo.lock", "native_main.rs.template", "deps/libhorizon_client.so", "deps/libmod_api-1.rmeta",
+            "sunrise-prebuilt.json", "Cargo.lock", "native_main.rs.template", "deps/libsunrise_client.so", "deps/libmod_api-1.rmeta",
             "native/libwindows.0.52.0.a",
-            "deps/libserde_derive-2.so", "deps/libhorizon_client.dll.a", "deps/libhorizon_mod_wasm.so",
-            "deps/horizon_mod_wasm.dll", "deps/libhorizon_mod_wasm.dylib", "deps/libhorizon_mod_host.so",
+            "deps/libserde_derive-2.so", "deps/libsunrise_client.dll.a", "deps/libsunrise_mod_wasm.so",
+            "deps/sunrise_mod_wasm.dll", "deps/libsunrise_mod_wasm.dylib", "deps/libsunrise_mod_host.so",
         )
         write_build_data(root)
         prebuilt_game.check(root)
 
     def test_build_data_without_its_header_for_this_commit_is_refused(self):
-        root = self.folder("deps/libhorizon_mod_host.so", "deps/libhorizon_mod_wasm.so")
+        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so")
         for name in prebuilt_game.BUILD_DATA:
             for broken in ('{"build": {"commit": "%s"}}' % COMMIT, '{"schema": 2, "build": {"commit": "%s"}}' % COMMIT,
                            '{"schema": 1, "build": {"commit": "%s"}}' % ("d" * 40), '{"schema": 1}', "[]", None):
@@ -615,21 +615,21 @@ class PrebuiltContentsTests(unittest.TestCase):
     def test_anything_else_is_refused(self):
         for stray in ("assets/minecraft/lang/en_us.json", "deps/Cargo.lock", "deps/client.jar", "deps/libmod_api-3.rlib", "native/libfoo.so", "deps/internals.json", "notes.txt"):
             with self.subTest(stray), self.assertRaises(SystemExit):
-                prebuilt_game.check(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so", stray))
+                prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so", stray))
 
     def test_a_folder_without_either_runtime_is_refused(self):
-        for present, missing in (("horizon_mod_host", "horizon-mod-wasm"), ("horizon_mod_wasm", "horizon-mod-host")):
+        for present, missing in (("sunrise_mod_host", "sunrise-mod-wasm"), ("sunrise_mod_wasm", "sunrise-mod-host")):
             with self.subTest(present), self.assertRaisesRegex(SystemExit, missing):
                 prebuilt_game.check(self.folder(f"deps/lib{present}.so"))
 
     def test_host_carries_engine_code_with_engine_metadata_for_mods(self):
-        root = self.folder("deps/libhorizon_mod_host.so", "deps/libhorizon_mod_wasm.so", "deps/libhorizon_client-123.rmeta")
+        root = self.folder("deps/libsunrise_mod_host.so", "deps/libsunrise_mod_wasm.so", "deps/libsunrise_client-123.rmeta")
         write_build_data(root)
         prebuilt_game.check(root)
 
     def test_engine_and_wasm_without_host_are_refused(self):
-        with self.assertRaisesRegex(SystemExit, "horizon-mod-host"):
-            prebuilt_game.check(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so"))
+        with self.assertRaisesRegex(SystemExit, "sunrise-mod-host"):
+            prebuilt_game.check(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so"))
 
     def dll(self, root: Path, name: str, count: int, pe64: bool = True) -> None:
         # One PE section: RVA 0x1000 maps to raw offset 0x200, holding the export directory.
@@ -647,20 +647,20 @@ class PrebuiltContentsTests(unittest.TestCase):
         (root / "deps" / name).write_bytes(data)
 
     def test_exports_reports_every_dll(self):
-        root = self.folder("deps/libhorizon_client.so")
-        self.dll(root, "horizon_client.dll", 45000)
-        self.dll(root, "horizon_mod_wasm.dll", 12000)
+        root = self.folder("deps/libsunrise_client.so")
+        self.dll(root, "sunrise_client.dll", 45000)
+        self.dll(root, "sunrise_mod_wasm.dll", 12000)
         self.dll(root, "serde_derive.dll", 1, pe64=False)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             prebuilt_game.exports(root)
-        for name, count in (("horizon_client", 45000), ("horizon_mod_wasm", 12000), ("serde_derive", 1)):
+        for name, count in (("sunrise_client", 45000), ("sunrise_mod_wasm", 12000), ("serde_derive", 1)):
             self.assertIn(f"{name}.dll: {count} exported names", output.getvalue())
 
     def test_exports_warns_past_80_percent_without_failing(self):
-        for large in ("horizon_client", "horizon_mod_wasm"):
-            root = self.folder("deps/libhorizon_client.so")
-            for name in ("horizon_client", "horizon_mod_wasm"):
+        for large in ("sunrise_client", "sunrise_mod_wasm"):
+            root = self.folder("deps/libsunrise_client.so")
+            for name in ("sunrise_client", "sunrise_mod_wasm"):
                 self.dll(root, f"{name}.dll", 52429 if name == large else 52428)
             output = io.StringIO()
             with self.subTest(large), contextlib.redirect_stdout(output):
@@ -671,21 +671,21 @@ class PrebuiltContentsTests(unittest.TestCase):
             self.assertEqual(output.getvalue().count("exported names (Windows' limit"), 2)
 
     def test_exports_fails_past_90_percent_after_reporting_every_dll(self):
-        root = self.folder("deps/libhorizon_client.so")
-        self.dll(root, "horizon_client.dll", 58982)
-        self.dll(root, "horizon_mod_wasm.dll", 58981)
+        root = self.folder("deps/libsunrise_client.so")
+        self.dll(root, "sunrise_client.dll", 58982)
+        self.dll(root, "sunrise_mod_wasm.dll", 58981)
         self.dll(root, "mod_api.dll", 171)
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as failed:
             prebuilt_game.exports(root)
-        self.assertIn("horizon_client.dll (58,982)", str(failed.exception.code))
-        self.assertNotIn("horizon_mod_wasm", str(failed.exception.code))
+        self.assertIn("sunrise_client.dll (58,982)", str(failed.exception.code))
+        self.assertNotIn("sunrise_mod_wasm", str(failed.exception.code))
         self.assertEqual(output.getvalue().count("exported names (Windows' limit"), 3)
 
     def test_exports_is_silent_without_dlls(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            prebuilt_game.exports(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so"))
+            prebuilt_game.exports(self.folder("deps/libsunrise_client.so", "deps/libsunrise_mod_wasm.so"))
         self.assertEqual(output.getvalue(), "")
 
 
@@ -700,7 +700,7 @@ class SmokeStartTests(unittest.TestCase):
             with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 result = subprocess.CompletedProcess([], code, stdout=prebuilt_game.NO_RESOURCES)
-                with patch.dict(sys.modules, {"lab": SimpleNamespace(game_env=lambda **_: {"HORIZON_HOME": "/inherited"})}), \
+                with patch.dict(sys.modules, {"lab": SimpleNamespace(game_env=lambda **_: {"SUNRISE_HOME": "/inherited"})}), \
                      patch.object(prebuilt_game.subprocess, "run", return_value=result) as run, \
                      contextlib.redirect_stdout(io.StringIO()):
                     if code == 1:
@@ -709,5 +709,5 @@ class SmokeStartTests(unittest.TestCase):
                         with self.assertRaises(SystemExit):
                             prebuilt_game.start(root / "out")
                 environment = run.call_args.kwargs["env"]
-                for key in ("HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+                for key in ("SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
                     self.assertTrue(Path(environment[key]).is_relative_to(root))

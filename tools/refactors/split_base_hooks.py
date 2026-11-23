@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
-DIRECTORY = ROOT / "crates/horizon-mod-api/src/hooks"
+DIRECTORY = ROOT / "crates/sunrise-mod-api/src/hooks"
 
 
 def main():

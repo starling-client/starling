@@ -412,21 +412,21 @@ async fn startup_sweep_only_removes_generated_files_from_exited_processes() {
     child.wait().unwrap();
     assert!(!crate::backend::process_alive(dead));
     let dir = tempfile::tempdir().unwrap();
-    let stale = dir.path().join(format!(".horizon-download-{dead}-a.part"));
+    let stale = dir.path().join(format!(".sunrise-download-{dead}-a.part"));
     let live = dir
         .path()
-        .join(format!(".horizon-download-{}-b.part", std::process::id()));
+        .join(format!(".sunrise-download-{}-b.part", std::process::id()));
     let unrelated = dir
         .path()
-        .join(format!(".horizon-download-{dead}-not-hex.part"));
-    let directory = dir.path().join(format!(".horizon-download-{dead}-c.part"));
+        .join(format!(".sunrise-download-{dead}-not-hex.part"));
+    let directory = dir.path().join(format!(".sunrise-download-{dead}-c.part"));
     for path in [&stale, &live, &unrelated] {
         fs::write(path, b"partial").await.unwrap();
     }
     fs::create_dir(&directory).await.unwrap();
     #[cfg(unix)]
     let link = {
-        let link = dir.path().join(format!(".horizon-download-{dead}-d.part"));
+        let link = dir.path().join(format!(".sunrise-download-{dead}-d.part"));
         std::os::unix::fs::symlink(&live, &link).unwrap();
         link
     };
@@ -456,7 +456,7 @@ async fn startup_sweep_only_removes_generated_files_from_exited_processes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn benchmark_download_pipeline() {
-    let mode = std::env::var("HORIZON_DOWNLOAD_BENCH_MODE").unwrap_or_else(|_| "parallel".into());
+    let mode = std::env::var("SUNRISE_DOWNLOAD_BENCH_MODE").unwrap_or_else(|_| "parallel".into());
     let body = data(1024);
     let server = Server::new(body.clone(), Duration::from_millis(5)).await;
     let dir = tempfile::tempdir().unwrap();

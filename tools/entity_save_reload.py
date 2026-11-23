@@ -1,5 +1,5 @@
 """Summon entities, save the world, reload it, and read fields back with `/data get`, on vanilla's
-dedicated server and on Horizon's, and compare what the two print.
+dedicated server and on Sunrise's, and compare what the two print.
 
 Shared by the `test_*_save_reload_parity.py` harnesses (one file of cases each). A case set is
 
@@ -15,7 +15,7 @@ when a probe finds no entity or reports an error. Run files stay under `.local/s
 
     test_<x>_save_reload_parity.py [--binary PATH] [--keep]
 
-`--binary` is a built `horizon-client` (default: `cargo build --profile fast -p horizon-client`).
+`--binary` is a built `sunrise-client` (default: `cargo build --profile fast -p sunrise-client`).
 """
 import argparse
 import json
@@ -35,7 +35,7 @@ except ImportError:
 
 CONSOLE_LINE = re.compile(r'^\[\d\d:\d\d:\d\d\] \[([^\]]+)\]: (.*)$')
 # Lines a loaded server logs by itself, between a command and its marker.
-SERVER_NOISE = re.compile(r"Horizon: slow tick|Can't keep up")
+SERVER_NOISE = re.compile(r"Sunrise: slow tick|Can't keep up")
 FAILED = re.compile(r'No entity was found|Unknown|Expected|Incorrect|Invalid|Could not|Unable|Found no elements|'
                     r'Failed|error', re.IGNORECASE)
 PROPERTIES = {
@@ -124,46 +124,46 @@ def run_server(name, command, directory, setup, probes, boot_timeout=600):
     return results, replies
 
 
-def horizon_binary(args, build):
+def sunrise_binary(args, build):
     if args.binary:
         # Each server runs with its world as the working directory, so a relative path must be the caller's.
         return Path(os.path.abspath(args.binary))
     with (build / 'cargo-build.log').open('w') as log:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'],
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client', '--bin', 'sunrise-client'],
                        cwd=lab.ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    return Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    return Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
 
 
 def main(name, setup, probes, description):
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('--binary', help='a built horizon-client (default: cargo build --profile fast)')
+    parser.add_argument('--binary', help='a built sunrise-client (default: cargo build --profile fast)')
     parser.add_argument('--keep', action='store_true', help='keep the run directory')
     args = parser.parse_args()
     build = lab.LOCAL / 'save-reload' / name
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
-    binary = horizon_binary(args, build)
+    binary = sunrise_binary(args, build)
     vanilla = ['java', '-Xmx2g', '-jar', str(lab.GAME / 'jars' / 'server.jar'), '--nogui']
-    horizon = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    sunrise = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     runs = {}
-    for who, command in (('vanilla', vanilla), ('horizon', horizon)):
+    for who, command in (('vanilla', vanilla), ('sunrise', sunrise)):
         runs[who] = run_server(f'{who}', command, build / who, setup, probes)
         for line, reply in runs[who][1]:
             if any(FAILED.search(l) for l in reply):
                 print(f'{who} setup failed: {line}: {reply}')
                 return 1
     failures = []
-    print(f'{"phase":9} {"probe":28} {"vanilla":34} horizon')
+    print(f'{"phase":9} {"probe":28} {"vanilla":34} sunrise')
     for key in runs['vanilla'][0]:
-        v, h = runs['vanilla'][0][key], runs['horizon'][0].get(key)
+        v, h = runs['vanilla'][0][key], runs['sunrise'][0].get(key)
         verdict = 'ok' if v == h else 'DIFFERENT'
         print(f'{key[0]:9} {key[1]:28} {v.split("data: ")[-1]:34} {h.split("data: ")[-1] if h else h}  {verdict}')
         if v != h or FAILED.search(v or '') or FAILED.search(h or ''):
             failures.append(key)
             print(f'    vanilla: {v!r}')
-            print(f'    horizon: {h!r}')
+            print(f'    sunrise: {h!r}')
     if not args.keep:
         shutil.rmtree(build, ignore_errors=True)
     print('FAIL' if failures else 'PASS', f'{len(runs["vanilla"][0])} probes')

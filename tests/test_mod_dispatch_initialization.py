@@ -16,8 +16,8 @@ DISPATCH = re.compile(r'\bdispatch_(?!workgroups\b)\w+\s*\(|\bwith_dispatch\s*\(
 # These helpers initialize before invoking user code or publishing registrations.
 READY = re.compile(r'\b(?:initialize|with_mods|install|install_parts|stick_part|install_counter|with_game|with_test_game)\s*\(')
 ISOLATED = {
-    'crates/horizon-mod-api/tests/late_instrumentation.rs',
-    'crates/horizon-mod-api/tests/uninstalled_dispatch.rs',
+    'crates/sunrise-mod-api/tests/late_instrumentation.rs',
+    'crates/sunrise-mod-api/tests/uninstalled_dispatch.rs',
 }
 
 
@@ -32,9 +32,9 @@ def test_bodies(source):
 
 def violations(root):
     failures = []
-    for crate in ('horizon-mod-api', 'horizon-mod-wasm', 'horizon-mod-host',
-                  'horizon-mod-points', 'horizon-mod-render', 'horizon-client',
-                  'horizon-client-lib'):
+    for crate in ('sunrise-mod-api', 'sunrise-mod-wasm', 'sunrise-mod-host',
+                  'sunrise-mod-points', 'sunrise-mod-render', 'sunrise-client',
+                  'sunrise-client-lib'):
         for path in (root / 'crates' / crate).rglob('*.rs'):
             relative = path.relative_to(root).as_posix()
             source = path.read_text()
@@ -48,7 +48,7 @@ def violations(root):
             for name, body in bodies:
                 dispatch = DISPATCH.search(body)
                 # This fixture constructs a Game through with_game_at first.
-                game_fixture = relative == 'crates/horizon-client/src/game/blocks/cauldron_interactions/tests.rs' and 'fixture(' in body
+                game_fixture = relative == 'crates/sunrise-client/src/game/blocks/cauldron_interactions/tests.rs' and 'fixture(' in body
                 if dispatch and not game_fixture and not READY.search(body[:dispatch.start()]):
                     failures.append(f'{relative}:{name}: initialize before mod dispatch')
     return failures

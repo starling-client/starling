@@ -31,16 +31,16 @@ HOST_IMPORTS.add('registrar')
 
 
 def build(directory, target, tool=False):
-    """Builds `horizon-mod-api` in `directory` and returns its build output folder (the manifest tool
+    """Builds `sunrise-mod-api` in `directory` and returns its build output folder (the manifest tool
     is built only here: it reads text, so one tool serves both sides)."""
     env = dict(os.environ, CARGO_TARGET_DIR=str(target))
     if tool:
-        subprocess.run(["cargo", "build", "-p", "horizon-mod-api-gen", "--bin", "host-manifest"], cwd=directory, env=env, check=True)
-    built = subprocess.run(["cargo", "build", "-p", "horizon-mod-api", "--message-format=json"],
+        subprocess.run(["cargo", "build", "-p", "sunrise-mod-api-gen", "--bin", "host-manifest"], cwd=directory, env=env, check=True)
+    built = subprocess.run(["cargo", "build", "-p", "sunrise-mod-api", "--message-format=json"],
                            cwd=directory, env=env, check=True, capture_output=True, text=True)
     outputs = [message["out_dir"] for line in built.stdout.splitlines()
                if (message := json.loads(line)).get("reason") == "build-script-executed"
-               and "/horizon-mod-api#" in message["package_id"]]
+               and "/sunrise-mod-api#" in message["package_id"]]
     if len(outputs) != 1:
         sys.exit(f"expected one mod API build-script output, got {outputs}")
     return Path(outputs[0])
@@ -76,9 +76,9 @@ def main():
             failed = True
         else:
             print(f"hook IDs and dispatch byte-identical: {name}")
-    old_areas = sorted((tree / "crates/horizon-mod-api/src/host").glob("*.rs"))
+    old_areas = sorted((tree / "crates/sunrise-mod-api/src/host").glob("*.rs"))
     old = manifest(tool, [old_out / "mod_api_generated_host.rs", *old_areas])
-    areas = sorted((root / "crates/horizon-mod-api/src/host").glob("*.rs"))
+    areas = sorted((root / "crates/sunrise-mod-api/src/host").glob("*.rs"))
     new = manifest(tool, [new_out / "mod_api_generated_host.rs", *areas])
     if old != new:
         old_lines, new_lines = set(old.splitlines()), set(new.splitlines())

@@ -44,10 +44,10 @@ def main():
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/integration_env.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client-render/src/sound_engine.rs',
-               lab.ROOT / 'crates/horizon-client/examples/probe/sound_engine_fixture.rs',
-               lab.ROOT / 'crates/horizon-client/examples/probe/audio_common/mod.rs',
-               *[lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity' / (name + '.java')
+               lab.ROOT / 'crates/sunrise-client-render/src/sound_engine.rs',
+               lab.ROOT / 'crates/sunrise-client/examples/probe/sound_engine_fixture.rs',
+               lab.ROOT / 'crates/sunrise-client/examples/probe/audio_common/mod.rs',
+               *[lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity' / (name + '.java')
                  for name in ['VanillaSoundEngineOracle', 'VanillaSoundRig', 'VanillaSoundEventOracle']]]
     hashes = h.base.source_hashes(sources)
     resources = build / 'resources'
@@ -77,7 +77,7 @@ def main():
         env = integration_env.game_environment(os.environ, scratch)
         env['ALSOFT_DRIVERS'] = 'null'
         h.run_logged(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                      'dev.horizonlab.parity.VanillaSoundEngineOracle', resources, inputs, build / 'client.txt'],
+                      'dev.sunriselab.parity.VanillaSoundEngineOracle', resources, inputs, build / 'client.txt'],
                      build, 'client', env=env)
         h.run_logged([*probe, resources, inputs, build / 'rust.txt'], build, 'rust', env=env)
     matched = h.base.compare(build / 'client.txt', build / 'rust.txt')

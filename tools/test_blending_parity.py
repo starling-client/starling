@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Compare the terrain next to chunks an older version generated with vanilla.
 
-Vanilla side: VanillaChunkGenerationOracle with HORIZON_OLD_CHUNKS: the chunks
+Vanilla side: VanillaChunkGenerationOracle with SUNRISE_OLD_CHUNKS: the chunks
 of a second seed count as saved by an older version (blending data, no
 worldgen heightmap), and the target chunks around them are generated with
-`Blender.of(region)`: biomes, noise terrain, surface and carvers. Horizon side:
+`Blender.of(region)`: biomes, noise terrain, surface and carvers. Sunrise side:
 the chunk_dump probe does the same with `worldgen::blending`. Every block and
 quart biome of the target chunks is compared.
 
@@ -39,7 +39,7 @@ def main():
                         help='full: with the features, trees and the rest spilling into the old chunks')
     args = parser.parse_args()
     import re
-    os.environ['HORIZON_PHASE'] = args.phase
+    os.environ['SUNRISE_PHASE'] = args.phase
     oracle = base.Oracle()
     binary = base.rust_binary()
     names = base.state_names()
@@ -49,7 +49,7 @@ def main():
     for seed, old_seed, old, rect, label in CASES:
         if args.filter and not re.search(args.filter, label):
             continue
-        os.environ['HORIZON_OLD_CHUNKS'] = f'{old_seed}:{old}'
+        os.environ['SUNRISE_OLD_CHUNKS'] = f'{old_seed}:{old}'
         tag = f'blending-{args.phase}-{seed}-{old_seed}-{old.replace(",", "_")}'
         vanilla_path, rust_path = base.build_dir() / f'vanilla-{tag}.txt', base.build_dir() / f'rust-{tag}.txt'
         with ThreadPoolExecutor(2) as pool:
@@ -57,7 +57,7 @@ def main():
             oracle.run(vanilla_path, ['dump', seed, 'overworld', rect])
             stderr = rust_run.result()
         for line in stderr.splitlines()[:5]:
-            print('  horizon:', line)
+            print('  sunrise:', line)
         vanilla, rust = base.parse(vanilla_path), base.parse(rust_path)
         ox0, oz0, ox1, oz1 = map(int, old.split(','))
         # The old chunks themselves are another seed's plain terrain: only what blends with them is compared.

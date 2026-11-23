@@ -6,7 +6,7 @@ in any case, else the profile service's `getByName` (asked with the lower-case n
 mode, the offline player of that lower-case name; what it finds is cached for a month and the file
 rewritten, most recently used first. A small mock of the Minecraft services (dev only: the discovery
 document and `getByName`, which knows one account) stands in for Mojang's; vanilla finds it through
-`-Dminecraft.api.discovery.host`, Horizon through `HORIZON_API_DISCOVERY`.
+`-Dminecraft.api.discovery.host`, Sunrise through `SUNRISE_API_DISCOVERY`.
 
 Each server starts in offline mode in a folder holding a usercache.json with a live entry, an expired
 one, entries without a date, with a bad date, without an id, and not an object. The console then
@@ -205,35 +205,35 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                    check=True, capture_output=True)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     services = Services()
     discovery = services.url + '/minecraft/client'
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={discovery}',
                       '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    os.environ['HORIZON_API_DISCOVERY'] = discovery
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    os.environ['SUNRISE_API_DISCOVERY'] = discovery
     try:
         vanilla = run_side('vanilla', vanilla_server, build, services)
-        horizon = run_side('horizon', horizon_server, build, services)
+        sunrise = run_side('sunrise', sunrise_server, build, services)
     finally:
         services.stop()
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
         import difflib
-        diff = '\n'.join(difflib.unified_diff(vanilla, horizon, 'vanilla', 'horizon', n=1, lineterm=''))
-        raise AssertionError(f'transcripts differ (see {build}/vanilla.txt and horizon.txt):\n' + diff[:6000])
+        diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=1, lineterm=''))
+        raise AssertionError(f'transcripts differ (see {build}/vanilla.txt and sunrise.txt):\n' + diff[:6000])
     if not any('Notch' in l for l in vanilla if l.startswith('usercache.json')):
         raise AssertionError(f'the cache never held the looked-up account (see {build})')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        lines=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        lines=len(vanilla), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='usercache.json (load, expiry, most recently used order, Gson output) and the console finding '
               'players by name through it and the profile service, offline and online.'))
     print(f'user cache: {len(vanilla)} lines identical')

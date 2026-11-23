@@ -25,8 +25,8 @@ fn main() {
                     _ => panic!("unknown relation"),
                 };
             }
-            let engine = horizon_client_core::component::to_text(&source, &mut |key| {
-                horizon_client_core::text::Text::literal(language[key].as_str().unwrap_or(key))
+            let engine = sunrise_client_core::component::to_text(&source, &mut |key| {
+                sunrise_client_core::text::Text::literal(language[key].as_str().unwrap_or(key))
             });
             eprintln!("built");
             text_boundary_tests::measure_host_text(black_box(engine));

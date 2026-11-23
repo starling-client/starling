@@ -28,10 +28,10 @@ def run(step: str, log: Path, command: list[str]) -> int:
     safe_line = "unclassified: see private log (not retained on per-job runners)"
     # The cache has no content-key marker: .entries lists names, not a digest.
     # Validate environment strings once before they can enter public diagnostics.
-    expected = os.environ.get("HORIZON_DIAGNOSTIC_EXPECTED_KEY", "")
+    expected = os.environ.get("SUNRISE_DIAGNOSTIC_EXPECTED_KEY", "")
     expected = expected if re.fullmatch(r"[0-9a-f]{16}", expected) else "unavailable-or-invalid"
-    state = os.environ.get("HORIZON_DIAGNOSTIC_CACHE_STATE", "")
-    state = state if state in ("missing-entry-list", "missing-horizon-client") else "unavailable"
+    state = os.environ.get("SUNRISE_DIAGNOSTIC_CACHE_STATE", "")
+    state = state if state in ("missing-entry-list", "missing-sunrise-client") else "unavailable"
     try:
         with log.open("wb") as output:
             result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=False)

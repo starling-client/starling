@@ -1,5 +1,5 @@
 Create (https://github.com/Creators-of-Create/Create): its code, outside its assets, is under the
-MIT License below. Starling ports parts of that code (crates/horizon-client/src/game/
+MIT License below. Starling ports parts of that code (crates/sunrise-client/src/game/
 kinetic_machines.rs, and shapes and numbers in the kinetic parts). Create's assets
 (src/main/resources/assets/) are All Rights Reserved and are not in this repository.
 

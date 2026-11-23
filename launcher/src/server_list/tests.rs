@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 fn scratch(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "horizon-launcher-servers-{name}-{}",
+        "sunrise-launcher-servers-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -202,10 +202,10 @@ fn the_official_server_is_put_on_top_once() {
     // Already there under the player's own name and spelling: not duplicated.
     let home = scratch("official-present");
     let mut list = List::load(&home);
-    list.add("SMP", "Play.PlayHorizon.dev:25565").unwrap();
+    list.add("SMP", "Play.PlaySunrise.net:25565").unwrap();
     list.save(&home).unwrap();
     add_official_default(&home).unwrap();
-    assert_eq!(ips(&home), ["Play.PlayHorizon.dev:25565"]);
+    assert_eq!(ips(&home), ["Play.PlaySunrise.net:25565"]);
     // A list that can't be read is left alone, and offered again once it can be.
     let home = scratch("official-broken");
     fs::write(home.join(FILE), b"not nbt").unwrap();
@@ -214,7 +214,7 @@ fn the_official_server_is_put_on_top_once() {
     assert!(!home.join(OFFICIAL_MARKER).exists());
     // No official server in links.json: nothing offered, nothing written.
     let home = scratch("official-none");
-    add_official(&home, " ", &["horizon.bunchy7s.dev".into()]).unwrap();
+    add_official(&home, " ", &["sunrise.bunchy7s.dev".into()]).unwrap();
     assert!(!home.join(FILE).exists());
     assert!(!home.join(OFFICIAL_MARKER).exists());
 }
@@ -240,9 +240,9 @@ fn a_moved_official_server_moves_the_players_entry_once() {
         &home,
         &[
             ("Friends", "friends.example"),
-            ("Our SMP", "Horizon.Bunchy7s.DEV:25565"),
+            ("Our SMP", "Sunrise.Bunchy7s.DEV:25565"),
         ],
-        "horizon.bunchy7s.dev",
+        "sunrise.bunchy7s.dev",
     );
     let mut list = List::load(&home);
     list.entries[1].insert(key("icon"), s("AAAA"));
@@ -266,20 +266,20 @@ fn a_moved_official_server_moves_the_players_entry_once() {
     assert_eq!(fs::read(home.join(FILE)).unwrap(), file);
     // An old address the player adds back after the move is theirs.
     let mut list = List::load(&home);
-    list.add("Old", "horizon.bunchy7s.dev").unwrap();
+    list.add("Old", "sunrise.bunchy7s.dev").unwrap();
     list.save(&home).unwrap();
     add_official_default(&home).unwrap();
-    assert_eq!(ips(&home)[2], "horizon.bunchy7s.dev");
+    assert_eq!(ips(&home)[2], "sunrise.bunchy7s.dev");
 
     // The new address already in the list: the old entry goes instead of making a second one.
     let home = scratch("moved-present");
     offered_at(
         &home,
         &[
-            ("Old", "horizon.bunchy7s.dev"),
-            ("New", "play.playhorizon.dev"),
+            ("Old", "sunrise.bunchy7s.dev"),
+            ("New", "play.playsunrise.net"),
         ],
-        "horizon.bunchy7s.dev",
+        "sunrise.bunchy7s.dev",
     );
     add_official_default(&home).unwrap();
     assert_eq!(shown(&home), [("New".into(), new.into())]);
@@ -288,10 +288,10 @@ fn a_moved_official_server_moves_the_players_entry_once() {
     offered_at(
         &home,
         &[
-            ("A", "horizon.bunchy7s.dev"),
-            ("B", "horizon.bunchy7s.dev:25565"),
+            ("A", "sunrise.bunchy7s.dev"),
+            ("B", "sunrise.bunchy7s.dev:25565"),
         ],
-        "horizon.bunchy7s.dev",
+        "sunrise.bunchy7s.dev",
     );
     add_official_default(&home).unwrap();
     assert_eq!(shown(&home), [("A".into(), new.into())]);
@@ -301,7 +301,7 @@ fn a_moved_official_server_moves_the_players_entry_once() {
     offered_at(
         &home,
         &[("Friends", "friends.example")],
-        "horizon.bunchy7s.dev",
+        "sunrise.bunchy7s.dev",
     );
     add_official_default(&home).unwrap();
     assert_eq!(ips(&home), ["friends.example"]);
@@ -309,15 +309,15 @@ fn a_moved_official_server_moves_the_players_entry_once() {
     let home = scratch("moved-port");
     offered_at(
         &home,
-        &[("Test", "horizon.bunchy7s.dev:25570")],
-        "horizon.bunchy7s.dev",
+        &[("Test", "sunrise.bunchy7s.dev:25570")],
+        "sunrise.bunchy7s.dev",
     );
     add_official_default(&home).unwrap();
-    assert_eq!(ips(&home), ["horizon.bunchy7s.dev:25570"]);
+    assert_eq!(ips(&home), ["sunrise.bunchy7s.dev:25570"]);
     // A list that was never offered it but has the old address: moved, nothing added.
     let home = scratch("moved-unoffered");
     let mut list = List::load(&home);
-    list.add("SMP", "horizon.bunchy7s.dev").unwrap();
+    list.add("SMP", "sunrise.bunchy7s.dev").unwrap();
     list.save(&home).unwrap();
     add_official_default(&home).unwrap();
     assert_eq!(shown(&home), [("SMP".into(), new.into())]);
@@ -327,29 +327,29 @@ fn a_moved_official_server_moves_the_players_entry_once() {
 fn the_official_address_comes_from_links_json() {
     // The defaults: the new host, and the old one to move from.
     let defaults = Links::default();
-    assert_eq!(defaults.official_server, "play.playhorizon.dev");
-    assert_eq!(defaults.official_server_previous, ["horizon.bunchy7s.dev"]);
+    assert_eq!(defaults.official_server, "play.playsunrise.net");
+    assert_eq!(defaults.official_server_previous, ["sunrise.bunchy7s.dev"]);
     // The file on main says the same.
     let file = Links::parse(include_str!("../../links.json"));
     assert_eq!(file, defaults);
     // A later move is a links.json edit: the list follows it, from either earlier address.
     let links = Links::parse(
         r#"{"official_server": " next.example ",
-            "official_server_previous": ["play.playhorizon.dev", "horizon.bunchy7s.dev", ""]}"#,
+            "official_server_previous": ["play.playsunrise.net", "sunrise.bunchy7s.dev", ""]}"#,
     );
     assert_eq!(links.official_server, "next.example");
     assert_eq!(
         links.official_server_previous,
-        ["play.playhorizon.dev", "horizon.bunchy7s.dev"]
+        ["play.playsunrise.net", "sunrise.bunchy7s.dev"]
     );
     let home = scratch("links-move");
     offered_at(
         &home,
         &[
-            ("SMP", "play.playhorizon.dev"),
-            ("Old", "horizon.bunchy7s.dev"),
+            ("SMP", "play.playsunrise.net"),
+            ("Old", "sunrise.bunchy7s.dev"),
         ],
-        "play.playhorizon.dev",
+        "play.playsunrise.net",
     );
     add_official(
         &home,

@@ -51,7 +51,7 @@ def observe_file(directory, build, label, phase):
 
 def run_side(label, command, client_command, build, world):
     directory = build/label; port = net.server_dir(directory, world)
-    audit = 'HORIZON_DEV_ADVANCEMENT_SELECTOR_AUDIT'; before = os.environ.get(audit)
+    audit = 'SUNRISE_DEV_ADVANCEMENT_SELECTOR_AUDIT'; before = os.environ.get(audit)
     if label == 'native': os.environ[audit] = '1'
     try: server = net.Server(command, directory, label)
     finally:
@@ -149,12 +149,12 @@ def main():
     p.add_argument('--work-dir', type=Path, help='where both runs write (default: a new temporary folder)')
     p.add_argument('--reference-only', action='store_true', help='run the vanilla side only')
     p.add_argument('--reference-dir', type=Path, help="reuse a --reference-only run's folder instead of running vanilla")
-    p.add_argument('--binary', type=Path, help='the horizon-client to run (default: built with --profile fast)')
+    p.add_argument('--binary', type=Path, help='the sunrise-client to run (default: built with --profile fast)')
     a = p.parse_args()
     work = a.work_dir or Path(tempfile.mkdtemp(prefix='connected-guest-advancement-save-'))
     work.mkdir(parents=True, exist_ok=True)
     print('work dir', work)
-    # A vanilla-only run needs no Horizon build: a placeholder binary skips it.
+    # A vanilla-only run needs no Sunrise build: a placeholder binary skips it.
     binary = work/'not-built' if a.reference_only else a.binary
     _, _, java, native, client = net.sides('online-guest-advancement-save', binary)
     reference = a.reference_dir or work

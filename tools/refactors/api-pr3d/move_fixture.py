@@ -4,9 +4,9 @@ import argparse
 from pathlib import Path
 import subprocess
 
-OLD = "crates/horizon-client-render/examples/standard_pack_gpu_entities.rs"
-NEW = "crates/horizon-client-render/fixtures/standard_pack_gpu_entities.rs"
-BEFORE = "//! `cargo run -p horizon-client-render --example standard_pack_gpu_entities -- <output-dir>`"
+OLD = "crates/sunrise-client-render/examples/standard_pack_gpu_entities.rs"
+NEW = "crates/sunrise-client-render/fixtures/standard_pack_gpu_entities.rs"
+BEFORE = "//! `cargo run -p sunrise-client-render --example standard_pack_gpu_entities -- <output-dir>`"
 AFTER = "//! `python3 tools/run_standard_pack_gpu_entities.py <output-dir>`"
 
 

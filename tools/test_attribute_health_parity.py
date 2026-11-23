@@ -20,7 +20,7 @@ def corpus(catalog):
     def bits(v):return struct.pack('>f',v).hex()
     def double(v):return struct.pack('>d',v).hex()
     def op(mode,value=0,attribute=0,amount=0,operation=0,**kw):
-        o=dict(mode=mode,value=bits(value),attribute=attribute,amount=double(amount),operation=operation,id='horizon:a',nutrition=2);o.update(kw);return o
+        o=dict(mode=mode,value=bits(value),attribute=attribute,amount=double(amount),operation=operation,id='sunrise:a',nutrition=2);o.update(kw);return o
     def food(n=20,s=5,e=0,t=9):return dict(food=n,saturation=bits(s),exhaustion=bits(e),timer=t)
     def row(entity,ops,**kw):
         f=dict(entity=entity,ops=ops,health=bits(10),absorption=bits(0),dead=False,regen=True,difficulty=2,food=food(),fail=-1);f.update(kw);return f
@@ -36,7 +36,7 @@ def corpus(catalog):
             for fail in [-1,0,1,2]:yield row(entity,[op('tick') for _ in range(100)]+[op('pack')],food=food(n,s,0,t),fail=fail)
     rng=random.Random(0x4845414c464f4f44)
     for _ in range(1500):
-        ops=[op(rng.choice(['hurt','dead','heal','set','absorption','tick','tick','eat','exhaust','pack','base','add','remove','reset']),rng.choice(values),rng.randrange(2),rng.choice(values),rng.randrange(3),id=rng.choice(['horizon:a','horizon:b']),nutrition=rng.choice([-1,0,1,2,20])) for __ in range(rng.randrange(5,80))]
+        ops=[op(rng.choice(['hurt','dead','heal','set','absorption','tick','tick','eat','exhaust','pack','base','add','remove','reset']),rng.choice(values),rng.randrange(2),rng.choice(values),rng.randrange(3),id=rng.choice(['sunrise:a','sunrise:b']),nutrition=rng.choice([-1,0,1,2,20])) for __ in range(rng.randrange(5,80))]
         yield row(rng.choice(entities),ops,health=bits(rng.choice(values)),absorption=bits(rng.choice(values)),dead=bool(rng.randrange(2)),regen=bool(rng.randrange(2)),difficulty=rng.randrange(4),food=food(rng.choice([0,17,18,19,20]),rng.choice(values),rng.choice(values),rng.choice([0,9,79])),fail=rng.choice([-1,-1,0,1,2,5]))
 
 
@@ -46,20 +46,20 @@ def main():
     report_path=build/'report.json';report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaAttributeHealthOracle.java'
-    helper=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEntityAttributeOracle.java'
-    sources=[oracle,helper,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/attribute_health_fixture.rs']
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaAttributeHealthOracle.java'
+    helper=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEntityAttributeOracle.java'
+    sources=[oracle,helper,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/attribute_health_fixture.rs']
     tested_sources=base.source_hashes(sources)
     classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,helper],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,helper],'compile-java')
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaAttributeHealthOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaAttributeHealthOracle',mode,path],side+'-'+mode)
     java('server','export',build);states=json.loads((build/'catalog.json').read_text());fixtures=list(corpus(states));inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(value,separators=(',',':'))+'\n' for value in fixtures),encoding='utf-8')
     fixture_paths=[inputs,build/'catalog.json'];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
     binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'attribute_health_fixture',build],'rust');run([binary,'attribute_health_fixture',build,'live'],'rust-live');references=[]

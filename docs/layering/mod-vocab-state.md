@@ -6,12 +6,12 @@ Part of #2587. The vocabulary is **not stateless**, and this first change does *
 free of unsafe. Its crate-level `deny(unsafe_code)` remains in force. The unchanged
 `src/__private/points.rs` contains the sole temporary unsafe exception (local lint expectations)
 and the open injection-dispatch registry. #2697 moves the final seal into
-`horizon-engine-slots`; #3523 also moves generated point records and activity there, behind a set-once dispatch socket. The #2587 follow-up then moves raw-pointer
+`sunrise-engine-slots`; #3523 also moves generated point records and activity there, behind a set-once dispatch socket. The #2587 follow-up then moves raw-pointer
 conversion and ownership behind the points boundary and installs `forbid(unsafe_code)`.
 
 Crash detail buffers, profiling, borrowed resource scopes, static-string storage, retained fluids,
 package/phase/registration snapshots, live authoring requests, concrete Part registrars and diagnostic
-warning history belong to `horizon-mod-api`. The engine interface retains dispatch routing, enabled
+warning history belong to `sunrise-mod-api`. The engine interface retains dispatch routing, enabled
 bits, installed/per-game lookup tables, set-once callback sockets, one crash-owner `Cell`, and the
 named immutable caches below. Ordinary installed key and Part reads never call an authoring service.
 Registration callbacks are consulted only while the API-owned activity counter is nonzero.
@@ -29,14 +29,14 @@ inside inline modules are refused because Rust resolves them from an inline-modu
 the file's directory. Conditional path routing and module-declaring generated macros are refused
 instead of being skipped.
 Every listed generated OUT_DIR input is token-checked before write by
-`horizon-mod-api-gen`: no unlisted static declarations (including macro metavariables), unsafe,
+`sunrise-mod-api-gen`: no unlisted static declarations (including macro metavariables), unsafe,
 unsafe lint suppression, or further includes. The generated immutable ABI hash is checked against
 this same inventory by exact name and type; nested state is refused. Lifetimes and string literals are not declarations. The trusted
 Wire derive supplies codecs, not state; the crate's unsafe lint applies to its expansion as well.
 Ownership reasons are reviewed permissions,
 not generated from newly discovered declarations. The table is generated from those permissions.
 
-Source paths below are relative to `crates/horizon-mod-vocab/src`; `@generated/` identifies an
+Source paths below are relative to `crates/sunrise-mod-vocab/src`; `@generated/` identifies an
 OUT_DIR file checked by the generator before writing it.
 
 | File and item | Type | Ownership | Reason |
@@ -51,16 +51,16 @@ OUT_DIR file checked by the generator before writing it.
 | `client/client_reload.rs::model_manager::ID` | `LazyLock<Identifier>` | immutable cache | Immutable vanilla reload-boundary identifier, allocated once and shared by anchor declarations. |
 | `client/particle_keys.rs::resolved::EMPTY` | `OnceLock<Particles>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
 | `content/crash.rs::CURRENT_CRASH_OWNER` | `Cell<CrashOwner>` | crash owner | The one addition to #2587: call and frame ownership stay local to avoid indirect callbacks on every subscribed dispatch. |
-| `content/registry_keys.rs::ENCHANTMENTS` | `std::sync::LazyLock<std::sync::RwLock<Option<horizon_mod_runtime::registry_keys::Names>>,>` | Parts lookup table | Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests. |
-| `content/registry_keys.rs::MENUS` | `std::sync::LazyLock<std::sync::RwLock<Option<horizon_mod_runtime::registry_keys::Names>>,>` | Parts lookup table | Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests. |
-| `content/registry_keys.rs::resolved_block_keys::EMPTY` | `std::sync::OnceLock<horizon_mod_runtime::block_definitions::Blocks>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
-| `content/registry_keys.rs::resolved_entity_types::EMPTY` | `std::sync::OnceLock<horizon_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
-| `content/registry_keys.rs::resolved_items::EMPTY` | `std::sync::OnceLock<horizon_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `content/registry_keys.rs::ENCHANTMENTS` | `std::sync::LazyLock<std::sync::RwLock<Option<sunrise_mod_runtime::registry_keys::Names>>,>` | Parts lookup table | Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests. |
+| `content/registry_keys.rs::MENUS` | `std::sync::LazyLock<std::sync::RwLock<Option<sunrise_mod_runtime::registry_keys::Names>>,>` | Parts lookup table | Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests. |
+| `content/registry_keys.rs::resolved_block_keys::EMPTY` | `std::sync::OnceLock<sunrise_mod_runtime::block_definitions::Blocks>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `content/registry_keys.rs::resolved_entity_types::EMPTY` | `std::sync::OnceLock<sunrise_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `content/registry_keys.rs::resolved_items::EMPTY` | `std::sync::OnceLock<sunrise_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
 | `dispatch_scope.rs::BACKEND` | `OnceLock<Option<Backend>>` | set-once socket | Set-once platform callback registration; mutable platform storage lives above the engine. |
-| `parts/block_entities.rs::resolved_block_entity_types::EMPTY` | `OnceLock<horizon_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `parts/block_entities.rs::resolved_block_entity_types::EMPTY` | `OnceLock<sunrise_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
 | `parts/datapack_registries.rs::PROCESS_DECLARATIONS` | `OnceLock<Vec<DatapackRegistryDeclaration>>` | test-support | Compiled only under cfg(any(test, feature = "testing")), never in a production build. Set once with installed datapack-registry declarations so connection tests on other threads can look them up; holds no live authoring requests. |
-| `parts/effects.rs::resolved_effects::EMPTY` | `OnceLock<horizon_mod_runtime::registry_keys::Effects>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
-| `parts/fluids.rs::resolved_fluids::EMPTY` | `OnceLock<horizon_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `parts/effects.rs::resolved_effects::EMPTY` | `OnceLock<sunrise_mod_runtime::registry_keys::Effects>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `parts/fluids.rs::resolved_fluids::EMPTY` | `OnceLock<sunrise_mod_runtime::registry_keys::Names>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
 | `parts/shared.rs::GAME_PARTS` | `RefCell<GamePartsLookup>` | Parts lookup table | Per-game lookup table and its world/thread validity context, replaced when world tags change. |
 | `parts/shared.rs::INSTALLED` | `OnceLock<Installed>` | Parts lookup table | Frozen installed Parts inventory used by engine dispatch and registry lookups. |
 | `parts/shared.rs::IN_FEATURE` | `Cell<bool>` | Parts lookup table | Per-thread flag keeping a running feature's worldgen Part table stable. |
@@ -69,7 +69,7 @@ OUT_DIR file checked by the generator before writing it.
 | `parts/shared.rs::WORLDGEN_GENERATION` | `AtomicU64` | Parts lookup table | Generation of the published worldgen Part table, read without its lock. |
 | `parts/shared.rs::WORLDGEN_PARTS` | `RwLock<(u64,Option<Arc<Parts>>)>` | Parts lookup table | Part table the server published for world generation, with its generation, replaced at world open and /reload. |
 | `parts/shared.rs::WORLDGEN_TABLE` | `RefCell<Option<(u64,Option<Arc<Parts>>)>>` | Parts lookup table | Per-thread handle on the published worldgen Part table and its generation. |
-| `parts/shared.rs::requested_keys::EMPTY` | `LazyLock<horizon_mod_runtime::registry_keys::Requests>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `parts/shared.rs::requested_keys::EMPTY` | `LazyLock<sunrise_mod_runtime::registry_keys::Requests>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
 | `runtime.rs::MODS` | `OnceLock<Installed>` | dispatch table | Dependency-ordered hook routing and its per-mod enabled bits remain engine-owned. |
 | `runtime.rs::MODS_SWITCHED` | `std::sync::atomic::AtomicU64` | dispatch table | Counts changes to the per-mod enabled bits it sits beside; read through the host's capability provider table, never by a guest's own copy. |
 | `runtime.rs::TEST_MODS` | `std::cell::Cell<Option<&'staticInstalled>>` | dispatch table | Thread-local dispatch inventory for isolated engine tests. |

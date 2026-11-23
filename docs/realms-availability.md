@@ -2,8 +2,8 @@
 
 Read this before a screen shows anything of Realms: the Realms screen, the title screen's Realms icons
 (`RealmsNotificationsScreen`), a button, a badge. Vanilla asks once whether the client may use Realms at all
-(`RealmsAvailability`), and its two consumers wait for the answer before their own requests. Horizon has the same check in
-`crates/horizon-client/src/realms/availability.rs`; this page is how to use it.
+(`RealmsAvailability`), and its two consumers wait for the answer before their own requests. Sunrise has the same check in
+`crates/sunrise-client/src/realms/availability.rs`; this page is how to use it.
 
 Vanilla has two consumers. `RealmsMainScreen` (the Realms screen) asks when it is created, shows its list as loading
 and makes none of its data requests until the answer comes; a success starts them, any other answer replaces the
@@ -81,9 +81,9 @@ The first answer is kept for the rest of the process, except one: a check that e
 by a new one at the next `get()`. `Success`, `IncompatibleClient`, `NeedsParentalConsent` and `AuthenticationError` are
 kept. This is vanilla's `shouldRefresh` rule. The screen that saw the error keeps its old `Pending` and its error.
 
-## Where Horizon differs from vanilla
+## Where Sunrise differs from vanilla
 
-- Vanilla's account can't change while the game runs, so its one future has no key. Horizon's session can be missing,
+- Vanilla's account can't change while the game runs, so its one future has no key. Sunrise's session can be missing,
   expire or be replaced, so the cache holds one entry, keyed on the account: the session's UUID and access token. A
   `get()` for another UUID, or the same account with a new token, starts a check of its own and never sees the previous
   answer. A check still running for the old session finishes into the old `Pending` only.
@@ -110,5 +110,5 @@ from a test, since they use `RealmsClient::production`.
 
 ## Files
 
-- `crates/horizon-client/src/realms/availability.rs`: `Availability`, `Pending`, `AvailabilityService`, `check`, `AvailabilityCache`, `get`, `current`.
-- `crates/horizon-client/src/realms/client.rs`: `RealmsClient` (the two requests), `CompatibleVersion`, `RealmsError` (`code()`, `message()`, `text()`).
+- `crates/sunrise-client/src/realms/availability.rs`: `Availability`, `Pending`, `AvailabilityService`, `check`, `AvailabilityCache`, `get`, `current`.
+- `crates/sunrise-client/src/realms/client.rs`: `RealmsClient` (the two requests), `CompatibleVersion`, `RealmsError` (`code()`, `message()`, `text()`).

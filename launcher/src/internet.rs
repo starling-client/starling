@@ -1,10 +1,10 @@
 //! The Servers page's "Friends over the internet" panel: Tailscale on this computer, the address friends
 //! type, inviting a friend to this one computer, and keeping shared friends to the server's port
-//! (`horizon_launcher::tailscale`). Signing in is always the player's, in Tailscale's own app or page;
+//! (`sunrise_launcher::tailscale`). Signing in is always the player's, in Tailscale's own app or page;
 //! the launcher reads `tailscale status` and, with the player's own access token, calls the API.
 use super::servers_page::Field;
 use super::*;
-use horizon_launcher::tailscale::{self, Api, Invite, Reach, State};
+use sunrise_launcher::tailscale::{self, Api, Invite, Reach, State};
 use serde_json::Value;
 
 /// How often Tailscale's state is read while the panel shows.
@@ -346,7 +346,7 @@ impl Launcher {
                     }));
                 panel = panel
                     .child(text(theme::UI).text_color(t.ink).child(tr(
-                        "Tailscale is installed. Sign in with your own account in Tailscale (Horizon never sees it), then come back here.",
+                        "Tailscale is installed. Sign in with your own account in Tailscale (Sunrise never sees it), then come back here.",
                     )))
                     .when(cfg!(target_os = "linux"), |d| {
                         d.child(line(trf(
@@ -408,7 +408,7 @@ impl Launcher {
                 .child(self.invite_section(&ip, port, cx)),
         );
         panel = panel.child(line(
-            tr("Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.")
+            tr("Sunrise never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.")
                 .into(),
         ));
         self.internet_message(panel)
@@ -418,7 +418,7 @@ impl Launcher {
     /// runs, else what to do about it.
     pub(super) fn glass_internet(&mut self, port: u16, cx: &mut Context<Self>) -> Div {
         use crate::glass_ui as ui;
-        use horizon_theme::glass::ink;
+        use sunrise_theme::glass::ink;
         let t = &self.theme.clone();
         let d = div()
             .flex()
@@ -460,7 +460,7 @@ impl Launcher {
                     check,
                 )),
             Some(State::SignedOut { auth_url }) => d
-                .child(ui::card_note(tr("Tailscale is installed. Sign in with your own account in Tailscale (Horizon never sees it), then come back here.")).mt(px(4.)))
+                .child(ui::card_note(tr("Tailscale is installed. Sign in with your own account in Tailscale (Sunrise never sees it), then come back here.")).mt(px(4.)))
                 .child(act(
                     button("ts-login", "Sign in to Tailscale", Kind::Secondary, t).on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -538,7 +538,7 @@ impl Launcher {
             .child(crate::glass_ui::card_heading(tr("Invite a friend")))
             .child(self.invite_section(&ip, port, cx))
             .child(crate::glass_ui::card_note(tr(
-                "Horizon never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.",
+                "Sunrise never turns on Funnel: the server isn't put on the public internet, only shared with the people you invite.",
             )));
         self.internet_message(panel)
     }
@@ -801,7 +801,7 @@ impl Launcher {
                     let snippet = tailscale::snippet(ip, port);
                     safety = safety
                         .child(text(theme::UI).text_color(t.ink).child(
-                            "Your access controls are your own, so Horizon leaves them alone. To \
+                            "Your access controls are your own, so Sunrise leaves them alone. To \
                              keep shared friends to Minecraft, add this rule in the admin console:",
                         ))
                         .child(

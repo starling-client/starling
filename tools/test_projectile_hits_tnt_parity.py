@@ -6,7 +6,7 @@ a projectile's path: a wind charge bursts on it (and its burst pushes the TNT), 
 or a trident hurts it for nothing and turns back (`AbstractArrow.onHitEntity`'s `ProjectileDeflection.REVERSE`,
 `ThrownTrident.onHitEntity`).
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen. Each lane is a primed TNT on the floor and a projectile without gravity flying +z at it, which reaches its
 box on the first tick. The servers are stepped; after every step the TNT's and the projectile's exact Pos and
 Motion are read with `data get`. The transcripts must match vanilla's (the oracle) line for line, and vanilla's
@@ -98,17 +98,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:24]))
     print(f'projectile hits TNT: {len(vanilla)} lines identical')
 

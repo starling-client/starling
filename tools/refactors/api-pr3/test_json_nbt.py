@@ -30,16 +30,16 @@ version = "0.0.0"
 edition = "2024"
 [workspace]
 [dependencies]
-horizon-core = {{ path = {json.dumps(str(ROOT / "crates/horizon-core"))} }}
+sunrise-core = {{ path = {json.dumps(str(ROOT / "crates/sunrise-core"))} }}
 serde_json = "1.0.151"
 ''')
     (OUT / "src/lib.rs").write_text(
-        f'#[path = {json.dumps(str(ROOT / "crates/horizon-client/src/json_nbt.rs"))}]\npub mod production;\n'
+        f'#[path = {json.dumps(str(ROOT / "crates/sunrise-client/src/json_nbt.rs"))}]\npub mod production;\n'
         f'#[cfg(test)]\n#[path = {json.dumps(str(HERE / "json_nbt_parity.rs"))}]\nmod parity;\n'
     )
     env = dict(os.environ, JSON_NBT_SAMPLES=str(HERE / "json_nbt_samples.json"), JSON_NBT_ORACLE=str(oracle))
     run("cargo", "test", "--manifest-path", str(OUT / "Cargo.toml"), env=env)
-    production = ROOT / "crates/horizon-client/src/json_nbt.rs"
+    production = ROOT / "crates/sunrise-client/src/json_nbt.rs"
     original = production.read_text()
     mutations = [
         ("wrong integer width", "return Tag::Long(value);", "return Tag::Int(value as i32);"),

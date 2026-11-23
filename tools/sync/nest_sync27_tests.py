@@ -3,7 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME = ROOT / "crates/horizon-client/src/game"
+GAME = ROOT / "crates/sunrise-client/src/game"
 PAIRS = {
     "blocks/campfire.rs": "campfire_tests.rs",
     "blocks/sculk.rs": "farm_animal_interaction_tests.rs",

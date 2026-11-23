@@ -52,7 +52,7 @@ def main(argv=None):
     for name,ops in PROGRAMS:(out/(name+'-script.jsonl')).write_text(script(ops))
     receipt={'processes':[],'unknown_times':None,'restart_boundary':'same storage, separate JVM/process; official embedded server recreates PrimaryLevelData; no general metadata/player/clock claim'}
     if args.reference_only:
-        classes=out/'classes';classes.mkdir();oracle=runner.lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandExecOracle.java'
+        classes=out/'classes';classes.mkdir();oracle=runner.lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandExecOracle.java'
         with (out/'compile-java.log').open('w') as log:subprocess.run(['javac','--release',str(lock['minecraft']['java_major']),'-proc:none','-cp',str(jars['server'])+os.pathsep+dependency,'-d',str(classes),str(oracle)],stdout=log,stderr=subprocess.STDOUT,check=True)
         cp=os.pathsep.join([str(classes),str(jars['server']),dependency]);cwd=out/'java';cwd.mkdir();sealed={str(p.relative_to(classes)):digest(p) for p in classes.rglob('*.class')};assert sealed
     else:
@@ -67,12 +67,12 @@ def main(argv=None):
         with (out/(name+'.log')).open('w') as log:
             if args.reference_only:
                 assert sealed=={str(p.relative_to(classes)):digest(p) for p in classes.rglob('*.class')}
-                command=['java','-Xmx3G','-Duser.timezone=UTC','-Dhorizon.parity.flat=true','-cp',cp,'dev.horizonlab.parity.VanillaCommandExecOracle',str(cwd/'universe'),str(original),str(output),str(runner.SEED)]
+                command=['java','-Xmx3G','-Duser.timezone=UTC','-Dsunrise.parity.flat=true','-cp',cp,'dev.sunriselab.parity.VanillaCommandExecOracle',str(cwd/'universe'),str(original),str(output),str(runner.SEED)]
                 result=subprocess.run(command,cwd=cwd,stdout=log,stderr=subprocess.STDOUT,timeout=600)
                 world=cwd/'universe/harness'
             else:
                 assert digest(binary)==seal
-                env=runner.lab.game_env(HORIZON_PLAYER_NAME='Player',HORIZON_COMMAND_SCRIPT=original,HORIZON_COMMAND_OUTPUT=output,HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+                env=runner.lab.game_env(SUNRISE_PLAYER_NAME='Player',SUNRISE_COMMAND_SCRIPT=original,SUNRISE_COMMAND_OUTPUT=output,SUNRISE_API_DISCOVERY='http://127.0.0.1:9/')
                 command=[str(binary),'--resources',str(runner.lab.RESOURCES),'--world','harness','--seed',str(runner.SEED),'--radius','4']
                 result=runner.run_game(command,cwd=cwd,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=600)
                 world=cwd/'saves/harness'
@@ -102,14 +102,14 @@ def main(argv=None):
     return summarize(out,ref,seal,args.strict_all,args.original_strict)
 
 def both(args):
-    """tools/parity.py runs every harness with no arguments: the fresh Java reference into <run>/java, then Horizon
+    """tools/parity.py runs every harness with no arguments: the fresh Java reference into <run>/java, then Sunrise
     (built when --binary is omitted) into <run>/native against it, in a new run folder under .local/ by default."""
     run=(args.work_dir or runner.lab.LOCAL/'container-component-names'/f"{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}-{os.getpid()}").resolve()
     if args.binary:binary=args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo','build','--profile','fast','-p','horizon-game','--bin','horizon-client'],cwd=runner.lab.ROOT,check=True)
+        subprocess.run(['cargo','build','--profile','fast','-p','sunrise-game','--bin','sunrise-client'],cwd=runner.lab.ROOT,check=True)
         metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=runner.lab.ROOT,text=True))
-        binary=Path(metadata['target_directory'])/'fast'/('horizon-client.exe' if os.name=='nt' else 'horizon-client')
+        binary=Path(metadata['target_directory'])/'fast'/('sunrise-client.exe' if os.name=='nt' else 'sunrise-client')
     shared=['--overlay-restart'] if args.overlay_restart else []
     main(['--reference-only','--work-dir',str(run/'java'),*shared])
     return main(['--work-dir',str(run/'native'),'--reference-dir',str(run/'java'),'--binary',str(binary),*shared,

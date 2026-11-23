@@ -30,14 +30,14 @@ class TestCompileLockTests(unittest.TestCase):
                                 "sys.exit(7)\n")
             compiler.chmod(0o755)
             env = dict(os.environ, RUNNER_TEMP=directory, CHILD_PID=str(pid_file),
-                       HORIZON_TEST_RUSTC_WRAPPER="")
+                       SUNRISE_TEST_RUSTC_WRAPPER="")
             try:
-                first = subprocess.run([WRAPPER, compiler, '--crate-name', 'horizon_client_lib',
+                first = subprocess.run([WRAPPER, compiler, '--crate-name', 'sunrise_client_lib',
                                         '--test', '--spawn-child'], env=env, timeout=5)
                 self.assertEqual(first.returncode, 7)
                 child_pid = int(pid_file.read_text())
                 os.kill(child_pid, 0)  # Descendant is still alive when the second call runs.
-                second = subprocess.run([WRAPPER, compiler, '--crate-name', 'horizon_client',
+                second = subprocess.run([WRAPPER, compiler, '--crate-name', 'sunrise_client',
                                          '--test'], env=env, timeout=5)
                 self.assertEqual(second.returncode, 7)
                 os.kill(child_pid, 0)
@@ -57,10 +57,10 @@ class TestCompileLockTests(unittest.TestCase):
                                 "sys.exit(7)\n")
             compiler.chmod(0o755)
             response = root / "arguments with spaces"
-            response.write_text('--crate-name\nhorizon_client_lib\n--cfg\nfeature="with spaces"\n--test')
-            env = dict(os.environ, RUNNER_TEMP=directory, HORIZON_TEST_RUSTC_WRAPPER="")
-            for args in (["@" + str(response)], ["--crate-name=horizon_client", "--test"]):
-                with self.subTest(args=args), (root / "horizon-lib-test-compile.lock").open("w") as lock:
+            response.write_text('--crate-name\nsunrise_client_lib\n--cfg\nfeature="with spaces"\n--test')
+            env = dict(os.environ, RUNNER_TEMP=directory, SUNRISE_TEST_RUSTC_WRAPPER="")
+            for args in (["@" + str(response)], ["--crate-name=sunrise_client", "--test"]):
+                with self.subTest(args=args), (root / "sunrise-lib-test-compile.lock").open("w") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX)
                     process = subprocess.Popen([WRAPPER, compiler, *args], env=env,
                                                stdout=subprocess.PIPE, text=True)
@@ -90,22 +90,22 @@ class TestCompileLockTests(unittest.TestCase):
             cache.write_text('#!/usr/bin/env bash\necho cached >> "$RUNNER_TEMP/cache-calls"\nexec "$@"\n')
             cache.chmod(0o755)
             env = dict(os.environ, RUNNER_TEMP=directory,
-                       HORIZON_TEST_RUSTC_WRAPPER=str(cache))
-            args = ["--crate-name", "horizon_client_lib", "--test", "--hold"]
+                       SUNRISE_TEST_RUSTC_WRAPPER=str(cache))
+            args = ["--crate-name", "sunrise_client_lib", "--test", "--hold"]
             first = subprocess.Popen([WRAPPER, compiler, *args], env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             second = None
             try:
                 self.assertTrue(select.select([first.stdout], [], [], 5)[0])
                 self.assertEqual(json.loads(first.stdout.readline()), args)
-                second_args = ["--test", "--crate-name", "horizon_client", "--cfg", 'feature="with spaces"']
+                second_args = ["--test", "--crate-name", "sunrise_client", "--cfg", 'feature="with spaces"']
                 second = subprocess.Popen([WRAPPER, compiler, *second_args], env=env,
                                           stdout=subprocess.PIPE, text=True)
                 self.assertFalse(select.select([second.stdout], [], [], 0.2)[0],
                                  "second large test started before first released its lock")
                 for other_args in (["--crate-name", "unrelated", "--test"],
-                                   ["--crate-name", "horizon_client"],
-                                   ["--crate-name", "horizon_client_lib_extra", "--test"]):
+                                   ["--crate-name", "sunrise_client"],
+                                   ["--crate-name", "sunrise_client_lib_extra", "--test"]):
                     result = subprocess.run([WRAPPER, compiler, *other_args], env=env,
                                             capture_output=True, text=True, timeout=5)
                     self.assertEqual(result.returncode, 7)
@@ -117,7 +117,7 @@ class TestCompileLockTests(unittest.TestCase):
                 self.assertEqual(json.loads(output), second_args)
                 self.assertEqual((root / "cache-calls").read_text().splitlines(), ["cached"] * 5)
                 # An unset upstream wrapper executes the compiler directly too.
-                env.pop("HORIZON_TEST_RUSTC_WRAPPER")
+                env.pop("SUNRISE_TEST_RUSTC_WRAPPER")
                 direct = subprocess.run([WRAPPER, compiler, "--version"], env=env,
                                         capture_output=True, text=True, timeout=5)
                 self.assertEqual(direct.returncode, 7)

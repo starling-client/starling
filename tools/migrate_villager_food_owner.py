@@ -15,7 +15,7 @@ registry argument here:
 import re
 from pathlib import Path
 
-ROOT = Path("crates/horizon-client")
+ROOT = Path("crates/sunrise-client")
 GAME = ROOT / "src/game"
 EXAMPLES = ROOT / "examples"
 # A `Mob::seen` call: its player argument is one of these (`MobWorld::seen` takes an id).

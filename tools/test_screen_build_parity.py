@@ -7,7 +7,7 @@ survival, crafting, furnace, chest (one to six rows), hopper and shulker
 screens, with or without the recipe book's offset, and reports the panel
 (`leftPos`/`topPos`/`imageWidth`/`imageHeight`), the slots' screen positions and
 the slot `AbstractContainerScreen`'s hover test answers for the case's cursor
-points. The game (`HORIZON_SCREEN_BUILD_FIXTURE`) builds the same screens'
+points. The game (`SUNRISE_SCREEN_BUILD_FIXTURE`) builds the same screens'
 `ScreenBuild::ContainerLayout` (and the pause screen's `PauseLayout`) and
 reports the panel, the origin, the slot boxes, the slot `slot_at` answers and
 the pause menu's buttons and icons. For chat in bed and the command block and
@@ -114,7 +114,7 @@ def main():
     parser.add_argument('--detail', type=int, default=4)
     args = parser.parse_args()
     lock, jars, _ = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'screen-build-parity'
     work.mkdir(parents=True, exist_ok=True)
     chosen = cases()
@@ -125,20 +125,20 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['client'], *baking.client_libraries()]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root),
          '-nowarn', '-cp', dependencies, '-d', str(classes),
-         str(java_root / 'dev/horizonlab/parity/VanillaScreenBuildOracle.java')])
+         str(java_root / 'dev/sunriselab/parity/VanillaScreenBuildOracle.java')])
     run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies,
-         'dev.horizonlab.parity.VanillaScreenBuildOracle', str(work / 'cases.jsonl'), str(work / 'native.jsonl')])
-    run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+         'dev.sunriselab.parity.VanillaScreenBuildOracle', str(work / 'cases.jsonl'), str(work / 'native.jsonl')])
+    run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
         env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    executable = lab.cargo_target() / ('fast/horizon-client.exe' if os.name == 'nt' else 'fast/horizon-client')
+    executable = lab.cargo_target() / ('fast/sunrise-client.exe' if os.name == 'nt' else 'fast/sunrise-client')
     with tempfile.TemporaryDirectory(prefix='game-', dir=work) as game_dir:
         done = run_game([str(executable), '--resources', str(resources), '--game-dir', game_dir], cwd=work,
-                        env=lab.game_env(HORIZON_SCREEN_BUILD_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.jsonl"}'))
+                        env=lab.game_env(SUNRISE_SCREEN_BUILD_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.jsonl"}'))
         if done.returncode:
-            sys.exit(f'horizon-client fixture failed with exit code {done.returncode}')
+            sys.exit(f'sunrise-client fixture failed with exit code {done.returncode}')
     native = [json.loads(line) for line in (work / 'native.jsonl').read_text().splitlines()]
     rust = [json.loads(line) for line in (work / 'rust.jsonl').read_text().splitlines()]
     assert len(native) == len(rust) == len(chosen), (len(native), len(rust), len(chosen))
@@ -170,13 +170,13 @@ def main():
             differing = [i for i, (x, y) in enumerate(zip(a['hits'], b['hits'])) if x != y]
             bad.append((case, 'hits', [a['hits'][i] for i in differing],
                         [b['hits'][i] for i in differing]))
-    for case, key, vanilla, horizon in bad[:args.detail]:
+    for case, key, vanilla, sunrise in bad[:args.detail]:
         labels = f'{case["kind"]}'
         if 'rows' in case:
             labels += f' rows {case["rows"]} book {case["book"]}'
         print(f'{labels} {case["window"]} scale {case["scale"]}: {key}')
         print('  vanilla', vanilla)
-        print('  horizon', horizon)
+        print('  sunrise', sunrise)
     print(f'{len(chosen) - len(bad) - errors}/{len(chosen)} cases match ({errors} errors)')
     raise SystemExit(1 if bad or errors else 0)
 

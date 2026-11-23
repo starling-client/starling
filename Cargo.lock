@@ -503,19 +503,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-horizon-mod"
+name = "cargo-sunrise-mod"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dunce",
- "horizon-addresses",
- "horizon-mod-package",
- "horizon-mod-point-emit",
- "horizon-mod-source",
- "horizon-mod-surface",
- "horizon-mod-wasm",
- "horizon-port-pack",
- "horizon-release-sign",
+ "sunrise-addresses",
+ "sunrise-mod-package",
+ "sunrise-mod-point-emit",
+ "sunrise-mod-source",
+ "sunrise-mod-surface",
+ "sunrise-mod-wasm",
+ "sunrise-port-pack",
+ "sunrise-release-sign",
  "libc",
  "ring",
  "rustc-demangle",
@@ -1770,26 +1770,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-addresses"
+name = "sunrise-addresses"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-android"
+name = "sunrise-android"
 version = "0.1.0"
 dependencies = [
- "horizon-client",
- "horizon-engine-slots",
- "horizon-mod-api",
- "horizon-mod-host",
- "horizon-mod-package",
- "horizon-mod-points",
- "horizon-mod-render",
+ "sunrise-client",
+ "sunrise-engine-slots",
+ "sunrise-mod-api",
+ "sunrise-mod-host",
+ "sunrise-mod-package",
+ "sunrise-mod-points",
+ "sunrise-mod-render",
  "jni 0.21.1",
  "winit",
 ]
 
 [[package]]
-name = "horizon-anticheat"
+name = "sunrise-anticheat"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1797,11 +1797,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-assets"
+name = "sunrise-assets"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "horizon-core",
+ "sunrise-core",
  "log",
  "miniz_oxide 0.8.9",
  "png",
@@ -1811,34 +1811,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-bench"
+name = "sunrise-bench"
 version = "0.1.0"
 dependencies = [
- "horizon-system",
+ "sunrise-system",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-bots"
+name = "sunrise-bots"
 version = "0.1.0"
 dependencies = [
- "horizon-protocol",
+ "sunrise-protocol",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-chat-filter"
+name = "sunrise-chat-filter"
 version = "0.1.0"
 dependencies = [
- "horizon-server-files",
+ "sunrise-server-files",
  "serde",
  "serde_json",
  "toml",
 ]
 
 [[package]]
-name = "horizon-client"
+name = "sunrise-client"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -1851,47 +1851,47 @@ dependencies = [
  "fs4",
  "gilrs",
  "glam",
- "horizon-anticheat",
- "horizon-assets",
- "horizon-bench",
- "horizon-chat-filter",
- "horizon-client-core",
- "horizon-client-input",
- "horizon-client-lib",
- "horizon-client-render",
- "horizon-command",
- "horizon-core",
- "horizon-cosmetics",
- "horizon-dualsense",
- "horizon-engine-slots",
- "horizon-friends",
- "horizon-game-discovery",
- "horizon-guest-stack",
- "horizon-hdr",
- "horizon-hooks",
- "horizon-items",
- "horizon-java-properties",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-package",
- "horizon-mod-runtime",
- "horizon-mod-vocab",
- "horizon-mod-wasm",
- "horizon-narrator",
- "horizon-optifine",
- "horizon-perf",
- "horizon-perf-format",
- "horizon-port-pack",
- "horizon-protocol",
- "horizon-server-files",
- "horizon-shader-api",
- "horizon-shaders",
- "horizon-system",
- "horizon-telemetry",
- "horizon-theme",
- "horizon-threads",
- "horizon-world",
+ "sunrise-anticheat",
+ "sunrise-assets",
+ "sunrise-bench",
+ "sunrise-chat-filter",
+ "sunrise-client-core",
+ "sunrise-client-input",
+ "sunrise-client-lib",
+ "sunrise-client-render",
+ "sunrise-command",
+ "sunrise-core",
+ "sunrise-cosmetics",
+ "sunrise-dualsense",
+ "sunrise-engine-slots",
+ "sunrise-friends",
+ "sunrise-game-discovery",
+ "sunrise-guest-stack",
+ "sunrise-hdr",
+ "sunrise-hooks",
+ "sunrise-items",
+ "sunrise-java-properties",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-package",
+ "sunrise-mod-runtime",
+ "sunrise-mod-vocab",
+ "sunrise-mod-wasm",
+ "sunrise-narrator",
+ "sunrise-optifine",
+ "sunrise-perf",
+ "sunrise-perf-format",
+ "sunrise-port-pack",
+ "sunrise-protocol",
+ "sunrise-server-files",
+ "sunrise-shader-api",
+ "sunrise-shaders",
+ "sunrise-system",
+ "sunrise-telemetry",
+ "sunrise-theme",
+ "sunrise-threads",
+ "sunrise-world",
  "image",
  "jni 0.21.1",
  "log",
@@ -1923,32 +1923,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-client-core"
+name = "sunrise-client-core"
 version = "0.1.0"
 dependencies = [
- "horizon-assets",
- "horizon-core",
- "horizon-world",
+ "sunrise-assets",
+ "sunrise-core",
+ "sunrise-world",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-client-input"
+name = "sunrise-client-input"
 version = "0.1.0"
 dependencies = [
  "arboard",
- "horizon-client-core",
- "horizon-dualsense",
- "horizon-engine-slots",
- "horizon-mod-api-macros",
- "horizon-theme",
+ "sunrise-client-core",
+ "sunrise-dualsense",
+ "sunrise-engine-slots",
+ "sunrise-mod-api-macros",
+ "sunrise-theme",
  "log",
  "png",
  "winit",
 ]
 
 [[package]]
-name = "horizon-client-lib"
+name = "sunrise-client-lib"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -1961,42 +1961,42 @@ dependencies = [
  "getrandom 0.3.4",
  "gilrs",
  "glam",
- "horizon-anticheat",
- "horizon-assets",
- "horizon-bench",
- "horizon-client-core",
- "horizon-client-input",
- "horizon-client-render",
- "horizon-command",
- "horizon-core",
- "horizon-dualsense",
- "horizon-engine-slots",
- "horizon-game-discovery",
- "horizon-guest-stack",
- "horizon-hdr",
- "horizon-hooks",
- "horizon-items",
- "horizon-java-properties",
- "horizon-mcp",
- "horizon-mod-api",
- "horizon-mod-api-macros",
- "horizon-mod-package",
- "horizon-mod-runtime",
- "horizon-mod-vocab",
- "horizon-mod-wasm",
- "horizon-narrator",
- "horizon-optifine",
- "horizon-perf",
- "horizon-perf-format",
- "horizon-prepare",
- "horizon-protocol",
- "horizon-server-files",
- "horizon-shader-api",
- "horizon-shaders",
- "horizon-telemetry",
- "horizon-theme",
- "horizon-threads",
- "horizon-world",
+ "sunrise-anticheat",
+ "sunrise-assets",
+ "sunrise-bench",
+ "sunrise-client-core",
+ "sunrise-client-input",
+ "sunrise-client-render",
+ "sunrise-command",
+ "sunrise-core",
+ "sunrise-dualsense",
+ "sunrise-engine-slots",
+ "sunrise-game-discovery",
+ "sunrise-guest-stack",
+ "sunrise-hdr",
+ "sunrise-hooks",
+ "sunrise-items",
+ "sunrise-java-properties",
+ "sunrise-mcp",
+ "sunrise-mod-api",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-package",
+ "sunrise-mod-runtime",
+ "sunrise-mod-vocab",
+ "sunrise-mod-wasm",
+ "sunrise-narrator",
+ "sunrise-optifine",
+ "sunrise-perf",
+ "sunrise-perf-format",
+ "sunrise-prepare",
+ "sunrise-protocol",
+ "sunrise-server-files",
+ "sunrise-shader-api",
+ "sunrise-shaders",
+ "sunrise-telemetry",
+ "sunrise-theme",
+ "sunrise-threads",
+ "sunrise-world",
  "log",
  "miniz_oxide 0.8.9",
  "mio",
@@ -2024,7 +2024,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-client-render"
+name = "sunrise-client-render"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -2035,33 +2035,33 @@ dependencies = [
  "flate2",
  "glam",
  "half",
- "horizon-assets",
- "horizon-client-core",
- "horizon-client-input",
- "horizon-command",
- "horizon-core",
- "horizon-engine-slots",
- "horizon-guest-stack",
- "horizon-hdr",
- "horizon-hooks",
- "horizon-items",
- "horizon-mod-api",
- "horizon-mod-api-macros",
- "horizon-mod-package",
- "horizon-mod-runtime",
- "horizon-mod-vocab",
- "horizon-narrator",
- "horizon-optifine",
- "horizon-perf",
- "horizon-perf-format",
- "horizon-polytone",
- "horizon-protocol",
- "horizon-shader-api",
- "horizon-shaders",
- "horizon-system",
- "horizon-theme",
- "horizon-threads",
- "horizon-world",
+ "sunrise-assets",
+ "sunrise-client-core",
+ "sunrise-client-input",
+ "sunrise-command",
+ "sunrise-core",
+ "sunrise-engine-slots",
+ "sunrise-guest-stack",
+ "sunrise-hdr",
+ "sunrise-hooks",
+ "sunrise-items",
+ "sunrise-mod-api",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-package",
+ "sunrise-mod-runtime",
+ "sunrise-mod-vocab",
+ "sunrise-narrator",
+ "sunrise-optifine",
+ "sunrise-perf",
+ "sunrise-perf-format",
+ "sunrise-polytone",
+ "sunrise-protocol",
+ "sunrise-shader-api",
+ "sunrise-shaders",
+ "sunrise-system",
+ "sunrise-theme",
+ "sunrise-threads",
+ "sunrise-world",
  "image-webp",
  "junction",
  "log",
@@ -2087,18 +2087,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-command"
+name = "sunrise-command"
 version = "0.1.0"
 dependencies = [
- "horizon-client-core",
- "horizon-core",
- "horizon-items",
- "horizon-protocol",
- "horizon-world",
+ "sunrise-client-core",
+ "sunrise-core",
+ "sunrise-items",
+ "sunrise-protocol",
+ "sunrise-world",
 ]
 
 [[package]]
-name = "horizon-core"
+name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "libm",
@@ -2107,12 +2107,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-cosmetics"
+name = "sunrise-cosmetics"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "glam",
- "horizon-addresses",
+ "sunrise-addresses",
  "png",
  "serde",
  "serde_json",
@@ -2120,16 +2120,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-discord"
+name = "sunrise-discord"
 version = "0.1.0"
 dependencies = [
- "horizon-platform",
+ "sunrise-platform",
  "log",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-dualsense"
+name = "sunrise-dualsense"
 version = "0.1.0"
 dependencies = [
  "cpal",
@@ -2138,22 +2138,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-engine-slots"
+name = "sunrise-engine-slots"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-api-gen",
- "horizon-mod-vocab",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-vocab",
 ]
 
 [[package]]
-name = "horizon-friends"
+name = "sunrise-friends"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.3.4",
  "hkdf",
- "horizon-addresses",
- "horizon-platform",
+ "sunrise-addresses",
+ "sunrise-platform",
  "if-addrs",
  "serde",
  "serde_json",
@@ -2163,22 +2163,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-game"
+name = "sunrise-game"
 version = "0.1.0"
 dependencies = [
- "horizon-client",
- "horizon-core",
- "horizon-guest-stack",
- "horizon-mod-host",
- "horizon-mod-package",
- "horizon-protocol",
+ "sunrise-client",
+ "sunrise-core",
+ "sunrise-guest-stack",
+ "sunrise-mod-host",
+ "sunrise-mod-package",
+ "sunrise-protocol",
  "serde_json",
  "tempfile",
  "winresource",
 ]
 
 [[package]]
-name = "horizon-game-discovery"
+name = "sunrise-game-discovery"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -2187,14 +2187,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-guest-stack"
+name = "sunrise-guest-stack"
 version = "0.1.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
-name = "horizon-hdr"
+name = "sunrise-hdr"
 version = "0.1.0"
 dependencies = [
  "ash",
@@ -2205,83 +2205,83 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-heartbeat"
+name = "sunrise-heartbeat"
 version = "0.1.0"
 dependencies = [
- "horizon-platform",
- "horizon-telemetry",
+ "sunrise-platform",
+ "sunrise-telemetry",
  "log",
 ]
 
 [[package]]
-name = "horizon-hooks"
+name = "sunrise-hooks"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-hot-paths-game"
+name = "sunrise-hot-paths-game"
 version = "0.1.0"
 dependencies = [
- "horizon-client",
- "horizon-guest-stack",
- "horizon-mod-api",
- "horizon-mod-host",
- "horizon-mod-package",
+ "sunrise-client",
+ "sunrise-guest-stack",
+ "sunrise-mod-api",
+ "sunrise-mod-host",
+ "sunrise-mod-package",
 ]
 
 [[package]]
-name = "horizon-internals"
+name = "sunrise-internals"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-items"
+name = "sunrise-items"
 version = "0.1.0"
 dependencies = [
- "horizon-client-core",
- "horizon-core",
- "horizon-mod-package",
- "horizon-mod-vocab",
- "horizon-world",
+ "sunrise-client-core",
+ "sunrise-core",
+ "sunrise-mod-package",
+ "sunrise-mod-vocab",
+ "sunrise-world",
  "log",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-java-properties"
+name = "sunrise-java-properties"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-mcp"
+name = "sunrise-mcp"
 version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-mod-api"
+name = "sunrise-mod-api"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
- "horizon-core",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-runtime",
- "horizon-mod-vocab",
+ "sunrise-core",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-runtime",
+ "sunrise-mod-vocab",
  "log",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-mod-api-gen"
+name = "sunrise-mod-api-gen"
 version = "0.1.0"
 dependencies = [
  "heck",
- "horizon-game-discovery",
- "horizon-mod-point-shape",
- "horizon-mod-source",
- "horizon-mod-surface",
+ "sunrise-game-discovery",
+ "sunrise-mod-point-shape",
+ "sunrise-mod-source",
+ "sunrise-mod-surface",
  "prettyplease",
  "proc-macro2",
  "quote",
@@ -2295,30 +2295,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-api-gen-tests"
+name = "sunrise-mod-api-gen-tests"
 version = "0.1.0"
 dependencies = [
- "horizon-client-core",
- "horizon-core",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-runtime",
+ "sunrise-client-core",
+ "sunrise-core",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-runtime",
  "log",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-mod-api-macros"
+name = "sunrise-mod-api-macros"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-point-shape",
+ "sunrise-mod-point-shape",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "horizon-mod-deps"
+name = "sunrise-mod-deps"
 version = "0.1.0"
 dependencies = [
  "gif",
@@ -2333,30 +2333,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-dimension-game"
+name = "sunrise-mod-dimension-game"
 version = "0.1.0"
 dependencies = [
- "horizon-client",
- "horizon-mod-api",
- "horizon-mod-host",
- "horizon-mod-package",
- "horizon-mod-wasm",
+ "sunrise-client",
+ "sunrise-mod-api",
+ "sunrise-mod-host",
+ "sunrise-mod-package",
+ "sunrise-mod-wasm",
  "log",
  "tempfile",
  "wat",
 ]
 
 [[package]]
-name = "horizon-mod-host"
+name = "sunrise-mod-host"
 version = "0.1.0"
 dependencies = [
- "horizon-client",
- "horizon-engine-slots",
- "horizon-guest-stack",
- "horizon-mod-api",
- "horizon-mod-package",
- "horizon-mod-points",
- "horizon-mod-render",
+ "sunrise-client",
+ "sunrise-engine-slots",
+ "sunrise-guest-stack",
+ "sunrise-mod-api",
+ "sunrise-mod-package",
+ "sunrise-mod-points",
+ "sunrise-mod-render",
  "libloading",
  "log",
  "serde",
@@ -2365,19 +2365,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-package"
+name = "sunrise-mod-package"
 version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
  "getrandom 0.4.3",
- "horizon-core",
- "horizon-mod-api",
- "horizon-mod-api-macros",
- "horizon-mod-point-shape",
- "horizon-mod-surface",
- "horizon-mod-vocab",
- "horizon-shader-api",
+ "sunrise-core",
+ "sunrise-mod-api",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-point-shape",
+ "sunrise-mod-surface",
+ "sunrise-mod-vocab",
+ "sunrise-shader-api",
  "libc",
  "log",
  "minisign-verify",
@@ -2401,15 +2401,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-point-emit"
+name = "sunrise-mod-point-emit"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-package",
+ "sunrise-mod-package",
  "serde",
 ]
 
 [[package]]
-name = "horizon-mod-point-shape"
+name = "sunrise-mod-point-shape"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -2420,45 +2420,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-points"
+name = "sunrise-mod-points"
 version = "0.1.0"
 dependencies = [
- "horizon-engine-slots",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-point-shape",
+ "sunrise-engine-slots",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-point-shape",
  "quote",
  "serde_json",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "horizon-mod-render"
+name = "sunrise-mod-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
- "horizon-client-render",
- "horizon-engine-slots",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
+ "sunrise-client-render",
+ "sunrise-engine-slots",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
  "wgpu",
 ]
 
 [[package]]
-name = "horizon-mod-runtime"
+name = "sunrise-mod-runtime"
 version = "0.1.0"
 dependencies = [
- "horizon-core",
+ "sunrise-core",
 ]
 
 [[package]]
-name = "horizon-mod-source"
+name = "sunrise-mod-source"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-surface",
+ "sunrise-mod-surface",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2467,7 +2467,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-surface"
+name = "sunrise-mod-surface"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -2479,40 +2479,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-vocab"
+name = "sunrise-mod-vocab"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
- "horizon-core",
- "horizon-items",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-runtime",
+ "sunrise-core",
+ "sunrise-items",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-runtime",
  "log",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-mod-wasm"
+name = "sunrise-mod-wasm"
 version = "0.1.0"
 dependencies = [
- "horizon-client-core",
- "horizon-core",
- "horizon-engine-slots",
- "horizon-guest-stack",
- "horizon-java-properties",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-package",
- "horizon-mod-point-emit",
- "horizon-mod-points",
- "horizon-mod-runtime",
- "horizon-threads",
- "horizon-world",
+ "sunrise-client-core",
+ "sunrise-core",
+ "sunrise-engine-slots",
+ "sunrise-guest-stack",
+ "sunrise-java-properties",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-package",
+ "sunrise-mod-point-emit",
+ "sunrise-mod-points",
+ "sunrise-mod-runtime",
+ "sunrise-threads",
+ "sunrise-world",
  "libc",
  "log",
  "rustix 1.1.5",
@@ -2525,29 +2525,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-wasm-wire-loopback"
+name = "sunrise-mod-wasm-wire-loopback"
 version = "0.1.0"
 dependencies = [
- "horizon-core",
- "horizon-game-discovery",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-runtime",
- "horizon-world",
+ "sunrise-core",
+ "sunrise-game-discovery",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-runtime",
+ "sunrise-world",
  "log",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-modding-examples"
+name = "sunrise-modding-examples"
 version = "0.0.0"
 dependencies = [
- "horizon-mod-api",
- "horizon-mod-points",
+ "sunrise-mod-api",
+ "sunrise-mod-points",
 ]
 
 [[package]]
-name = "horizon-narrator"
+name = "sunrise-narrator"
 version = "0.1.0"
 dependencies = [
  "libloading",
@@ -2559,49 +2559,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-official"
+name = "sunrise-official"
 version = "0.1.0"
 dependencies = [
- "horizon-discord",
- "horizon-friends",
- "horizon-game",
- "horizon-heartbeat",
- "horizon-official-servers",
- "horizon-perf-share",
- "horizon-platform",
+ "sunrise-discord",
+ "sunrise-friends",
+ "sunrise-game",
+ "sunrise-heartbeat",
+ "sunrise-official-servers",
+ "sunrise-perf-share",
+ "sunrise-platform",
  "log",
  "winresource",
 ]
 
 [[package]]
-name = "horizon-official-servers"
+name = "sunrise-official-servers"
 version = "0.1.0"
 dependencies = [
- "horizon-addresses",
- "horizon-platform",
+ "sunrise-addresses",
+ "sunrise-platform",
  "log",
 ]
 
 [[package]]
-name = "horizon-optifine"
+name = "sunrise-optifine"
 version = "0.1.0"
 dependencies = [
- "horizon-assets",
- "horizon-core",
- "horizon-system",
+ "sunrise-assets",
+ "sunrise-core",
+ "sunrise-system",
  "log",
  "regex",
  "zip",
 ]
 
 [[package]]
-name = "horizon-perf"
+name = "sunrise-perf"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "horizon-bench",
- "horizon-perf-format",
- "horizon-perf-share",
+ "sunrise-bench",
+ "sunrise-perf-format",
+ "sunrise-perf-share",
  "prost",
  "regex",
  "serde",
@@ -2609,7 +2609,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-perf-format"
+name = "sunrise-perf-format"
 version = "0.1.0"
 dependencies = [
  "flate2",
@@ -2620,12 +2620,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-perf-share"
+name = "sunrise-perf-share"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
- "horizon-addresses",
- "horizon-platform",
+ "sunrise-addresses",
+ "sunrise-platform",
  "log",
  "open",
  "serde",
@@ -2635,26 +2635,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-platform"
+name = "sunrise-platform"
 version = "0.1.0"
 dependencies = [
- "horizon-bench",
- "horizon-core",
- "horizon-guest-stack",
- "horizon-hooks",
- "horizon-java-properties",
- "horizon-mod-api-gen",
- "horizon-mod-point-shape",
- "horizon-perf-format",
- "horizon-prepare",
- "horizon-protocol",
- "horizon-server-files",
- "horizon-system",
- "horizon-world",
+ "sunrise-bench",
+ "sunrise-core",
+ "sunrise-guest-stack",
+ "sunrise-hooks",
+ "sunrise-java-properties",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-point-shape",
+ "sunrise-perf-format",
+ "sunrise-prepare",
+ "sunrise-protocol",
+ "sunrise-server-files",
+ "sunrise-system",
+ "sunrise-world",
 ]
 
 [[package]]
-name = "horizon-polytone"
+name = "sunrise-polytone"
 version = "0.1.0"
 dependencies = [
  "log",
@@ -2663,12 +2663,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-port-pack"
+name = "sunrise-port-pack"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-package",
+ "sunrise-mod-api",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-package",
  "serde",
  "serde_json",
  "sha1",
@@ -2680,7 +2680,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-prepare"
+name = "sunrise-prepare"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
@@ -2693,16 +2693,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-protocol"
+name = "sunrise-protocol"
 version = "0.1.0"
 dependencies = [
  "aes",
  "flate2",
  "getrandom 0.3.4",
- "horizon-core",
- "horizon-mod-runtime",
- "horizon-threads",
- "horizon-world",
+ "sunrise-core",
+ "sunrise-mod-runtime",
+ "sunrise-threads",
+ "sunrise-world",
  "ipconfig",
  "log",
  "serde_json",
@@ -2712,16 +2712,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-relay"
+name = "sunrise-relay"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
- "horizon-friends",
+ "sunrise-friends",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-release-sign"
+name = "sunrise-release-sign"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -2729,19 +2729,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-server"
+name = "sunrise-server"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
  "chrono",
  "getrandom 0.3.4",
- "horizon-anticheat",
- "horizon-chat-filter",
- "horizon-mcp",
- "horizon-platform",
- "horizon-release-sign",
- "horizon-server-launch",
+ "sunrise-anticheat",
+ "sunrise-chat-filter",
+ "sunrise-mcp",
+ "sunrise-platform",
+ "sunrise-release-sign",
+ "sunrise-server-launch",
  "libc",
  "p12-keystore",
  "png",
@@ -2758,15 +2758,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-server-files"
+name = "sunrise-server-files"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
- "horizon-core",
- "horizon-java-properties",
- "horizon-protocol",
- "horizon-world",
+ "sunrise-core",
+ "sunrise-java-properties",
+ "sunrise-protocol",
+ "sunrise-world",
  "log",
  "serde",
  "ureq",
@@ -2774,15 +2774,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-server-launch"
+name = "sunrise-server-launch"
 version = "0.1.0"
 dependencies = [
  "dunce",
- "horizon-anticheat",
- "horizon-chat-filter",
- "horizon-core",
- "horizon-platform",
- "horizon-server-files",
+ "sunrise-anticheat",
+ "sunrise-chat-filter",
+ "sunrise-core",
+ "sunrise-platform",
+ "sunrise-server-files",
  "serde",
  "toml",
  "toml_edit",
@@ -2790,7 +2790,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-shader-api"
+name = "sunrise-shader-api"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
@@ -2804,27 +2804,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-shaders"
+name = "sunrise-shaders"
 version = "0.1.0"
 dependencies = [
  "half",
- "horizon-core",
+ "sunrise-core",
  "naga",
  "png",
  "zip",
 ]
 
 [[package]]
-name = "horizon-system"
+name = "sunrise-system"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-telemetry"
+name = "sunrise-telemetry"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
- "horizon-addresses",
- "horizon-platform",
+ "sunrise-addresses",
+ "sunrise-platform",
  "ruzstd",
  "serde",
  "serde_json",
@@ -2832,16 +2832,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-theme"
+name = "sunrise-theme"
 version = "0.1.0"
 
 [[package]]
-name = "horizon-threads"
+name = "sunrise-threads"
 version = "0.1.0"
 dependencies = [
  "addr2line",
  "framehop",
- "horizon-guest-stack",
+ "sunrise-guest-stack",
  "libc",
  "libmimalloc-sys",
  "memmap2",
@@ -2852,15 +2852,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-world"
+name = "sunrise-world"
 version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
  "flate2",
- "horizon-assets",
- "horizon-core",
- "horizon-threads",
+ "sunrise-assets",
+ "sunrise-core",
+ "sunrise-threads",
  "libm",
  "log",
  "lz4_flex",
@@ -5495,9 +5495,9 @@ dependencies = [
 name = "starling-catalog"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-package",
- "horizon-platform",
- "horizon-port-pack",
+ "sunrise-mod-package",
+ "sunrise-platform",
+ "sunrise-port-pack",
  "image",
  "serde",
  "serde_json",
@@ -7266,10 +7266,10 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "horizon-addresses",
- "horizon-mod-api-gen",
- "horizon-mod-package",
- "horizon-theme",
+ "sunrise-addresses",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-package",
+ "sunrise-theme",
 ]
 
 [[package]]

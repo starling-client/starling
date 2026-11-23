@@ -5,7 +5,7 @@ use std::time::Duration;
 
 fn scratch(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "horizon-launcher-import-{name}-{}",
+        "sunrise-launcher-import-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -58,7 +58,7 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
 const NONE: &dyn Fn(&str, f32) = &|_, _| {};
 
 /// Bytes `build_import::is_game` accepts as a game build: this platform's
-/// executable magic followed by the mod API mark every Horizon program
+/// executable magic followed by the mod API mark every Sunrise program
 /// carries. Not a real program -- `what` only has to recognise one.
 fn fake_program() -> Vec<u8> {
     let magic: &[u8] = if cfg!(windows) {
@@ -69,7 +69,7 @@ fn fake_program() -> Vec<u8> {
         b"ELF"
     };
     let mut bytes = magic.to_vec();
-    bytes.extend_from_slice(&horizon_mod_package::game_identity::MARK);
+    bytes.extend_from_slice(&sunrise_mod_package::game_identity::MARK);
     bytes
 }
 
@@ -135,8 +135,8 @@ fn says_what_a_dropped_file_is() {
             (p, Ok(Dropped::Pack(packs::Kind::Shader)))
         },
         {
-            let p = dir.join("glow.hshader");
-            zip_file(&p, &[("horizon-shaders.toml", b"")]);
+            let p = dir.join("glow.sshader");
+            zip_file(&p, &[("sunrise-shaders.toml", b"")]);
             (p, Ok(Dropped::Pack(packs::Kind::Shader)))
         },
         {
@@ -151,20 +151,20 @@ fn says_what_a_dropped_file_is() {
         // being read, so `build_import` is the one to say why a file is not a
         // game for this computer.
         {
-            let p = dir.join("horizon-client.exe");
+            let p = dir.join("sunrise-client.exe");
             put(&p, b"not read");
             (p, Ok(Dropped::Build))
         },
         // A browser's second copy keeps the extension, so it is a build too.
         {
-            let p = dir.join("horizon-client (1).exe");
+            let p = dir.join("sunrise-client (1).exe");
             put(&p, b"not read");
             (p, Ok(Dropped::Build))
         },
         // A build for Linux or macOS has no extension: read, and recognised
         // by its magic and the mod API mark.
         {
-            let p = dir.join("horizon-client");
+            let p = dir.join("sunrise-client");
             put(&p, &fake_program());
             (p, Ok(Dropped::Build))
         },
@@ -173,13 +173,13 @@ fn says_what_a_dropped_file_is() {
         {
             let p = dir.join("artifact.zip");
             // Named as the game is on this platform: from_zip looks for that
-            // entry, which is horizon-client.exe on Windows.
+            // entry, which is sunrise-client.exe on Windows.
             zip_file(&p, &[(crate::backend::CLIENT, fake_program().as_slice())]);
             (p, Ok(Dropped::Build))
         },
         // Named as the game but holding nothing like it: not a build.
         {
-            let p = dir.join("horizon-client-notes");
+            let p = dir.join("sunrise-client-notes");
             put(&p, b"just notes");
             (p, Err(()))
         },
@@ -218,7 +218,7 @@ fn a_dropped_zip_reports_the_central_directory_limit() {
     bytes[size..size + 4].copy_from_slice(&(128_u32 << 20).to_le_bytes());
 
     let scratch = tempfile::tempdir().unwrap();
-    for name in ["oversized.zip", "oversized.hshader"] {
+    for name in ["oversized.zip", "oversized.sshader"] {
         let path = scratch.path().join(name);
         fs::write(&path, &bytes).unwrap();
         let error = what(&path).unwrap_err();
@@ -233,7 +233,7 @@ fn an_export_comes_back_as_an_instance_and_nothing_escapes_its_folder() {
     put(&home.join("options.txt"), b"lang:fr_ch\n");
     put(&home.join("resourcepacks/Glass.zip"), b"glass");
     put(
-        &home.join("horizon-mods/coords/horizon-mod.toml"),
+        &home.join("sunrise-mods/coords/sunrise-mod.toml"),
         b"id = \"coords\"\n",
     );
     put(&home.join("saves/Base/region/r.0.0.mca"), b"region");
@@ -246,7 +246,7 @@ fn an_export_comes_back_as_an_instance_and_nothing_escapes_its_folder() {
         for f in [
             "options.txt",
             "resourcepacks/Glass.zip",
-            "horizon-mods/coords/horizon-mod.toml",
+            "sunrise-mods/coords/sunrise-mod.toml",
             "saves/Base/region/r.0.0.mca",
         ] {
             assert_eq!(

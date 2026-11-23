@@ -61,7 +61,7 @@ pub struct Found {
     pub launcher: &'static str,
     pub name: String,
     /// The Minecraft version: an id (`1.21.1`), `latest` or `latest-snapshot`; none when the
-    /// launcher keeps it where Horizon doesn't read.
+    /// launcher keeps it where Sunrise doesn't read.
     pub minecraft: Option<String>,
     pub loader: Option<Loader>,
     /// Its game folder: saves, mods, packs, options.
@@ -85,14 +85,14 @@ const SHARED: [&str; 9] = [
 ];
 /// What is never copied from an instance's own game folder: logs, the CurseForge app's own
 /// files, and the BlueMap web maps the game asks for tiles around the player
-/// (`horizon_client_render::bluemap::SERVERS_FILE`): only the player names those, never a pack
+/// (`sunrise_client_render::bluemap::SERVERS_FILE`): only the player names those, never a pack
 /// the other launcher installed.
 const SKIPPED: [&str; 7] = [
     "logs",
     "crash-reports",
     "minecraftinstance.json",
     ".curseclient",
-    "horizon-bluemap.txt",
+    "sunrise-bluemap.txt",
     // Far terrain's copies of what servers sent, and of their web maps.
     "server-terrain",
     // The browser's list of what it installed (and may delete): only this launcher writes it.
@@ -337,10 +337,10 @@ fn child_holds(dir: &Path, file: &str) -> bool {
 
 /// `found` with the Minecraft version and loader its CurseForge instance records
 /// (`minecraftinstance.json`, else `manifest.json`). An instance that records neither, or a
-/// loader Horizon doesn't name, keeps none.
+/// loader Sunrise doesn't name, keeps none.
 fn with_curseforge_target(mut found: Found) -> Found {
     let Some((minecraft, loader, version)) =
-        horizon_port_pack::import::curseforge_instance_target(&found.game)
+        sunrise_port_pack::import::curseforge_instance_target(&found.game)
     else {
         return found;
     };
@@ -559,7 +559,7 @@ pub fn copy_game(found: &Found, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The loader `found` runs, at the same version, when Horizon installs it ([`loaders::Kind`]).
+/// The loader `found` runs, at the same version, when Sunrise installs it ([`loaders::Kind`]).
 pub fn loader(found: &Found) -> Option<loaders::Loader> {
     let l = found.loader.as_ref()?;
     Some(loaders::Loader {
@@ -569,7 +569,7 @@ pub fn loader(found: &Found) -> Option<loaders::Loader> {
 }
 
 /// A new Java instance named `name` playing what `found` plays (or `minecraft`, the version the
-/// player names), with its loader when Horizon installs it ([`loader`]) and a copy of its game
+/// player names), with its loader when Sunrise installs it ([`loader`]) and a copy of its game
 /// folder.
 pub fn import(found: &Found, name: &str, minecraft: Option<&str>) -> Result<Instance, String> {
     let Some(minecraft) = minecraft.or(found.minecraft.as_deref()) else {

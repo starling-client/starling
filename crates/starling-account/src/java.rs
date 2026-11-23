@@ -2,7 +2,7 @@
 //! phone): OpenJDK 25 built for Android (GPLv2 with the Classpath Exception; publisher/source
 //! references are recorded in THIRD_PARTY_NOTICES.md).
 //! It is fetched once, checked against the hash pinned here, and unpacked in a folder of its own;
-//! the preparer runs Mojang's code in it (horizon-prepare's exporters), and it can go afterwards.
+//! the preparer runs Mojang's code in it (sunrise-prepare's exporters), and it can go afterwards.
 use crate::files::Failure;
 use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Write};

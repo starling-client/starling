@@ -7,9 +7,9 @@ on (but those of the two structure steps, and its own lakes step when `lakes` is
 `FillLayerFeature` per layer that is not opaque to MOTION_BLOCKING. Its structures come from its
 `structure_overrides`.
 
-Vanilla side: VanillaChunkGenerationOracle with HORIZON_FLAT=<preset>, which builds a real
+Vanilla side: VanillaChunkGenerationOracle with SUNRISE_FLAT=<preset>, which builds a real
 FlatLevelSource from the `flat_level_generator_preset` registry and runs every generation stage
-through WorldGenRegion instances. Horizon side: chunk_dump with the same variable, generating with
+through WorldGenRegion instances. Sunrise side: chunk_dump with the same variable, generating with
 OverworldGenerator::flat. Every block state, quart biome and block entity of each target chunk is
 compared. Presets that decorate must hold blocks beyond their layers in vanilla, so the comparison is
 known to cover the decoration.
@@ -60,7 +60,7 @@ class Oracle(chunks.Oracle):
     def run(self, out, args):
         result = subprocess.run(['java', '-Xmx4G', '-XX:ActiveProcessorCount=2',
                                  '-cp', str(self.classes) + os.pathsep + self.dependencies,
-                                 'dev.horizonlab.parity.VanillaChunkGenerationOracle', *map(str, [args[0], out, *args[1:]])],
+                                 'dev.sunriselab.parity.VanillaChunkGenerationOracle', *map(str, [args[0], out, *args[1:]])],
                                 capture_output=True, text=True, env=dict(os.environ))
         if result.returncode:
             output = (result.stdout + result.stderr).splitlines()
@@ -100,7 +100,7 @@ def main():
     parser.add_argument('--sites', type=int, default=2, help='sites per seed besides 0,0')
     parser.add_argument('--radius', type=int, default=1, help='chunk radius around each site')
     args = parser.parse_args()
-    os.environ['HORIZON_PHASE'] = 'full'
+    os.environ['SUNRISE_PHASE'] = 'full'
     oracle = Oracle()
     binary = chunks.rust_binary()
     names = chunks.state_names()
@@ -110,7 +110,7 @@ def main():
     for preset in args.preset or PRESETS:
         settings = preset_settings(preset)
         decorates = settings.get('features') or settings.get('lakes')
-        os.environ['HORIZON_FLAT'] = preset
+        os.environ['SUNRISE_FLAT'] = preset
         for seed in args.seed or SEEDS:
             rng = random.Random(seed)
             r = args.radius
@@ -121,7 +121,7 @@ def main():
             oracle.run(vanilla_path, ['dump', seed, 'overworld', *rects])
             stderr = chunks.run_rust(binary, rust_path, seed, 'overworld', rects)
             for line in stderr.splitlines()[:5]:
-                print('  horizon:', line)
+                print('  sunrise:', line)
             vanilla, rust = chunks.parse(vanilla_path), chunks.parse(rust_path)
             counts = chunks.compare(vanilla, rust, names, tag)
             differing += counts[0]
@@ -130,7 +130,7 @@ def main():
                 undecorated.append(tag)
             print(f'{tag}: {len(vanilla)} chunks, {extra} decorated blocks in vanilla, differing chunks {counts[0]} '
                   f'(blocks {counts[1]}, biome cells {counts[2]}, block entities {counts[3]})', flush=True)
-    del os.environ['HORIZON_FLAT']
+    del os.environ['SUNRISE_FLAT']
     if undecorated:
         sys.exit('vanilla placed nothing beyond the layers, so the decoration went unchecked: ' + ', '.join(undecorated))
     if differing:

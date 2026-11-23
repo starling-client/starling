@@ -8,25 +8,25 @@ from tools import entity_save_reload as harness
 
 
 def binary_for(path):
-    return harness.horizon_binary(argparse.Namespace(binary=path), Path('unused'))
+    return harness.sunrise_binary(argparse.Namespace(binary=path), Path('unused'))
 
 
-class HorizonBinaryTests(unittest.TestCase):
+class SunriseBinaryTests(unittest.TestCase):
     def test_relative_binary_is_resolved_against_the_callers_directory(self):
         # Each server runs with its world as the working directory, so the path must not stay relative.
         before = os.getcwd()
         with tempfile.TemporaryDirectory() as caller:
             os.chdir(caller)
             try:
-                found = binary_for('target/fast/horizon-client')
-                expected = Path(os.getcwd()) / 'target' / 'fast' / 'horizon-client'
+                found = binary_for('target/fast/sunrise-client')
+                expected = Path(os.getcwd()) / 'target' / 'fast' / 'sunrise-client'
             finally:
                 os.chdir(before)
         self.assertTrue(found.is_absolute())
         self.assertEqual(found, expected)
 
     def test_absolute_binary_is_kept(self):
-        binary = Path(os.path.abspath('horizon-client'))
+        binary = Path(os.path.abspath('sunrise-client'))
         self.assertEqual(binary_for(str(binary)), binary)
 
 

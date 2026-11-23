@@ -21,7 +21,7 @@ def load(name, path):
 
 builder = load('android_exporter_builder', ROOT / 'tools/build_android_exporters.py')
 apk = load('android_exporter_apk', ROOT / 'packaging/android/build_apk.py')
-CLASS = 'server/dev/horizonlab/parity/PrepareWorker.class'
+CLASS = 'server/dev/sunriselab/parity/PrepareWorker.class'
 BYTECODE = b'original exporter fixture'
 
 
@@ -50,7 +50,7 @@ class ExporterBundle(unittest.TestCase):
                 'client_sha1': hashlib.sha1(client).hexdigest(), 'server_sha1': hashlib.sha1(server).hexdigest()}}))
             responses = {f'https://piston-meta.mojang.com/v1/packages/{checksum}/test.json': manifest,
                          'https://example.invalid/client': client, 'https://example.invalid/server': server}
-            with patch.dict(builder.os.environ, {'HORIZON_MINECRAFT_DIR': ''}), patch.object(
+            with patch.dict(builder.os.environ, {'SUNRISE_MINECRAFT_DIR': ''}), patch.object(
                     builder.urllib.request, 'urlopen', side_effect=lambda url, **kw: io.BytesIO(responses[url])):
                 home, made = builder.inputs(root)
             self.assertEqual((home / 'versions/test/test.json').read_bytes(), manifest)
@@ -78,7 +78,7 @@ class ExporterBundle(unittest.TestCase):
                 'version': 'test', 'manifest_sha1': hashlib.sha1(manifest).hexdigest(),
                 'client_sha1': downloads['client']['sha1'], 'server_sha1': downloads['server']['sha1']}}))
             before = {p.relative_to(supplied): p.read_bytes() for p in supplied.rglob('*') if p.is_file()}
-            with patch.dict(builder.os.environ, {'HORIZON_MINECRAFT_DIR': str(supplied)}), patch.object(
+            with patch.dict(builder.os.environ, {'SUNRISE_MINECRAFT_DIR': str(supplied)}), patch.object(
                     builder.urllib.request, 'urlopen', side_effect=AssertionError('unexpected download')):
                 home, server = builder.inputs(root)
             self.assertEqual(home, root / '.local/android-exporter-inputs')
@@ -115,7 +115,7 @@ class ExporterBundle(unittest.TestCase):
             root = Path(folder)
             source = root / 'compiled'
             bundle(source, 'server/net/minecraft/Foreign.class')
-            with self.assertRaisesRegex(ValueError, 'Non-Horizon'):
+            with self.assertRaisesRegex(ValueError, 'Non-Sunrise'):
                 builder.copy_bundle(source, root / 'exporters')
             self.assertFalse((root / 'exporters').exists())
 
@@ -127,10 +127,10 @@ class ExporterBundle(unittest.TestCase):
             foreign = root / 'exporters/server/net/minecraft/Foreign.class'
             foreign.parent.mkdir(parents=True)
             foreign.write_bytes(b'must stay out')
-            for entry in ['research-lock.json', 'crates/horizon-prepare/src/exporters.rs',
-                          'mods/horizon/src/test/java/dev/horizonlab/parity/PrepareWorker.java',
-                          'crates/horizon-theme/fonts/Geist-Regular.ttf',
-                          'crates/horizon-theme/fonts/Geist-SemiBold.ttf',
+            for entry in ['research-lock.json', 'crates/sunrise-prepare/src/exporters.rs',
+                          'mods/sunrise/src/test/java/dev/sunriselab/parity/PrepareWorker.java',
+                          'crates/sunrise-theme/fonts/Geist-Regular.ttf',
+                          'crates/sunrise-theme/fonts/Geist-SemiBold.ttf',
                           'packaging/lowbudget/pack/original.txt',
                           'packaging/shaderpacks/starling-visuals/original.txt']:
                 path = root / entry

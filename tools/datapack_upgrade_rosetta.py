@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks `horizon-port-pack upgrade-datapack` on vanilla's own world generation.
+"""Checks `sunrise-port-pack upgrade-datapack` on vanilla's own world generation.
 
 Vanilla 26.2's worldgen (from the 26.2 server jar the player downloaded
 themselves, `--jar-26-2`, default `.local/vanilla-26.2/server-game.jar`) is
@@ -94,9 +94,9 @@ def main():
         if not jar.exists():
             sys.exit(f"missing {jar}")
     target = lab.cargo_target()
-    subprocess.run(["cargo", "build", "-q", "-p", "horizon-port-pack", "--target-dir", str(target)],
+    subprocess.run(["cargo", "build", "-q", "-p", "sunrise-port-pack", "--target-dir", str(target)],
                    cwd=ROOT, check=True)
-    exe = target / "debug" / "horizon-port-pack"
+    exe = target / "debug" / "sunrise-port-pack"
     with tempfile.TemporaryDirectory(prefix="upgrade-rosetta-") as tmp:
         tmp = pathlib.Path(tmp)
         old, new, out = tmp / "26.2", tmp / "26.3", tmp / "upgraded"

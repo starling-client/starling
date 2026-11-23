@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
-API = ROOT / "crates/horizon-mod-api/src"
+API = ROOT / "crates/sunrise-mod-api/src"
 
 
 def run(source, directory):
@@ -32,7 +32,7 @@ def main():
         shape = shape[shape.index("/// The explosion"):shape.index("/// An `ItemStackTemplate`")]
         identifier = (API / "unresolved_fluid.rs").read_text()
         identifier = identifier[identifier.index("fn namespaced_id("):]
-        engine = (ROOT / "crates/horizon-mod-package/src/content.rs").read_text()
+        engine = (ROOT / "crates/sunrise-mod-package/src/content.rs").read_text()
         engine = engine[engine.index("pub fn namespaced_id("):engine.index("fn vanilla_id(")]
         identifier += "\nmod engine {\n" + engine + "\n}\n"
         identifier += '''

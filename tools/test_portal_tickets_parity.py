@@ -96,8 +96,8 @@ def main():
         'addTicketWithRadius(PORTAL, 3) and deactivateTicketsOnClosing, against SaveDir and '
         'ChunkTickets through a real chunk_tickets.dat. Excludes level propagation, streaming '
         'readiness and other ticket types than FORCED beside PORTAL.',
-        sources=[lab.ROOT / 'crates/horizon-client/src/save.rs',
-                 lab.ROOT / 'crates/horizon-client/src/ticket_levels.rs'],
+        sources=[lab.ROOT / 'crates/sunrise-client/src/save.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/ticket_levels.rs'],
         expected_lines=len(CASES))
 
 

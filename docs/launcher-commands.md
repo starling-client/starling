@@ -1,87 +1,87 @@
 # Launcher commands
 
-<!-- Generated from launcher/src/cli.rs by cli_tools::markdown(); a test fails when this file is out of date. Update it with: HORIZON_WRITE_DOCS=1 cargo test --manifest-path launcher/Cargo.toml the_launcher_reference -->
+<!-- Generated from launcher/src/cli.rs by cli_tools::markdown(); a test fails when this file is out of date. Update it with: SUNRISE_WRITE_DOCS=1 cargo test --manifest-path launcher/Cargo.toml the_launcher_reference -->
 
-Every command of `horizon-launcher`, and the tool `horizon-launcher mcp` offers for it. A tool's arguments are the command's, in snake_case. A tool runs the command with `--json` and returns what it printed. The tools that change the player's things for good need `confirm: true`. The tools that send something or reach other people say "only when the player asks". The game's own tools, `game_*`, are in [horizon-ctl-commands.md](horizon-ctl-commands.md). For unsigned developer installations only, `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1` enables account-free Play. Only the exact value `1` enables it. The installed base must have persisted developer provenance, and the selected game must advertise `--developer-single-player` through `--launch-api`; older games must be rebuilt and reinstalled. Signed releases, Nightlies and their native descendants keep the account check. This mode supplies no session, blocks normal external connections and LAN hosting, and preserves managed launch leases, instance settings and unsigned labels. It is not a sandbox for native mods. If direct execution reports unregistered cache directories, use Horizon Launcher Play from the same launcher data directory with the intended instance and installed version (`horizon-launcher play --instance <instance> --version <tag>`).
+Every command of `sunrise-launcher`, and the tool `sunrise-launcher mcp` offers for it. A tool's arguments are the command's, in snake_case. A tool runs the command with `--json` and returns what it printed. The tools that change the player's things for good need `confirm: true`. The tools that send something or reach other people say "only when the player asks". The game's own tools, `game_*`, are in [sunrise-ctl-commands.md](sunrise-ctl-commands.md). For unsigned developer installations only, `SUNRISE_LAUNCHER_DEVELOPER_OFFLINE=1` enables account-free Play. Only the exact value `1` enables it. The installed base must have persisted developer provenance, and the selected game must advertise `--developer-single-player` through `--launch-api`; older games must be rebuilt and reinstalled. Signed releases, Nightlies and their native descendants keep the account check. This mode supplies no session, blocks normal external connections and LAN hosting, and preserves managed launch leases, instance settings and unsigned labels. It is not a sandbox for native mods. If direct execution reports unregistered cache directories, use Sunrise Launcher Play from the same launcher data directory with the intended instance and installed version (`sunrise-launcher play --instance <instance> --version <tag>`).
 
 With No AI on, `mcp` and `agent-config` are hidden and refuse; every other command stays. See [agent-control.md](agent-control.md#no-ai).
 
-## `horizon-launcher completions`
+## `sunrise-launcher completions`
 
 Write a shell completion script to stdout.
 
-    horizon-launcher completions <SHELL>
+    sunrise-launcher completions <SHELL>
 
 - `SHELL` (bash, elvish, fish, powershell, zsh)
 
 MCP: none: the player's switch.
 
-## `horizon-launcher versions`
+## `sunrise-launcher versions`
 
-List Horizon releases, or the installed versions.
+List Sunrise releases, or the installed versions.
 
-    horizon-launcher versions
+    sunrise-launcher versions
 
 - `--installed`: Only the versions installed here (no network)
 
 MCP: `versions`.
 
-## `horizon-launcher install`
+## `sunrise-launcher install`
 
 Download and install a release (a tag such as v2026.10.13, or "latest").
 
-    horizon-launcher install <TAG>
+    sunrise-launcher install <TAG>
 
 - `TAG`
 
 MCP: `install`.
 
-## `horizon-launcher developer-install`
+## `sunrise-launcher developer-install`
 
 Install a local unsigned developer build from a trusted checkout.
 
-    horizon-launcher developer-install --program <PROGRAM> --trust-unsigned <CHECKOUT>
+    sunrise-launcher developer-install --program <PROGRAM> --trust-unsigned <CHECKOUT>
 
-- `CHECKOUT`: The trusted clean Horizon checkout to package
-- `--program`: The real horizon-client executable built from that committed checkout
+- `CHECKOUT`: The trusted clean Sunrise checkout to package
+- `--program`: The real sunrise-client executable built from that committed checkout
 - `--trust-unsigned`: Allow executing this checkout's build code and unsigned game with your rights
 
-Example: horizon-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/horizon-client --trust-unsigned
+Example: sunrise-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/sunrise-client --trust-unsigned
 This executes the checkout's build code and an unsigned game with your rights. Trust both before continuing.
 
 MCP: none: the player's switch.
 
-## `horizon-launcher remove`
+## `sunrise-launcher remove`
 
 Remove an installed version.
 
-    horizon-launcher remove <TAG>
+    sunrise-launcher remove <TAG>
 
 - `TAG`
 
 MCP: `remove`, needs `confirm: true`.
 
-## `horizon-launcher import-build`
+## `sunrise-launcher import-build`
 
-Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed base's game files, and select it. A local unsigned developer base is allowed only when explicitly selected or named with --version. Nothing signed it: it runs with your rights, and updates never replace it.
+Install a game program you have, such as a sunrise-client built on your fork's Actions, as its own version on an installed base's game files, and select it. A local unsigned developer base is allowed only when explicitly selected or named with --version. Nothing signed it: it runs with your rights, and updates never replace it.
 
-    horizon-launcher import-build <PATH>
+    sunrise-launcher import-build <PATH>
 
-- `PATH`: The program (horizon-client, horizon-client.exe on Windows), or a zip holding it
+- `PATH`: The program (sunrise-client, sunrise-client.exe on Windows), or a zip holding it
 - `--version`: The installed base whose game files it plays with (default: the selected usable base, else the newest release or Nightly; developer bases need explicit selection)
 - `--trust-unsigned`: You picked this build yourself and trust it with full access to this computer
 
-The program must match this computer's executable format and carry the exact `horizon-game-executable;`
+The program must match this computer's executable format and carry the exact `sunrise-game-executable;`
 identity signature embedded by ordinary and launcher-generated games. It carries no mod API level or build id,
 and is not a signature of authenticity. Unmarked programs are refused.
 
 MCP: none: the player's switch.
 
-## `horizon-launcher prepare`
+## `sunrise-launcher prepare`
 
 Prepare a version's resources from your own Minecraft install, or from Mojang.
 
-    horizon-launcher prepare
+    sunrise-launcher prepare
 
 - `--minecraft`: The game folder of the official launcher, Prism Launcher, MultiMC, the Modrinth App, ATLauncher or GDLauncher (default: the launcher's, then every launcher's default)
 - `--download`: Download Minecraft from Mojang for the signed-in account that owns it, instead of using an install
@@ -89,11 +89,11 @@ Prepare a version's resources from your own Minecraft install, or from Mojang.
 
 MCP: `prepare`.
 
-## `horizon-launcher play`
+## `sunrise-launcher play`
 
 Start the client (needs a signed-in Microsoft account that owns Minecraft: Java Edition).
 
-    horizon-launcher play
+    sunrise-launcher play
 
 - `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
 - `--version`: Installed version to play (default: instance version)
@@ -107,11 +107,11 @@ Start the client (needs a signed-in Microsoft account that owns Minecraft: Java 
 
 MCP: `play`, then the `game_*` tools.
 
-## `horizon-launcher server`
+## `sunrise-launcher server`
 
 Run a dedicated server here; type commands into its console.
 
-    horizon-launcher server
+    sunrise-launcher server
 
 - `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
 - `--dir`: The server's folder (default: the one the launcher uses)
@@ -120,264 +120,264 @@ Run a dedicated server here; type commands into its console.
 
 MCP: `server`, `server_command`, `server_log`, `server_stop`.
 
-## `horizon-launcher storage`
+## `sunrise-launcher storage`
 
 Show disposable storage by category as JSON. Builds must be idle.
 
-    horizon-launcher storage
+    sunrise-launcher storage
 
 - `--clear`: Request cleanup of build-files, prebuilt-games, spare-game-builds, rust-compiler, other-caches or all rows; game-accessible caches refuse cleanup without enforceable lifetime exclusion
 
 MCP: `storage`.
 
-## `horizon-launcher native-lock`
+## `sunrise-launcher native-lock`
 
 Generate the registry-only Cargo.lock for one native mod, without executing mod code.
 
-    horizon-launcher native-lock <FOLDER>
+    sunrise-launcher native-lock <FOLDER>
 
 - `FOLDER`
 - `--update-lock`: Explicitly replace an existing lock with newly resolved registry pins
 
 MCP: `native_lock`.
 
-## `horizon-launcher native-build`
+## `sunrise-launcher native-build`
 
-Native mods (docs/modding/src/how-to/native-mods.md): compile flat Rust mod projects against the instance's exact Horizon source revision with the launcher's own Rust, as the version the instance then plays. Not sandboxed: the mods' code runs with your rights.
+Native mods (docs/modding/src/how-to/native-mods.md): compile flat Rust mod projects against the instance's exact Sunrise source revision with the launcher's own Rust, as the version the instance then plays. Not sandboxed: the mods' code runs with your rights.
 
-    horizon-launcher native-build [FOLDER]
+    sunrise-launcher native-build [FOLDER]
 
-- `--sync-internals`: Discover internal uses through compiler diagnostics. Prints resolved declarations as JSON for cargo horizon-mod internals sync; never installs or selects a game
+- `--sync-internals`: Discover internal uses through compiler diagnostics. Prints resolved declarations as JSON for cargo sunrise-mod internals sync; never installs or selects a game
 - `--catalog`
 - `--catalog-output`: Copy discovery catalogs into this caller-owned empty directory
-- `FOLDER`: A mod folder (horizon-mod.toml with [native], Cargo.toml and src/), or a folder of them (default: the native mods installed and turned on in the instance). Server exports also read wasm internals declarations from .hmod packages directly in this folder
+- `FOLDER`: A mod folder (sunrise-mod.toml with [native], Cargo.toml and src/), or a folder of them (default: the native mods installed and turned on in the instance). Server exports also read wasm internals declarations from .smod packages directly in this folder
 - `--server-output`: Export mode: build a standalone dedicated-server engine into this folder instead of an instance's build. Needs a mod FOLDER; no instance is read or changed, and no launcher config is written
 - `--allow-jar-downloads`: Allow exact-hash jar downloads into the local cache for the server export; jar bytes are never included in the exported folder
 - `--instance`: The instance whose installed native mods to build, and which then plays the build (default: the selected one)
-- `--version`: The installed version whose game files the build reuses, and whose commit it builds on when no mod pins one (default: the one the instance plays, so a rebuild stays on its Horizon)
-- `--update`: Move to the newest installed release or Nightly instead of the Horizon the instance plays (rebuilds the mods for that pinned SDK)
+- `--version`: The installed version whose game files the build reuses, and whose commit it builds on when no mod pins one (default: the one the instance plays, so a rebuild stays on its Sunrise)
+- `--update`: Move to the newest installed release or Nightly instead of the Sunrise the instance plays (rebuilds the mods for that pinned SDK)
 - `--trust-native-code`: Allow native code for this install (remembered; revoke in Settings, Storage)
 - `--profile` (optimized): Native mods use the pinned SDK's optimized compilation settings. The game is never rebuilt by a mod build
 - `--back-up-worlds`: When a mod this build can't use was saved into the instance's worlds, back those worlds up (into the game folder's backups/) and build without it. Without this the build stops and names the worlds, leaving the instance as it is
 
 MCP: none: the player's switch.
 
-## `horizon-launcher notes`
+## `sunrise-launcher notes`
 
 Show a release's patch notes (default: the newest).
 
-    horizon-launcher notes [TAG]
+    sunrise-launcher notes [TAG]
 
 - `TAG`
 
 MCP: `notes`.
 
-## `horizon-launcher links`
+## `sunrise-launcher links`
 
 Show the website, roadmap and documentation links.
 
-    horizon-launcher links
+    sunrise-launcher links
 
 MCP: `links`.
 
-## `horizon-launcher account list`
+## `sunrise-launcher account list`
 
 The signed-in accounts and which one plays.
 
-    horizon-launcher account list
+    sunrise-launcher account list
 
 MCP: `account_list`.
 
-## `horizon-launcher account sign-in`
+## `sunrise-launcher account sign-in`
 
 Sign in with a Microsoft account in your browser (device code). Play needs one that owns Minecraft: Java Edition.
 
-    horizon-launcher account sign-in
+    sunrise-launcher account sign-in
 
 - `--for`: Sign this account (name or UUID) in again: another Microsoft account is refused and who plays stays the same
 
 MCP: `account_sign_in`.
 
-## `horizon-launcher account refresh`
+## `sunrise-launcher account refresh`
 
 Renew an account's session now, even when its access token is still fresh.
 
-    horizon-launcher account refresh <WHO>
+    sunrise-launcher account refresh <WHO>
 
 - `WHO`
 
 MCP: `account_refresh`.
 
-## `horizon-launcher account session`
+## `sunrise-launcher account session`
 
 Renew an account's session for a game already running: prints the read-once session file it hands over (`--json`: {"session_file"} or {"authentication"} when it can't).
 
-    horizon-launcher account session <WHO>
+    sunrise-launcher account session <WHO>
 
 - `WHO`
 
 MCP: none: the game's own session handoff.
 
-## `horizon-launcher account sign-out`
+## `sunrise-launcher account sign-out`
 
 Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them).
 
-    horizon-launcher account sign-out <WHO>
+    sunrise-launcher account sign-out <WHO>
 
 - `WHO`: Its name or UUID
 
 MCP: `account_sign_out`, needs `confirm: true`.
 
-## `horizon-launcher account select`
+## `sunrise-launcher account select`
 
 Play as this account.
 
-    horizon-launcher account select <WHO>
+    sunrise-launcher account select <WHO>
 
 - `WHO`
 
 MCP: `account_select`.
 
-## `horizon-launcher settings`
+## `sunrise-launcher settings`
 
-Show the launcher's settings, or set one (the Settings page): selected-version TAG, game-architecture auto|x64|arm64, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port|socks5://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any hue), background PATH (a picture behind Home; "default" shows Horizon's landscape), cache-limit-gib N (managed cache limit in GiB: 10, 25 (default), 50, 100; 0 disables automatic cleanup).
+Show the launcher's settings, or set one (the Settings page): selected-version TAG, game-architecture auto|x64|arm64, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port|socks5://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any hue), background PATH (a picture behind Home; "default" shows Sunrise's landscape), cache-limit-gib N (managed cache limit in GiB: 10, 25 (default), 50, 100; 0 disables automatic cleanup).
 
-    horizon-launcher settings [KEY] [VALUE]
+    sunrise-launcher settings [KEY] [VALUE]
 
 - `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, game-architecture, proxy, while-playing, language, accent, background, cache-limit-gib)
 - `VALUE`: The new value (with KEY)
 
 MCP: `settings`.
 
-## `horizon-launcher game-args`
+## `sunrise-launcher game-args`
 
 Show or set the extra arguments the game starts with (for example --server-thread); quotes group a word with spaces in it.
 
-    horizon-launcher game-args [ARGS]
+    sunrise-launcher game-args [ARGS]
 
 - `ARGS`: Omit to show the current arguments
 
 MCP: `game_args`.
 
-## `horizon-launcher share-log`
+## `sunrise-launcher share-log`
 
 Upload an instance's latest.log to mclo.gs (a paste service for Minecraft logs) and print its link, for a bug report: only when the player asks. The home folder, the user name and the account names are taken out first; the link expires after 90 days unread.
 
-    horizon-launcher share-log
+    sunrise-launcher share-log
 
 - `--instance`: The instance (default: the selected one)
 
 MCP: `share_log`, only when the player asks.
 
-## `horizon-launcher unshare-log`
+## `sunrise-launcher unshare-log`
 
 Delete a log shared with share-log: the "<id>:<token>" it printed.
 
-    horizon-launcher unshare-log <SHARED>
+    sunrise-launcher unshare-log <SHARED>
 
 - `SHARED`
 
 MCP: `unshare_log`, needs `confirm: true`.
 
-## `horizon-launcher logs`
+## `sunrise-launcher logs`
 
 Print the end of the game's log (logs/latest.log in the game folder), or its newest crash report.
 
-    horizon-launcher logs
+    sunrise-launcher logs
 
 - `--lines`: How many lines of latest.log
 - `--crash`: The newest crash report instead
 
 MCP: `logs`.
 
-## `horizon-launcher update`
+## `sunrise-launcher update`
 
-Look for a newer Horizon release and launcher, and install them.
+Look for a newer Sunrise release and launcher, and install them.
 
-    horizon-launcher update
+    sunrise-launcher update
 
 - `--check`: Only report what is available
 
 MCP: `update`.
 
-## `horizon-launcher desktop-entry`
+## `sunrise-launcher desktop-entry`
 
-Linux: put Horizon in the applications menu (an entry and the icon, under $XDG_DATA_HOME), or take it out with --remove.
+Linux: put Sunrise in the applications menu (an entry and the icon, under $XDG_DATA_HOME), or take it out with --remove.
 
-    horizon-launcher desktop-entry
+    sunrise-launcher desktop-entry
 
 - `--remove`: Remove the entry and the icon, and stop adding them back
 
 MCP: `desktop_entry`.
 
-## `horizon-launcher bug-report`
+## `sunrise-launcher bug-report`
 
 Write a bug report to a file you attach to the issue by hand; nothing is sent (docs/telemetry.md).
 
-    horizon-launcher bug-report <TEXT>
+    sunrise-launcher bug-report <TEXT>
 
 - `TEXT`
 - `--log`: Add the end of the game's log (names and worlds hidden, without chat)
 
 MCP: `bug_report`.
 
-## `horizon-launcher data status`
+## `sunrise-launcher data status`
 
 What is allowed, the install ID and how many items wait (the default).
 
-    horizon-launcher data status
+    sunrise-launcher data status
 
 MCP: `data_status`.
 
-## `horizon-launcher data allow`
+## `sunrise-launcher data allow`
 
 Turn kinds on: performance, crashes, bugs, benchmarks, or all.
 
-    horizon-launcher data allow <KINDS>...
+    sunrise-launcher data allow <KINDS>...
 
 - `KINDS`
 
 MCP: `data_allow`, only when the player asks.
 
-## `horizon-launcher data deny`
+## `sunrise-launcher data deny`
 
 Turn kinds off: performance, crashes, bugs, benchmarks, or all.
 
-    horizon-launcher data deny <KINDS>...
+    sunrise-launcher data deny <KINDS>...
 
 - `KINDS`
 
 MCP: `data_deny`.
 
-## `horizon-launcher data show`
+## `sunrise-launcher data show`
 
 Print exactly what would be sent.
 
-    horizon-launcher data show
+    sunrise-launcher data show
 
 MCP: `data_show`.
 
-## `horizon-launcher data delete`
+## `sunrise-launcher data delete`
 
 Delete everything sent from here, and what waits, and take a new install ID.
 
-    horizon-launcher data delete
+    sunrise-launcher data delete
 
 MCP: `data_delete`, needs `confirm: true`.
 
-## `horizon-launcher data send`
+## `sunrise-launcher data send`
 
 Send what is waiting now.
 
-    horizon-launcher data send
+    sunrise-launcher data send
 
 MCP: `data_send`, only when the player asks.
 
-## `horizon-launcher data bug`
+## `sunrise-launcher data bug`
 
 Send a bug report you write; it is printed first, as it would leave.
 
-    horizon-launcher data bug <TEXT>
+    sunrise-launcher data bug <TEXT>
 
 - `TEXT`
 - `--log`: Add the end of the game's log (scrubbed, without chat)
@@ -385,55 +385,55 @@ Send a bug report you write; it is printed first, as it would leave.
 
 MCP: `data_bug`, only when the player asks.
 
-## `horizon-launcher data benchmark`
+## `sunrise-launcher data benchmark`
 
 Upload a benchmark report (docs/benchmark-report.md); it is printed first.
 
-    horizon-launcher data benchmark <FILE>
+    sunrise-launcher data benchmark <FILE>
 
 - `FILE`
 - `--yes`
 
 MCP: `data_benchmark`, only when the player asks.
 
-## `horizon-launcher instance list`
+## `sunrise-launcher instance list`
 
 The instances, each with its game folder (* = the one Play starts).
 
-    horizon-launcher instance list
+    sunrise-launcher instance list
 
 MCP: `instance_list`.
 
-## `horizon-launcher instance create`
+## `sunrise-launcher instance create`
 
 Make an instance: empty but for your options and name, or a copy of another one's worlds, options and packs.
 
-    horizon-launcher instance create <NAME>
+    sunrise-launcher instance create <NAME>
 
 - `NAME`
 - `--copy`: The instance to copy (its name or id)
-- `--minecraft`: Make a Minecraft: Java Edition instance of this version (1.21.4, latest or latest-snapshot) instead of a Horizon one
+- `--minecraft`: Make a Minecraft: Java Edition instance of this version (1.21.4, latest or latest-snapshot) instead of a Sunrise one
 - `--loader`: With this mod loader: fabric, quilt, forge or neoforge
 - `--loader-version`: The loader's version (default: its newest stable one)
 
 MCP: `instance_create`.
 
-## `horizon-launcher instance versions`
+## `sunrise-launcher instance versions`
 
 The versions of Minecraft: Java Edition a Java instance can play, the newest first.
 
-    horizon-launcher instance versions
+    sunrise-launcher instance versions
 
 - `--snapshots`: Snapshots too
 - `--old`: Old betas and alphas too
 
 MCP: `instance_versions`.
 
-## `horizon-launcher instance java`
+## `sunrise-launcher instance java`
 
 A Java instance's Java: its own Java home or the automatic pick, memory and JVM arguments.
 
-    horizon-launcher instance java <INSTANCE>
+    sunrise-launcher instance java <INSTANCE>
 
 - `INSTANCE`
 - `--home`: A Java home to run it on
@@ -444,11 +444,11 @@ A Java instance's Java: its own Java home or the automatic pick, memory and JVM 
 
 MCP: `instance_java`.
 
-## `horizon-launcher instance loader`
+## `sunrise-launcher instance loader`
 
 A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions.
 
-    horizon-launcher instance loader <INSTANCE> <LOADER>
+    sunrise-launcher instance loader <INSTANCE> <LOADER>
 
 - `INSTANCE`
 - `LOADER`
@@ -457,75 +457,75 @@ A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list 
 
 MCP: `instance_loader`.
 
-## `horizon-launcher instance rename`
+## `sunrise-launcher instance rename`
 
 Rename an instance (its folder stays).
 
-    horizon-launcher instance rename <INSTANCE> <NAME>
+    sunrise-launcher instance rename <INSTANCE> <NAME>
 
 - `INSTANCE`
 - `NAME`
 
 MCP: `instance_rename`.
 
-## `horizon-launcher instance delete`
+## `sunrise-launcher instance delete`
 
-Delete an instance: its folder (worlds, options, packs) goes to the Trash, where you can get it back. Horizon's own instance stays.
+Delete an instance: its folder (worlds, options, packs) goes to the Trash, where you can get it back. Sunrise's own instance stays.
 
-    horizon-launcher instance delete <INSTANCE>
+    sunrise-launcher instance delete <INSTANCE>
 
 - `INSTANCE`
 
 MCP: `instance_delete`.
 
-## `horizon-launcher instance icon`
+## `sunrise-launcher instance icon`
 
 Set an instance's icon: a block or item name from your prepared files (grass_block), a colour (#3fa7d6), or none.
 
-    horizon-launcher instance icon <INSTANCE> <ICON>
+    sunrise-launcher instance icon <INSTANCE> <ICON>
 
 - `INSTANCE`
 - `ICON`
 
 MCP: `instance_icon`.
 
-## `horizon-launcher instance group`
+## `sunrise-launcher instance group`
 
 Put an instance in a sidebar group, or take it out with no group.
 
-    horizon-launcher instance group <INSTANCE> [GROUP]
+    sunrise-launcher instance group <INSTANCE> [GROUP]
 
 - `INSTANCE`
 - `GROUP`
 
 MCP: `instance_group`.
 
-## `horizon-launcher instance select`
+## `sunrise-launcher instance select`
 
 Make Play start this instance.
 
-    horizon-launcher instance select <INSTANCE>
+    sunrise-launcher instance select <INSTANCE>
 
 - `INSTANCE`
 
 MCP: `instance_select`.
 
-## `horizon-launcher instance version`
+## `sunrise-launcher instance version`
 
-Keep an instance on one installed Horizon version, or "latest" to follow updates again.
+Keep an instance on one installed Sunrise version, or "latest" to follow updates again.
 
-    horizon-launcher instance version <INSTANCE> <VERSION>
+    sunrise-launcher instance version <INSTANCE> <VERSION>
 
 - `INSTANCE`
 - `VERSION`
 
 MCP: `instance_version`.
 
-## `horizon-launcher instance export`
+## `sunrise-launcher instance export`
 
-Export an instance (or a port) to share: its settings, packs, Horizon mods and the worlds named, as a .mrpack (resource packs from Modrinth listed by download) or a zip. Never logs, screenshots or account data; worlds go without their per-player files.
+Export an instance (or a port) to share: its settings, packs, Sunrise mods and the worlds named, as a .mrpack (resource packs from Modrinth listed by download) or a zip. Never logs, screenshots or account data; worlds go without their per-player files.
 
-    horizon-launcher instance export [INSTANCE]
+    sunrise-launcher instance export [INSTANCE]
 
 - `INSTANCE`: The instance (default: the selected one)
 - `--format` (mrpack, zip)
@@ -534,11 +534,11 @@ Export an instance (or a port) to share: its settings, packs, Horizon mods and t
 
 MCP: `instance_export`.
 
-## `horizon-launcher instance launch`
+## `sunrise-launcher instance launch`
 
 Show or set what runs around an instance's game: a shell command before it (the game starts only if it succeeds), a wrapper it runs through (`nice -n 5`), environment variables ("NAME=value NAME2=value") and a shell command after it exits. An empty value clears one. The game and the commands also get INST_NAME, INST_ID, INST_DIR, INST_MC_DIR and, for a Java instance, INST_JAVA. On Linux, also GameMode, MangoHud and the dedicated graphics card, when the computer has them.
 
-    horizon-launcher instance launch <INSTANCE>
+    sunrise-launcher instance launch <INSTANCE>
 
 - `INSTANCE`
 - `--pre-launch`
@@ -551,44 +551,44 @@ Show or set what runs around an instance's game: a shell command before it (the 
 
 MCP: `instance_launch`, needs `confirm: true`.
 
-## `horizon-launcher instance shortcut`
+## `sunrise-launcher instance shortcut`
 
 Put a shortcut on the desktop that plays an instance (`play --instance`): a .desktop file (also in the applications menu) on Linux, an app on macOS, a .lnk on Windows.
 
-    horizon-launcher instance shortcut [INSTANCE]
+    sunrise-launcher instance shortcut [INSTANCE]
 
 - `INSTANCE`: The instance (default: the selected one)
 - `--remove`: Move the instance's shortcuts to the trash instead
 
 MCP: `instance_shortcut`.
 
-## `horizon-launcher instance import`
+## `sunrise-launcher instance import`
 
 Import what a file is, as dropping it on the window does: a shared instance (a .mrpack without mod loaders, such as `instance export` writes, or a game folder zip) becomes a new instance; a Java modpack goes to the Modpacks import; a resource or shader pack into the instance (default: the selected one).
 
-    horizon-launcher instance import <FILE>
+    sunrise-launcher instance import <FILE>
 
 - `FILE`
 - `--instance`: The instance a pack goes into
-- `--java`: A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod loader, mods and overrides, instead of a Horizon instance or a Modpacks import
+- `--java`: A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod loader, mods and overrides, instead of a Sunrise instance or a Modpacks import
 
 MCP: `instance_import`.
 
-## `horizon-launcher instance others`
+## `sunrise-launcher instance others`
 
 List the instances other launchers keep (Prism Launcher, MultiMC, the official launcher, the CurseForge app, the Modrinth App), read without changing anything there.
 
-    horizon-launcher instance others
+    sunrise-launcher instance others
 
 - `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
 
 MCP: `instance_others`.
 
-## `horizon-launcher instance copy-from`
+## `sunrise-launcher instance copy-from`
 
 Copy another launcher's instance into a new Java instance: its Minecraft version and its game folder (worlds, mods, packs, options); the other launcher's copy stays as it is.
 
-    horizon-launcher instance copy-from <NAME>
+    sunrise-launcher instance copy-from <NAME>
 
 - `NAME`: Its name, as `instance others` lists it
 - `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
@@ -597,65 +597,65 @@ Copy another launcher's instance into a new Java instance: its Minecraft version
 
 MCP: `instance_copy_from`.
 
-## `horizon-launcher worlds list`
+## `sunrise-launcher worlds list`
 
 The worlds: name, mode, version, last played and size (the default).
 
-    horizon-launcher worlds list
+    sunrise-launcher worlds list
 
 - `--instance`: The instance (default: the selected one)
 
 MCP: `worlds_list`.
 
-## `horizon-launcher worlds backup`
+## `sunrise-launcher worlds backup`
 
 Zip a world into the instance's backups/ folder, as the game's Make Backup does.
 
-    horizon-launcher worlds backup <WORLD>
+    sunrise-launcher worlds backup <WORLD>
 
 - `WORLD`: Its folder or name
 - `--instance`
 
 MCP: `worlds_backup`.
 
-## `horizon-launcher worlds copy`
+## `sunrise-launcher worlds copy`
 
 Copy a world beside it, as "<name> (1)".
 
-    horizon-launcher worlds copy <WORLD>
+    sunrise-launcher worlds copy <WORLD>
 
 - `WORLD`
 - `--instance`
 
 MCP: `worlds_copy`.
 
-## `horizon-launcher worlds delete`
+## `sunrise-launcher worlds delete`
 
 Move a world to the system's trash.
 
-    horizon-launcher worlds delete <WORLD>
+    sunrise-launcher worlds delete <WORLD>
 
 - `WORLD`
 - `--instance`
 
 MCP: `worlds_delete`, needs `confirm: true`.
 
-## `horizon-launcher worlds datapack-list`
+## `sunrise-launcher worlds datapack-list`
 
 A world's data packs, and which are on.
 
-    horizon-launcher worlds datapack-list <WORLD>
+    sunrise-launcher worlds datapack-list <WORLD>
 
 - `WORLD`
 - `--instance`
 
 MCP: `worlds_datapack_list`.
 
-## `horizon-launcher worlds datapack-add`
+## `sunrise-launcher worlds datapack-add`
 
 Copy a data pack zip into a world (the game turns it on when the world opens).
 
-    horizon-launcher worlds datapack-add <WORLD> <FILE>
+    sunrise-launcher worlds datapack-add <WORLD> <FILE>
 
 - `WORLD`
 - `FILE`
@@ -663,11 +663,11 @@ Copy a data pack zip into a world (the game turns it on when the world opens).
 
 MCP: `worlds_datapack_add`.
 
-## `horizon-launcher worlds datapack-remove`
+## `sunrise-launcher worlds datapack-remove`
 
 Move a world's data pack to the system's trash.
 
-    horizon-launcher worlds datapack-remove <WORLD> <PACK>
+    sunrise-launcher worlds datapack-remove <WORLD> <PACK>
 
 - `WORLD`
 - `PACK`: Its file name, with or without .zip
@@ -675,33 +675,33 @@ Move a world's data pack to the system's trash.
 
 MCP: `worlds_datapack_remove`, needs `confirm: true`.
 
-## `horizon-launcher packs list`
+## `sunrise-launcher packs list`
 
 The resource and shader packs, and which are on (the default).
 
-    horizon-launcher packs list
+    sunrise-launcher packs list
 
 - `--kind` (resource, shader): Only this kind
 - `--instance`: The instance (default: the selected one)
 
 MCP: `packs_list`.
 
-## `horizon-launcher packs add`
+## `sunrise-launcher packs add`
 
-Copy a pack file in: a resource pack .zip, a shader pack .zip or a .hshader.
+Copy a pack file in: a resource pack .zip, a shader pack .zip or a .sshader.
 
-    horizon-launcher packs add <FILE>
+    sunrise-launcher packs add <FILE>
 
 - `FILE`
 - `--instance`
 
 MCP: `packs_add`.
 
-## `horizon-launcher packs on`
+## `sunrise-launcher packs on`
 
 Turn a pack on (a resource pack goes on top; a shader pack replaces the one that was on).
 
-    horizon-launcher packs on <PACK>
+    sunrise-launcher packs on <PACK>
 
 - `PACK`: Its file name or title
 - `--kind` (resource, shader)
@@ -709,11 +709,11 @@ Turn a pack on (a resource pack goes on top; a shader pack replaces the one that
 
 MCP: `packs_on`.
 
-## `horizon-launcher packs off`
+## `sunrise-launcher packs off`
 
 Turn a pack off.
 
-    horizon-launcher packs off <PACK>
+    sunrise-launcher packs off <PACK>
 
 - `PACK`
 - `--kind` (resource, shader)
@@ -721,11 +721,11 @@ Turn a pack off.
 
 MCP: `packs_off`.
 
-## `horizon-launcher packs remove`
+## `sunrise-launcher packs remove`
 
 Turn a pack off and move it to the system's trash.
 
-    horizon-launcher packs remove <PACK>
+    sunrise-launcher packs remove <PACK>
 
 - `PACK`
 - `--kind` (resource, shader)
@@ -733,60 +733,60 @@ Turn a pack off and move it to the system's trash.
 
 MCP: `packs_remove`, needs `confirm: true`.
 
-## `horizon-launcher java list`
+## `sunrise-launcher java list`
 
-The Java runtimes Horizon downloaded from Mojang and the ones installed on this computer.
+The Java runtimes Sunrise downloaded from Mojang and the ones installed on this computer.
 
-    horizon-launcher java list
+    sunrise-launcher java list
 
 MCP: `java_list`.
 
-## `horizon-launcher java install`
+## `sunrise-launcher java install`
 
 Download Mojang's Java runtime: a major (8, 16, 17, 21, 25) or a component name from a version's JSON (java-runtime-delta).
 
-    horizon-launcher java install <JAVA>
+    sunrise-launcher java install <JAVA>
 
 - `JAVA`
 
 MCP: `java_install`.
 
-## `horizon-launcher screenshots list`
+## `sunrise-launcher screenshots list`
 
 The screenshots, the newest first, with their files (the default).
 
-    horizon-launcher screenshots list
+    sunrise-launcher screenshots list
 
 - `--instance`: The instance (default: the selected one)
 
 MCP: `screenshots_list`.
 
-## `horizon-launcher screenshots delete`
+## `sunrise-launcher screenshots delete`
 
 Move a screenshot to the system's trash.
 
-    horizon-launcher screenshots delete <SCREENSHOT>
+    sunrise-launcher screenshots delete <SCREENSHOT>
 
 - `SCREENSHOT`: Its file name, with or without .png
 - `--instance`
 
 MCP: `screenshots_delete`, needs `confirm: true`.
 
-## `horizon-launcher multiplayer list`
+## `sunrise-launcher multiplayer list`
 
 The servers of the game's Multiplayer screen (the default).
 
-    horizon-launcher multiplayer list
+    sunrise-launcher multiplayer list
 
 - `--instance`: The instance (default: the selected one)
 
 MCP: `multiplayer_list`.
 
-## `horizon-launcher multiplayer add`
+## `sunrise-launcher multiplayer add`
 
 Add a server to the list.
 
-    horizon-launcher multiplayer add <ADDRESS>
+    sunrise-launcher multiplayer add <ADDRESS>
 
 - `ADDRESS`: Its address, as in the game's Add Server (host or host:port)
 - `--name`: Its name in the list (default: Minecraft Server)
@@ -794,40 +794,40 @@ Add a server to the list.
 
 MCP: `multiplayer_add`.
 
-## `horizon-launcher multiplayer remove`
+## `sunrise-launcher multiplayer remove`
 
 Remove a server from the list: its position from 1, name or address.
 
-    horizon-launcher multiplayer remove <SERVER>
+    sunrise-launcher multiplayer remove <SERVER>
 
 - `SERVER`
 - `--instance`
 
 MCP: `multiplayer_remove`, needs `confirm: true`.
 
-## `horizon-launcher modpack list`
+## `sunrise-launcher modpack list`
 
 The imported packs and their coverage (the default).
 
-    horizon-launcher modpack list
+    sunrise-launcher modpack list
 
 MCP: `modpack_list`.
 
-## `horizon-launcher modpack import`
+## `sunrise-launcher modpack import`
 
 Import a .mrpack, a CurseForge zip or an instance folder, and write its coverage report.
 
-    horizon-launcher modpack import <PATH>
+    sunrise-launcher modpack import <PATH>
 
 - `PATH`
 
 MCP: `modpack_import`.
 
-## `horizon-launcher modpack port`
+## `sunrise-launcher modpack port`
 
 Get the jars of what this computer can port and carry them over.
 
-    horizon-launcher modpack port <PACK>
+    sunrise-launcher modpack port <PACK>
 
 - `PACK`: The pack's folder name, as list shows it
 - `--from`: A folder with your own jars (an installed instance, a downloads folder)
@@ -835,11 +835,11 @@ Get the jars of what this computer can port and carry them over.
 
 MCP: `modpack_port`.
 
-## `horizon-launcher modpack play`
+## `sunrise-launcher modpack play`
 
 Play a ported pack as its own profile.
 
-    horizon-launcher modpack play <PACK>
+    sunrise-launcher modpack play <PACK>
 
 - `PACK`
 - `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
@@ -847,71 +847,71 @@ Play a ported pack as its own profile.
 
 MCP: `modpack_play`.
 
-## `horizon-launcher modpack remove`
+## `sunrise-launcher modpack remove`
 
 Remove an imported pack: its jars, ports and the profile's saves.
 
-    horizon-launcher modpack remove <PACK>
+    sunrise-launcher modpack remove <PACK>
 
 - `PACK`
 
 MCP: `modpack_remove`, needs `confirm: true`.
 
-## `horizon-launcher mods list`
+## `sunrise-launcher mods list`
 
 What the browser installed in an instance (the default).
 
-    horizon-launcher mods list
+    sunrise-launcher mods list
 
 - `--instance`: The instance (default: the selected one)
 
 MCP: `mods_list`.
 
-## `horizon-launcher mods search`
+## `sunrise-launcher mods search`
 
-Search for packs Horizon loads, or for what a Java instance runs (made for its Minecraft version and loader).
+Search for packs Sunrise loads, or for what a Java instance runs (made for its Minecraft version and loader).
 
-    horizon-launcher mods search [TEXT]...
+    sunrise-launcher mods search [TEXT]...
 
 - `TEXT`
 - `--kind` (mod, resource, modpack, shader, datapack)
 - `--everything`: Also what was made for other versions or runs only partly, each marked
-- `--source` (modrinth, curseforge, horizon)
+- `--source` (modrinth, curseforge, sunrise)
 - `--instance`: The instance (default: the selected one)
 
 MCP: `mods_search`.
 
-## `horizon-launcher mods check`
+## `sunrise-launcher mods check`
 
-Say how well a Java mod runs in Horizon: its jar is downloaded (checksum checked), carried over and read; the answer is kept.
+Say how well a Java mod runs in Sunrise: its jar is downloaded (checksum checked), carried over and read; the answer is kept.
 
-    horizon-launcher mods check <PROJECT>
+    sunrise-launcher mods check <PROJECT>
 
 - `PROJECT`
 - `--everything`: Allow a version made for another Minecraft version (1.21 and later)
-- `--source` (modrinth, curseforge, horizon)
+- `--source` (modrinth, curseforge, sunrise)
 
 MCP: `mods_check`.
 
-## `horizon-launcher mods install`
+## `sunrise-launcher mods install`
 
-Install a pack and what it needs into an instance, by its id or slug (checksums checked); a Java mod is ported into horizon-mods and turned on (a Java instance gets the jar made for its version and loader in mods/); a modpack is imported as an instance of its own; a data pack goes into the world `--world` names.
+Install a pack and what it needs into an instance, by its id or slug (checksums checked); a Java mod is ported into sunrise-mods and turned on (a Java instance gets the jar made for its version and loader in mods/); a modpack is imported as an instance of its own; a data pack goes into the world `--world` names.
 
-    horizon-launcher mods install <PROJECT>
+    sunrise-launcher mods install <PROJECT>
 
 - `PROJECT`
 - `--world`: Install the project's data pack into this world of the instance (its name or folder)
 - `--instance`: The instance (default: the selected one)
 - `--everything`: Allow a version made for another Minecraft version
-- `--source` (modrinth, curseforge, horizon)
+- `--source` (modrinth, curseforge, sunrise)
 
 MCP: `mods_install`.
 
-## `horizon-launcher mods update`
+## `sunrise-launcher mods update`
 
 Update what the browser installed (or one pack).
 
-    horizon-launcher mods update [PROJECT]
+    sunrise-launcher mods update [PROJECT]
 
 - `PROJECT`
 - `--check`: Only say what is newer
@@ -919,11 +919,11 @@ Update what the browser installed (or one pack).
 
 MCP: `mods_update`.
 
-## `horizon-launcher mods add-github`
+## `sunrise-launcher mods add-github`
 
-Install a native mod from a GitHub link (docs/modding/src/how-to/native-mods.md, "Install from GitHub"): https://github.com/OWNER/REPO (its latest release, else its default branch), .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or commit, checked like a registry mod. NOT reviewed by the Horizon registry.
+Install a native mod from a GitHub link (docs/modding/src/how-to/native-mods.md, "Install from GitHub"): https://github.com/OWNER/REPO (its latest release, else its default branch), .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or commit, checked like a registry mod. NOT reviewed by the Sunrise registry.
 
-    horizon-launcher mods add-github <URL>
+    sunrise-launcher mods add-github <URL>
 
 - `URL`
 - `--mod`: The mod to install when the link holds several
@@ -933,11 +933,11 @@ Install a native mod from a GitHub link (docs/modding/src/how-to/native-mods.md,
 
 MCP: none: the player's switch.
 
-## `horizon-launcher mods update-github`
+## `sunrise-launcher mods update-github`
 
 Look for newer versions of the native mods installed from GitHub (the latest release, or the default branch's head for a mod installed from a commit), and install them.
 
-    horizon-launcher mods update-github [ID]
+    sunrise-launcher mods update-github [ID]
 
 - `ID`: One mod (default: all of them)
 - `--check`: Only say what is newer
@@ -946,76 +946,76 @@ Look for newer versions of the native mods installed from GitHub (the latest rel
 
 MCP: none: the player's switch.
 
-## `horizon-launcher mods remove`
+## `sunrise-launcher mods remove`
 
 Remove a pack the browser installed.
 
-    horizon-launcher mods remove <PROJECT>
+    sunrise-launcher mods remove <PROJECT>
 
 - `PROJECT`
 - `--instance`: The instance (default: the selected one)
 
 MCP: `mods_remove`, needs `confirm: true`.
 
-## `horizon-launcher mods enable`
+## `sunrise-launcher mods enable`
 
-Turn on a mod the browser installed (horizon-mods.txt; the game's Mods screen has no switch; in a Java instance, its file loses `.disabled`).
+Turn on a mod the browser installed (sunrise-mods.txt; the game's Mods screen has no switch; in a Java instance, its file loses `.disabled`).
 
-    horizon-launcher mods enable <PROJECT>
+    sunrise-launcher mods enable <PROJECT>
 
 - `PROJECT`
 - `--instance`: The instance (default: the selected one)
 
 MCP: `mods_enable`.
 
-## `horizon-launcher mods disable`
+## `sunrise-launcher mods disable`
 
 Turn off a mod the browser installed; it stays installed (in a Java instance, as `<file>.disabled`).
 
-    horizon-launcher mods disable <PROJECT>
+    sunrise-launcher mods disable <PROJECT>
 
 - `PROJECT`
 - `--instance`: The instance (default: the selected one)
 
 MCP: `mods_disable`.
 
-## `horizon-launcher rust status`
+## `sunrise-launcher rust status`
 
 Whether it is installed, its version and whether this computer can link with it.
 
-    horizon-launcher rust status
+    sunrise-launcher rust status
 
 MCP: `rust_status`.
 
-## `horizon-launcher rust install`
+## `sunrise-launcher rust install`
 
 Download the pinned toolchain from static.rust-lang.org (once), checked by SHA-256.
 
-    horizon-launcher rust install
+    sunrise-launcher rust install
 
 MCP: `rust_install`.
 
-## `horizon-launcher rust remove`
+## `sunrise-launcher rust remove`
 
 Delete the toolchain and the native builds' Cargo home.
 
-    horizon-launcher rust remove
+    sunrise-launcher rust remove
 
 MCP: `rust_remove`.
 
-## `horizon-launcher servers list`
+## `sunrise-launcher servers list`
 
 The servers, their folder and whether they run.
 
-    horizon-launcher servers list
+    sunrise-launcher servers list
 
 MCP: `servers_list`.
 
-## `horizon-launcher servers create`
+## `sunrise-launcher servers create`
 
 Create a server; with no options it is a new world, survival, normal, 10 players, friends only.
 
-    horizon-launcher servers create
+    sunrise-launcher servers create
 
 - `--name`
 - `--seed`: The new world's seed (default: random)
@@ -1031,71 +1031,71 @@ Create a server; with no options it is a new world, survival, normal, 10 players
 
 MCP: `servers_create`, only when the player asks.
 
-## `horizon-launcher servers set-up`
+## `sunrise-launcher servers set-up`
 
 Copy an installed, prepared version's programs and game files for the servers (again).
 
-    horizon-launcher servers set-up
+    sunrise-launcher servers set-up
 
 - `--version`
 
 MCP: `servers_set_up`.
 
-## `horizon-launcher servers run`
+## `sunrise-launcher servers run`
 
-Run a horizon-server command on a server, for example: servers run "My server" -- status.
+Run a sunrise-server command on a server, for example: servers run "My server" -- status.
 
-    horizon-launcher servers run <SERVER> -- <ARGS>...
+    sunrise-launcher servers run <SERVER> -- <ARGS>...
 
 - `SERVER`: The server's name or folder
 - `ARGS`
 
 MCP: `servers_run`.
 
-## `horizon-launcher servers forget`
+## `sunrise-launcher servers forget`
 
 Take a server off the list (its folder stays).
 
-    horizon-launcher servers forget <SERVER>
+    sunrise-launcher servers forget <SERVER>
 
 - `SERVER`
 
 MCP: `servers_forget`, needs `confirm: true`.
 
-## `horizon-launcher mcp`
+## `sunrise-launcher mcp`
 
 Serve the Model Context Protocol on stdin and stdout, for AI agents (refused while No AI is on).
 
-    horizon-launcher mcp
+    sunrise-launcher mcp
 
 MCP: none: this command is the MCP server.
 
-## `horizon-launcher agent-config`
+## `sunrise-launcher agent-config`
 
 How to connect an AI agent (Claude Code, Codex, Cursor, any MCP client) to `mcp`: the config to paste and the command that adds it (refused while No AI is on).
 
-    horizon-launcher agent-config
+    sunrise-launcher agent-config
 
 - `--client` (claude-code, codex, cursor, generic): Only this client
 - `--test`: Start the MCP server as a client would and say whether it answered
 
 MCP: none: it prints how to connect a client to `mcp`.
 
-## `horizon-launcher no-ai`
+## `sunrise-launcher no-ai`
 
-Show or set No AI: on hides and turns off every AI feature (the companion, agent control, horizon-ctl and both MCP servers); off, the default, makes them available.
+Show or set No AI: on hides and turns off every AI feature (the companion, agent control, sunrise-ctl and both MCP servers); off, the default, makes them available.
 
-    horizon-launcher no-ai [STATE]
+    sunrise-launcher no-ai [STATE]
 
 - `STATE` (on, off): Omit to show the current state
 
 MCP: none: the player's switch.
 
-## `horizon-launcher benchmark`
+## `sunrise-launcher benchmark`
 
 Measure the launcher: starts (the first is the cold one), page switching, idle CPU and memory, the release list fetch; writes a benchmark report to benchmarks/ in its data folder.
 
-    horizon-launcher benchmark
+    sunrise-launcher benchmark
 
 - `--repeats`: How many times to start it
 

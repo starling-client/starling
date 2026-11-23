@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Moving on wool makes no vibration on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's each serve a copy of one flat world. KnockbackClient, a player made of
+A vanilla dedicated server and Sunrise's each serve a copy of one flat world. KnockbackClient, a player made of
 vanilla's protocol code, sends the positions a real client sends for a jump, a drop and a walk, sneaking or not, on
 stone (the control), wool, a wool carpet and a wool slab, and beside a hole at a block's edge. A cow, an item and an
 armor stand fall on the same floors. A sculk sensor stands three blocks away, and a shrieker beside it in two cases.
@@ -10,7 +10,7 @@ After each case the sensor's `last_vibration_frequency` and phase (and the shrie
 A player hurt on each floor is the positive control: the same sensor hears it, so a silent sensor on wool is the
 dampening (VibrationSystem.User.isValidVibration) and not an occluded signal.
 
-Each case is compared on its own. KNOWN lists the cases Horizon still gets wrong and why; one that matches again is
+Each case is compared on its own. KNOWN lists the cases Sunrise still gets wrong and why; one that matches again is
 reported, and should leave the list.
 """
 import difflib
@@ -242,46 +242,46 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/KnockbackClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/KnockbackClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'],
+    subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'],
                    cwd=lab.ROOT, check=True, capture_output=True)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.KnockbackClient']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.KnockbackClient']
 
     world = generate_world(vanilla_server, build)
     vanilla = compared(run_side('vanilla', vanilla_server, client, build, world))
-    horizon = compared(run_side('horizon', horizon_server, client, build, world))
+    sunrise = compared(run_side('sunrise', sunrise_server, client, build, world))
     differ, fixed = [], []
     for case in CASES:
-        want, got = vanilla.get(case, []), horizon.get(case, [])
-        print(f'{"same  " if want == got else "DIFFER"} {case}: vanilla {want}' + ('' if want == got else f' horizon {got}'))
+        want, got = vanilla.get(case, []), sunrise.get(case, [])
+        print(f'{"same  " if want == got else "DIFFER"} {case}: vanilla {want}' + ('' if want == got else f' sunrise {got}'))
         if not want or any(line.startswith(('error', 'disconnected')) for line in want):
             raise AssertionError(f'{case}: vanilla recorded nothing or failed: {want}')
         if want == got:
             if case in KNOWN:
                 fixed.append(case)
         elif case not in KNOWN:
-            differ.append(f'{case}:\n' + '\n'.join(difflib.unified_diff(want, got, 'vanilla', 'horizon', n=1, lineterm='')))
+            differ.append(f'{case}:\n' + '\n'.join(difflib.unified_diff(want, got, 'vanilla', 'sunrise', n=1, lineterm='')))
     if fixed:
         print('matching vanilla now, take them out of KNOWN: ' + ', '.join(fixed))
     if differ:
-        raise AssertionError(f'{len(differ)} cases differ (see {build}/vanilla.txt and horizon.txt):\n'
+        raise AssertionError(f'{len(differ)} cases differ (see {build}/vanilla.txt and sunrise.txt):\n'
                              + '\n'.join(differ)[:8000])
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        cases=len(CASES), known=sorted(KNOWN), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        cases=len(CASES), known=sorted(KNOWN), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='A sculk sensor (and a shrieker) on a dedicated server, as a vanilla-codec player jumps, drops, walks '
               'and sneaks on stone, wool, a wool carpet and a wool slab or at a block\'s edge, and as a cow, an item '
               'and an armor stand fall on the same floors.'))

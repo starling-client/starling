@@ -3,7 +3,7 @@
 
 Usage: add_method.py AREA TIER NAME SIGNATURE ACCESS GAME_FILE IMPLEMENTATION_FILE < doc
 The implementation file contains a complete `impl Game<'_>` block with the named
-method. GAME_FILE is its destination under crates/horizon-client/src/game/.
+method. GAME_FILE is its destination under crates/sunrise-client/src/game/.
 ACCESS is WorldOnly, Metadata, ClientSetup or PublishedResources.
 """
 import re
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-API = ROOT / 'crates/horizon-mod-api/src/host'
+API = ROOT / 'crates/sunrise-mod-api/src/host'
 DESCRIPTION = {
     "Host": "The host's methods both sides share of the `{a}` area, implemented by the game and reached through [`Host`].",
     "ServerHost": "The server host's methods of the `{a}` area, implemented by the game and reached through [`ServerHost`].",
@@ -31,7 +31,7 @@ def main():
     if not re.fullmatch(r'[a-z][a-z0-9_]*', area) or not re.fullmatch(r'[a-z][a-z0-9_]*', name):
         sys.exit('area and method must be Rust identifiers')
     game = (ROOT / destination).resolve()
-    if not game.is_relative_to(ROOT / 'crates/horizon-client/src/game'):
+    if not game.is_relative_to(ROOT / 'crates/sunrise-client/src/game'):
         sys.exit('GAME_FILE must be in the game source directory')
     body = Path(implementation).read_text()
     if not re.search(r'\bfn ' + re.escape(name) + r'\b', body) or not re.search(r'\bimpl Game', body):
@@ -55,7 +55,7 @@ def main():
         source = source[:end] + method + source[end:]
     else:
         hidden = '// hidden: handle backend, reached through the union\n#[doc(hidden)]\n' if 'Backend' in tier else ''
-        source += f'/// {DESCRIPTION[tier].format(a=area)}\n{hidden}#[horizon_mod_api_macros::host_area]\n{marker}{method}}}\n'
+        source += f'/// {DESCRIPTION[tier].format(a=area)}\n{hidden}#[sunrise_mod_api_macros::host_area]\n{marker}{method}}}\n'
     game_source = game.read_text() if game.exists() else 'use crate::game::Game;\n'
     path.write_text(source)
     game.write_text(game_source + '\n' + body)

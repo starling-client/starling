@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The ender dragon's death roar, and a silent dragon's lack of one, against vanilla's dedicated server.
 
-A vanilla dedicated server and Horizon's each serve a fresh flat world; a vanilla-codec client
+A vanilla dedicated server and Sunrise's each serve a fresh flat world; a vanilla-codec client
 (VanillaProtocolClient, level-events mode: LevelEventTranscript) joins. With the ticks frozen the console summons a
 dead dragon (Health 0, NoAI, in the overworld: no fight; EnderDragon.kill would remove it with no death, and
-/damage on a dragon is a gap of Horizon's) and steps 210 ticks, through its death (LivingEntity.baseTick runs
+/damage on a dragon is a gap of Sunrise's) and steps 210 ticks, through its death (LivingEntity.baseTick runs
 tickDeath while isDeadOrDying) and removal: at the death's first tick EnderDragon.tickDeath sends the global level event 1028 (the roar heard everywhere) unless the
 dragon is silent (`dragonDeathTime == 1 && !isSilent()`). Once with a loud dragon, then with a `Silent:1b` one.
 Each side's 1028 events (phase, position, data, global) must match vanilla's: one for the loud dragon, none for
@@ -119,41 +119,41 @@ def run_side(label, command, client_command, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'dragon-death-roar-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(),
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(),
                             '--dedicated', '--nogui']}
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
-    vanilla, horizon = results['vanilla']['roars'], results['horizon']['roars']
+    vanilla, sunrise = results['vanilla']['roars'], results['sunrise']['roars']
     print(f'vanilla roars: {vanilla}', flush=True)
-    print(f'horizon roars: {horizon}', flush=True)
+    print(f'sunrise roars: {sunrise}', flush=True)
     # The spec as read from EnderDragon.tickDeath: one global roar for the loud dragon, none for the silent one.
     assert [e['phase'] for e in vanilla] == ['loud'] and vanilla[0]['global'], vanilla
-    assert horizon == vanilla, f'death roars differ from vanilla; see {out}'
+    assert sunrise == vanilla, f'death roars differ from vanilla; see {out}'
     print('dragon death roar: matches vanilla', flush=True)
 
 

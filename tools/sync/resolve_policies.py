@@ -20,11 +20,11 @@ def patterns(name):
 def area(path):
     if '/lang/' in path:
         return 'translations'
-    if path.startswith(('launcher/', 'crates/horizon-client-render/')):
+    if path.startswith(('launcher/', 'crates/sunrise-client-render/')):
         return 'renderlauncher'
-    if path.startswith('crates/horizon-client/src/game/'):
+    if path.startswith('crates/sunrise-client/src/game/'):
         return 'game'
-    if path.startswith('crates/horizon-client/'):
+    if path.startswith('crates/sunrise-client/'):
         return 'clientroot'
     if path.startswith('crates/'):
         return 'crates'
@@ -37,7 +37,7 @@ def main(target):
     unmerged = git('diff', '--name-only', '--diff-filter=U').splitlines()
     if 'Cargo.toml' in unmerged:
         manifest = git('show', 'HEAD:Cargo.toml')
-        for member in ('crates/horizon-addresses', 'crates/horizon-platform'):
+        for member in ('crates/sunrise-addresses', 'crates/sunrise-platform'):
             if member not in manifest:
                 manifest = manifest.replace('members = [', f'members = [\n    "{member}",', 1)
         Path('Cargo.toml').write_text(manifest)
@@ -61,7 +61,7 @@ def main(target):
     remaining = git('diff', '--name-only', '--diff-filter=U').splitlines()
     # Client translations may only name canonical en_us keys. Upstream adds
     # translations for features intentionally removed from the fork's catalog.
-    lang_root = Path('crates/horizon-client/assets/horizon/lang')
+    lang_root = Path('crates/sunrise-client/assets/sunrise/lang')
     canonical = lang_root / 'en_us.json'
     if canonical.exists() and str(canonical) not in remaining:
         keys = json.loads(canonical.read_text()).keys()

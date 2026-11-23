@@ -38,7 +38,7 @@ class DatafixPaths(unittest.TestCase):
 
     def test_symlinked_ancestor_refused(self):
         (self.checkout / '.local').symlink_to(self.shared, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT'):
+        with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT'):
             datafix_paths.writable_root()
         self.assertEqual(list(self.shared.iterdir()), [])
 
@@ -49,13 +49,13 @@ class DatafixPaths(unittest.TestCase):
             datafix_paths.writable_root()
 
     def test_explicit_safe_root(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = str(self.base / 'private')
+        os.environ['SUNRISE_DATAFIX_ROOT'] = str(self.base / 'private')
         self.assertEqual(datafix_paths.writable_root(), self.base / 'private')
 
     def test_preflight_starts_no_subprocess_on_refusal(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = str(self.shared / 'downloads')
+        os.environ['SUNRISE_DATAFIX_ROOT'] = str(self.shared / 'downloads')
         with mock.patch.object(pr_ready.subprocess, 'Popen') as runner:
-            with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT'):
+            with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT'):
                 step = pr_ready.Step('Parity', 'echo unexpected')
                 step.datafix_selected = True
                 pr_ready.run_script([step], 'local', False)
@@ -65,43 +65,43 @@ class DatafixPaths(unittest.TestCase):
         root = self.checkout / '.local/datafix'
         root.parent.mkdir()
         root.write_text('not a directory')
-        with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT.*not a directory'):
+        with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT.*not a directory'):
             datafix_paths.writable_root()
         root.unlink()
         with mock.patch.object(datafix_paths.os, 'access', return_value=False):
-            with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT.*not writable'):
+            with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT.*not writable'):
                 datafix_paths.writable_root()
 
     def test_protected_ancestor_root_refused(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = str(self.base)
+        os.environ['SUNRISE_DATAFIX_ROOT'] = str(self.base)
         (self.base / 'servers').symlink_to(self.shared / 'servers')
-        with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT'):
+        with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT'):
             datafix_paths.writable_root()
         self.assertEqual(list(self.shared.iterdir()), [])
 
     def test_subprocess_receives_canonical_root(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = 'private-datafix'
+        os.environ['SUNRISE_DATAFIX_ROOT'] = 'private-datafix'
         step = pr_ready.Step('Parity', 'true')
         step.datafix_selected = True
         with mock.patch.object(datafix_paths.os, 'getcwd', return_value=str(self.checkout)), mock.patch.object(pr_ready.subprocess, 'Popen', side_effect=RuntimeError('intercepted')) as runner:
             with self.assertRaisesRegex(RuntimeError, 'intercepted'):
                 pr_ready.run_script([step], 'local', False)
-        self.assertEqual(runner.call_args.kwargs['env']['HORIZON_DATAFIX_ROOT'], str(self.checkout / 'private-datafix'))
-        self.assertEqual(os.environ['HORIZON_DATAFIX_ROOT'], 'private-datafix')
+        self.assertEqual(runner.call_args.kwargs['env']['SUNRISE_DATAFIX_ROOT'], str(self.checkout / 'private-datafix'))
+        self.assertEqual(os.environ['SUNRISE_DATAFIX_ROOT'], 'private-datafix')
 
     def test_unknown_dependencies_still_preflight_opt_in(self):
         args = argparse.Namespace(host='local', quick=False, harnesses=True, datafix=True)
         with mock.patch.object(pr_ready, 'affected_here', return_value=None):
             step = next(s for s in pr_ready.plan(args, 'origin/main', set(), {}, set(), {}) if s.name == 'Parity')
         self.assertTrue(step.datafix_selected)
-        os.environ['HORIZON_DATAFIX_ROOT'] = str(self.shared)
+        os.environ['SUNRISE_DATAFIX_ROOT'] = str(self.shared)
         with mock.patch.object(pr_ready.subprocess, 'Popen') as runner:
-            with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT'):
+            with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT'):
                 pr_ready.run_script([step], 'local', False)
             runner.assert_not_called()
 
     def test_relative_override(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = 'private-datafix'
+        os.environ['SUNRISE_DATAFIX_ROOT'] = 'private-datafix'
         self.assertEqual(datafix_paths.writable_root(), Path('private-datafix').resolve())
 
     def test_descendant_symlinks_refused_without_writes(self):
@@ -111,13 +111,13 @@ class DatafixPaths(unittest.TestCase):
             with self.subTest(name=name):
                 link = root / name
                 link.symlink_to(self.shared / name)
-                with self.assertRaisesRegex(ValueError, 'HORIZON_DATAFIX_ROOT.*escapes'):
+                with self.assertRaisesRegex(ValueError, 'SUNRISE_DATAFIX_ROOT.*escapes'):
                     datafix_paths.writable_root()
                 self.assertEqual(list(self.shared.iterdir()), [])
                 link.unlink()
 
     def test_unrelated_local_and_remote_parity_do_not_preflight(self):
-        os.environ['HORIZON_DATAFIX_ROOT'] = str(self.shared)
+        os.environ['SUNRISE_DATAFIX_ROOT'] = str(self.shared)
         for host, selected in [('local', False), ('macmini', True)]:
             step = pr_ready.Step('Parity', 'true')
             step.datafix_selected = selected
@@ -127,7 +127,7 @@ class DatafixPaths(unittest.TestCase):
 
     def test_author_plan_requires_datafix_opt_in(self):
         (self.checkout / '.local/minecraft').mkdir(parents=True)
-        (self.checkout / '.local/horizon-client').mkdir()
+        (self.checkout / '.local/sunrise-client').mkdir()
         for opt_in in (False, True):
             args = argparse.Namespace(host='local', quick=False, harnesses=True, datafix=opt_in)
             output = io.StringIO()

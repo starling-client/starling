@@ -9,7 +9,7 @@ PATTERNS = [
     (re.compile(r"(?m)^(?P<indent>[ \t]*)game\.lan_acting_entity = Some\((?P<id>\d+)\);\n(?P=indent)game\.lan_acting_uuid = Some\((?P<uuid>\d+)\);")),
 ]
 
-for path in sorted((ROOT / 'crates/horizon-client/src/game/modding').glob('native_*.rs')):
+for path in sorted((ROOT / 'crates/sunrise-client/src/game/modding').glob('native_*.rs')):
     # This statistics fixture has an acting service context but no living body.
     if path.name == 'native_player_stats.rs':
         continue

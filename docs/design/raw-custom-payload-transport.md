@@ -10,7 +10,7 @@ no NeoForge implementation source was read by this implementation's author.
 Replace the legacy envelope transport, its broadcast hooks, old send methods, brand gate,
 30,000-byte envelope bound and 32-message counters outright. Application packets
 use their declared namespaced custom-payload channel and exact opaque body bytes.
-There is no Horizon application envelope and no second path for typed payloads.
+There is no Sunrise application envelope and no second path for typed payloads.
 Existing attachment synchronization is outside this raw transport migration.
 
 Registration runs in dependency order during mod loading. `PayloadRegistrar`
@@ -36,13 +36,13 @@ incompatible matching declaration is ignored. A vanilla
 peer is admitted when all local requirements are optional; sending an absent
 optional payload returns UnsupportedPeer without a packet. There is no per-tick mod
 work for empty registries. Configuration still exchanges a constant-size protocol
-mark (and an empty Offer) for Horizon-branded peers, even with empty or all-optional
-registries. On `horizon:payloads`, Query is bytes `[0, 1]`; Offer begins `[1, 1]`
+mark (and an empty Offer) for Sunrise-branded peers, even with empty or all-optional
+registries. On `sunrise:payloads`, Query is bytes `[0, 1]`; Offer begins `[1, 1]`
 then the manifest record count. The second byte is raw transport revision 1,
 independent of application versions. A wrong revision or an absent marked response
-from a Horizon-branded peer refuses admission with a named raw-protocol cause.
+from a Sunrise-branded peer refuses admission with a named raw-protocol cause.
 Servers send the Query before known packs so a compatible empty peer's Offer cannot
-be overtaken by that barrier. Non-Horizon vanilla peers remain eligible for optional
+be overtaken by that barrier. Non-Sunrise vanilla peers remain eligible for optional
 admission; a brand is capability negotiation, not authentication of a build.
 
 A connection owns its negotiated table, protocol and incarnation epoch. Application
@@ -108,7 +108,7 @@ The `wasm-mods` fixture job runs
 by exact name and requires one passing test. It loads this run's compiled fixture,
 negotiates payloads over TCP with the actual LAN connection, and holds known packs
 and the serving Game thread while requiring two transformed, guest-counted replies.
-This keeps dispatch in CONFIGURATION on `horizon-lan-conn`, before the Play I/O pool:
+This keeps dispatch in CONFIGURATION on `sunrise-lan-conn`, before the Play I/O pool:
 the existing guest-entry `check_current()` rejects a default-stack connection thread
 instead of producing the expected replies. Its isolated child uses fresh game and
 launcher homes and a scratch game directory/current working directory.

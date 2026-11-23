@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare actual ServerEntity late pairing and first updates with Horizon's tracker."""
+"""Compare actual ServerEntity late pairing and first updates with Sunrise's tracker."""
 import os
 from pathlib import Path
 import tempfile
@@ -32,14 +32,14 @@ def main():
     paths = [
         'tools/test_late_entity_pair_parity.py', 'tools/oracle_harness.py',
         'tools/test_rust_parity.py', 'tools/lab.py', 'tools/integration_env.py',
-        'Cargo.toml', 'Cargo.lock', 'crates/horizon-client/src/lan/entity.rs',
-        'crates/horizon-client/src/lan/tracking.rs',
-        'crates/horizon-protocol/src/packets/play.rs',
-        'crates/horizon-protocol/src/packets/mod.rs',
-        'crates/horizon-protocol/src/buf.rs',
-        'crates/horizon-client/examples/probe/main.rs',
-        'crates/horizon-client/examples/probe/late_entity_pair_fixture.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaLateEntityPairOracle.java',
+        'Cargo.toml', 'Cargo.lock', 'crates/sunrise-client/src/lan/entity.rs',
+        'crates/sunrise-client/src/lan/tracking.rs',
+        'crates/sunrise-protocol/src/packets/play.rs',
+        'crates/sunrise-protocol/src/packets/mod.rs',
+        'crates/sunrise-protocol/src/buf.rs',
+        'crates/sunrise-client/examples/probe/main.rs',
+        'crates/sunrise-client/examples/probe/late_entity_pair_fixture.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaLateEntityPairOracle.java',
     ]
     sources = [lab.ROOT / p for p in paths]
     hashes = h.base.source_hashes(sources)
@@ -52,7 +52,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='late-pair-', dir=build) as scratch:
         env = integration_env.game_environment(os.environ, scratch)
         h.run_logged(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                      'dev.horizonlab.parity.VanillaLateEntityPairOracle', build / 'client.txt'],
+                      'dev.sunriselab.parity.VanillaLateEntityPairOracle', build / 'client.txt'],
                      build, 'client', env=env)
         native_type = (build / 'client.txt').read_text(encoding='utf-8').splitlines()[0].removeprefix('type ')
         int(native_type)

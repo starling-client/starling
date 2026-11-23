@@ -31,168 +31,168 @@
   },
   "edits": [
     {
-      "path": "crates/horizon-mod-vocab/src/host/entities.rs",
+      "path": "crates/sunrise-mod-vocab/src/host/entities.rs",
       "label": "backend return key",
       "old": "fn entity_kind(&self, entity: EntityRef) -> Option<String>;",
       "new": "fn entity_kind(&self, entity: EntityRef) -> Option<EntityTypeKey>;",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/testing.rs",
+      "path": "crates/sunrise-mod-vocab/src/testing.rs",
       "label": "fake host return key",
       "old": "fn entity_kind(&self, entity: EntityRef) -> Option<String> {",
       "new": "fn entity_kind(&self, entity: EntityRef) -> Option<crate::EntityTypeKey> {",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_entity_refs.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_entity_refs.rs",
       "label": "game return key",
       "old": "pub(super) fn entity_kind(&self, entity: EntityRef) -> Option<String> {",
       "new": "pub(super) fn entity_kind(&self, entity: EntityRef) -> Option<mod_api::EntityTypeKey> {",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_goal_ticks/mod.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_goal_ticks/mod.rs",
       "label": "goal view return key",
       "old": "fn r_entity_kind(&self, entity: EntityRef) -> Option<String> {",
       "new": "fn r_entity_kind(&self, entity: EntityRef) -> Option<mod_api::EntityTypeKey> {",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_dragon_refs.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_dragon_refs.rs",
       "label": "explicit name request: game.entity_kind(*part)",
       "old": "game.entity_kind(*part)",
       "new": "game.entity_kind(*part).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_living_refs.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_living_refs.rs",
       "label": "explicit name request: game.entity_kind(item)",
       "old": "game.entity_kind(item)",
       "new": "game.entity_kind(item).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/entity_initialization.rs",
+      "path": "crates/sunrise-client/src/game/modding/entity_initialization.rs",
       "label": "explicit name request: self.entity_kind(entity)",
       "old": "self.entity_kind(entity)",
       "new": "self.entity_kind(entity).map(|kind| kind.id(self))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_components.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_components.rs",
       "label": "explicit name request: self.entity_kind(target)",
       "old": "self.entity_kind(target)",
       "new": "self.entity_kind(target).map(|kind| kind.id(self))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_components.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_components.rs",
       "label": "explicit name request: self.entity_kind(attacker.entity())",
       "old": "self.entity_kind(attacker.entity())",
       "new": "self.entity_kind(attacker.entity()).map(|kind| kind.id(self))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_level_spawning.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_level_spawning.rs",
       "label": "explicit name request: game.entity_kind(cow)",
       "old": "game.entity_kind(cow)",
       "new": "game.entity_kind(cow).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_entity_refs.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_entity_refs.rs",
       "label": "explicit name request: game.entity_kind(found[0])",
       "old": "game.entity_kind(found[0])",
       "new": "game.entity_kind(found[0]).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_level_items.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_level_items.rs",
       "label": "explicit name request: game.entity_kind(popped)",
       "old": "game.entity_kind(popped)",
       "new": "game.entity_kind(popped).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/network/remote/native_entity_tests.rs",
+      "path": "crates/sunrise-client/src/game/network/remote/native_entity_tests.rs",
       "label": "explicit name request: game.entity_kind(me)",
       "old": "game.entity_kind(me)",
       "new": "game.entity_kind(me).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/network/remote/native_entity_tests.rs",
+      "path": "crates/sunrise-client/src/game/network/remote/native_entity_tests.rs",
       "label": "explicit name request: game.entity_kind(stand)",
       "old": "game.entity_kind(stand)",
       "new": "game.entity_kind(stand).map(|kind| kind.id(game))",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/network/remote/native_entity_tests.rs",
+      "path": "crates/sunrise-client/src/game/network/remote/native_entity_tests.rs",
       "label": "explicit name request: game.entity_kind(display).as_deref()",
       "old": "game.entity_kind(display).as_deref()",
       "new": "game.entity_kind(display).map(|kind| kind.id(game)).as_deref()",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/entity/entity_capability.rs",
+      "path": "crates/sunrise-mod-vocab/src/entity/entity_capability.rs",
       "label": "existing player-name consumer",
       "old": "entity.kind(host)? != \"minecraft:player\"",
       "new": "entity.kind(host)?.id(host) != \"minecraft:player\"",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/entity/entity_capability.rs",
+      "path": "crates/sunrise-mod-vocab/src/entity/entity_capability.rs",
       "label": "existing named capability provider table",
       "old": ".then(|| self.kind(host))",
       "new": ".then(|| self.kind(host).map(|kind| kind.id(host)))",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/entity/entity_capability.rs",
+      "path": "crates/sunrise-mod-vocab/src/entity/entity_capability.rs",
       "label": "existing string kind_of consumer",
       "old": "entity.kind(host).unwrap_or_default()",
       "new": "entity.kind(host).map(|kind| kind.id(host)).unwrap_or_default()",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/parts/entities.rs",
+      "path": "crates/sunrise-mod-vocab/src/parts/entities.rs",
       "label": "existing named entity provider lookup",
       "old": ".get(&*entity.kind(host)?)?;",
       "new": ".get(entity.kind(host)?.id(host).as_str())?;",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_player_destroyed_block_tests.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_player_destroyed_block_tests.rs",
       "label": "test name assertion",
       "old": "entity.kind(host).as_deref()",
       "new": "entity.kind(host).map(|kind| kind.id(host)).as_deref()",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/modding/native_item_places.rs",
+      "path": "crates/sunrise-client/src/game/modding/native_item_places.rs",
       "label": "cart name assertion",
       "old": "cart.kind(host).as_deref()",
       "new": "cart.kind(host).map(|kind| kind.id(host)).as_deref()",
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/entities/lightning.rs",
+      "path": "crates/sunrise-client/src/game/entities/lightning.rs",
       "label": "conversion log name records",
       "old": ".and_then(|entity| entity.kind(host))",
       "new": ".and_then(|entity| entity.kind(host).map(|kind| kind.id(host)))",
       "count": 2
     },
     {
-      "path": "crates/horizon-mod-vocab/src/host/entities.rs",
+      "path": "crates/sunrise-mod-vocab/src/host/entities.rs",
       "label": "entity kind API documentation",
       "old": "    /// The entity's type (`Entity.getType`): `minecraft:zombie`. API\n    /// 373.",
       "new": "    /// The entity's resolved type key (`Entity.getType`). Compare keys directly;\n    /// request `key.id(host)` explicitly when its canonical name is needed. API 373.",
       "count": 1
     },
     {
-      "path": "crates/horizon-mod-vocab/src/entity/types.rs",
+      "path": "crates/sunrise-mod-vocab/src/entity/types.rs",
       "label": "entity key documentation",
       "old": "/// A mob entity type (`minecraft:zombie`) in the built-in entity-type registry, in\n/// registration order. A key stays valid until the game exits.",
       "new": "/// An entity type (`minecraft:zombie`) in the built-in entity-type registry, in\n/// registration order. Returned by `EntityRef::kind`; Copy/Eq comparisons do not\n/// allocate. Request `key.id(host)` for its namespaced name (an owned diagnostic\n/// string). A key stays valid until the game exits.",
@@ -206,7 +206,7 @@
       "count": 1
     },
     {
-      "path": "crates/horizon-client/src/game/entities/explosion/explosion_part_tests.rs",
+      "path": "crates/sunrise-client/src/game/entities/explosion/explosion_part_tests.rs",
       "label": "new main skull proof explicit name",
       "old": "let kind = event.entity.kind(host);",
       "new": "let kind = event.entity.kind(host).map(|kind| kind.id(host).to_owned());",

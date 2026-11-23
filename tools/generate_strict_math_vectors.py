@@ -27,7 +27,7 @@ SIGN = 1 << 63
 MIN_CASES = 768
 DEFAULT_OUTPUT = (
     Path(__file__).resolve().parents[1]
-    / "crates/horizon-mod-wasm/tests/fixture/src/strict_math_vectors.rs"
+    / "crates/sunrise-mod-wasm/tests/fixture/src/strict_math_vectors.rs"
 )
 
 JAVA_ORACLE = r"""
@@ -243,7 +243,7 @@ def generate(java):
         for name, cases in tables.items()
         for inputs in cases.rows
     ]
-    with tempfile.TemporaryDirectory(prefix="horizon-strict-vectors-") as directory:
+    with tempfile.TemporaryDirectory(prefix="sunrise-strict-vectors-") as directory:
         oracle = Path(directory) / "StrictMathVectorOracle.java"
         oracle.write_text(JAVA_ORACLE, encoding="utf-8")
         result = subprocess.run(

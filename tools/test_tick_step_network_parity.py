@@ -93,10 +93,10 @@ def run_side(label, command, client_command, build, world):
 
 
 def main():
-    lock, build, vanilla, horizon, client = net.sides('tick-step-network-parity')
-    sources = [lab.ROOT / 'crates/horizon-client/src/clock.rs',
-               lab.ROOT / 'crates/horizon-client/src/lan/hub.rs',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java',
+    lock, build, vanilla, sunrise, client = net.sides('tick-step-network-parity')
+    sources = [lab.ROOT / 'crates/sunrise-client/src/clock.rs',
+               lab.ROOT / 'crates/sunrise-client/src/lan/hub.rs',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java',
                lab.ROOT / 'tools/test_locator_bar_parity.py',
                lab.ROOT / 'tools/test_dedicated_server_parity.py', lab.ROOT / __file__]
     hashes = base.source_hashes(sources)
@@ -117,9 +117,9 @@ def main():
     reference = run_side('vanilla', vanilla, client, build, world)
     if reference != expected:
         raise AssertionError(f'vanilla scenario did not establish the contract: {reference}')
-    actual = run_side('horizon', horizon, client, build, world)
+    actual = run_side('sunrise', sunrise, client, build, world)
     if actual != reference:
-        raise AssertionError(f'Horizon differs from vanilla:\n{actual}\nexpected:\n{reference}')
+        raise AssertionError(f'Sunrise differs from vanilla:\n{actual}\nexpected:\n{reference}')
     base.ensure_sources_unchanged(sources, hashes)
     report = {'schema': 1, 'minecraft': lock['minecraft']['version'],
               'platform': platform.platform(), 'sources_sha256': hashes,

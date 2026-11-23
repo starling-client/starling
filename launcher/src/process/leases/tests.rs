@@ -30,7 +30,7 @@ fn child_keeps_gate_and_tree_after_creator_closes_its_copies() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");
     let trees = [directory(&root.path().join("tree"))];
-    if let Ok(mask) = std::env::var("HORIZON_TEST_CLOSED_STDIO") {
+    if let Ok(mask) = std::env::var("SUNRISE_TEST_CLOSED_STDIO") {
         let mask: u8 = mask.parse().unwrap();
         // SAFETY: only the isolated regression subprocess closes its own stdio.
         for fd in 0..3 {
@@ -57,11 +57,11 @@ fn child_keeps_gate_and_tree_after_creator_closes_its_copies() {
             "process::leases::tests::bridge_actor",
             "--nocapture",
         ])
-        .env("HORIZON_LEASE_BRIDGE_ACTOR", "1")
+        .env("SUNRISE_LEASE_BRIDGE_ACTOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if std::env::var_os("HORIZON_TEST_STDIO_CLOEXEC").is_some() {
+    if std::env::var_os("SUNRISE_TEST_STDIO_CLOEXEC").is_some() {
         use std::os::unix::process::CommandExt;
         // Model the post-dup2(fd, fd) state for every slot independently of
         // Command's pipe allocation order. Only fcntl runs after fork.
@@ -134,7 +134,7 @@ mod windows_tests;
 
 #[test]
 fn bridge_actor() {
-    if std::env::var_os("HORIZON_LEASE_BRIDGE_ACTOR").is_none() {
+    if std::env::var_os("SUNRISE_LEASE_BRIDGE_ACTOR").is_none() {
         return;
     }
     println!("BRIDGE-READY");
@@ -155,7 +155,7 @@ fn closed_stdin_does_not_lose_tree() {
             "process::leases::tests::child_keeps_gate_and_tree_after_creator_closes_its_copies",
             "--nocapture",
         ])
-        .env("HORIZON_TEST_CLOSED_STDIO", "1")
+        .env("SUNRISE_TEST_CLOSED_STDIO", "1")
         .status()
         .unwrap();
     assert!(status.success());
@@ -171,7 +171,7 @@ fn all_closed_stdio_masks_preserve_configured_pipes() {
                 "process::leases::tests::child_keeps_gate_and_tree_after_creator_closes_its_copies",
                 "--nocapture",
             ])
-            .env("HORIZON_TEST_CLOSED_STDIO", mask.to_string())
+            .env("SUNRISE_TEST_CLOSED_STDIO", mask.to_string())
             .status()
             .unwrap();
         assert!(status.success(), "closed stdio mask {mask}");
@@ -187,7 +187,7 @@ fn configured_stdio_cloexec_is_cleared_after_setup() {
             "process::leases::tests::child_keeps_gate_and_tree_after_creator_closes_its_copies",
             "--nocapture",
         ])
-        .env("HORIZON_TEST_STDIO_CLOEXEC", "1")
+        .env("SUNRISE_TEST_STDIO_CLOEXEC", "1")
         .status()
         .unwrap();
     assert!(status.success());

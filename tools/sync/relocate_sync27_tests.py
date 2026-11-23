@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Move incoming game-root tests beside their relocated owning modules."""
 from pathlib import Path
-root = Path('crates/horizon-client/src/game')
+root = Path('crates/sunrise-client/src/game')
 placements = {
  'campfire_tests': ('blocks', 'blocks/campfire.rs', 'campfire_tests.rs'),
  'farm_animal_interaction_tests': ('blocks', 'blocks/sculk.rs', '../farm_animal_interaction_tests.rs'),

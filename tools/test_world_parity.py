@@ -41,24 +41,24 @@ def main():
     base = Path(tempfile.mkdtemp(prefix="run-", dir=directory))
     classes = base / "classes"
     classes.mkdir()
-    oracle = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWorldOracle.java"
-    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/horizon-world/Cargo.toml",
-               *sorted((lab.ROOT / "crates/horizon-world").rglob("*.rs")), *sorted((lab.ROOT / "crates/horizon-core/src").rglob("*.rs"))]
+    oracle = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaWorldOracle.java"
+    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/sunrise-world/Cargo.toml",
+               *sorted((lab.ROOT / "crates/sunrise-world").rglob("*.rs")), *sorted((lab.ROOT / "crates/sunrise-core/src").rglob("*.rs"))]
     tested_sources = test_rust_parity.source_hashes(sources)
     dependency_path = os.pathsep.join(map(str, libraries))
     run(["javac", "--release", "25", "-proc:none", "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", classes, oracle], base / "compile-java.log")
 
     def java(side, mode):
         return run(["java", "-Xmx1G", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]),
-                    "dev.horizonlab.parity.VanillaWorldOracle", mode, base], base / f"{side}-{mode}.log")
+                    "dev.sunriselab.parity.VanillaWorldOracle", mode, base], base / f"{side}-{mode}.log")
 
     print("Generating vanilla world-data fixtures...", flush=True)
-    print(java("server", "generate").split("HORIZON_WORLD_GENERATED")[-1].strip(), flush=True)
-    run(["cargo", "build", "--release", "-p", "horizon-world", "--bin", "horizon-world", "--example", "world_probe"], base / "compile-rust.log")
+    print(java("server", "generate").split("SUNRISE_WORLD_GENERATED")[-1].strip(), flush=True)
+    run(["cargo", "build", "--release", "-p", "sunrise-world", "--bin", "sunrise-world", "--example", "world_probe"], base / "compile-rust.log")
     metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
     target = Path(metadata["target_directory"]) / "release"
     suffix = ".exe" if os.name == "nt" else ""
-    binary = target / ("horizon-world" + suffix)
+    binary = target / ("sunrise-world" + suffix)
     run([target / "examples" / ("world_probe" + suffix), "world_fixture", base], base / "rust-fixture.log")
     for network in [False, True]:
         kind = "network" if network else "nbt"
@@ -90,7 +90,7 @@ def main():
     for side in ["server", "client"]:
         print(f"Checking Rust-written world data in vanilla {side}...", flush=True)
         output = java(side, "verify")
-        marker = "HORIZON_WORLD_RESULT "
+        marker = "SUNRISE_WORLD_RESULT "
         results = [json.loads(line.split(marker, 1)[1]) for line in output.splitlines() if marker in line]
         expected = {"nbt_pairs": 32, "palettes": 44, "palette_values": 123776,
                     "region_chunks": 48, "registry_states": 35723, "resident_values": 8192}

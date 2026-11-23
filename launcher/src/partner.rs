@@ -1,4 +1,4 @@
-//! Sculk, a server host that sponsors Horizon (Ludovic, 2026-10-26): its wide banner on the Servers
+//! Sculk, a server host that sponsors Sunrise (Ludovic, 2026-10-26): its wide banner on the Servers
 //! page, and a card made for the sidebar on the other pages, where the banner's baked-in text was too
 //! small to read. The pictures are in the binary, never fetched; a click opens Sculk's page in the
 //! browser. A "Partner" label above each says it is an ad. After `SEEN_BEFORE_HIDE` seconds on screen
@@ -10,7 +10,7 @@ use gpui::{
 };
 use std::sync::{Arc, LazyLock};
 
-pub const URL: &str = horizon_addresses::HOSTING_PARTNER;
+pub const URL: &str = sunrise_addresses::HOSTING_PARTNER;
 
 /// How long the sidebar's banner stays on screen, counted over every start, before a "Hide" shows
 /// beside its label: long enough to be seen, then the player may put it away for good.
@@ -31,7 +31,7 @@ pub fn hide_button(id: &'static str, t: &Theme) -> Stateful<Div> {
             crate::text(crate::theme::MICRO)
                 .text_color(t.muted)
                 .hover(move |s| s.text_color(t.ink))
-                .child(horizon_launcher::i18n::tr("HIDE")),
+                .child(sunrise_launcher::i18n::tr("HIDE")),
         );
     crate::keyboard(hide, &t)
 }
@@ -63,7 +63,7 @@ pub fn banner(id: &'static str, width: f32, t: &Theme) -> Stateful<Div> {
             crate::text(crate::theme::MICRO)
                 .text_color(t.muted)
                 .group_hover(id, move |s| s.text_color(t.ink))
-                .child(horizon_launcher::i18n::tr("PARTNER")),
+                .child(sunrise_launcher::i18n::tr("PARTNER")),
         )
         .child(
             div().relative().group_hover(id, |s| s.top(px(-2.))).child(
@@ -127,7 +127,7 @@ const GREY: u32 = 0x9aa6b2;
 const ON_CYAN: u32 = 0x062330;
 
 /// The promo code: Sculk's, never translated.
-const CODE: &str = "HORIZON15";
+const CODE: &str = "SUNRISE15";
 
 /// What the tall card needs of the sidebar's height, label included, with room for a third line of
 /// headline: below it the sidebar shows the compact card.
@@ -136,8 +136,8 @@ pub const TALL_HEIGHT: f32 = 410.;
 /// "Your Minecraft server, 24/7 online." with "24/7 online" in Sculk's cyan, in the launcher's
 /// language.
 fn headline() -> StyledText {
-    let online = horizon_launcher::i18n::tr("24/7 online");
-    let line = horizon_launcher::i18n::tr("Your Minecraft server, {online}.");
+    let online = sunrise_launcher::i18n::tr("24/7 online");
+    let line = sunrise_launcher::i18n::tr("Your Minecraft server, {online}.");
     let (before, after) = line.split_once("{online}").unwrap_or((line, ""));
     let text = format!("{before}{online}{after}");
     let lit = before.len()..before.len() + online.len();
@@ -150,7 +150,7 @@ fn headline() -> StyledText {
     )])
 }
 
-/// "HORIZON15 · 15% off" in a dashed cyan frame, as on Sculk's banner.
+/// "SUNRISE15 · 15% off" in a dashed cyan frame, as on Sculk's banner.
 fn code_chip(size: f32, height: f32, glass: bool) -> Div {
     div()
         .flex()
@@ -176,7 +176,7 @@ fn code_chip(size: f32, height: f32, glass: bool) -> Div {
         .child(
             div()
                 .text_color(rgb(CYAN))
-                .child(horizon_launcher::i18n::tr("15% off")),
+                .child(sunrise_launcher::i18n::tr("15% off")),
         )
 }
 
@@ -196,7 +196,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
     let label = crate::text(crate::theme::MICRO)
         .text_color(t.muted)
         .group_hover(id, move |s| s.text_color(t.ink))
-        .child(horizon_launcher::i18n::tr("PARTNER"));
+        .child(sunrise_launcher::i18n::tr("PARTNER"));
     let face = div()
         .relative()
         .flex()
@@ -266,7 +266,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
             .text_color(rgb(ON_CYAN))
             .text_size(px(14.))
             .font_weight(FontWeight::SEMIBOLD)
-            .child(horizon_launcher::i18n::tr("Get my server"));
+            .child(sunrise_launcher::i18n::tr("Get my server"));
         // The art stands out of the card's top; the text starts over its faded foot.
         face.mt(px(ART_TOP))
             .flex_col()
@@ -301,7 +301,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
                             .text_size(px(13.))
                             .line_height(px(18.))
                             .text_color(rgb(GREY))
-                            .child(horizon_launcher::i18n::tr("Ready in under a minute")),
+                            .child(sunrise_launcher::i18n::tr("Ready in under a minute")),
                     )
                     .child(div().mt(px(16.)).child(button))
                     .child(

@@ -1,5 +1,5 @@
-//! Whether a native mod fits the Horizon the player plays, said before it is installed, so a
-//! mod made for another Horizon is no surprise at build time. A mod made for another build is
+//! Whether a native mod fits the Sunrise the player plays, said before it is installed, so a
+//! mod made for another Sunrise is no surprise at build time. A mod made for another build is
 //! built when everything it uses is unchanged in the instance's build (SDK design §10); the
 //! build tests it, since that needs the mod's own files.
 use crate::i18n::{tr, trf};
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The Horizon the selected instance plays: the commit its game was compiled from.
+/// The Sunrise the selected instance plays: the commit its game was compiled from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plays {
     pub revision: String,
@@ -18,13 +18,13 @@ pub struct Plays {
 /// How a native mod fits [`Plays`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fit {
-    /// It was made for the Horizon the player plays.
+    /// It was made for the Sunrise the player plays.
     Fits,
     /// It was made for another build: the build tests whether it fits.
     OtherRevision { pin: String },
 }
 
-/// How a mod made for commit `pin` fits the Horizon played.
+/// How a mod made for commit `pin` fits the Sunrise played.
 pub fn fit(pin: &str, plays: &Plays) -> Fit {
     if pin == plays.revision {
         Fit::Fits
@@ -36,7 +36,7 @@ pub fn fit(pin: &str, plays: &Plays) -> Fit {
 /// What the player reads about `fit`.
 pub fn describe(fit: &Fit, plays: &Plays) -> String {
     match fit {
-        Fit::Fits => tr("Made for the Horizon you play").to_owned(),
+        Fit::Fits => tr("Made for the Sunrise you play").to_owned(),
         Fit::OtherRevision { pin } => trf(
             "Made for {pin}; you play {yours}. Building checks whether it fits your game: it does when nothing it uses changed.",
             &[
@@ -62,7 +62,7 @@ fn cached(cache: &Known, key: &CacheKey) -> Option<Option<Plays>> {
         .map(|(_, plays)| plays.clone())
 }
 
-/// The Horizon `instance` plays; None for a Java instance, when nothing is installed, or when
+/// The Sunrise `instance` plays; None for a Java instance, when nothing is installed, or when
 /// its release doesn't say its build id.
 pub fn plays(instance: &Instance) -> Option<Plays> {
     if instance.java.is_some() {
@@ -70,7 +70,7 @@ pub fn plays(instance: &Instance) -> Option<Plays> {
     }
     let version = instance.resolve_version(None).ok()?;
     // Read the build record before consulting the cache so a rebuild's answer follows it.
-    let native_revision = native_mods::about(&version).map(|about| about.horizon);
+    let native_revision = native_mods::about(&version).map(|about| about.sunrise);
     let key = (version.clone(), native_revision.clone());
     let known = cached(PLAYS.lock().unwrap().get_or_insert_default(), &key);
     if let Some(plays) = known {

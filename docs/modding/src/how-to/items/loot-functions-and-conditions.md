@@ -53,7 +53,7 @@ Defaults are `sword_sweep` from `minecraft:swords`, `shovel_douse` from
 All other defaults are false. Existing action sites retain their own vanilla
 answers until #3330 adopts the shared table.
 
-Engine callers can scope a shared `horizon_world::loot::query::LootQuery` with
+Engine callers can scope a shared `sunrise_world::loot::query::LootQuery` with
 `with_query`. Call `set_id` before rolling to supply the first id, and read
 `table_id()` afterwards to inspect the completed root. Set `queried_stack` before
 sharing the query; normal loot callers do not query an item's own data.

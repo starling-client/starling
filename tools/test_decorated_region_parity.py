@@ -6,7 +6,7 @@ neighbours, so where trees, ore blobs, sculk patches and geodes end up (and
 whether a geode cuts through a stronghold room) depends on which chunk is
 decorated first. test_chunk_generation_parity.py decorates row-major; this
 harness decorates every site in the order vanilla's chunk scheduler uses
-around a player standing in the site's chunk (horizon_world's
+around a player standing in the site's chunk (sunrise_world's
 decoration_order::vanilla_order, which the game's streamer follows), on both
 sides, and compares every block state, quart biome, block entity and
 scheduled tick of the whole decorated area: the square of chunks whose 3x3
@@ -67,7 +67,7 @@ def build_dir():
 
 def vanilla_order(binary, cx, cz, view):
     out = subprocess.run([str(binary), 'chunk_dump', str(cg.RESOURCES), '0', 'overworld'], capture_output=True, text=True, check=True,
-                         env=dict(os.environ, HORIZON_LIST_ORDER=f'{cx},{cz},{view}'), cwd=lab.ROOT).stdout
+                         env=dict(os.environ, SUNRISE_LIST_ORDER=f'{cx},{cz},{view}'), cwd=lab.ROOT).stdout
     return [tuple(map(int, line.split())) for line in out.splitlines()]
 
 
@@ -90,7 +90,7 @@ def main():
     parser.add_argument('--limit', type=int, default=4, help='block differences shown per chunk')
     parser.add_argument('--no-structures', action='store_true', help='skip the scanned structure sites')
     args = parser.parse_args()
-    os.environ['HORIZON_PHASE'] = 'full'
+    os.environ['SUNRISE_PHASE'] = 'full'
     oracle = cg.Oracle()
     binary = cg.rust_binary()
     names = cg.state_names()
@@ -107,7 +107,7 @@ def main():
         tag = f'{seed}-{cx}-{cz}-v{args.view}'
         order = build / f'order-{tag}.txt'
         order.write_text(''.join(f'{x} {z}\n' for x, z in vanilla_order(binary, cx, cz, args.view)))
-        env = dict(os.environ, HORIZON_ORDER=str(order))
+        env = dict(os.environ, SUNRISE_ORDER=str(order))
         vanilla_path, rust_path = build / f'vanilla-{tag}.txt', build / f'rust-{tag}.txt'
         t0 = time.time()
         saved = dict(os.environ)
@@ -121,7 +121,7 @@ def main():
             os.environ.clear()
             os.environ.update(saved)
         for line in stderr.splitlines()[:3]:
-            print('  horizon:', line)
+            print('  sunrise:', line)
         vanilla, rust = cg.parse(vanilla_path), cg.parse(rust_path)
         counts = cg.compare(vanilla, rust, names, f'{label} ({seed})', limit=args.limit)
         totals.update(dict(zip(['chunks', 'blocks', 'biomes', 'entities'], counts)))

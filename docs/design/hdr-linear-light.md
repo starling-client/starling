@@ -54,7 +54,7 @@ below); where HDR's settings live (a later note).
 ## The colour rule (shader API 0.2)
 
 - **Every colour a 0.2 stage reads or returns is linear light**: BT.709 (sRGB) primaries by default,
-  scene-referred, **1.0 is vanilla's white at paper white**, more is brighter, up to half float's range. Horizon
+  scene-referred, **1.0 is vanilla's white at paper white**, more is brighter, up to half float's range. Sunrise
   replaces negative values and NaN with 0 before the display.
 - **Decoding is vanilla's 2.2 power**, as `hdr.wgsl` decodes today, not the piecewise sRGB curve. Because a power is
   multiplicative, vanilla's lit colour `albedo * tint * lightmap` is the same in linear: decoding the product is the
@@ -78,15 +78,15 @@ below); where HDR's settings live (a later note).
 - **A `[tonemap]` stage**, `fn tonemap(input: TonemapInput) -> vec3<f32>`: the post chain's linear picture in, the
   picture for the display out, linear, 1.0 at paper white and at most `frame.headroom`. It runs once per pixel at
   the window's size, after the post chain and before the camera overlays and the HUD, and owns the look of
-  highlights. A pack that leaves it out gets Horizon's:
+  highlights. A pack that leaves it out gets Sunrise's:
   in HDR a roll-off into the headroom (ITU-R BT.2390's EETF in PQ; HDR's black level already uses the same
-  recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Horizon's tone curve;
-  one that only tone maps needs no post chain. Horizon's curve keeps light as it is up to its knee, 60% of the peak
+  recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Sunrise's tone curve;
+  one that only tone maps needs no post chain. Sunrise's curve keeps light as it is up to its knee, 60% of the peak
   and at least paper white, where HDR lighting eased into the peak before it. The source's peak is where the EETF
   puts its knee there (13.7 times paper white at 203 and 1000 nits, PQ's 10 000 nits at most), and light past it
   shows at the peak. The curve acts on the brightest channel and scales the others with it, so light keeps its hue
   as it eases and no channel passes the peak.
-- **Horizon's display pass is always last** and can't be replaced: it clamps to the headroom, converts to BT.2020
+- **Sunrise's display pass is always last** and can't be replaced: it clamps to the headroom, converts to BT.2020
   for HDR10, lifts the black level, encodes (PQ, scRGB, or 2.2 for SDR) and shows what the HUD and menus cover at
   UI Brightness, as today.
 
@@ -117,15 +117,15 @@ this case is held to the existing HDR-versus-SDR check (below).
 
 **Linear blending, if a pack asks.** `[frame] blend = "linear"` in the manifest stores linear light instead, for a
 physically based pack that wants glass, water and smoke to blend as light does. A 0.2 stage sees the same values
-either way; what changes is where Horizon converts:
+either way; what changes is where Sunrise converts:
 
 | | `blend = "gamma"` (the default) | `blend = "linear"` |
 | --- | --- | --- |
 | The frame holds | vanilla's gamma, values above 1 kept | linear light |
 | A 0.2 stage's result | encoded before the frame stores and blends it | stored as it is |
-| Horizon's own draws (entities, particles, clouds, weather, stages the pack leaves out) | as today | decoded at the end of their shaders: solid ones look as with gamma, see-through ones blend in linear |
-| Horizon's multiplying draws (block breaking, `CRUMBLING_BLEND`) | as today | their factor given in linear terms, so they darken as vanilla's |
-| Horizon's fog | mixed in gamma, as vanilla's | mixed in gamma too: encoded, mixed, decoded |
+| Sunrise's own draws (entities, particles, clouds, weather, stages the pack leaves out) | as today | decoded at the end of their shaders: solid ones look as with gamma, see-through ones blend in linear |
+| Sunrise's multiplying draws (block breaking, `CRUMBLING_BLEND`) | as today | their factor given in linear terms, so they darken as vanilla's |
+| Sunrise's fog | mixed in gamma, as vanilla's | mixed in gamma too: encoded, mixed, decoded |
 | What a 0.2 stage samples from the frame (`scene_color`, `opaque_color`) | decoded: once before the post chain (a full-screen pass), and in the copy `opaque_color` already is | as stored |
 
 The water mirror and `shadow_color` draw no blends, so they store linear in both.
@@ -168,7 +168,7 @@ Artifacts are not allowed: light showing through the HUD or a menu, light lost o
 meets written light, anti-aliasing or TAA history smearing or sparkling around it. Any other change of look is a
 separate pull request, with screenshots.
 
-Under a 0.2 pack Horizon lifts nothing: the pack gets vanilla's picture in linear light whatever the display, reads
+Under a 0.2 pack Sunrise lifts nothing: the pack gets vanilla's picture in linear light whatever the display, reads
 `emission` in its material stage, and writes what shines. (Telling post stages which pixels are light sources is a
 likely 0.2 addition, not designed here. Wide colour is one that is: a pack asks for BT.2020 primaries with
 `[frame] primaries`, which the check takes and the game doesn't serve yet, #14584.)
@@ -186,7 +186,7 @@ With HDR on:
 
 - **Camera overlays belong to the world.** `hud_overlays::camera_overlays` (the vignette, the pumpkin and powder-snow
   overlays and the rest) and the hand draw onto the tone-mapped world before `keep_world` (today just after it),
-  converted as Horizon's own draws are under `blend = "linear"`, so they darken or cover light above white too, the
+  converted as Sunrise's own draws are under `blend = "linear"`, so they darken or cover light above white too, the
   world border's red vignette included.
 - **`keep_world` becomes a pass** instead of a copy. The frame keeps the world, light above white included; the pass
   writes it clipped to white, in gamma, with alpha 0, into the HUD's target. That backdrop is what the HUD draws on,
@@ -216,7 +216,7 @@ With HDR on:
 
 ## 0.1 packs: the shim
 
-Horizon serves both lines (`manifest.rs` `API` becomes a list). A 0.1 pack runs on today's path, in SDR and in HDR:
+Sunrise serves both lines (`manifest.rs` `API` becomes a list). A 0.1 pack runs on today's path, in SDR and in HDR:
 
 - today's frame (8-bit, or `Rgba16Unorm` with HDR on), inputs and gamma values;
 - its post chain through half-float targets that keep values above 1 between passes, onto the frame;
@@ -229,8 +229,8 @@ its test pack until then; a 0.2 port sits beside it.
 **0.1 ends at step 5.** The shader API is experimental: it may change in any release without notice, with no
 deprecation window ([api/stability.md](../api/stability.md)). Serving 0.1 beside 0.2 for longer would keep this shim,
 the pipeline variants that write marks and the HDR pass's lift from them, only for 0.1 packs, which can move to 0.2.
-So when step 5 turns 0.2 on by default, Horizon stops serving 0.1:
-- a 0.1 pack is refused with the message stability.md asks for (`needs API 0.1; this Horizon serves 0.2`);
+So when step 5 turns 0.2 on by default, Sunrise stops serving 0.1:
+- a 0.1 pack is refused with the message stability.md asks for (`needs API 0.1; this Sunrise serves 0.2`);
 - the registry lists 0.2 packs instead of 0.1 ones;
 - Golden Hour's 0.2 port replaces it as the example and test pack;
 - the changelog says so.
@@ -250,7 +250,7 @@ paper white) are a later, optional addition for pack authors.
 
 They read the frame as it is stored and, outside the 0.1 path, have no marks to keep, which fixes the alpha problems
 above. Native upscaling
-([#1403](https://github.com/horizon-rust/horizon/issues/1403)) should take the float frame. Horizon's TAA
+([#1403](https://github.com/horizon-rust/horizon/issues/1403)) should take the float frame. Sunrise's TAA
 blends the gamma-stored frame as it is; a tone-weighted resolve is for passes that accumulate linear light (a 0.2
 pack's post chain, or the frame under linear storage), where bright pixels would otherwise sparkle. Frame generation stays off with HDR output, as today.
 The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
@@ -260,7 +260,7 @@ The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
 1. **HDR off, no pack, bit for bit.** The frame format and pipelines for this case don't change (unit tests on
    `frame_format` and the pipelines' targets). A screenshot test pins the picture: pictures of the game hold
    Minecraft's textures and can't be committed, so it is differential. A runner with a copy of Minecraft and Mesa's
-   software Vulkan builds main and the change, captures fixed scenes offscreen with `HORIZON_STILL=1` (repeatable
+   software Vulkan builds main and the change, captures fixed scenes offscreen with `SUNRISE_STILL=1` (repeatable
    frames, [#9398](https://github.com/horizon-rust/horizon/pull/9398), in review), and requires identical PNGs, also
    after turning HDR on and off, picking and dropping a 0.2 pack, and, while 0.1 is served, swapping it for a 0.1 one.
 2. **Golden Hour (0.1) against main**, while 0.1 is served: the same capture in SDR, and the offscreen HDR capture in
@@ -279,10 +279,10 @@ The rules such a pass keeps now are in [hdr-passes.md](../hdr-passes.md).
 
 ## Steps
 
-Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
+Behind `SUNRISE_HDR_FRAME=float` until the last step, each a small pull request:
 
 1. This note.
-2. Shader API 0.2 in `horizon-shader-api`: the rule, the `Frame` fields, `[tonemap]`, `[frame] blend`, both lines
+2. Shader API 0.2 in `sunrise-shader-api`: the rule, the `Frame` fields, `[tonemap]`, `[frame] blend`, both lines
    served, the reference regenerated, Golden Hour's 0.2 port.
 3. The float frame with HDR on: the frame and the display pass decoding it; then the HUD's own layer, with the world
    still marked: a pass that turns the marks into light once, after the world and the hand are drawn (the lift the
@@ -312,7 +312,7 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
      the sky adds onto the sun), then maps S onto the display's peak T with BT.2390's EETF in PQ on the brightest
      channel: the identity where T reaches S, that is where Peak Brightness is at least 1000/203 times Paper White,
      so at a paper white of 203 a display at 1000 nits or more shows the scene as written and one above 1000 shows
-     it as at 1000. Light Horizon doesn't lift (HDR Lighting off, the title, a 0.2 pack's own) has
+     it as at 1000. Light Sunrise doesn't lift (HDR Lighting off, the title, a 0.2 pack's own) has
      no known peak, so there the curve's source still follows the display, as the 0.2 rule above describes. HDR off,
      the HUD, the black lift, the SDR screenshot's shoulder and the compatibility frame (HDR's default until step 5,
      whose look then changes once) don't change.
@@ -334,6 +334,6 @@ Each has a recommendation; the step it blocks says when it's needed.
 
 | Decision | Options | Recommended | Why | Needed before |
 | --- | --- | --- | --- | --- |
-| Where the HDR-off screenshot test runs | **A.** The parity runners: build main and the change, capture fixed scenes with `HORIZON_STILL=1` on Mesa's software Vulkan, compare PNGs. **B.** A synthetic scene with generated textures and a committed digest. | A | It tests the real game with real resource packs; B's digest changes with every Mesa update and covers less. A costs a second build a run, and needs #9398. | Step 3, the first change to the frame |
-| How tone mapping is written | **A.** A `[tonemap]` stage of its own. **B.** The last post pass, with a flag. | A | A pack that only grades keeps Horizon's curve, and one that only tone maps needs no post chain; the check can hold the stage to its range (0 to `headroom`); upscaling and anti-aliasing can run between the post chain and the curve. | Step 2, the API |
+| Where the HDR-off screenshot test runs | **A.** The parity runners: build main and the change, capture fixed scenes with `SUNRISE_STILL=1` on Mesa's software Vulkan, compare PNGs. **B.** A synthetic scene with generated textures and a committed digest. | A | It tests the real game with real resource packs; B's digest changes with every Mesa update and covers less. A costs a second build a run, and needs #9398. | Step 3, the first change to the frame |
+| How tone mapping is written | **A.** A `[tonemap]` stage of its own. **B.** The last post pass, with a flag. | A | A pack that only grades keeps Sunrise's curve, and one that only tone maps needs no post chain; the check can hold the stage to its range (0 to `headroom`); upscaling and anti-aliasing can run between the post chain and the curve. | Step 2, the API |
 | `paper_white` and `peak` in SDR | **A.** 80 nits, sRGB's reference white (scRGB's 1.0). **B.** 0, for unknown. | A | A pack that divides by them never gets infinity or NaN; `hdr` = 0 already says they're nominal, and `headroom` is 1 either way. | Step 2, the API |

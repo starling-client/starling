@@ -1,7 +1,7 @@
 # Parallel mob tick: reach and acceptance requirements
 
 Design: [#14457](https://github.com/horizon-rust/horizon/issues/14457).
-Implementation: `crates/horizon-client/src/game/creatures/mob_islands.rs`.
+Implementation: `crates/sunrise-client/src/game/creatures/mob_islands.rs`.
 This is the upstream design reference. On this fork all opt-in parallel phases are disabled at
 `parallel.rs::parallel_tick`. The retained upstream mob sources are behind the nondefault
 `upstream-parallel-mobs` feature: this code is not compiled or tested on the fork.
@@ -47,7 +47,7 @@ turn added before the move:
 
 - `moveRelative(amount, input)` adds `input * amount` with the input normalized when longer than
   1, so it adds at most `|amount|`. Its `amount` is, by travel mode: on the ground
-  `getFrictionInfluencedSpeed`, which is `speed` (Horizon's `friction_speed`: `speed` for a
+  `getFrictionInfluencedSpeed`, which is `speed` (Sunrise's `friction_speed`: `speed` for a
   friction of 0.6 or less, `speed * 0.216 / friction³ < speed` above); in the air the flying speed,
   `0.02` or a tenth of `speed` for a ridden mount; in water `0.02 + (speed - 0.02) * efficiency`,
   at most `max(0.02, speed)`; flying mobs the type's air speed or `speed` (allay, nautilus,
@@ -134,7 +134,7 @@ The ordered level random (above) makes a mob's first draw wait for every mob bef
 list, on every group. A villager's brain draws on nearly every turn (behaviour durations in
 `Timed::begin`, one-in-N rolls such as `nextInt(20) != 0`), and the result of most rolls decides
 what the villager does in the same turn, so those draws cannot be put off. With
-`HORIZON_PARALLEL_TICK` on, the brain therefore draws from a `LegacyRandom` seeded from a hash of
+`SUNRISE_PARALLEL_TICK` on, the brain therefore draws from a `LegacyRandom` seeded from a hash of
 the mob's id and the game time (`parallel::villagers_own_random`, `villager::tick_brain`), not
 from the level random. The seed takes no draw, so the villager's own random (movement, looks,
 sounds) keeps vanilla's sequence. No villager waits for another mob's draws, and a measured world whose
@@ -158,7 +158,7 @@ the mob waits until every lane has passed its place in the list. The official se
 76 µs a turn and two parrots 540 µs, against 5 µs for a zombie, nearly all of it waiting, the
 process used 1.4 cores, and the loop took as long as the serial one.
 
-With `HORIZON_PARALLEL_TICK` on, a turn's level-random draws therefore come from a `LegacyRandom`
+With `SUNRISE_PARALLEL_TICK` on, a turn's level-random draws therefore come from a `LegacyRandom`
 seeded from the mob's id and the game time (`parallel::mobs_own_random`, `mob_turn_random`,
 `Group::tick`), as the villagers' brains already did, and the mob loop no longer advances the
 level random. The same reasoning holds: vanilla's odds, not its values, which no player can rely
@@ -169,14 +169,14 @@ turns' new RNGs (`in_seed_order`) and the lookups by id.
 
 ## Why a tick ran serially
 
-A capture (`horizon-ctl profile`, `/profiler`) counts every tick of the loop under `mob_islands.ticks`, labelled
+A capture (`sunrise-ctl profile`, `/profiler`) counts every tick of the loop under `mob_islands.ticks`, labelled
 `verdict`: `grouped`, or the rule that kept the tick serial: `one_lane`, `mods_hook_turns`, `few_mobs`
 (under 256 mobs in the loop), `repeating_seeds`, `mod_effect`, `few_ticking`, `over_budget`, `one_island` (one island holds more than
 three quarters of the ticking mobs) and `one_group`, or one of four that say a reach has no finite bound, which keeps every mob of the level
 serial: `unbounded_state` (a mob's position or velocity is not finite), `unbounded_locomotion`,
 `unbounded_meal` and `unbounded_lists`. The server log names the first such mob, once a minute. The gauges `mob_islands.ticking`, `.islands` and
 `.largest_island` hold what the last plan that got that far found. Read them with
-`horizon-perf query series` on the capture.
+`sunrise-perf query series` on the capture.
 
 ## Native mods and the profiler
 
@@ -207,11 +207,11 @@ parallel safety for dynamically loaded mods; integration remains behind the gate
 Upstream-only acceptance command (not validation of the fork's default build):
 
 ```sh
-cargo test -p horizon-client --lib game::creatures::mob_islands:: -- --include-ignored --test-threads=1
+cargo test -p sunrise-client --lib game::creatures::mob_islands:: -- --include-ignored --test-threads=1
 ```
 
-Set `HORIZON_TEST_RESOURCES` to prepared resources and isolate game homes as `CLAUDE.md`
-requires. Do not set `HORIZON_TEST_SEEDS` when proving grouped execution: it forces fallback.
+Set `SUNRISE_TEST_RESOURCES` to prepared resources and isolate game homes as `CLAUDE.md`
+requires. Do not set `SUNRISE_TEST_SEEDS` when proving grouped execution: it forces fallback.
 
 ## Other ways a turn moves a mob
 

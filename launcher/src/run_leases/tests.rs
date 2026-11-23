@@ -29,7 +29,7 @@ fn failed_launch_log_keeps_paths_but_not_argument_or_environment_secrets() {
     command
         .args(["--token", "private-argument", "--token=private-inline"])
         .current_dir(root.path())
-        .env("HORIZON_ACCOUNT_SESSIONS", "private-environment")
+        .env("SUNRISE_ACCOUNT_SESSIONS", "private-environment")
         .env("TMPDIR", root.path());
     let error = std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -93,16 +93,16 @@ fn killed_holder_releases_production_home_source_and_parent_leases() {
                 "run_leases::tests::lease_holder_actor",
                 "--nocapture",
             ])
-            .env("HORIZON_LEASE_ACTOR_ROOT", root.path())
-            .env("HORIZON_LAUNCHER_HOME", &data)
-            .env("HORIZON_HOME", &home)
+            .env("SUNRISE_LEASE_ACTOR_ROOT", root.path())
+            .env("SUNRISE_LAUNCHER_HOME", &data)
+            .env("SUNRISE_HOME", &home)
             .env("XDG_DATA_HOME", root.path().join("xdg-data"))
             .env("XDG_CONFIG_HOME", root.path().join("xdg-config"))
-            .env("HORIZON_LAUNCHER_TRASH", root.path().join("trash"))
-            .env("HORIZON_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
-            .env("HORIZON_LAUNCHER_DESKTOP", root.path().join("desktop"))
-            .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-            .env("HORIZON_NO_AUDIO", "1")
+            .env("SUNRISE_LAUNCHER_TRASH", root.path().join("trash"))
+            .env("SUNRISE_LAUNCHER_CLIPBOARD", root.path().join("clipboard"))
+            .env("SUNRISE_LAUNCHER_DESKTOP", root.path().join("desktop"))
+            .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+            .env("SUNRISE_NO_AUDIO", "1")
             .current_dir(root.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -139,14 +139,14 @@ fn killed_holder_releases_production_home_source_and_parent_leases() {
 
 #[test]
 fn lease_holder_actor() {
-    let Some(root) = std::env::var_os("HORIZON_LEASE_ACTOR_ROOT") else {
+    let Some(root) = std::env::var_os("SUNRISE_LEASE_ACTOR_ROOT") else {
         return;
     };
     let root = std::path::PathBuf::from(root);
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .current_dir(root.join("game"))
-        .env("HORIZON_HOME", root.join("home"))
+        .env("SUNRISE_HOME", root.join("home"))
         .arg("--resources")
         .arg(root.join("base/resources"));
     mark(&mut command, &root.join("versions/native-fixture"));
@@ -194,15 +194,15 @@ fn routed_lifetime(stop: bool) {
             .env("ROUTING_STOP", if stop { "1" } else { "0" })
             // Keep actor failures visible in CI rather than only timing out on its marker.
             .env("RUST_BACKTRACE", "1")
-            .env("HORIZON_LAUNCHER_HOME", &data)
-            .env("HORIZON_HOME", &home)
+            .env("SUNRISE_LAUNCHER_HOME", &data)
+            .env("SUNRISE_HOME", &home)
             .env("XDG_DATA_HOME", data.join("xdg-data"))
             .env("XDG_CONFIG_HOME", data.join("xdg-config"))
-            .env("HORIZON_LAUNCHER_TRASH", data.join("trash"))
-            .env("HORIZON_LAUNCHER_CLIPBOARD", data.join("clipboard"))
-            .env("HORIZON_LAUNCHER_DESKTOP", data.join("desktop"))
-            .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-            .env("HORIZON_NO_AUDIO", "1")
+            .env("SUNRISE_LAUNCHER_TRASH", data.join("trash"))
+            .env("SUNRISE_LAUNCHER_CLIPBOARD", data.join("clipboard"))
+            .env("SUNRISE_LAUNCHER_DESKTOP", data.join("desktop"))
+            .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+            .env("SUNRISE_NO_AUDIO", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .spawn()
@@ -270,7 +270,7 @@ fn routed_lifetime(stop: bool) {
 #[cfg(unix)]
 #[test]
 fn routing_actor() {
-    horizon_mod_package::holder::enter();
+    sunrise_mod_package::holder::enter();
     let Some(root) = std::env::var_os("ROUTING_ROOT") else {
         return;
     };
@@ -312,12 +312,12 @@ fn routing_actor() {
             let _ = child.wait();
         }
     } else {
-        horizon_mod_package::holder::enter();
+        sunrise_mod_package::holder::enter();
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command.args(std::env::args_os().skip(1));
         let selection =
-            horizon_mod_package::selection::LaunchArguments::for_command(&command).unwrap();
-        let _capture = horizon_mod_package::holder::acquire(&selection);
+            sunrise_mod_package::selection::LaunchArguments::for_command(&command).unwrap();
+        let _capture = sunrise_mod_package::holder::acquire(&selection);
         assert!(_capture.is_some(), "game did not enter through the holder");
         // The parent may stop the game as soon as the readiness file exists.
         let pending = root.join("routed-ready.tmp");
@@ -338,12 +338,12 @@ fn data_directory_leaf_never_leases_ancestors_outside_data() {
         let data = std::path::PathBuf::from(root).join("data");
         fs::create_dir_all(&data).unwrap();
         let mut command = Command::new(std::env::current_exe().unwrap());
-        command.current_dir(&data).env("HORIZON_HOME", &data);
+        command.current_dir(&data).env("SUNRISE_HOME", &data);
         let _claims = shared(&command).unwrap();
-        let registry = horizon_mod_package::runtime_leases::Registry::existing(&data).unwrap();
+        let registry = sunrise_mod_package::runtime_leases::Registry::existing(&data).unwrap();
         let parent = directory(data.parent().unwrap());
         assert!(
-            matches!(registry.lock(&parent, LockMode::Exclusive), Err(horizon_mod_package::runtime_leases::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+            matches!(registry.lock(&parent, LockMode::Exclusive), Err(sunrise_mod_package::runtime_leases::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
         );
         return;
     }
@@ -354,9 +354,9 @@ fn data_directory_leaf_never_leases_ancestors_outside_data() {
             "run_leases::tests::data_directory_leaf_never_leases_ancestors_outside_data"
         ])
         .env(ENV, root.path())
-        .env("HORIZON_LAUNCHER_HOME", root.path().join("data"))
-        .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-        .env("HORIZON_NO_AUDIO", "1")
+        .env("SUNRISE_LAUNCHER_HOME", root.path().join("data"))
+        .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+        .env("SUNRISE_NO_AUDIO", "1")
         .status()
         .unwrap()
         .success());

@@ -1,10 +1,10 @@
 //! The Modpacks page's headline: the same plain lines `coverage.md` opens with, in the
 //! launcher's language (English here).
-use horizon_launcher::{
+use sunrise_launcher::{
     i18n::{self, Language},
     modpacks::Imported,
 };
-use horizon_port_pack::{
+use sunrise_port_pack::{
     fetch::Fetched,
     import::Pack,
     report::{self, Row, Status},
@@ -82,8 +82,8 @@ fn the_headline_says_what_coverage_md_says() {
 
 #[test]
 fn row_explanations_keep_the_coverage_reports_english_and_dependency_counts() {
-    use horizon_launcher::modpacks::row_plain;
-    use horizon_port_pack::inventory::Record;
+    use sunrise_launcher::modpacks::row_plain;
+    use sunrise_port_pack::inventory::Record;
     i18n::set(Language::English);
     let records: Vec<_> = [
         ("base", "content", "machines", vec![]),
@@ -106,7 +106,7 @@ fn row_explanations_keep_the_coverage_reports_english_and_dependency_counts() {
         ..Default::default()
     })
     .collect();
-    let missing = std::env::temp_dir().join(format!("horizon-row-english-{}", std::process::id()));
+    let missing = std::env::temp_dir().join(format!("sunrise-row-english-{}", std::process::id()));
     let rows = report::build(&records, &missing);
     for row in &rows {
         assert_eq!(row_plain(row), row.plain_text(), "{}", row.key);

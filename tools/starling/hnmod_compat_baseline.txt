@@ -1,13 +1,13 @@
 # The website's native mods that built (cargo ndk check, arm64-v8a) on the last measured Starling:
-# sync-horizon-7 with sync-horizon-6 merged in (9b1cedb204, 2026-11-15), hnmod-compat run 43733910338: 87 of the
+# sync-sunrise-7 with sync-sunrise-6 merged in (9b1cedb204, 2026-11-15), hnmod-compat run 43733910338: 87 of the
 # index's 135, and dynamic_fps_for_rust, which that merge broke and the next commit mends: 88.
 # hnmod-compat.yml names every one of these that no longer builds. Update it from a run's summary when a sync is
 # measured, and say what left it.
 # Back since 85 (e0220f9c81): ayynoxs_map_pack and elytratrails (the old mod messages, game/starling/old_mod_net.rs)
-# and horizon_physics (native_mod_adapt.py FOLDED_PARAMETERS).
+# and sunrise_physics (native_mod_adapt.py FOLDED_PARAMETERS).
 accurate_block_placement
 appleskin
-appleskin_horizon
+appleskin_sunrise
 armor_status
 armorhud
 atlas
@@ -24,7 +24,7 @@ context_tools
 coords_hud
 crosshair_indicator
 customhud
-distant_horizons
+distant_sunrises
 dynamic_fps_for_rust
 dynamiclights
 elytratrails
@@ -39,12 +39,12 @@ freecam
 freecam_plus
 freelook
 fullbright
-fullbright_horizon
+fullbright_sunrise
 fullbright_nofog
 gyro
 held_item_info
 hitbox_plus
-horizon_physics
+sunrise_physics
 hud_plus
 imfast
 inventory_profiles
@@ -84,7 +84,7 @@ smoothswapping
 speedrun_timer
 status_effect_hud
 stuck
-tectonic_horizon
+tectonic_sunrise
 toggle_sprint
 treefall
 veinminer

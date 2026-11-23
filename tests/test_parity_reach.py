@@ -159,21 +159,21 @@ class ReachTests(unittest.TestCase):
 
     def test_old_broad_client_records_find_moved_ctl_and_probes(self):
         workspace(self.root, {
-            "crates/horizon-client/Cargo.toml": '[package]\nname = "horizon-client"\nautobins = false\nautoexamples = false\n'
-            '[[bin]]\nname = "horizon-client"\npath = "src/main.rs"\n',
-            "crates/horizon-client/src/main.rs": "fn main() {}\n",
-            "crates/horizon-client/src/bin/horizon-ctl.rs": "fn main() {}\n",
-            "crates/horizon-client/examples/probe/main.rs": "fn main() {}\n",
-            "crates/horizon-client-lib/Cargo.toml": '[package]\nname = "horizon-client-lib"\nautobins = false\nautoexamples = false\n'
-            '[[bin]]\nname = "horizon-ctl"\npath = "../horizon-client/src/bin/horizon-ctl.rs"\n'
-            '[[example]]\nname = "client_probe"\npath = "../horizon-client/examples/probe/main.rs"\n',
+            "crates/sunrise-client/Cargo.toml": '[package]\nname = "sunrise-client"\nautobins = false\nautoexamples = false\n'
+            '[[bin]]\nname = "sunrise-client"\npath = "src/main.rs"\n',
+            "crates/sunrise-client/src/main.rs": "fn main() {}\n",
+            "crates/sunrise-client/src/bin/sunrise-ctl.rs": "fn main() {}\n",
+            "crates/sunrise-client/examples/probe/main.rs": "fn main() {}\n",
+            "crates/sunrise-client-lib/Cargo.toml": '[package]\nname = "sunrise-client-lib"\nautobins = false\nautoexamples = false\n'
+            '[[bin]]\nname = "sunrise-ctl"\npath = "../sunrise-client/src/bin/sunrise-ctl.rs"\n'
+            '[[example]]\nname = "client_probe"\npath = "../sunrise-client/examples/probe/main.rs"\n',
         })
         graph = parity_reach.SourceGraph(self.root, parity.rust_code)
-        game, ctl, probe = ("crates/horizon-client/" + path for path in
-                            ["src/main.rs", "src/bin/horizon-ctl.rs", "examples/probe/main.rs"])
-        self.assertEqual(graph.entries([["bins", "", "dev", ["-p", "horizon-client"], False]], {game, ctl, probe}),
+        game, ctl, probe = ("crates/sunrise-client/" + path for path in
+                            ["src/main.rs", "src/bin/sunrise-ctl.rs", "examples/probe/main.rs"])
+        self.assertEqual(graph.entries([["bins", "", "dev", ["-p", "sunrise-client"], False]], {game, ctl, probe}),
                          {game, ctl})
-        self.assertEqual(graph.entries([["examples", "", "dev", ["-p", "horizon-client"], True]], {game, ctl, probe}),
+        self.assertEqual(graph.entries([["examples", "", "dev", ["-p", "sunrise-client"], True]], {game, ctl, probe}),
                          {probe})
 
     def test_unknown_probes_keep_everything(self):

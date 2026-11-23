@@ -22,7 +22,7 @@ as Parts, not a separate manifest channel list.
 ```rust,ignore
 use mod_api::{
     Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId,
-    Registrar, RegistrationContext, horizon_mod,
+    Registrar, RegistrationContext, sunrise_mod,
 };
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ impl IPayloadHandler for Update {
 }
 struct ExampleMod;
 
-#[horizon_mod]
+#[sunrise_mod]
 impl Hooks for ExampleMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         r.payload_handlers().registrar("1")
@@ -70,11 +70,11 @@ A missing required declaration refuses admission. Matching protocol/id declarati
 must agree on version and direction even when optional; mismatches refuse with the
 id, reason and both declarations. Only one-sided optional absence permits admission,
 and send then returns `UnsupportedPeer`
-without a packet. Horizon-branded peers must also answer the global raw transport
-revision mark on `horizon:payloads`, even with empty or all-optional declarations.
+without a packet. Sunrise-branded peers must also answer the global raw transport
+revision mark on `sunrise:payloads`, even with empty or all-optional declarations.
 Query is `[0, 1]`; Offer starts `[1, 1]` followed by the record count. A missing
 response or wrong revision refuses admission with a named raw-protocol cause.
-This is not a build authentication mechanism. Non-Horizon vanilla peers retain
+This is not a build authentication mechanism. Non-Sunrise vanilla peers retain
 optional admission. Empty peers exchange only protocol metadata and an empty Offer;
 there is no per-tick scan of loaded mods.
 
@@ -123,7 +123,7 @@ commit and the same physical protocol incarnation. It refuses every locally owne
 registered channel and engine-reserved channel; it cannot bypass negotiation,
 direction, or service authority. The former envelope hooks and tick-capped send
 methods are removed, without aliases or fallback handlers. Private custom books
-advertise their own version on `horizon:recipe_book_settings`; book support does not
+advertise their own version on `sunrise:recipe_book_settings`; book support does not
 depend on a mod transport flag.
 
 ## Raw plugin channels
@@ -134,13 +134,13 @@ declaring it by its exact id: `registrar.play_raw(PayloadId(id), Some(handler))`
 or `None` for a channel the mod only sends on. A raw declaration is a server's
 unnegotiated policy for that channel, not a payload: it is not in the
 negotiation offer, makes no client mod-required, and a raw-only mod needs no
-Horizon peer. `PlayerRef::send_payload` sends the exact bytes in a vanilla
+Sunrise peer. `PlayerRef::send_payload` sends the exact bytes in a vanilla
 custom payload to any client in play; above vanilla's clientbound limit
 (1,048,576 bytes) it returns `PayloadTooLarge`. What a client sends on the
 channel reaches every mod that declared it with a handler, once each, in mod
 load order and on the main thread; one mod's error is logged and rolls back its
 own work only. The serverbound limit stays vanilla's 32,767 bytes. An
-undeclared channel is ignored as before. `minecraft:` and `horizon:` ids cannot
+undeclared channel is ignored as before. `minecraft:` and `sunrise:` ids cannot
 be declared, and a raw id that a typed payload also registers refuses load,
 naming both mods. `PlayerRef::announced_channels` reads what the client
 announced in `minecraft:register` (less `minecraft:unregister`), in
@@ -175,7 +175,7 @@ impl IPayloadHandler for VoiceSecret {
 }
 
 struct MyMod;
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         r.payload_handlers()
@@ -189,7 +189,7 @@ impl Hooks for MyMod {
 
 ## Stage 2: the value codec
 
-`crates/horizon-mod-vocab/src/content/payload_codec.rs` holds the pure codec half of stage 2, exported from `mod_api`, and `#[derive(PayloadCodec)]` writes a type's codec from its fields. It is the part that touches neither registration nor delivery, so it stands apart from the raw transport of [#2882](https://github.com/arismoko/horizon/issues/2882). Nothing calls it yet: the typed handler adapter that decodes a received body, and the typed send helper that encodes one, arrive with registration.
+`crates/sunrise-mod-vocab/src/content/payload_codec.rs` holds the pure codec half of stage 2, exported from `mod_api`, and `#[derive(PayloadCodec)]` writes a type's codec from its fields. It is the part that touches neither registration nor delivery, so it stands apart from the raw transport of [#2882](https://github.com/arismoko/horizon/issues/2882). Nothing calls it yet: the typed handler adapter that decodes a received body, and the typed send helper that encodes one, arrive with registration.
 
 | Item | Contract |
 | --- | --- |
@@ -200,7 +200,7 @@ impl Hooks for MyMod {
 | `PAYLOAD_MAX_DEPTH` | 64. Each list, each present option and each `nested` level counts one; level 65 is `TooDeep` |
 | `PAYLOAD_MAX_STRING_BYTES`, `PAYLOAD_MAX_LIST_ENTRIES` | 4096 each, the defaults of `String` and `Vec<T>`. A schema with another bound calls `str_within(limit)`, `bytes(limit)` or `list(limit, read)` itself, so these are not a transport ceiling |
 | `PAYLOAD_DECODE_BUDGET` | 8,388,608 bytes of allocation for one value. A list is charged `count * size_of::<T>()` before it is reserved, an owned string its length, so a small body cannot ask for a large allocation |
-| `#[derive(PayloadCodec)]` | The generated codec, in `crates/horizon-mod-api-macros/src/payload.rs`. A struct is its fields in declaration order with nothing between them. An enum is a VarInt tag, the variant's position from 0 whatever its discriminant, then that variant's fields; a tag no variant has is `InvalidDiscriminant`. Each field goes through its own `PayloadCodec`, so the bounds above hold inside a derived type, and it adds no nesting level of its own. An enum with no variants, a union and a field without a codec do not compile |
+| `#[derive(PayloadCodec)]` | The generated codec, in `crates/sunrise-mod-api-macros/src/payload.rs`. A struct is its fields in declaration order with nothing between them. An enum is a VarInt tag, the variant's position from 0 whatever its discriminant, then that variant's fields; a tag no variant has is `InvalidDiscriminant`. Each field goes through its own `PayloadCodec`, so the bounds above hold inside a derived type, and it adds no nesting level of its own. An enum with no variants, a union and a field without a codec do not compile |
 | `PayloadDecodeError` | `UnexpectedEnd`, `VarIntTooLong`, `NegativeLength`, `LengthOverLimit`, `Utf8`, `TooDeep`, `InvalidDiscriminant`, `NonFinite`, `BudgetExhausted`, `Trailing`, `InvalidValue`; has a Wire form |
 | `PayloadEncodeError` | `TooLarge`, `LengthOverLimit`, `TooDeep`, `NonFinite`; has a Wire form. An encoder refuses what the peer's decoder would refuse |
 

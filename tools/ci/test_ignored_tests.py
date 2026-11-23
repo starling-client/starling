@@ -15,15 +15,15 @@ class IgnoredTestsHomeTest(unittest.TestCase):
 
         def execute(command, **kwargs):
             env = kwargs["env"]
-            home = Path(env["HORIZON_HOME"])
+            home = Path(env["SUNRISE_HOME"])
             self.assertTrue(home.is_dir())
             self.assertFalse((home / "fixture-state").exists())
             (home / "fixture-state").touch()
-            self.assertEqual(env["HORIZON_TEST_RESOURCES"], "prepared-fixture")
-            for key in ("HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+            self.assertEqual(env["SUNRISE_TEST_RESOURCES"], "prepared-fixture")
+            for key in ("SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
                 self.assertTrue(Path(env[key]).is_dir())
                 self.assertEqual(Path(env[key]).parent, home.parent)
-            for key in ("HORIZON_LAUNCHER_TRASH", "HORIZON_LAUNCHER_CLIPBOARD", "HORIZON_LAUNCHER_DESKTOP"):
+            for key in ("SUNRISE_LAUNCHER_TRASH", "SUNRISE_LAUNCHER_CLIPBOARD", "SUNRISE_LAUNCHER_DESKTOP"):
                 self.assertEqual(Path(env[key]).parent, home.parent)
             homes.append(home)
             return SimpleNamespace(
@@ -36,12 +36,12 @@ class IgnoredTestsHomeTest(unittest.TestCase):
                 ),
             )
 
-        with patch.dict(os.environ, HORIZON_HOME="parent-home", HORIZON_TEST_RESOURCES="prepared-fixture"):
+        with patch.dict(os.environ, SUNRISE_HOME="parent-home", SUNRISE_TEST_RESOURCES="prepared-fixture"):
             with patch.object(ignored_tests.lab, "game_env", wraps=lab.game_env) as sandbox:
                 with patch.object(ignored_tests.subprocess, "run", side_effect=execute):
                     for _ in range(2):
-                        self.assertEqual(ignored_tests.run("horizon-client", []), {"fixture": True})
-                        self.assertEqual(os.environ["HORIZON_HOME"], "parent-home")
+                        self.assertEqual(ignored_tests.run("sunrise-client", []), {"fixture": True})
+                        self.assertEqual(os.environ["SUNRISE_HOME"], "parent-home")
                 self.assertEqual(sandbox.call_count, 2)
             self.assertNotEqual(homes[0], homes[1])
             self.assertTrue(all(not home.parent.exists() for home in homes))

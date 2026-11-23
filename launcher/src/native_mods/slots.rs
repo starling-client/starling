@@ -1,7 +1,7 @@
 //! API engine point validation. No source or listed-call-site fallback exists.
 use super::internals::Catalog;
 use crate::i18n::trf;
-use horizon_mod_package::{manifest::inject::Kind, Manifest};
+use sunrise_mod_package::{manifest::inject::Kind, Manifest};
 
 pub(super) fn check(catalog: &Catalog, manifest: &Manifest) -> Result<(), String> {
     for entry in &manifest.inject {
@@ -41,7 +41,7 @@ pub(super) fn check(catalog: &Catalog, manifest: &Manifest) -> Result<(), String
             ));
         }
         if entry.kind == Kind::Replace {
-            horizon_mod_point_emit::replaceable(&id, &entry.at, &point.emitted())?;
+            sunrise_mod_point_emit::replaceable(&id, &entry.at, &point.emitted())?;
         }
     }
     Ok(())

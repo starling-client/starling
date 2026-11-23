@@ -65,7 +65,7 @@ def kill_die_vibration(full=False):
         cmd(f'/execute if block {x} {Y} {Z} sculk_sensor[sculk_sensor_phase=inactive,power=0]',
             f'sensor-{name}-inactive', 1)
         cmd(f'/data get block {x} {Y} {Z} last_vibration_frequency', f'sensor-{name}-frequency', 0)
-    # World ticks for the sensors before any actor: Horizon finds a new
+    # World ticks for the sensors before any actor: Sunrise finds a new
     # sensor in its periodic chunk scan, within ten ticks (a separate
     # difference; vanilla's block entity registers its listener when it is
     # added).

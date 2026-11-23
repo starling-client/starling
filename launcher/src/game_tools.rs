@@ -1,9 +1,9 @@
 //! The running game's tools in the launcher's MCP, so an agent needs one server
-//! (docs/agent-control.md): the selected version's `horizon-ctl mcp` runs as a child, its tools
+//! (docs/agent-control.md): the selected version's `sunrise-ctl mcp` runs as a child, its tools
 //! are offered as `game_<name>`, and calls go to it unchanged. `play` starts the game with
 //! the launcher's own control endpoint; a game the player started with Agent Control on answers
 //! on the game's default endpoint instead. The child talks to whichever of them answers.
-use horizon_launcher::backend;
+use sunrise_launcher::backend;
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
@@ -14,13 +14,13 @@ use std::time::Duration;
 
 pub const PREFIX: &str = "game_";
 
-/// horizon-ctl tools the launcher covers itself: `play` starts the game.
+/// sunrise-ctl tools the launcher covers itself: `play` starts the game.
 const HIDDEN: &[&str] = &["launch"];
 
 const CTL: &str = if cfg!(windows) {
-    "horizon-ctl.exe"
+    "sunrise-ctl.exe"
 } else {
-    "horizon-ctl"
+    "sunrise-ctl"
 };
 
 /// The control endpoint of a game started by `play`: a Unix socket, or on Windows the
@@ -43,9 +43,9 @@ pub fn control_args() -> Vec<String> {
 
 /// The endpoint a game listens on when nothing names one, which is where Agent Control opens it.
 /// The launcher runs whichever version is installed, so this is a contract with every game
-/// rather than shared code: `control::default_path` in horizon-client, and `horizon-ctl help`.
+/// rather than shared code: `control::default_path` in sunrise-client, and `sunrise-ctl help`.
 /// `shared_uid` is the user's id when `temp` is shared by every user (`/tmp`): the game then
-/// keeps its socket in a folder of that user's own there, `horizon-<uid>`.
+/// keeps its socket in a folder of that user's own there, `sunrise-<uid>`.
 fn default_endpoint(
     control: Option<OsString>,
     runtime: Option<OsString>,
@@ -56,18 +56,18 @@ fn default_endpoint(
         return path.into();
     }
     if !cfg!(unix) {
-        return temp.join("horizon-control.json");
+        return temp.join("sunrise-control.json");
     }
     match (runtime, shared_uid) {
         (Some(runtime), _) => PathBuf::from(runtime),
-        (None, Some(uid)) => temp.join(format!("horizon-{uid}")),
+        (None, Some(uid)) => temp.join(format!("sunrise-{uid}")),
         (None, None) => temp,
     }
-    .join("horizon-control.sock")
+    .join("sunrise-control.sock")
 }
 
 /// The user's id when the temporary directory is shared by every user (`control::fallback_dir`
-/// in horizon-client): the owner of `/proc/self`, else of the home folder.
+/// in sunrise-client): the owner of `/proc/self`, else of the home folder.
 fn shared_temp_uid(temp: &Path) -> Option<u32> {
     #[cfg(unix)]
     {
@@ -102,7 +102,7 @@ fn current_endpoint() -> PathBuf {
     choose_endpoint(
         socket_path(),
         default_endpoint(
-            std::env::var_os("HORIZON_CONTROL"),
+            std::env::var_os("SUNRISE_CONTROL"),
             std::env::var_os("XDG_RUNTIME_DIR"),
             std::env::temp_dir(),
             shared_temp_uid(&std::env::temp_dir()),
@@ -119,7 +119,7 @@ fn answers(path: &Path) -> bool {
     tcp_answers(path).unwrap_or(false)
 }
 
-/// The file names a localhost port and its token (`control::connect` in horizon-client): a game
+/// The file names a localhost port and its token (`control::connect` in sunrise-client): a game
 /// accepts that token, and whatever took over the port of a game long gone does not.
 fn tcp_answers(path: &Path) -> Option<bool> {
     let endpoint: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
@@ -140,7 +140,7 @@ pub fn listening() -> bool {
 }
 
 pub struct GameTools {
-    /// The installed version this `horizon-ctl` belongs to.
+    /// The installed version this `sunrise-ctl` belongs to.
     tag: String,
     /// The endpoint it talks to.
     endpoint: PathBuf,
@@ -152,7 +152,7 @@ pub struct GameTools {
 }
 
 impl GameTools {
-    /// Start `horizon-ctl mcp` of an installed version and read its tools.
+    /// Start `sunrise-ctl mcp` of an installed version and read its tools.
     pub fn start(tag: &str) -> Result<Self, String> {
         Self::start_on(tag, current_endpoint())
     }
@@ -162,7 +162,7 @@ impl GameTools {
         if !ctl.exists() {
             return Err(format!("{tag} has no {CTL}"));
         }
-        let mut child = horizon_launcher::process::command(&ctl)
+        let mut child = sunrise_launcher::process::command(&ctl)
             .arg("--socket")
             .arg(&endpoint)
             .arg("mcp")
@@ -183,11 +183,11 @@ impl GameTools {
             tools: Vec::new(),
         };
         tools.rpc(
-            // The child is whichever `horizon-ctl` the player has installed, so open with the
+            // The child is whichever `sunrise-ctl` the player has installed, so open with the
             // handshake revision: older versions do not know the stateless one.
             "initialize",
-            json!({ "protocolVersion": horizon_mcp::LEGACY, "capabilities": {},
-                    "clientInfo": { "name": "horizon-launcher", "version": backend::VERSION } }),
+            json!({ "protocolVersion": sunrise_mcp::LEGACY, "capabilities": {},
+                    "clientInfo": { "name": "sunrise-launcher", "version": backend::VERSION } }),
         )?;
         tools.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))?;
         let listed = tools.rpc("tools/list", json!({}))?;
@@ -200,8 +200,8 @@ impl GameTools {
         &self.tools
     }
 
-    /// Call a `game_` tool; the result is horizon-ctl's (text and image content). The game can
-    /// start, stop or turn Agent Control on between two calls, and an installed horizon-ctl keeps
+    /// Call a `game_` tool; the result is sunrise-ctl's (text and image content). The game can
+    /// start, stop or turn Agent Control on between two calls, and an installed sunrise-ctl keeps
     /// the endpoint it started with, so another endpoint means another child.
     pub fn call(&mut self, name: &str, args: &Value) -> Result<Value, String> {
         let inner = name.strip_prefix(PREFIX).ok_or("not a game tool")?;
@@ -216,7 +216,7 @@ impl GameTools {
     fn send(&mut self, message: &Value) -> Result<(), String> {
         writeln!(self.stdin, "{message}")
             .and_then(|_| self.stdin.flush())
-            .map_err(|e| format!("horizon-ctl stopped: {e}"))
+            .map_err(|e| format!("sunrise-ctl stopped: {e}"))
     }
 
     fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -227,7 +227,7 @@ impl GameTools {
         loop {
             line.clear();
             match self.stdout.read_line(&mut line) {
-                Ok(0) | Err(_) => return Err("horizon-ctl stopped".into()),
+                Ok(0) | Err(_) => return Err("sunrise-ctl stopped".into()),
                 Ok(_) => {}
             }
             let Ok(reply) = serde_json::from_str::<Value>(&line) else {
@@ -251,7 +251,7 @@ impl Drop for GameTools {
     }
 }
 
-/// horizon-ctl's tools as the launcher offers them.
+/// sunrise-ctl's tools as the launcher offers them.
 fn prefixed(tools: &Value) -> Vec<Value> {
     tools
         .as_array()
@@ -284,7 +284,7 @@ fn explain_unreachable(mut result: Value) -> Value {
         });
     if unreachable {
         result["content"] = json!([{ "type": "text", "text": json!({
-            "error": "The game is not running under agent control. Start it with play, then game_wait_ready, or ask the player to turn on Agent Control in the game they started (Options > Horizon Settings > AI Agent).",
+            "error": "The game is not running under agent control. Start it with play, then game_wait_ready, or ask the player to turn on Agent Control in the game they started (Options > Sunrise Settings > AI Agent).",
             "kind": "state",
         }).to_string() }]);
     }
@@ -299,7 +299,7 @@ mod tests {
     /// A folder for one test's endpoint files.
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "horizon-game-endpoint-{name}-{}",
+            "sunrise-game-endpoint-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -433,22 +433,22 @@ mod tests {
         if cfg!(unix) {
             assert_eq!(
                 default_endpoint(None, runtime(), temp.clone(), Some(1000)),
-                Path::new("run").join("horizon-control.sock")
+                Path::new("run").join("sunrise-control.sock")
             );
             // A temporary directory of the user's own, as macOS's.
             assert_eq!(
                 default_endpoint(None, None, temp.clone(), None),
-                temp.join("horizon-control.sock")
+                temp.join("sunrise-control.sock")
             );
             // A shared one: the user's own folder in it.
             assert_eq!(
                 default_endpoint(None, None, temp.clone(), Some(1000)),
-                temp.join("horizon-1000/horizon-control.sock")
+                temp.join("sunrise-1000/sunrise-control.sock")
             );
         } else {
             assert_eq!(
                 default_endpoint(None, runtime(), temp.clone(), None),
-                temp.join("horizon-control.json")
+                temp.join("sunrise-control.json")
             );
         }
     }

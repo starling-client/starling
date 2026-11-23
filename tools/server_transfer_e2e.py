@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""A whole hand-over between two Horizon dedicated servers, over their real control sockets (#7484).
+"""A whole hand-over between two Sunrise dedicated servers, over their real control sockets (#7484).
 
-Two engines (`horizon-client --dedicated`) run with `[transfer]` on (`--transfers`) and Velocity forwarding
+Two engines (`sunrise-client --dedicated`) run with `[transfer]` on (`--transfers`) and Velocity forwarding
 (`forwarding.secret`), as docs/server.md requires. This harness is the proxy: a small relay per engine answers
 the engine's `velocity:player_info` request with a signed payload (docs/velocity-forwarding.md), then copies
 bytes both ways, and the control requests are sent on each engine's control socket. The player is a
-horizon-bots client; the hand-over's two connections are two bot processes with the same name, as a proxy
+sunrise-bots client; the hand-over's two connections are two bot processes with the same name, as a proxy
 holds two connections for one client.
 
     python3 tools/server_transfer_e2e.py --bin-dir target/fast
@@ -34,11 +34,11 @@ Last, a stop during a move: A, with nobody on, stops at once. B is stopped with 
 (`stop_wait_seconds`), refuses a new arrival, and a third server C takes the player in the meantime. B stops by
 itself once the player is out, without writing its file again, and C's file holds the player's items.
 
-The engines run in a fresh folder with fresh HORIZON_HOME and XDG folders (lab.game_env), on free ports, with no
+The engines run in a fresh folder with fresh SUNRISE_HOME and XDG folders (lab.game_env), on free ports, with no
 window. Every request, reply (records shortened) and check goes to --out/steps.json, with both servers' logs.
 Build first:
-    cargo build --profile fast -p horizon-game --bin horizon-client
-    cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p sunrise-game --bin sunrise-client
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 import base64
@@ -65,7 +65,7 @@ from server_bench import DONE, Server  # noqa: E402
 EXE = '.exe' if os.name == 'nt' else ''
 SECRET = b'server-transfer-e2e-secret'
 NAME = 'Mover'
-PLAYER = NAME + '0'  # horizon-bots names its bots PREFIX0, PREFIX1...
+PLAYER = NAME + '0'  # sunrise-bots names its bots PREFIX0, PREFIX1...
 PROPERTIES = {
     'online-mode': 'false',
     'white-list': 'false',
@@ -76,7 +76,7 @@ PROPERTIES = {
     'view-distance': '3',
     'simulation-distance': '3',
 }
-CONTAINER_CLICK = 18  # ServerboundContainerClickPacket's id (horizon-protocol ids.rs)
+CONTAINER_CLICK = 18  # ServerboundContainerClickPacket's id (sunrise-protocol ids.rs)
 
 
 def click_body(slot):
@@ -153,7 +153,7 @@ def send_frame(sock, body):
 
 
 def offline_uuid(name):
-    """UUID.nameUUIDFromBytes("OfflinePlayer:" + name), as an offline server and horizon-bots derive it."""
+    """UUID.nameUUIDFromBytes("OfflinePlayer:" + name), as an offline server and sunrise-bots derive it."""
     md5 = bytearray(hashlib.md5(('OfflinePlayer:' + name).encode()).digest())
     md5[6] = (md5[6] & 0x0F) | 0x30
     md5[8] = (md5[8] & 0x3F) | 0x80
@@ -269,10 +269,10 @@ class Engine:
         (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
         (folder / 'eula.txt').write_text('eula=true\n')
         (folder / 'forwarding.secret').write_bytes(SECRET + b'\n')
-        # horizon-server makes the folder of the game's control endpoint; the game does not.
-        self.endpoint = folder / '.horizon' / 'engine.json'
+        # sunrise-server makes the folder of the game's control endpoint; the game does not.
+        self.endpoint = folder / '.sunrise' / 'engine.json'
         self.endpoint.parent.mkdir()
-        command = [bins / f'horizon-client{EXE}', '--resources', resources, '--control-socket', self.endpoint,
+        command = [bins / f'sunrise-client{EXE}', '--resources', resources, '--control-socket', self.endpoint,
                    '--transfers', TRANSFERS, '--dedicated', '--nogui']
         self.server = Server(command, folder, out / f'server-{label}.log')
         self.control = None
@@ -296,7 +296,7 @@ class Engine:
         return json.loads(reader.readline())
 
     def world_file(self, kind, player_uuid):
-        """players/<kind>/<uuid>.<dat|json> of the world, as Horizon writes it."""
+        """players/<kind>/<uuid>.<dat|json> of the world, as Sunrise writes it."""
         ext = 'dat' if kind == 'data' else 'json'
         return self.folder / 'world' / 'players' / kind / f'{player_uuid}.{ext}'
 
@@ -401,13 +401,13 @@ def short(reply):
 
 
 class Bot:
-    """One horizon-bots client standing still, through a relay."""
+    """One sunrise-bots client standing still, through a relay."""
 
     def __init__(self, bins, port, out, label, seconds, *extra):
         self.report = out / f'bot-{label}.json'
         self.log = (out / f'bot-{label}.log').open('w')
         self.process = subprocess.Popen(
-            [str(bins / f'horizon-bots{EXE}'), '--server', f'127.0.0.1:{port}', '--bots', '1',
+            [str(bins / f'sunrise-bots{EXE}'), '--server', f'127.0.0.1:{port}', '--bots', '1',
              '--behaviour', 'stand', '--seconds', str(seconds), '--name', NAME, '--report', str(self.report),
              *extra],
             stdout=self.log, stderr=subprocess.STDOUT, env=lab.game_env())

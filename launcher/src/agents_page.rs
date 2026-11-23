@@ -1,9 +1,9 @@
-//! Settings' AI rows: the No AI switch (`horizon_platform::no_ai`, shared with the game) and "Connect
+//! Settings' AI rows: the No AI switch (`sunrise_platform::no_ai`, shared with the game) and "Connect
 //! an AI agent", the ready-made MCP config of each common client with Copy buttons, a one-click
 //! add where the client has a CLI (run only on that click, its command shown first), and a test
 //! that starts the MCP server and lists its tools. With No AI on, only the switch shows.
 use super::*;
-use horizon_launcher::agents;
+use sunrise_launcher::agents;
 
 #[derive(Default)]
 pub(crate) struct AgentsUi {
@@ -33,9 +33,9 @@ impl Launcher {
             Some(
                 div()
                     .child(tr(if on {
-                        "On: every AI feature is hidden and off. The game opens no control socket, and horizon-ctl and the MCP servers refuse."
+                        "On: every AI feature is hidden and off. The game opens no control socket, and sunrise-ctl and the MCP servers refuse."
                     } else {
-                        "Hides and turns off every AI feature: agent control of the launcher and the game, horizon-ctl and the MCP servers."
+                        "Hides and turns off every AI feature: agent control of the launcher and the game, sunrise-ctl and the MCP servers."
                     }))
                     .into_any_element(),
             ),
@@ -107,7 +107,7 @@ impl Launcher {
                     .child(tr("Connect an AI agent")),
             )
             .child(div().max_w(px(640.)).text_color(t.muted).child(tr(
-                "Your own agent (Claude Code, Codex, Cursor or any MCP client) can drive the launcher and the game it starts, with the same commands as the terminal. It runs on your computer and talks to Horizon there; it asks before deleting anything.",
+                "Your own agent (Claude Code, Codex, Cursor or any MCP client) can drive the launcher and the game it starts, with the same commands as the terminal. It runs on your computer and talks to Sunrise there; it asks before deleting anything.",
             )))
             .child(picker);
         if let Some((program, args)) = client.add.clone() {
@@ -178,7 +178,7 @@ impl Launcher {
                         let exe = backend::update_target();
                         let task = cx.background_executor().spawn(async move {
                             match agents::self_test(&exe) {
-                                Ok(n) => (true, trf("The MCP server answered with {count} tools. Now ask your agent: \"Say hello from Horizon\".", &[("count", &n.to_string())])),
+                                Ok(n) => (true, trf("The MCP server answered with {count} tools. Now ask your agent: \"Say hello from Sunrise\".", &[("count", &n.to_string())])),
                                 Err(e) => (false, trf("The MCP server did not answer: {error}", &[("error", &e)])),
                             }
                         });
@@ -218,14 +218,14 @@ impl Launcher {
 
 /// Runs a client's add command; (went well, what it said).
 fn run_add(program: &str, args: &[String]) -> (bool, String) {
-    match horizon_launcher::process::command(agents::locate(program))
+    match sunrise_launcher::process::command(agents::locate(program))
         .args(args)
         .output()
     {
         Ok(out) if out.status.success() => (
             true,
             trf(
-                "Added. Restart {program} if it is open, then ask it: \"Say hello from Horizon\".",
+                "Added. Restart {program} if it is open, then ask it: \"Say hello from Sunrise\".",
                 &[("program", program)],
             ),
         ),

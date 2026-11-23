@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""A player riding a minecart (or a boat) through a Nether portal, on vanilla's dedicated server and Horizon's.
+"""A player riding a minecart (or a boat) through a Nether portal, on vanilla's dedicated server and Sunrise's.
 
-    python3 tools/cart_portal_player_e2e.py --bin-dir target/fast [--side vanilla|horizon] [--vehicle minecart|boat]
+    python3 tools/cart_portal_player_e2e.py --bin-dir target/fast [--side vanilla|sunrise] [--vehicle minecart|boat]
 
 PURPOSE: a vanilla-codec client (VanillaProtocolClient in its ride mode) joins a flat world, the console puts it
 in a minecart pushed at 0.4 along 10 rails into a Nether portal (powered rails behind the exit portal), freezes
 the ticks and steps them one at a time. Per tick the harness prints what the server holds (the vehicle's
 position and speed, the player's level and vehicle) and puts a chat line "RIDE T<n>" in the client's stream, so
-the client's transcript (RideTranscript: respawn, spawn, passengers, motion, teleports) is cut by tick. Horizon
+the client's transcript (RideTranscript: respawn, spawn, passengers, motion, teleports) is cut by tick. Sunrise
 must match vanilla on the tick the vehicle crosses, where it lands, the speed it keeps and the ride link; the
 client must see the level change and be riding again.
-WHY: a minecart with only a player on it stayed at the portal on Horizon (#6021); mob riders and empty carts
+WHY: a minecart with only a player on it stayed at the portal on Sunrise (#6021); mob riders and empty carts
 crossed since #6991.
 REFS: Entity.handlePortal, Entity.teleportCrossDimension (the passengers are taken off, teleported and put on
 the vehicle again), AbstractMinecart.tick, ServerPlayer.teleport; cart_portal_e2e.py for the scene.
@@ -181,9 +181,9 @@ def compile_bot(build):
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = lab_path(jars['server'], libraries)
-    sources = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaProtocolClient.java'
+    sources = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaProtocolClient.java'
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, sources],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, sources],
                    cwd=lab.ROOT, check=True, capture_output=True)
     return dependencies, classes
 
@@ -196,7 +196,7 @@ def lab_path(server_jar, libraries):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--bin-dir', default='target/fast', type=Path)
-    parser.add_argument('--side', action='append', choices=['vanilla', 'horizon'])
+    parser.add_argument('--side', action='append', choices=['vanilla', 'sunrise'])
     parser.add_argument('--vehicle', default='minecart', choices=['minecart', 'boat'])
     parser.add_argument('--out', type=Path)
     args = parser.parse_args()
@@ -207,13 +207,13 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     dependencies, classes = compile_bot(build)
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [args.bin_dir.resolve() / 'horizon-client', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    sunrise_server = [args.bin_dir.resolve() / 'sunrise-client', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-Duser.timezone=UTC', '-cp', str(classes) + os.pathsep + dependencies,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     world = generate_world(vanilla_server, build)
     results = {}
-    for label, command in (('vanilla', vanilla_server), ('horizon', horizon_server)):
-        if label in (args.side or ['vanilla', 'horizon']):
+    for label, command in (('vanilla', vanilla_server), ('sunrise', sunrise_server)):
+        if label in (args.side or ['vanilla', 'sunrise']):
             results[label] = run_side(label, command, client, build, world, args.vehicle, out)
             print(f'{label}: table {out / (label + ".table")}, client {out / (label + "-ride.txt")}')
     status = 0

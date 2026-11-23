@@ -7,7 +7,7 @@ immutable empty installation. Semantic protocol handling is written separately.
 from pathlib import Path
 import re
 
-path = Path("crates/horizon-client/src/net.rs")
+path = Path("crates/sunrise-client/src/net.rs")
 source = path.read_text()
 changes = []
 tokens = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/|[()]', re.S)

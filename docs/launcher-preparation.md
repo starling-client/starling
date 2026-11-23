@@ -1,7 +1,7 @@
 # Launcher resource preparation
 
 Release folders include `exporters/server`, `exporters/client` and an integrity manifest.
-These contain only Horizon's original Java exporter classes. Minecraft jars, libraries,
+These contain only Sunrise's original Java exporter classes. Minecraft jars, libraries,
 assets and generated resources remain local and are verified against `research-lock.json`.
 The same platform-independent class bundle is used in game and dedicated-server releases.
 Starling's APK builder uses the same bundle for Android: a host JDK compiles it,
@@ -16,11 +16,11 @@ pinned jars. The release job also compares two fresh isolated preparations with 
 batched preparation using a runtime-only Java home:
 
 ```sh
-cargo build --release -p horizon-prepare
+cargo build --release -p sunrise-prepare
 # Requires already imported Minecraft files in .local/minecraft/<version>.
-target/release/horizon-prepare compile-exporters
+target/release/sunrise-prepare compile-exporters
 # Copy server/, client/ and manifest.json from the printed folder into exporters/.
-python3 tools/check_prepare_exporters.py --binary target/release/horizon-prepare
+python3 tools/check_prepare_exporters.py --binary target/release/sunrise-prepare
 ```
 
 Development checkouts and changed sources compile on demand, into
@@ -42,7 +42,7 @@ components as well as tags. The data generator also remains separate. Inspection
 its providers. Calling it inside a worker would shut down shared executors; incorporating
 its providers directly needs a separate comparison of registry and executor lifetimes.
 Fresh release preparation therefore starts five exporter/data-generator JVMs, down from 18
-(six with 6 processors or more, below), and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1`
+(six with 6 processors or more, below), and invokes no compiler. `SUNRISE_PREPARE_ISOLATED=1`
 retains separate exporter JVMs for output comparisons and diagnosis.
 
 Those JVMs run on four lanes at once, so at most three run at a time (five lanes and four JVMs
@@ -54,7 +54,7 @@ come after every lane. A worker stops when its lane is done. The two sides compi
 too. Imports and checks hash the pinned files on several threads; every file is still checked
 in full.
 
-`HORIZON_PREPARE_JOBS` is how many threads each copying, hashing or compiling step spreads
+`SUNRISE_PREPARE_JOBS` is how many threads each copying, hashing or compiling step spreads
 over: the logical processors by default, at most 8. `1` also runs the lanes one after another
 (for a machine short on memory); any other number runs them all at once. From 6, the world
 generator's block behaviour and structure blocks, a quarter of the server lane, run on a fifth
@@ -73,7 +73,7 @@ file: the worker peaks at about 480 MB instead of 1.25 GB, and a fresh preparati
 JVM). Threads reading one jar share its parsed member list.
 
 A repeat run starts no JVM when nothing changed: each exporter is skipped by the hashes of its
-sources, its jar and its outputs. Most of those are in `horizon-resources.json`; the block
+sources, its jar and its outputs. Most of those are in `sunrise-resources.json`; the block
 behaviour and structure-block exporters keep a `stamp.json` beside their working files in
 `.local/` (the exporter bundle's key, the server jar, this preparer's sources, and the
 outputs' sha256), so the prepared files stay the same.

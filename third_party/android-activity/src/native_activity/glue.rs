@@ -904,8 +904,8 @@ extern "C" fn ANativeActivity_onCreate(
         // Let us Send the NativeActivity pointer to the Rust main() thread without a wrapper type
         let activity_ptr: libc::intptr_t = activity as _;
 
-        // Horizon's patch: the game runs on this thread, and calls wasm mods there, which need
-        // horizon_guest_stack's GUEST_STACK_BYTES + HOST_HEADROOM (128 + 8 MiB) under them: on
+        // Sunrise's patch: the game runs on this thread, and calls wasm mods there, which need
+        // sunrise_guest_stack's GUEST_STACK_BYTES + HOST_HEADROOM (128 + 8 MiB) under them: on
         // 64-bit Android it is reserved, as a desktop main thread's is. 32-bit Android loads no
         // wasm mods and keeps std's default.
         let builder = std::thread::Builder::new();

@@ -7,7 +7,7 @@
 //! build starts or ends.
 use super::*;
 use gpui::{ClipboardItem, ScrollHandle, SharedString};
-use horizon_launcher::native_mods;
+use sunrise_launcher::native_mods;
 
 /// How much of the log the panel shows: its last lines. Copy log still copies all of it.
 const SHOWN: usize = LOG_LINES;
@@ -133,7 +133,7 @@ impl Launcher {
         self.native_log.stale = true;
     }
 
-    /// Records a failure from before the build itself started (no Horizon to build on, no mods
+    /// Records a failure from before the build itself started (no Sunrise to build on, no mods
     /// to build), where the build's own output would have gone.
     pub(super) fn native_log_preflight(&mut self, error: &str) {
         if self.native_log.reset.is_none() {
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn snapshot_keeps_complete_diagnostics_and_only_renders_the_tail() {
-        let dir = std::env::temp_dir().join(format!("horizon-log-preview-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sunrise-log-preview-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("build.log");
         let full = "first build context\n".repeat(SHOWN + 5)

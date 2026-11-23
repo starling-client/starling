@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare host-manifest outputs across the item type boundary change.
 
-Generate each input with horizon-mod-api-gen's host-manifest binary, including
+Generate each input with sunrise-mod-api-gen's host-manifest binary, including
 both generated host unions and src/host/*.rs. This deliberately ignores Rust
 signatures: ItemStack changes ownership and tag reads change shape. Names,
 owner traits, docs and hidden flags remain checked. Explicit changes are listed

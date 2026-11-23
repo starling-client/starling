@@ -99,7 +99,7 @@ Closing requires a separate `TransactionSeal`. The `host.transaction` guard hold
 that seal; its closure receives only the write token. If you use the raw
 `transaction_open` method, you receive the seal and must close it with
 `transaction_close`. The game refuses a seal that does not match an open
-transaction and logs `Horizon: refused to close a transaction the seal does not end`.
+transaction and logs `Sunrise: refused to close a transaction the seal does not end`.
 
 ## Inspecting a transaction
 

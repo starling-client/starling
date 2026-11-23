@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-horizon-mod-runtime = { path = "../../crates/horizon-mod-runtime" }
+sunrise-mod-runtime = { path = "../../crates/sunrise-mod-runtime" }
 
 [profile.fast]
 inherits = "release"

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "crates/horizon-client/src"
+SRC = ROOT / "crates/sunrise-client/src"
 
 def extract(text, start, end):
     a = text.index(start)
@@ -60,7 +60,7 @@ s = s.replace("mod residency;", "mod residency;\nmod raw_inbox;")
 p.write_text(s)
 block = "\n".join(line[4:] if line.startswith("    ") else line for line in block.splitlines())
 block = block.replace("events = host.hub.drain_packets(&mut ctx);", "hub.drain_packets(&mut ctx)").replace("entities: entities.as_slice(),", "entities,")
-(SRC / "game/network/lan/raw_inbox.rs").write_text("//! Reborrow live world state only after a raw root has completed.\nuse super::*;\n\nimpl Game<'_> {\n    pub(super) fn resume_raw_inbox(\n        &mut self,\n        hub: &mut Hub,\n        entities: &[horizon_client::lan::entity::EntityState],\n        spawn: [f64; 3],\n    ) -> Vec<HostEvent> {\n" + block + "\n    }\n}\n")
+(SRC / "game/network/lan/raw_inbox.rs").write_text("//! Reborrow live world state only after a raw root has completed.\nuse super::*;\n\nimpl Game<'_> {\n    pub(super) fn resume_raw_inbox(\n        &mut self,\n        hub: &mut Hub,\n        entities: &[sunrise_client::lan::entity::EntityState],\n        spawn: [f64; 3],\n    ) -> Vec<HostEvent> {\n" + block + "\n    }\n}\n")
 
 # Additional small extractions keep all three files at or below their base sizes.
 p = SRC / "game/network/lan/mod.rs"
@@ -73,13 +73,13 @@ s = s[:a] + "        let Some(back) = self.drain_raw_turns(host, events, entitie
 p.write_text(s)
 p = SRC / "game/network/lan/raw_inbox.rs"
 s = p.read_text().replace("entities: entities.as_slice(),", "entities,")
-s += "\nimpl Game<'_> {\n    pub(super) fn drain_raw_turns(\n        &mut self,\n        mut host: LanHost,\n        mut events: Vec<HostEvent>,\n        entities: &[horizon_client::lan::entity::EntityState],\n        spawn: [f64; 3],\n    ) -> Option<LanHost> {\n" + loop + "    }\n}\n"
+s += "\nimpl Game<'_> {\n    pub(super) fn drain_raw_turns(\n        &mut self,\n        mut host: LanHost,\n        mut events: Vec<HostEvent>,\n        entities: &[sunrise_client::lan::entity::EntityState],\n        spawn: [f64; 3],\n    ) -> Option<LanHost> {\n" + loop + "    }\n}\n"
 p.write_text(s)
 p = SRC / "game/network/remote/mod.rs"
 s = p.read_text().replace("                let Received::Event(_, credit) = item else {\n                    unreachable!()\n                };\n                forgotten_credits.push(credit);", "                forgotten_credits.push(item.into_event_credit());")
 p.write_text(s)
 p = SRC / "game/network/remote/raw_backlog.rs"
-s = p.read_text() + "\nimpl Received {\n    pub(super) fn into_event_credit(self) -> horizon_client::net::ingress::ReceiveLease<Event> {\n        let Self::Event(_, credit) = self else {\n            unreachable!()\n        };\n        credit\n    }\n}\n"
+s = p.read_text() + "\nimpl Received {\n    pub(super) fn into_event_credit(self) -> sunrise_client::net::ingress::ReceiveLease<Event> {\n        let Self::Event(_, credit) = self else {\n            unreachable!()\n        };\n        credit\n    }\n}\n"
 p.write_text(s)
 p = SRC / "lan/hub.rs"
 s = p.read_text()
@@ -98,7 +98,7 @@ p = SRC / "game/network/remote/mod.rs"
 s = p.read_text().replace("mod raw_backlog;\n", "").replace("use raw_backlog::Received;", "use super::raw_backlog::Received;")
 p.write_text(s)
 p = SRC / "game/network/remote/raw_backlog.rs"
-s = p.read_text().replace("use super::*;", "use super::remote_chunks::ChunkFormat;\nuse horizon_client::net::Event;\nuse std::sync::Arc;")
+s = p.read_text().replace("use super::*;", "use super::remote_chunks::ChunkFormat;\nuse sunrise_client::net::Event;\nuse std::sync::Arc;")
 (SRC / "game/network/raw_backlog.rs").write_text(s)
 p.unlink()
 p = SRC / "lan/hub.rs"

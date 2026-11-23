@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manual placement in fresh flat servers, with automatic structures off and on.
 
-Compare console feedback from the pinned Java dedicated server and Horizon.
+Compare console feedback from the pinned Java dedicated server and Sunrise.
 Readiness is four bounded `execute if loaded` probes, never a fixed tick wait.
 This checks command availability/errors and the template's villager, not the
 geometry or processors of generated structures.
@@ -95,38 +95,38 @@ def run_case(command, out, label, structures):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='use an already built Horizon server')
+    parser.add_argument('--binary', type=Path, help='use an already built Sunrise server')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'flat-place-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     classpath = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {
         'vanilla': ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', classpath,
                     'net.minecraft.server.Main', 'nogui'],
-        'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui'],
+        'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui'],
     }
     results, summary, failures = {}, {}, []
     for structures in (False, True):
         key = str(structures).lower()
         results[key] = {label: run_case(command, out, label, structures)
                         for label, command in commands.items()}
-        expected, actual = (results[key][label] for label in ('vanilla', 'horizon'))
+        expected, actual = (results[key][label] for label in ('vanilla', 'sunrise'))
         mismatches = [(v, h) for v, h in zip(expected['records'], actual['records']) if v != h]
         assert len(expected['records']) == len(actual['records']) == 12
         summary[key] = {'observations': 12, 'mismatches': len(mismatches)}
         print(f'flat structures={key}: {12 - len(mismatches)}/12 observations match', flush=True)
-        failures += [{'structures': structures, 'vanilla': v, 'horizon': h} for v, h in mismatches]
+        failures += [{'structures': structures, 'vanilla': v, 'sunrise': h} for v, h in mismatches]
         if not structures:
             empty = 'chunks with structure starts: 0, with references: 0'
             assert expected['automatic'] == actual['automatic'] == empty, results[key]

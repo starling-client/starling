@@ -3,33 +3,33 @@
 A player's own AI agent (Claude Code, Codex, Cursor, any MCP client) or a script can do
 everything a player does with the mouse and keyboard, in the launcher and in the game. This page
 covers developers: the surfaces, the full inventory, and the rules every new command follows.
-Players read [Control Horizon with your AI agent](https://playhorizon.dev/docs/agents)
-(playhorizon.dev/docs/agents).
+Players read [Control Sunrise with your AI agent](https://playsunrise.net/docs/agents)
+(playsunrise.net/docs/agents).
 
 The command lists are generated, so they can't drift:
 
-- [launcher-commands.md](launcher-commands.md): every `horizon-launcher` command, its arguments
+- [launcher-commands.md](launcher-commands.md): every `sunrise-launcher` command, its arguments
   and its MCP tool. It comes from the CLI's clap definition (`cli_tools::markdown`), and the
   launcher test `the_launcher_reference_is_up_to_date` fails when it is stale or a tool is missing.
-- [horizon-ctl-commands.md](horizon-ctl-commands.md): every `horizon-ctl` command, its MCP tool
-  and its arguments. It comes from the command table (`horizon-ctl help --markdown`), and the
+- [sunrise-ctl-commands.md](sunrise-ctl-commands.md): every `sunrise-ctl` command, its MCP tool
+  and its arguments. It comes from the command table (`sunrise-ctl help --markdown`), and the
   test `the_generated_reference_is_up_to_date` fails when it is stale.
 
 ## Surfaces
 
 | Surface | Where | Transport |
 | --- | --- | --- |
-| Game control socket | `horizon-client --control` / `--control-socket PATH`, or Agent Control on in Horizon Settings > AI Agent (`crates/horizon-client/src/control.rs`; commands in `src/game/runtime/control.rs`, `agent.rs`, `ui_control.rs`, `saves_control.rs` and friends) | text line in, one JSON line out; Unix socket, or localhost TCP and a token where there is none |
-| `horizon-ctl` | `crates/horizon-client/src/bin/horizon-ctl/` | CLI over the socket; one table of commands (`commands.rs`) gives the help, the argument checks, the MCP tools and the reference |
-| `horizon-ctl mcp` | same | MCP over stdio, one tool per command of the table |
-| Launcher CLI | `launcher/src/cli.rs` | `horizon-launcher <command> [--json]` |
-| Launcher MCP | `launcher/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `horizon-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
-| Connecting | `launcher/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `horizon-launcher agent-config`; Settings > AI in the launcher; Horizon Settings > AI Agent in the game |
-| No AI | `crates/horizon-core/src/no_ai.rs` | `noAi:true` in `<game home>/horizon-extras.txt`, read by every surface |
+| Game control socket | `sunrise-client --control` / `--control-socket PATH`, or Agent Control on in Sunrise Settings > AI Agent (`crates/sunrise-client/src/control.rs`; commands in `src/game/runtime/control.rs`, `agent.rs`, `ui_control.rs`, `saves_control.rs` and friends) | text line in, one JSON line out; Unix socket, or localhost TCP and a token where there is none |
+| `sunrise-ctl` | `crates/sunrise-client/src/bin/sunrise-ctl/` | CLI over the socket; one table of commands (`commands.rs`) gives the help, the argument checks, the MCP tools and the reference |
+| `sunrise-ctl mcp` | same | MCP over stdio, one tool per command of the table |
+| Launcher CLI | `launcher/src/cli.rs` | `sunrise-launcher <command> [--json]` |
+| Launcher MCP | `launcher/src/mcp.rs`, `cli_tools.rs`, `game_tools.rs` | `sunrise-launcher mcp` (stdio): every CLI command as a tool, the session tools, and the game's tools as `game_*` |
+| Connecting | `launcher/src/agents.rs`, `agents_page.rs`; `src/game/runtime/agent_settings.rs` | `sunrise-launcher agent-config`; Settings > AI in the launcher; Sunrise Settings > AI Agent in the game |
+| No AI | `crates/sunrise-core/src/no_ai.rs` | `noAi:true` in `<game home>/sunrise-extras.txt`, read by every surface |
 
 ## One MCP server for everything
 
-An agent adds one server, `horizon-launcher mcp`. It holds:
+An agent adds one server, `sunrise-launcher mcp`. It holds:
 
 - **The launcher's CLI, generated.** `cli_tools.rs` walks the clap definition. Each command is a
   tool named after its words (`mods search` is `mods_search`). Its arguments are the command's,
@@ -40,7 +40,7 @@ An agent adds one server, `horizon-launcher mcp`. It holds:
   - `play` (the game, under control: `world`, `creative`, `join`, `offscreen`, `arg`);
   - `server`, `server_command`, `server_log`, `server_stop`;
   - `account_sign_in`, `account_list`.
-- **The game's tools.** It runs the selected version's `horizon-ctl mcp` (shipped beside the
+- **The game's tools.** It runs the selected version's `sunrise-ctl mcp` (shipped beside the
   game) as a child. It lists that server's tools as `game_<name>`, all but `launch`, and passes
   calls and results through, images included. `play` starts the game with a control endpoint in
   the launcher's data folder. A game the player started and turned Agent Control on in answers on
@@ -48,15 +48,15 @@ An agent adds one server, `horizon-launcher mcp`. It holds:
   where a game answers, the launcher's first, so a game from `play` wins over one from the window.
   While no game answers on either, `game_*` calls say to call `play` or to turn Agent Control on.
 
-The default endpoint is worked out in the launcher's own process, so `$HORIZON_CONTROL`, and on
-Linux `$XDG_RUNTIME_DIR`, must be the same for `horizon-launcher mcp` as for the game.
+The default endpoint is worked out in the launcher's own process, so `$SUNRISE_CONTROL`, and on
+Linux `$XDG_RUNTIME_DIR`, must be the same for `sunrise-launcher mcp` as for the game.
 
-Why one server rather than two: the game's tools stay defined once, in horizon-ctl's table. The
+Why one server rather than two: the game's tools stay defined once, in sunrise-ctl's table. The
 agent's client needs one entry and one approval, whichever way the game was started. The tools
 are always those of the version the launcher selected, even for a game of another version: a
 command that game does not know answers with an error, and `game_hello` tells which game it is.
-`horizon-ctl mcp` stays available on its own, for a game started by hand or by a script.
-`horizon-ctl mcp --paced` stops a single-player world between tool calls: it opens the pause menu
+`sunrise-ctl mcp` stays available on its own, for a game started by hand or by a script.
+`sunrise-ctl mcp --paced` stops a single-player world between tool calls: it opens the pause menu
 after each action and closes it before the next, so the world moves only while an action (or
 `wait`) runs, not while the agent thinks. Reading tools (`state`, `inventory`, `entities`,
 `events`...) leave it paused; a pause a person opened, another menu, a LAN or a server world are
@@ -64,7 +64,7 @@ left alone.
 
 ## Protocol revisions
 
-All three servers share one implementation, `crates/horizon-mcp`, so they advertise and answer
+All three servers share one implementation, `crates/sunrise-mcp`, so they advertise and answer
 the same revisions. There are two of them.
 
 - `2026-07-28` is stateless: there is no handshake, and every request carries its version and
@@ -74,7 +74,7 @@ the same revisions. There are two of them.
   `_meta["io.modelcontextprotocol/serverInfo"]`. `server/discover` reports the versions,
   capabilities and identity. `ping` no longer exists in this revision.
 - `2025-06-18` is the handshake revision, kept because the launcher's `game_*` tools talk to
-  whichever `horizon-ctl` the player has installed: an older one does not know the stateless
+  whichever `sunrise-ctl` the player has installed: an older one does not know the stateless
   revision. A request with no `_meta` is answered in that revision's shapes, and `initialize`
   still negotiates it.
 
@@ -86,9 +86,9 @@ A client that speaks both probes with `server/discover` first on stdio, then fal
 
 ## Inventory
 
-What an agent can reach, by page and screen. CLI is `horizon-launcher` for the launcher and `horizon-ctl` for the game. MCP is
-`horizon-launcher mcp` (the game's tools as `game_*`) and `horizon-ctl mcp`. **part** means only
-through a generic command (`ui` and `click` by widget, or a raw socket line that horizon-ctl
+What an agent can reach, by page and screen. CLI is `sunrise-launcher` for the launcher and `sunrise-ctl` for the game. MCP is
+`sunrise-launcher mcp` (the game's tools as `game_*`) and `sunrise-ctl mcp`. **part** means only
+through a generic command (`ui` and `click` by widget, or a raw socket line that sunrise-ctl
 passes on without checking it).
 
 ### Launcher
@@ -114,7 +114,7 @@ passes on without checking it).
 | Mod browser: search, check, install, update, remove, list (mods, resource packs, modpacks) | Mods | yes | no | yes | yes | `mods ...`; `mods_remove` needs `confirm` |
 | Modpacks: import, port, play, remove, list | Modpacks | yes | no | yes | yes | `modpack ...`; `modpack_remove` needs `confirm` |
 | Launcher benchmark | (none) | yes | no | yes | yes | |
-| The game it started | (the game) | (horizon-ctl) | yes | (horizon-ctl) | yes | `game_*` |
+| The game it started | (the game) | (sunrise-ctl) | yes | (sunrise-ctl) | yes | `game_*` |
 | Connect an AI agent | Settings > AI | no | (none) | yes | (none) | `agent-config [--client] [--test]`; the agent is already connected, so there is no tool |
 | No AI | Settings > AI | no | (none) | yes | (none) | `no-ai [on\|off]`; the player's switch, never an agent's |
 
@@ -134,8 +134,8 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | yes | `options-get`, `options-set` (all of options.txt, typed) |
-| Horizon Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Horizon Settings, Video Settings, Controls | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
-| Agent control on or off, status, connection details | Horizon Settings > AI Agent | yes | yes | `options horizon`, the page's widgets (`ai-agent`) |
+| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Sunrise Settings, Video Settings, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Agent control on or off, status, connection details | Sunrise Settings > AI Agent | yes | yes | `options sunrise`, the page's widgets (`ai-agent`) |
 | Key binds | Controls > Key Binds | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |
 | Chat and commands | Chat | yes | yes | `chat`, `command`, `messages`, `chat-log` |
@@ -154,31 +154,31 @@ passes on without checking it).
 | Waits and events | (all) | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
 | Benchmarks and frame stats | (all) | yes | yes | `bench`, `stats`, `fly` |
-| Performance captures | `/profiler` | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `horizon-perf` or `horizon-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
+| Performance captures | `/profiler` | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `sunrise-perf` or `sunrise-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
 
 ## No AI
 
-One switch hides and turns off every AI feature: `noAi:true` in `<game home>/horizon-extras.txt`.
-The game home is `HORIZON_HOME`, else the data dir's `horizon`. The game reads its extras from
-its working directory, which is that folder. `horizon_core::no_ai` reads and writes the switch:
+One switch hides and turns off every AI feature: `noAi:true` in `<game home>/sunrise-extras.txt`.
+The game home is `SUNRISE_HOME`, else the data dir's `sunrise`. The game reads its extras from
+its working directory, which is that folder. `sunrise_core::no_ai` reads and writes the switch:
 
 - `is_on(home)` and `check(home)` read it;
 - `set(home, on)` keeps the file's other lines, and writes no file to turn off a switch that was
   never on;
 - `REFUSAL` is the one line every surface prints.
 
-The switch is in three places: Settings > AI in the launcher, Horizon Settings in the game
-(`Item::NoAi`), and `horizon-launcher no-ai on|off`. When it is on:
+The switch is in three places: Settings > AI in the launcher, Sunrise Settings in the game
+(`Item::NoAi`), and `sunrise-launcher no-ai on|off`. When it is on:
 
 | Surface | What happens |
 | --- | --- |
-| Game | opens no control socket, even with `--control` (it logs the refusal); Horizon Settings hides AI Agent...; turning it on in a running game closes the socket at once |
-| `horizon-ctl` | every command refuses: exit status 4, `{"error": REFUSAL, "kind": "denied"}` |
-| `horizon-ctl mcp` | refuses to start (exit 4, REFUSAL on stderr); a session already running refuses each call |
-| `horizon-launcher mcp` | refuses to start; a running session answers each `tools/call` with error -32000 and REFUSAL |
+| Game | opens no control socket, even with `--control` (it logs the refusal); Sunrise Settings hides AI Agent...; turning it on in a running game closes the socket at once |
+| `sunrise-ctl` | every command refuses: exit status 4, `{"error": REFUSAL, "kind": "denied"}` |
+| `sunrise-ctl mcp` | refuses to start (exit 4, REFUSAL on stderr); a session already running refuses each call |
+| `sunrise-launcher mcp` | refuses to start; a running session answers each `tools/call` with error -32000 and REFUSAL |
 | Launcher CLI | `mcp` and `agent-config` are hidden from the help and refuse |
 | Launcher window | Settings > AI shows only the No AI switch, without Connect an AI agent |
-| Companion (#1068) | uses the same switch (see horizon-parity companion-notes.md) |
+| Companion (#1068) | uses the same switch (see sunrise-parity companion-notes.md) |
 
 Every other launcher command stays usable: versions, install, remove, prepare, play, server,
 notes, links, account, settings, game-args, logs, update, desktop-entry, data,
@@ -191,23 +191,23 @@ turn the switch off.
 - **Launcher, Settings > AI > Connect an AI agent:**
   - a client picker (Claude Code, Codex, Cursor, any MCP client) with its config and a Copy button;
   - for clients with a CLI, the add command, shown and run only on **Add to ...**:
-    `claude mcp add --scope user horizon -- <exe> mcp`, `codex mcp add horizon -- <exe> mcp`;
+    `claude mcp add --scope user sunrise -- <exe> mcp`, `codex mcp add sunrise -- <exe> mcp`;
   - **Test the connection** (`agents::self_test`) starts `<exe> mcp`, lists its tools and says
     how many answered.
-  - `horizon-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
-- **Game, Horizon Settings > AI Agent:**
-  - **Agent Control** (`agentControl` in horizon-extras.txt, off by default) opens the default
-    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory, or
-    `horizon-control.json` in the temporary directory on Windows) in a game the player started.
-    `horizon-launcher mcp` reaches it as it is, with no second server. Turning it off closes the
+  - `sunrise-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
+- **Game, Sunrise Settings > AI Agent:**
+  - **Agent Control** (`agentControl` in sunrise-extras.txt, off by default) opens the default
+    endpoint (`$SUNRISE_CONTROL`, else `sunrise-control.sock` in the runtime directory, or
+    `sunrise-control.json` in the temporary directory on Windows) in a game the player started.
+    `sunrise-launcher mcp` reaches it as it is, with no second server. Turning it off closes the
     endpoint and stops its listener.
   - The page shows whether a client is connected (`Server::clients`), when the last command came,
     and the socket's name.
-  - **Copy Connection Details** copies the socket path, a `horizon-ctl --socket ... state` line
-    and an `mcpServers` config for this game's `horizon-ctl mcp`. That config points into the
+  - **Copy Connection Details** copies the socket path, a `sunrise-ctl --socket ... state` line
+    and an `mcpServers` config for this game's `sunrise-ctl mcp`. That config points into the
     version's folder, so it stops working once the launcher removes that version; an agent that
-    already has `horizon-launcher mcp` does not need it.
-- **The default:** a game an agent starts (`play` in MCP, `horizon-ctl launch`, `--control`) is
+    already has `sunrise-launcher mcp` does not need it.
+- **The default:** a game an agent starts (`play` in MCP, `sunrise-ctl launch`, `--control`) is
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
   asked for the game, or when the player chose it.
@@ -215,7 +215,7 @@ turn the switch off.
   anyway): the person keeps their keyboard, and the game keeps its pointer grab to itself, as
   `--offscreen` does, so the system pointer is never taken, hidden or moved. Once the person
   clicks into the window it is an ordinary one, and that click takes the pointer.
-- **Headless:** `horizon-ctl launch --headless` (`horizon-client --headless --control`) starts a
+- **Headless:** `sunrise-ctl launch --headless` (`sunrise-client --headless --control`) starts a
   game with no display, no window and no GPU: it runs where no display server is (an SSH session,
   a server) and runs its own loop instead of winit's (`game/runtime/headless.rs`), one frame a tick. It
   plays through these commands only; commands that need the screen's pixels (`screenshot`, clicks
@@ -225,13 +225,13 @@ turn the switch off.
 
 ### One vocabulary
 
-- **A command has one name**, kebab-case, the same on the socket, in `horizon-ctl` and in the
+- **A command has one name**, kebab-case, the same on the socket, in `sunrise-ctl` and in the
   launcher CLI. Its MCP tool is the name with `_` for `-` (`click-slot` is `click_slot`). In the
   launcher, a subcommand's words are joined (`mods search` is `mods_search`). The launcher's MCP
   offers every game tool as `game_<name>`, so none collides with its own (`logs` is on both
   sides). A launcher tool whose name starts with `game_` (`game_args`) is matched first.
 - **Arguments:** positional words, then `--flags`.
-  - The game: the `horizon-ctl` table (`Param`) is the source of truth. It generates the MCP
+  - The game: the `sunrise-ctl` table (`Param`) is the source of truth. It generates the MCP
     `inputSchema` and the reference. A game command is not done until it is in that table.
   - The launcher: the clap definition is the source of truth. Give every argument a help line;
     it becomes the tool's description.
@@ -270,7 +270,7 @@ turn the switch off.
   `openWorldHint`, and its description says "only when the player asks". In the game these are
   `connect`, `lan`, `friends`, `chat` and `command`; in the launcher, `servers create` and
   `share-log`. `play`'s `join` argument says the same. Bug and benchmark reports stay local;
-  there is no telemetry or data collection switch ([Horizon sends nothing](telemetry.md)).
+  there is no telemetry or data collection switch ([Sunrise sends nothing](telemetry.md)).
 - **No secrets.** No surface returns tokens, session files, keychain entries or invite secrets
   the player didn't ask to share:
   - accounts are names and UUIDs;
@@ -321,11 +321,11 @@ turn the switch off.
 ### Input provenance
 
 Every input event carries who caused it: `user` (this computer's keyboard, mouse or pad),
-`agent` (the control socket: `horizon-ctl`, an MCP client) or `game` (input the game made up
+`agent` (the control socket: `sunrise-ctl`, an MCP client) or `game` (input the game made up
 itself, such as a pad menu's click). This is how an agent tells its own actions from a person
 who took over mid-test.
 
-- While a screenshot sequence, a `HORIZON_TICK_SCRIPT` scenario or a `record-replay` runs, the
+- While a screenshot sequence, a `SUNRISE_TICK_SCRIPT` scenario or a `record-replay` runs, the
   keyboard, mouse and pad at this computer don't reach the game, and what they do isn't
   recorded: a stray key or mouse move can't spoil the run. The run's own input (the socket, the
   replay) still plays. Clicking into the window or away from it takes effect when the run ends,
@@ -368,7 +368,7 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   IPs, UUIDs, the world and server names and the other players' names; `status.json` loses the
   server, name tags, sidebar and clipboard (an invite code lives there). Nothing is uploaded
   automatically: the player attaches the zip to the bug report.
-- A player without `horizon-ctl` uses the debug keys: **F3+R** starts a recording and F3+R again
+- A player without `sunrise-ctl` uses the debug keys: **F3+R** starts a recording and F3+R again
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
@@ -388,7 +388,7 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
 
 ### Repeatable screenshots
 
-`HORIZON_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
+`SUNRISE_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
 run, pixel for pixel, on the same build, GPU and driver: a change's before and after are then
 compared by a pixel diff, not by eye, where two runs otherwise differ by a shade or two over much
 of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
@@ -403,7 +403,7 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   - the HUD: the hearts' jiggle and blink, chat fading, titles, the action bar, the held item's
     name, the locator bar and the tab list (a title shown while frozen fades in on the next
     `/tick step`);
-  - a shader pack's clock (Iris's `frameTimeCounter`, `frameCounter` and `frameTime`, a Horizon
+  - a shader pack's clock (Iris's `frameTimeCounter`, `frameCounter` and `frameTime`, a Sunrise
     pack's `time`, `frame_index` and `delta_time`, with smoothed values at their targets) and the
     randoms behind custom uniforms, cave mood (`playerMood`), obfuscated text and a clock or
     compass that spins;
@@ -431,9 +431,9 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   otherwise), and after a turn or a move wait a few seconds (`wait 60`) before a capture, or the
   hand, which eases toward the view each tick, is a hair off. What the player does goes on too:
   using an item, riding, running out of air.
-- A shader pack's own buffers, kept from frame to frame, take `horizon-ctl screenshot-sequence
+- A shader pack's own buffers, kept from frame to frame, take `sunrise-ctl screenshot-sequence
   FRAMES STEP_MS PATH`: the pack starts over (its buffers, images, shadow maps, smoothed values and
-  custom uniforms, or a Horizon pack's `history` and eased values) and draws FRAMES frames on a set
+  custom uniforms, or a Sunrise pack's `history` and eased values) and draws FRAMES frames on a set
   clock, frame n at n frames and (n - 1) × STEP_MS milliseconds (0 since the frame before on frame
   1, STEP_MS after; a decimal, `16.666667` for 60 fps). The last is written as `screenshot PATH`
   writes it (with its `-hdr.png` under HDR output), and the reply, once it is, names the pack and
@@ -450,10 +450,10 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
 ## Tests
 
 - **Unit tests:**
-  - horizon-ctl: the table, the schemas, the reference, the No AI refusal, the destructive and
+  - sunrise-ctl: the table, the schemas, the reference, the No AI refusal, the destructive and
     network annotations;
   - the launcher: generated tools, `confirm`, the reference, the agent configs;
-  - `horizon_core::no_ai`;
+  - `sunrise_core::no_ai`;
   - `options_ui`: the AI Agent page, and that No AI hides it;
   - `input_trace`: origins, the ring, the intrusion rule, `input-log` and the recording writer;
   - `repro`: the format's round trip, the folder slug and the world copy.
@@ -465,14 +465,14 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   - `setting`: Agent Control on opens the endpoint, the AI Agent page, Copy, and off closes it;
   - `repro`: origins in `state`/`input-log`, record-start/stop, the bundle's entries, and a
     replay ending near the recorded state.
-- **`tools/launcher_mcp_e2e.py`** drives `horizon-launcher mcp`: the generated tools, `play` and
+- **`tools/launcher_mcp_e2e.py`** drives `sunrise-launcher mcp`: the generated tools, `play` and
   the `game_*` tools, `confirm`, `agent-config` and `--test`, and No AI.
 
 ## Later
 
 These are tracked in FEATURES.md (LATER):
 
-- Horizon's own option files by key (`horizon-graphics.txt`, controller, extras) next to
+- Sunrise's own option files by key (`sunrise-graphics.txt`, controller, extras) next to
   `options-get` and `options-set`.
 - Adding and removing saved servers by command.
 - `subscribe`: events as a stream on one connection.

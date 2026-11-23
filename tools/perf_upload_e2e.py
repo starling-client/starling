@@ -16,14 +16,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--fixture", type=Path, default=Path(__file__).resolve().parents[1] / "crates/horizon-perf-format/tests/fixtures/v1.hzperf")
+    parser.add_argument("--fixture", type=Path, default=Path(__file__).resolve().parents[1] / "crates/sunrise-perf-format/tests/fixtures/v1.hzperf")
     args = parser.parse_args()
     base = args.url.rstrip("/")
     raw = args.fixture.read_bytes()
     owners: list[tuple[str, str]] = []
 
     def request(method: str, path: str, data: bytes | None = None, token: str | None = None):
-        headers = {"Content-Type": "application/vnd.horizon.perf", "User-Agent": "horizon-perf-e2e/0.1"}
+        headers = {"Content-Type": "application/vnd.sunrise.perf", "User-Agent": "sunrise-perf-e2e/0.1"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
@@ -57,7 +57,7 @@ def main() -> None:
         assert uploaded["shared"] is False
         status, headers, payload = request("GET", f"/api/perf/captures/{identity}")
         assert status == 200 and payload == raw
-        assert headers["Content-Type"] == "application/vnd.horizon.perf"
+        assert headers["Content-Type"] == "application/vnd.sunrise.perf"
         assert headers["Cache-Control"] == "public, max-age=31536000, immutable"
         status, headers, payload = request("GET", f"/api/perf/captures/{identity}/meta")
         assert status == 200 and headers["Cache-Control"] == "no-store"

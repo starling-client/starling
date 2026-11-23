@@ -1,5 +1,5 @@
 //! Download progress presentation for terminal and redirected CLI output.
-use horizon_launcher::native_mods;
+use sunrise_launcher::native_mods;
 use std::io::{IsTerminal, Write};
 
 /// Download progress on one terminal line, only when stderr is a terminal and the percentage moves.
@@ -64,11 +64,11 @@ mod tests {
             [
                 format!(
                     "Downloading Rust {} (once): 0%",
-                    horizon_launcher::rust_toolchain::VERSION
+                    sunrise_launcher::rust_toolchain::VERSION
                 ),
                 format!(
                     "Downloading Rust {} (once): 100%",
-                    horizon_launcher::rust_toolchain::VERSION
+                    sunrise_launcher::rust_toolchain::VERSION
                 ),
             ]
         );
@@ -89,7 +89,7 @@ mod tests {
                 progress(native_mods::Step::Rust(done)),
                 Some(format!(
                     "Downloading Rust {} (once): {percent}%",
-                    horizon_launcher::rust_toolchain::VERSION
+                    sunrise_launcher::rust_toolchain::VERSION
                 ))
             );
         }
@@ -156,7 +156,7 @@ mod tests {
             progress(Step::Rust(0.97)),
             Some(format!(
                 "Downloading Rust {} (once): 97%",
-                horizon_launcher::rust_toolchain::VERSION
+                sunrise_launcher::rust_toolchain::VERSION
             ))
         );
         assert_eq!(progress(Step::Rust(0.98)), None);
@@ -190,11 +190,11 @@ mod tests {
                 "Installing the build".to_owned(),
                 format!(
                     "Downloading Rust {} (once): 0%",
-                    horizon_launcher::rust_toolchain::VERSION
+                    sunrise_launcher::rust_toolchain::VERSION
                 ),
                 format!(
                     "Downloading Rust {} (once): 100%",
-                    horizon_launcher::rust_toolchain::VERSION
+                    sunrise_launcher::rust_toolchain::VERSION
                 ),
             ]
         );

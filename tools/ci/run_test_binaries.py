@@ -53,7 +53,7 @@ def package_identity(package_id: str) -> tuple[str, str]:
         return found[1], found[2]
     fragment = package_id.rsplit("#", 1)[-1]
     name, _, version = fragment.rpartition("@")
-    if not name:  # `path+file:///x/horizon-world#0.1.0`: the name is the last path segment.
+    if not name:  # `path+file:///x/sunrise-world#0.1.0`: the name is the last path segment.
         name = package_id.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     return name, version
 

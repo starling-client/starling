@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Server load bench: the same horizon-bots load on Horizon, vanilla 26.3 or Pumpkin.
+"""Server load bench: the same sunrise-bots load on Sunrise, vanilla 26.3 or Pumpkin.
 
-    python3 tools/bench.py --server horizon --exe target/release/horizon-server --bots 50
+    python3 tools/bench.py --server sunrise --exe target/release/sunrise-server --bots 50
     python3 tools/bench.py --server vanilla --jar ~/mc/server.jar --bots 50 --pre-generated ~/worlds/seed12345
     python3 tools/bench.py --server pumpkin --exe ./pumpkin --bots 50
 
 Every run uses a fresh scratch folder (bound to 127.0.0.1, offline, creative so the bots can fly), starts the
-server, lets `horizon-bots` join one every --join-every seconds, warms up, then measures for --seconds:
+server, lets `sunrise-bots` join one every --join-every seconds, warms up, then measures for --seconds:
 
 - TPS: `time query gametime` at the start and the end of the window, as game ticks per wall-clock second;
 - MSPT: `tick query` every 5 s (average, P50, P95, P99 over the last 100 ticks), averaged over the window;
@@ -20,7 +20,7 @@ Vanilla is the owner's own server.jar (--jar): nothing of Mojang's is fetched or
 binary run as a black box (--exe); its Bedrock listeners, LAN broadcast and telemetry are turned off in the
 config this script writes (--pumpkin-config adds a TOML file of your own on top if a release names a key
 differently). `--pre-generated DIR` copies a finished world into every run's scratch folder as `world`, so runs
-repeat on the same terrain. Build the bots first: cargo build --release -p horizon-bots
+repeat on the same terrain. Build the bots first: cargo build --release -p sunrise-bots
 """
 
 import argparse
@@ -46,7 +46,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 EXE = '.exe' if os.name == 'nt' else ''
-SERVERS = ('horizon', 'vanilla', 'pumpkin')
+SERVERS = ('sunrise', 'vanilla', 'pumpkin')
 
 PROPERTIES = {
     'level-seed': '12345',
@@ -212,7 +212,7 @@ class Server:
         self.lines = []
         self.lock = threading.Lock()
         self.log = log_path.open('w', encoding='utf-8')
-        env = lab.game_env(HORIZON_HOME=directory / 'horizon-home')
+        env = lab.game_env(SUNRISE_HOME=directory / 'sunrise-home')
         self.process = subprocess.Popen([str(c) for c in command], cwd=directory, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                         encoding='utf-8', errors='replace', env=env)
@@ -327,7 +327,7 @@ def summarize(kind, args, ticks, rss, cpu, gametime, window_seconds, summary, st
 
 
 def run_once(kind, args, out):
-    scratch = Path(tempfile.mkdtemp(prefix=f'horizon-bench-{kind}-'))
+    scratch = Path(tempfile.mkdtemp(prefix=f'sunrise-bench-{kind}-'))
     result = {'server': kind, 'bots': args.bots, 'behaviour': args.behaviour}
     server = None
     try:
@@ -410,20 +410,20 @@ def check(args):
     if 'vanilla' in args.server and not args.jar:
         sys.exit('vanilla needs --jar, your own server.jar')
     if any(k != 'vanilla' for k in args.server) and not args.exe:
-        sys.exit('horizon and pumpkin need --exe, the server binary')
+        sys.exit('sunrise and pumpkin need --exe, the server binary')
     if not Path(args.bots_bin).exists():
-        sys.exit(f'{args.bots_bin} is missing: cargo build --release -p horizon-bots')
+        sys.exit(f'{args.bots_bin} is missing: cargo build --release -p sunrise-bots')
     if args.pre_generated and not Path(args.pre_generated).is_dir():
         sys.exit(f'--pre-generated {args.pre_generated} is not a folder')
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    parser.add_argument('--server', type=lambda s: s.split(','), default=['horizon'],
-                        help='horizon, vanilla or pumpkin (comma-separated, one run each)')
-    parser.add_argument('--exe', help='the horizon-server or Pumpkin binary')
+    parser.add_argument('--server', type=lambda s: s.split(','), default=['sunrise'],
+                        help='sunrise, vanilla or pumpkin (comma-separated, one run each)')
+    parser.add_argument('--exe', help='the sunrise-server or Pumpkin binary')
     parser.add_argument('--jar', help="vanilla's server.jar (your own copy)")
-    parser.add_argument('--bots-bin', default=str(ROOT / 'target/release' / f'horizon-bots{EXE}'))
+    parser.add_argument('--bots-bin', default=str(ROOT / 'target/release' / f'sunrise-bots{EXE}'))
     parser.add_argument('--bots', type=int, default=50)
     parser.add_argument('--behaviour', default='mixed')
     parser.add_argument('--join-every', type=float, default=0.5)
@@ -445,7 +445,7 @@ def main(argv=None):
         runs.append(run_once(kind, args, args.out))
         print(json.dumps(runs[-1]), flush=True)
     report = {
-        'kind': 'horizon-bench',
+        'kind': 'sunrise-bench',
         'date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
         'machine': {'system': platform.system(), 'machine': platform.machine(), 'cpus': os.cpu_count()},
         'settings': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},

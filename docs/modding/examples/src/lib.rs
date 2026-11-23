@@ -20,7 +20,7 @@ static COUNTER: AttachmentType<i32> = AttachmentType {
 // ANCHOR_END: counter
 
 // ANCHOR: tick_hook
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn server_tick(&self, host: &mut dyn ServerHost, _: &mut ServerTickEvent<'_>) {
         let _ = count(host);
@@ -64,7 +64,7 @@ pub mod at_a_point {
         }
     }
 
-    #[mod_api::horizon_mod]
+    #[mod_api::sunrise_mod]
     impl Hooks for Mod {}
     // ANCHOR_END: points
 }

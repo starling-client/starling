@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An elder guardian's curse on a client, against vanilla's dedicated server.
 
-A vanilla dedicated server and Horizon's each serve a fresh flat world; a vanilla-codec client
+A vanilla dedicated server and Sunrise's each serve a fresh flat world; a vanilla-codec client
 (VanillaProtocolClient, elder-curse mode: ElderCurseTranscript) joins in survival. With the ticks frozen the console
 walls an elder guardian into a water box near the player (no line of sight: it never attacks), then steps 1201
 ticks, so ElderGuardian.customServerAiStep's `(tickCount + id) % 1200 == 0` comes exactly once: Mining Fatigue III
@@ -137,32 +137,32 @@ def checks(result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'elder-curse-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(),
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(),
                             '--dedicated', '--nogui']}
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     report = {label: checks(result) for label, result in results.items()}
@@ -173,7 +173,7 @@ def main():
         for failure in case['failures']:
             print(json.dumps(failure), flush=True)
     assert not report['vanilla']['failures'], report['vanilla']
-    assert not report['horizon']['failures'], f'elder curse failures; see {out}'
+    assert not report['sunrise']['failures'], f'elder curse failures; see {out}'
 
 
 if __name__ == '__main__':

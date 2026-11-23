@@ -327,7 +327,7 @@ impl super::Device {
 
                 let source = if naga_stage == naga::ShaderStage::Compute
                     && (self.shared.private_caps.legacy_intel
-                        || std::env::var_os("HORIZON_METAL_LEGACY_INTEL").is_some())
+                        || std::env::var_os("SUNRISE_METAL_LEGACY_INTEL").is_some())
                 {
                     legacy_intel_compute(&source)
                 } else {

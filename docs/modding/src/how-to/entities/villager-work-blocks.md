@@ -1,8 +1,8 @@
 # Villager secondary work blocks
 
 Add blocks to a vanilla profession's secondary work sites with the block tag
-`horizon:villager_secondary_poi/<profession>`. For example,
-`data/horizon/tags/block/villager_secondary_poi/farmer.json`:
+`sunrise:villager_secondary_poi/<profession>`. For example,
+`data/sunrise/tags/block/villager_secondary_poi/farmer.json`:
 
 ```json
 {"values": ["minecraft:soul_sand"]}

@@ -17,7 +17,7 @@ records every GuiGraphicsExtractor call of the screen shown at the end
 (widgets, list backgrounds, scissor, separators, scroll bars, entries with
 their incompatibility tint, hover overlay and arrows, the selection
 outline, the search box, the buttons and their tooltip);
-examples/probe/pack_screen_fixture runs horizon_client::pack_screen, which the
+examples/probe/pack_screen_fixture runs sunrise_client::pack_screen, which the
 game's pack screen is, through the same actions. The call lists must agree.
 
   test_pack_screen_parity.py [--count N] [--detail N]
@@ -37,7 +37,7 @@ except ImportError:
     import test_rust_parity as base
     import test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 IDS = ['vanilla', 'programmer_art', 'file/Faithful.zip', 'file/alpha', 'file/Zeta pack', 'file/zeta', 'file/é', 'file/0',
        'server', 'world', 'fabric', 'file/a.zip', 'file/A.zip', 'file/b', 'file/HC', 'file/Stay True 1.21.zip']
 WORDS = ['Faithful', 'pack', 'textures', 'the', 'default', 'look', 'of', 'Minecraft', 'x32', 'by', 'Vattic',
@@ -168,9 +168,9 @@ def main():
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaPackScreenOracle'))], 'compile-java')
-    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaPackScreenOracle',
+    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaPackScreenOracle',
          inputs, build / 'vanilla.jsonl', lab.RESOURCES / 'assets'], 'vanilla')
-    lib.cargo_example('horizon-client', 'pack_screen_fixture', lib.RESOURCES, inputs, build / 'rust.jsonl')
+    lib.cargo_example('sunrise-client', 'pack_screen_fixture', lib.RESOURCES, inputs, build / 'rust.jsonl')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text(encoding='utf-8').splitlines()]
     assert len(vanilla) == len(rust) == len(chosen), (len(vanilla), len(rust), len(chosen))
@@ -186,12 +186,12 @@ def main():
         brief = {k: c[k] for k in ('title', 'width', 'height', 'inWorld', 'selected', 'actions', 'mouse', 'blink', 'lang', 'now')}
         print('MISMATCH', json.dumps(brief)[:1500])
         if v.get('screen') != r.get('screen'):
-            print(f'   screen: vanilla {v.get("screen")} | horizon {r.get("screen")}')
+            print(f'   screen: vanilla {v.get("screen")} | sunrise {r.get("screen")}')
         a, b = v.get('draws', []), r.get('draws', [])
         i = next((i for i in range(max(len(a), len(b))) if i >= len(a) or i >= len(b) or a[i] != b[i]), None)
         if i is not None:
             print(f'   call {i}: vanilla {json.dumps(a[i]) if i < len(a) else None}')
-            print(f'   call {i}: horizon {json.dumps(b[i]) if i < len(b) else None}')
+            print(f'   call {i}: sunrise {json.dumps(b[i]) if i < len(b) else None}')
     print(f'{len(chosen) - len(bad) - len(errors)}/{len(chosen)} pack screens match; {len(errors)} oracle errors')
     if bad or errors:
         sys.exit(1)

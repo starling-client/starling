@@ -9,16 +9,16 @@ if '--verify' in sys.argv:
     raise SystemExit(0)
 
 root = Path(__file__).resolve().parents[2]
-source = root / 'crates/horizon-client/src/main.rs'
-target = root / 'crates/horizon-game/src/main.rs'
+source = root / 'crates/sunrise-client/src/main.rs'
+target = root / 'crates/sunrise-game/src/main.rs'
 target.write_text(source.read_text())
 source.unlink()
-p = root / 'crates/horizon-client/Cargo.toml'
-s = p.read_text().replace('default-run = "horizon-client"\n', '')
-s = s.replace('[[bin]]\nname = "horizon-client"\npath = "src/main.rs"\n\n', '')
+p = root / 'crates/sunrise-client/Cargo.toml'
+s = p.read_text().replace('default-run = "sunrise-client"\n', '')
+s = s.replace('[[bin]]\nname = "sunrise-client"\npath = "src/main.rs"\n\n', '')
 p.write_text(s)
-p = root / 'crates/horizon-game/Cargo.toml'
-p.write_text(p.read_text() + '\n[[bin]]\nname = "horizon-client"\npath = "src/main.rs"\n')
+p = root / 'crates/sunrise-game/Cargo.toml'
+p.write_text(p.read_text() + '\n[[bin]]\nname = "sunrise-client"\npath = "src/main.rs"\n')
 # Rewrite explicit Cargo package selections only; library references stay unchanged.
 for base in ['tools', '.github', 'docs']:
     for p in (root / base).rglob('*'):
@@ -28,6 +28,6 @@ for base in ['tools', '.github', 'docs']:
             s = p.read_text()
         except UnicodeError:
             continue
-        updated = s.replace('-p horizon-client --bin horizon-client', '-p horizon-game --bin horizon-client')
+        updated = s.replace('-p sunrise-client --bin sunrise-client', '-p sunrise-game --bin sunrise-client')
         if updated != s:
             p.write_text(updated)

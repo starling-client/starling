@@ -20,8 +20,8 @@ class BiomeTemperatureCorpusTests(unittest.TestCase):
         self.assertIn([2**26,4032,-2**26,63],queries)
 
     def test_climate_codec_fields_and_float_rounding_edges(self):
-        fixtures=list(biome.codec_corpus({'horizon:test':'{"has_precipitation":false,"temperature":0,"downfall":1}'}))
-        self.assertEqual(fixtures,list(biome.codec_corpus({'horizon:test':'{"has_precipitation":false,"temperature":0,"downfall":1}'})))
+        fixtures=list(biome.codec_corpus({'sunrise:test':'{"has_precipitation":false,"temperature":0,"downfall":1}'}))
+        self.assertEqual(fixtures,list(biome.codec_corpus({'sunrise:test':'{"has_precipitation":false,"temperature":0,"downfall":1}'})))
         decoded=[json.loads(f['json']) for f in fixtures]
         self.assertIn({'has_precipitation':True,'temperature':0.5,'downfall':0.5},decoded)
         self.assertIn({'has_precipitation':True,'temperature':0.5,'downfall':0.5,'temperature_modifier':None},decoded)

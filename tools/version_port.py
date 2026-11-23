@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Port a new Minecraft release to Horizon: detect it, prepare it, diff it against the pinned one
+"""Port a new Minecraft release to Sunrise: detect it, prepare it, diff it against the pinned one
 (docs/version-ports.md).
 
-    version_port.py detect [--snapshots]          what Mojang released that Horizon doesn't pin
+    version_port.py detect [--snapshots]          what Mojang released that Sunrise doesn't pin
     version_port.py prepare VERSION               download, verify, run the data generator, read its facts,
                                                   index its classes (tools/class_index.py)
     version_port.py diff OLD NEW                  facts, packets, registries, blocks, items, commands,
-                                                  data packs, assets, lang and classes, with the Horizon
+                                                  data packs, assets, lang and classes, with the Sunrise
                                                   code each changed class concerns: diff-OLD-NEW/diff.json
     version_port.py regen NEW [--base REF]        a port/NEW worktree pinned to NEW with every generated table
                                                   regenerated (tools/port_regen.py): diff-OLD-NEW/regen.json
-    version_port.py harnesses NEW [--baseline S]  horizon-prepare and every harness in the candidate, each pass,
+    version_port.py harnesses NEW [--baseline S]  sunrise-prepare and every harness in the candidate, each pass,
                                                   oracle (no longer compiles) or fail, and newly failing against
                                                   a run on the pinned version (tools/port_harness.py)
     version_port.py report OLD NEW [--results S]  the ranked port report: diff-OLD-NEW/report.md and .json
@@ -19,9 +19,9 @@
     version_port.py port NEW [--old OLD]          prepare both, diff, regen, report
     version_port.py gc [--keep VERSION...]        keep the pinned, the newest two others and --keep
 
-The downloads are for development only: they go to the version store (~/code/horizon-parity/versions,
-HORIZON_VERSIONS overrides it), never into the repository, and nothing from them is shipped. Candidate
-worktrees go to ~/code/horizon-parity/ports/NEW (HORIZON_PORTS overrides it). The pinned
+The downloads are for development only: they go to the version store (~/code/sunrise-parity/versions,
+SUNRISE_VERSIONS overrides it), never into the repository, and nothing from them is shipped. Candidate
+worktrees go to ~/code/sunrise-parity/ports/NEW (SUNRISE_PORTS overrides it). The pinned
 version is not downloaded: its files are read where tools/lab.py prepared them (.local/).
 
 detect exits 0 when nothing is new, 10 for a new release and 11 for a new snapshot (with --snapshots).
@@ -52,8 +52,8 @@ except ImportError:
     import vanilla_map
 
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-STORE = Path(os.environ.get("HORIZON_VERSIONS", Path.home() / "code" / "horizon-parity" / "versions"))
-PORTS = Path(os.environ.get("HORIZON_PORTS", STORE.parent / "ports"))
+STORE = Path(os.environ.get("SUNRISE_VERSIONS", Path.home() / "code" / "sunrise-parity" / "versions"))
+PORTS = Path(os.environ.get("SUNRISE_PORTS", STORE.parent / "ports"))
 STATES = ["handshake", "status", "login", "configuration", "play"]
 # How many changed JSON paths one changed file keeps in diff.json.
 PATH_LIMIT = 50
@@ -66,7 +66,7 @@ def safe_version(version):
 
 
 def fetch_json(url, sha1=None):
-    request = urllib.request.Request(url, headers={"User-Agent": "horizon/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "sunrise/0.1"})
     with urllib.request.urlopen(request, timeout=60) as response:
         data = response.read()
     if sha1 is not None and hashlib.sha1(data).hexdigest() != sha1:
@@ -99,10 +99,10 @@ def detect(args):
     seen = json.loads(state_path.read_text()) if state_path.exists() else {}
     found = news(manifest, pinned(), seen, args.snapshots)
     if not found:
-        print(f"Nothing new: latest release {manifest['latest']['release']}, Horizon pins {pinned()}")
+        print(f"Nothing new: latest release {manifest['latest']['release']}, Sunrise pins {pinned()}")
         return 0
     for kind, version in found:
-        print(f"New {kind}: {version} (Horizon pins {pinned()})")
+        print(f"New {kind}: {version} (Sunrise pins {pinned()})")
         seen[kind] = version
     if not args.dry_run:
         lab.write_json(state_path, seen)
@@ -196,7 +196,7 @@ def prepare_pinned(version, directory):
     }
     missing = [str(p) for p in found.values() if not p.exists()]
     if missing:
-        raise SystemExit("The pinned version is not prepared in .local (tools/lab.py prepare, horizon-prepare): "
+        raise SystemExit("The pinned version is not prepared in .local (tools/lab.py prepare, sunrise-prepare): "
                          + ", ".join(missing))
     return {key: path.resolve() for key, path in found.items()}
 
@@ -472,17 +472,17 @@ def class_names(old, new, moved):
 
 
 def diff_classes(result, mapping):
-    """The class diff, each changed or removed class with the Horizon files and harnesses that concern it."""
-    horizon = {}
+    """The class diff, each changed or removed class with the Sunrise files and harnesses that concern it."""
+    sunrise = {}
     for name in result["changed"]:
         entry = vanilla_map.lookup(mapping, name)
         if entry["rust"] or entry["harnesses"]:
-            horizon[name] = entry
+            sunrise[name] = entry
     for name in result["removed"]:
         entry = vanilla_map.lookup(mapping, name)
         if entry["rust"] or entry["harnesses"]:
-            horizon[name] = entry
-    result["horizon"] = horizon
+            sunrise[name] = entry
+    result["sunrise"] = sunrise
     return result
 
 
@@ -541,8 +541,8 @@ def summary(old, new, result):
     if classes:
         methods = sum(class_index.changed_methods(c) for c in classes["changed"].values())
         lines.append(f"  classes: +{len(classes['added'])} -{len(classes['removed'])}, {len(classes['moved'])} moved, "
-                     f"{len(classes['changed'])} changed ({methods} methods); {len(classes['horizon'])} of the "
-                     f"changed or removed ones are ported or proved by Horizon")
+                     f"{len(classes['changed'])} changed ({methods} methods); {len(classes['sunrise'])} of the "
+                     f"changed or removed ones are ported or proved by Sunrise")
     return "\n".join(lines)
 
 
@@ -595,7 +595,7 @@ def harnesses(args):
     lab.write_json(directory / "harnesses.json", result)
     port_harness.keep_logs(result, directory / "harness-logs")
     counts = result["summary"]
-    print(f"horizon-prepare: {result['prepare']['status']}")
+    print(f"sunrise-prepare: {result['prepare']['status']}")
     print(f"harnesses: {counts['pass']} pass, {counts['oracle']} oracle no longer compiles, {counts['fail']} fail; "
           f"{counts['new']} newly failing, {counts['known']} failing on the baseline too")
     print(f"{directory / 'harnesses.json'}")
@@ -704,7 +704,7 @@ def gc(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("detect", help="what Mojang released that Horizon doesn't pin")
+    command = commands.add_parser("detect", help="what Mojang released that Sunrise doesn't pin")
     command.add_argument("--snapshots", action="store_true")
     command.add_argument("--dry-run", action="store_true", help="don't remember what was found")
     command = commands.add_parser("prepare", help="download, verify and run the data generator")
@@ -718,13 +718,13 @@ def main():
     command = commands.add_parser("regen", help="a candidate worktree pinned to NEW, every table regenerated")
     command.add_argument("new")
     command.add_argument("--base", default="origin/main", help="what port/NEW starts from (default origin/main)")
-    command.add_argument("--worktree", help="where (default: $HORIZON_PORTS/NEW)")
+    command.add_argument("--worktree", help="where (default: $SUNRISE_PORTS/NEW)")
     command.add_argument("--only", nargs="*", help="these generators only (names in tools/port_regen.py)")
-    command = commands.add_parser("harnesses", help="horizon-prepare and every harness in the candidate")
+    command = commands.add_parser("harnesses", help="sunrise-prepare and every harness in the candidate")
     command.add_argument("new")
     command.add_argument("names", nargs="*", help="these harnesses only (default: all)")
     command.add_argument("--old", help="the version the port starts from (default: the pinned one)")
-    command.add_argument("--worktree", help="the candidate (default: $HORIZON_PORTS/NEW)")
+    command.add_argument("--worktree", help="the candidate (default: $SUNRISE_PORTS/NEW)")
     command.add_argument("--baseline", help="tools/parity.py's state.json from a run on the pinned version: what "
                                             "fails there too is not newly failing")
     command.add_argument("--timeout", type=int, help="per harness, seconds (tools/parity.py --timeout)")

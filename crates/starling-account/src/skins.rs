@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // SPDX-License-Identifier: MIT
-// Adapted from Vasysik/horizon-android (`launcher/src/skins/cloud.rs`); see THIRD_PARTY_NOTICES.md.
+// Adapted from Vasysik/sunrise-android (`launcher/src/skins/cloud.rs`); see THIRD_PARTY_NOTICES.md.
 //! A profile's skin on its account's service. A Microsoft account's goes to its Minecraft profile
 //! (`POST /minecraft/profile/skins`: the PNG and its arms), which servers then hand to the other
 //! players. Ely.by's public API takes no uploads: an Ely.by account changes its skin on the
@@ -9,7 +9,7 @@ use super::*;
 
 /// Where an Ely.by account changes its skin.
 pub const ELY_SKINS: &str = "https://ely.by/skins";
-/// The largest PNG sent, as Horizon Android's import takes.
+/// The largest PNG sent, as Sunrise Android's import takes.
 pub const MAX_PNG: usize = 1024 * 1024;
 const BOUNDARY: &str = "starling-skin-upload-v1";
 

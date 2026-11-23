@@ -9,7 +9,7 @@ except ImportError:
 
 
 def make_input(build):
-    resources = lab.LOCAL / 'horizon-client' / '26.3'
+    resources = lab.LOCAL / 'sunrise-client' / '26.3'
     items = json.loads((resources / 'items.json').read_text())
     rows = [dict(item=item, creative=creative, count=count, tool=tool)
             for item in sorted(items)
@@ -28,7 +28,7 @@ def main():
         'Item.canDestroyBlock with each vanilla item, empty stacks, Survival/Creative '
         'abilities, and explicit/implicit tool overrides. Block destruction and network '
         'prediction call this predicate; end-to-end packet handling is not covered here.',
-        sources=[lab.ROOT / 'crates/horizon-items/src/items.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-items/src/items.rs'])
 
 
 if __name__ == '__main__':

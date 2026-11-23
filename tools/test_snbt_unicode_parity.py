@@ -74,11 +74,11 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    paths = ['crates/horizon-world/src/snbt_text.rs', 'crates/horizon-core/src/nbt.rs',
-             'crates/horizon-world/tests/integration/snbt_unicode_order.rs',
-             'crates/horizon-world/examples/probe/main.rs',
-             'crates/horizon-world/examples/probe/snbt_unicode_fixture.rs',
-             'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSnbtUnicodeOracle.java',
+    paths = ['crates/sunrise-world/src/snbt_text.rs', 'crates/sunrise-core/src/nbt.rs',
+             'crates/sunrise-world/tests/integration/snbt_unicode_order.rs',
+             'crates/sunrise-world/examples/probe/main.rs',
+             'crates/sunrise-world/examples/probe/snbt_unicode_fixture.rs',
+             'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSnbtUnicodeOracle.java',
              'tools/test_snbt_unicode_parity.py']
     sources = [lab.ROOT / path for path in paths]
     hashes = base.source_hashes(sources)
@@ -89,7 +89,7 @@ def main():
     classes, dependencies, _ = h.compile_oracle(build, 'VanillaSnbtUnicodeOracle',
         {'client': jars['server']}, libraries, lock['minecraft']['java_major'])
     h.java_run(build, classes, dependencies, 'VanillaSnbtUnicodeOracle', [inputs, build / 'java.txt'], 'java')
-    h.run_logged(['cargo', 'build', '--offline', '--locked', '-p', 'horizon-world',
+    h.run_logged(['cargo', 'build', '--offline', '--locked', '-p', 'sunrise-world',
                   '--example', 'world_probe'], build, 'compile-rust',
                  env=dict(os.environ, CARGO_BUILD_JOBS='2'))
     metadata = json.loads(subprocess.check_output(

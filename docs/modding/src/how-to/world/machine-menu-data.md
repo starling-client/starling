@@ -123,7 +123,7 @@ side that holds a copy, before the copy is dropped.
 
 ```rust,ignore
 struct Node;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::BlockEntityPart for Node {
     fn on_chunk_unloaded(
         &self,
@@ -176,9 +176,9 @@ static HUMS: LazyLock<Mutex<HashMap<mod_api::BlockEntityRef, mod_api::SoundRef>>
     LazyLock::new(Default::default);
 
 struct Hum;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::BlockPart for Hum {}
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::BlockEntityPart for Hum {
     fn block_entity_client_ticks(
         &self,
@@ -214,7 +214,7 @@ impl mod_api::BlockEntityPart for Hum {
 }
 
 struct MyMod;
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl mod_api::Hooks for MyMod {
     // A machine removed, replaced or whose chunk unloaded ticks no more, and its handle no
     // longer reads: its hum stops.

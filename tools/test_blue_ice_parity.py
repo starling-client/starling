@@ -32,7 +32,7 @@ def corpus(facts, placement):
     for legacy,fail,reject in itertools.product([False,True],[-1,0,3,8,20],[0,3]):
         placed={'feature':{'type':'blue_ice','ignored':None},'placement':[{'type':'count','count':2}]}
         yield case(definition=json.dumps(placed),mode='placed',legacy=legacy,fail=fail,reject=reject,repeats=2)
-        yield case(definition=json.dumps({'type':'overlay','features':[placed,{'feature':'horizon:moss','placement':[]}]}),legacy=legacy,fail=fail,reject=reject)
+        yield case(definition=json.dumps({'type':'overlay','features':[placed,{'feature':'sunrise:moss','placement':[]}]}),legacy=legacy,fail=fail,reject=reject)
 
 
 if __name__=='__main__':

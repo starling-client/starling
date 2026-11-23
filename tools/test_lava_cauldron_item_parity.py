@@ -52,11 +52,11 @@ def main():
     if args.lab_root:
         lab.LOCAL = args.lab_root.resolve()
     lock, jars, libraries = base.verify_artifacts()
-    java = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+    java = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
     sources = [Path(__file__), java / 'VanillaLavaCauldronItemOracle.java', java / 'ParityData.java',
-               lab.ROOT / 'crates/horizon-client/src/entities.rs',
-               lab.ROOT / 'crates/horizon-client/examples/probe/main.rs',
-               lab.ROOT / 'crates/horizon-client/examples/probe/lava_cauldron_item_fixture.rs',
+               lab.ROOT / 'crates/sunrise-client/src/entities.rs',
+               lab.ROOT / 'crates/sunrise-client/examples/probe/main.rs',
+               lab.ROOT / 'crates/sunrise-client/examples/probe/lava_cauldron_item_fixture.rs',
                lab.ROOT / 'Cargo.lock']
     hashes = base.source_hashes(sources)
     inputs = work / 'inputs.tsv'
@@ -74,10 +74,10 @@ def main():
         if result.returncode:
             raise RuntimeError(f'{label} failed: {log.read_text(encoding="utf-8")[-10000:]}')
 
-    with tempfile.TemporaryDirectory(prefix='horizon-lava-cauldron-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='sunrise-lava-cauldron-') as tmp:
         scratch = Path(tmp)
         env = lab.game_env(os.environ, **{key: scratch / key for key in
-                           ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
+                           ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
         run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', cp,
              '-d', classes, java / 'VanillaLavaCauldronItemOracle.java', java / 'ParityData.java'],
             'javac', cwd=scratch, env=env)
@@ -85,9 +85,9 @@ def main():
         expected.unlink(missing_ok=True)
         actual.unlink(missing_ok=True)
         run(['java', '-Xmx512M', '-Djava.awt.headless=true', '-Duser.home=' + tmp,
-             '-cp', str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaLavaCauldronItemOracle',
+             '-cp', str(classes) + os.pathsep + cp, 'dev.sunriselab.parity.VanillaLavaCauldronItemOracle',
              inputs, expected], 'java', cwd=scratch, env=env)
-        run(['cargo', 'build', '--locked', '-p', 'horizon-client-lib', '--example', 'client_probe',
+        run(['cargo', 'build', '--locked', '-p', 'sunrise-client-lib', '--example', 'client_probe',
              '--message-format=json'], 'compile', cwd=lab.ROOT, env=env)
         import json
         artifacts = [json.loads(line) for line in (work / 'compile.log').read_text(encoding='utf-8').splitlines()

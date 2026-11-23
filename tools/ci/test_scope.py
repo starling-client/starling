@@ -24,11 +24,11 @@ from tools.ci.rust_changes import changed_paths  # noqa: E402
 # own files had changed: whatever depends on it is selected too.
 # tests/test_ci_test_scope.py scans crates/ and xtask/ and fails on a read missing here. Entries outside every package
 # directory only document the read: a change there selects the whole workspace.
-HORIZON_CLIENT = [
+SUNRISE_CLIENT = [
     # The build script and the native hook tests read the hook targets' sources.
-    "crates/horizon-client-render/src", "crates/horizon-world/src", "crates/horizon-items/src",
-    "crates/horizon-guest-stack/src/guest_stack_constants.rs", "crates/horizon-mod-wasm/tests/fixture/src",
-    "docs/api/launch-reference.md", "docs/horizon-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
+    "crates/sunrise-client-render/src", "crates/sunrise-world/src", "crates/sunrise-items/src",
+    "crates/sunrise-guest-stack/src/guest_stack_constants.rs", "crates/sunrise-mod-wasm/tests/fixture/src",
+    "docs/api/launch-reference.md", "docs/sunrise-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
     "docs/parity/random-chance-seeded.jsonl", "packaging/android/bedrock-controls.json",
     "packaging/android/build-server.txt", "packaging/executable_link.rs", "packaging/windows/exe.rs",
     "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
@@ -36,78 +36,78 @@ HORIZON_CLIENT = [
 # The generator scans these to write the mod API, the points and the host boundary: its own sources, the vocabulary, the
 # engine crates holding hook targets and their manifests.
 MOD_API_GEN = [
-    "Cargo.lock", "crates/horizon-assets/src", "crates/horizon-client", "crates/horizon-client-core/src",
-    "crates/horizon-client-render", "crates/horizon-core/src", "crates/horizon-engine-slots", "crates/horizon-items",
-    "crates/horizon-mod-api", "crates/horizon-mod-api-macros/src/lib.rs", "crates/horizon-mod-package/src",
-    "crates/horizon-mod-render", "crates/horizon-mod-runtime/src", "crates/horizon-mod-vocab/src",
-    "crates/horizon-world", "packaging/executable_link.rs", "tools/layering/mod_vocab_state.json", "tools/refactors",
+    "Cargo.lock", "crates/sunrise-assets/src", "crates/sunrise-client", "crates/sunrise-client-core/src",
+    "crates/sunrise-client-render", "crates/sunrise-core/src", "crates/sunrise-engine-slots", "crates/sunrise-items",
+    "crates/sunrise-mod-api", "crates/sunrise-mod-api-macros/src/lib.rs", "crates/sunrise-mod-package/src",
+    "crates/sunrise-mod-render", "crates/sunrise-mod-runtime/src", "crates/sunrise-mod-vocab/src",
+    "crates/sunrise-world", "packaging/executable_link.rs", "tools/layering/mod_vocab_state.json", "tools/refactors",
 ]
 READERS = {
-    "cargo-horizon-mod": [
-        "Cargo.lock", "crates/horizon-mod-api", "crates/horizon-mod-package/src/sdk/fixture.tar.xz",
-        "crates/horizon-mod-package/tests/index", "docs/modding/src/how-to/native-mods.md", "tools/ci/rust-version",
+    "cargo-sunrise-mod": [
+        "Cargo.lock", "crates/sunrise-mod-api", "crates/sunrise-mod-package/src/sdk/fixture.tar.xz",
+        "crates/sunrise-mod-package/tests/index", "docs/modding/src/how-to/native-mods.md", "tools/ci/rust-version",
     ],
-    "horizon-client": HORIZON_CLIENT,
-    # Starling's Android library is built from horizon-client's files, like horizon-client-lib.
-    "horizon-android": HORIZON_CLIENT,
-    # Shares horizon-client's sources, so its unit tests run the same reads.
-    "horizon-client-lib": HORIZON_CLIENT,
+    "sunrise-client": SUNRISE_CLIENT,
+    # Starling's Android library is built from sunrise-client's files, like sunrise-client-lib.
+    "sunrise-android": SUNRISE_CLIENT,
+    # Shares sunrise-client's sources, so its unit tests run the same reads.
+    "sunrise-client-lib": SUNRISE_CLIENT,
     # lang.rs embeds the bundled language files.
-    "horizon-client-core": ["crates/horizon-client/assets/horizon/lang"],
-    "horizon-client-render": [
-        "crates/horizon-client/assets/horizon/lang", "crates/horizon-client/assets/horizon/textures/gui",
-        "crates/horizon-client/assets/touch",
+    "sunrise-client-core": ["crates/sunrise-client/assets/sunrise/lang"],
+    "sunrise-client-render": [
+        "crates/sunrise-client/assets/sunrise/lang", "crates/sunrise-client/assets/sunrise/textures/gui",
+        "crates/sunrise-client/assets/touch",
     ],
     # The build scripts hand the repository root to the generator.
-    "horizon-engine-slots": MOD_API_GEN,
-    "horizon-game": ["packaging/windows/exe.rs"],
+    "sunrise-engine-slots": MOD_API_GEN,
+    "sunrise-game": ["packaging/windows/exe.rs"],
     # The shared guest-stack tests read the sources that use its constants, and the jobs they wait on.
-    "horizon-guest-stack": ["crates/horizon-client/src", "crates/horizon-threads/src"],
-    "horizon-mod-api": MOD_API_GEN,
-    "horizon-mod-api-gen": MOD_API_GEN,
-    "horizon-mod-api-gen-tests": MOD_API_GEN,
-    "horizon-mod-package": [
+    "sunrise-guest-stack": ["crates/sunrise-client/src", "crates/sunrise-threads/src"],
+    "sunrise-mod-api": MOD_API_GEN,
+    "sunrise-mod-api-gen": MOD_API_GEN,
+    "sunrise-mod-api-gen-tests": MOD_API_GEN,
+    "sunrise-mod-package": [
         "Cargo.lock", "docs/modding/src/how-to/native-mods/07-local-developer-builds.md",
         "tools/mixins/narrow-reference-rule.patch",
     ],
-    "horizon-mod-points": MOD_API_GEN,
-    "horizon-mod-render": MOD_API_GEN,
-    "horizon-mod-wasm": [*MOD_API_GEN, "crates/horizon-guest-stack/src/guest_stack_constants.rs"],
-    "horizon-mod-wasm-wire-loopback": [
-        *MOD_API_GEN, "crates/horizon-guest-stack/src/guest_stack_constants.rs", "crates/horizon-mod-wasm/src/prepared.rs",
-        "crates/horizon-mod-wasm/tests/fixture/src", "crates/horizon-mod-wasm/tests/support",
+    "sunrise-mod-points": MOD_API_GEN,
+    "sunrise-mod-render": MOD_API_GEN,
+    "sunrise-mod-wasm": [*MOD_API_GEN, "crates/sunrise-guest-stack/src/guest_stack_constants.rs"],
+    "sunrise-mod-wasm-wire-loopback": [
+        *MOD_API_GEN, "crates/sunrise-guest-stack/src/guest_stack_constants.rs", "crates/sunrise-mod-wasm/src/prepared.rs",
+        "crates/sunrise-mod-wasm/tests/fixture/src", "crates/sunrise-mod-wasm/tests/support",
     ],
-    "horizon-official": ["packaging/windows/exe.rs"],
-    "horizon-perf": ["crates/horizon-perf-format/tests/fixtures", "tests/fixtures/pacing_slow_frames.hzperf"],
-    "horizon-port-pack": ["docs/modpacks/atm10-mods.csv"],
-    "horizon-prepare": [
-        "crates/horizon-client/src/game/runtime/launch_api.rs", "mods/horizon/src/test/java", "research-lock.json",
+    "sunrise-official": ["packaging/windows/exe.rs"],
+    "sunrise-perf": ["crates/sunrise-perf-format/tests/fixtures", "tests/fixtures/pacing_slow_frames.hzperf"],
+    "sunrise-port-pack": ["docs/modpacks/atm10-mods.csv"],
+    "sunrise-prepare": [
+        "crates/sunrise-client/src/game/runtime/launch_api.rs", "mods/sunrise/src/test/java", "research-lock.json",
     ],
-    "horizon-release-sign": ["tools/ci/sign_native_build.sh", "tools/ci/sign_release.sh"],
-    "horizon-server": [
-        "crates/horizon-theme/fonts", "crates/horizon-theme/icons", "docs/api/server-reference.md",
+    "sunrise-release-sign": ["tools/ci/sign_native_build.sh", "tools/ci/sign_release.sh"],
+    "sunrise-server": [
+        "crates/sunrise-theme/fonts", "crates/sunrise-theme/icons", "docs/api/server-reference.md",
         "packaging/executable_link.rs",
     ],
-    "horizon-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
-    "horizon-world": ["crates/horizon-core", "Cargo.lock"],
+    "sunrise-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
+    "sunrise-world": ["crates/sunrise-core", "Cargo.lock"],
     # Starling's own crates: the account tests read the research lock, the catalog its launcher's sources.
     "starling-account": ["research-lock.json"],
     "starling-catalog": ["launcher/src"],
     # Commands (tokens, icons, package), not tests: listed so the scan finds nothing unexplained.
     "xtask": [
-        "crates/horizon-client/src", "crates/horizon-mod-vocab/src/hooks", "crates/horizon-perf/web",
-        "crates/horizon-prepare", "crates/horizon-theme", "docs/media/brand", "mods/horizon/src/test/java", "packaging",
+        "crates/sunrise-client/src", "crates/sunrise-mod-vocab/src/hooks", "crates/sunrise-perf/web",
+        "crates/sunrise-prepare", "crates/sunrise-theme", "docs/media/brand", "mods/sunrise/src/test/java", "packaging",
         "research-lock.json", "tools",
     ],
 }
 # What a package's tests only read at run time and nothing else uses: the package is selected, its dependents are not.
-# horizon-client-core's lang.rs tests read the sources of every crate for the language keys the code names.
-SCANNED = {"horizon-client-core": ["crates"]}
+# sunrise-client-core's lang.rs tests read the sources of every crate for the language keys the code names.
+SCANNED = {"sunrise-client-core": ["crates"]}
 # Literals the scan takes for a walk up to crates/ that are not one (a ".." among path-traversal checks).
 # "machines/.." in a test's sample paths, "mods/" in an instance's file names: no read either.
 NOT_READS = {
-    "horizon-android": {"crates"}, "horizon-client": {"crates"}, "horizon-client-lib": {"crates"}, "horizon-mod-package": {"crates"},
-    "horizon-mod-vocab": {"."}, "horizon-port-pack": {"mods"}, "horizon-prepare": {"crates"},
+    "sunrise-android": {"crates"}, "sunrise-client": {"crates"}, "sunrise-client-lib": {"crates"}, "sunrise-mod-package": {"crates"},
+    "sunrise-mod-vocab": {"."}, "sunrise-port-pack": {"mods"}, "sunrise-prepare": {"crates"},
 }
 
 
@@ -128,7 +128,7 @@ class Workspace:
         for package in metadata["packages"]:
             for target in package["targets"]:
                 source = relative(target["src_path"])
-                # horizon-client-lib builds horizon-client's files: all of that package's folder counts.
+                # sunrise-client-lib builds sunrise-client's files: all of that package's folder counts.
                 folder = max((d for d in home.values() if under(source, d)), key=len, default=None)
                 self.dirs[package["name"]].add(folder or os.path.dirname(source))
         self.home = home

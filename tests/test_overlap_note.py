@@ -9,10 +9,10 @@ from tools.ci import overlap_note as ov
 ROOT = Path(__file__).resolve().parents[1]
 
 DIFF = """\
-diff --git a/crates/horizon-client/src/game/mobs/dragon.rs b/crates/horizon-client/src/game/mobs/dragon.rs
+diff --git a/crates/sunrise-client/src/game/mobs/dragon.rs b/crates/sunrise-client/src/game/mobs/dragon.rs
 index 1..2 100644
---- a/crates/horizon-client/src/game/mobs/dragon.rs
-+++ b/crates/horizon-client/src/game/mobs/dragon.rs
+--- a/crates/sunrise-client/src/game/mobs/dragon.rs
++++ b/crates/sunrise-client/src/game/mobs/dragon.rs
 @@ -440 +440,2 @@ impl Dragon {
 -        let a = 1;
 +        let a = 2;
@@ -38,9 +38,9 @@ diff --git a/tools/lan_e2e.py b/tools/lan_e2e.py
 @@ -5 +5 @@ def check_chest(args):
 -    x
 +    y
-diff --git a/crates/horizon-client/examples/probe/mob_ai_probe.rs b/crates/horizon-client/examples/probe/mob_ai_probe.rs
---- a/crates/horizon-client/examples/probe/mob_ai_probe.rs
-+++ b/crates/horizon-client/examples/probe/mob_ai_probe.rs
+diff --git a/crates/sunrise-client/examples/probe/mob_ai_probe.rs b/crates/sunrise-client/examples/probe/mob_ai_probe.rs
+--- a/crates/sunrise-client/examples/probe/mob_ai_probe.rs
++++ b/crates/sunrise-client/examples/probe/mob_ai_probe.rs
 @@ -214,0 +215,2 @@ fn goal_name(m: &Mob, name: &str) -> String {
 +        "a" => 1,
 +        "b" => 2,
@@ -66,8 +66,8 @@ def fx(*names, path="a.rs"):
 class FunctionTests(unittest.TestCase):
     def test_functions_from_a_diff(self):
         self.assertEqual(ov.functions(DIFF), {
-            ("crates/horizon-client/src/game/mobs/dragon.rs", "tick_dragon"),
-            ("crates/horizon-client/src/game/mobs/dragon.rs", "helper"),
+            ("crates/sunrise-client/src/game/mobs/dragon.rs", "tick_dragon"),
+            ("crates/sunrise-client/src/game/mobs/dragon.rs", "helper"),
             ("tools/lan_e2e.py", "check_chest"),
         })
         # `impl Dragon` and `use` headers name no function; a hunk that only adds a new function after

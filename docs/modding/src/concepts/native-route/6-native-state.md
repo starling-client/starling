@@ -1,6 +1,6 @@
 # Native state: `[[native.state]]` is refused
 
-Horizon refuses `[[native.state]]` at native build time: adding a field changes a game type's layout,
+Sunrise refuses `[[native.state]]` at native build time: adding a field changes a game type's layout,
 which must match the prebuilt game. If you declare this table, the build reports:
 
 ```text

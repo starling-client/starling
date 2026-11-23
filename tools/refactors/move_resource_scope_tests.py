@@ -3,8 +3,8 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VOCAB = ROOT / "crates/horizon-mod-vocab/src/wire"
-API = ROOT / "crates/horizon-mod-api/tests"
+VOCAB = ROOT / "crates/sunrise-mod-vocab/src/wire"
+API = ROOT / "crates/sunrise-mod-api/tests"
 
 
 def take_test(path, name):

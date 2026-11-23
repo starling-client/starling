@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare vanilla random ticks (and scheduled ticks) with horizon-world, state by state.
+"""Compare vanilla random ticks (and scheduled ticks) with sunrise-world, state by state.
 
 Every block state is put at the origin of a random neighbourhood and `randomTick`
 (or `tick`) is run with a seeded RNG on both sides; the resulting block changes,

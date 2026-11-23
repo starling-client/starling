@@ -5,7 +5,7 @@
 `xRot % 360` to +-90); `Painting.readAdditionalSaveData`'s `setDirection` only writes the yaw, so
 `Entity.saveWithoutId` writes the loaded pitch back. Paintings are summoned with several pitches
 against a wall, the world is saved and reloaded (tools/entity_save_reload.py), and each one's
-`Rotation`, `facing` and `variant` are read with `/data get` on vanilla's server and Horizon's.
+`Rotation`, `facing` and `variant` are read with `/data get` on vanilla's server and Sunrise's.
 """
 try:
     from . import entity_save_reload as harness

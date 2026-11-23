@@ -19,7 +19,7 @@ class Counterparts(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.hooks = self.root / "crates/horizon-mod-vocab/src/hooks/example.rs"
+        self.hooks = self.root / "crates/sunrise-mod-vocab/src/hooks/example.rs"
         self.hooks.parent.mkdir(parents=True)
         self.context = {"root": str(self.root / "docs/modding")}
 

@@ -10,7 +10,7 @@ use mod_api::{ClientHost, ComponentHoverEvent, Flow, Hooks, Text};
 #[derive(Default)]
 pub struct HoverTooltip;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for HoverTooltip {
     fn component_hover(&self, _: &dyn ClientHost, event: &mut ComponentHoverEvent<'_>) -> Flow {
         let TextHover::Item { id, count, .. } = event.hover else {

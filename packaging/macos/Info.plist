@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Horizon.app's Info.plist; package.sh fills in @VERSION@ from launcher/Cargo.toml. -->
+<!-- Sunrise.app's Info.plist; package.sh fills in @VERSION@ from launcher/Cargo.toml. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Horizon</string>
+	<string>Sunrise</string>
 	<key>CFBundleExecutable</key>
-	<string>horizon-launcher</string>
+	<string>sunrise-launcher</string>
 	<key>CFBundleIconFile</key>
-	<string>horizon</string>
+	<string>sunrise</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.horizon.launcher</string>
+	<string>dev.sunrise.launcher</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Horizon</string>
+	<string>Sunrise</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

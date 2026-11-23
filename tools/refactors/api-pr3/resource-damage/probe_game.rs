@@ -8,5 +8,5 @@ pub trait TryIntoEngine<C: ?Sized> {
     type Error;
     fn try_into_engine(&self, context: &C) -> Result<Self::Engine, Self::Error>;
 }
-#[path = "../../../../crates/horizon-client/src/game/modding/api_values/damage.rs"]
+#[path = "../../../../crates/sunrise-client/src/game/modding/api_values/damage.rs"]
 mod boundary;

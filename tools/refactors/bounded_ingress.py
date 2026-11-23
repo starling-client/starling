@@ -5,7 +5,7 @@ Run from the checkout root. Semantic visitor/actor changes are separate commits.
 """
 from pathlib import Path
 
-root = Path("crates/horizon-client/src")
+root = Path("crates/sunrise-client/src")
 net = root / "net.rs"
 source = net.read_text()
 source = source.replace("Receiver<Event>", "ingress::Consumer<Event>")

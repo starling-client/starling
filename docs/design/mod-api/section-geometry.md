@@ -13,7 +13,7 @@ This note adds the section-level append case rather than repeating its recipes.
 
 ## Vanilla and NeoForge 26.3
 
-Verified from `/workspace/horizon` with `python3 tools/rea_vanilla.py method
+Verified from `/workspace/sunrise` with `python3 tools/rea_vanilla.py method
 net.minecraft.client.renderer.chunk.SectionCompiler compile` and the matching
 `callers` command: `SectionRenderDispatcher.RenderSection.CompileTask.doTask`
 is the sole reported caller (complete coverage). Compilation traverses 4096
@@ -93,14 +93,14 @@ invalidation and publication rules above apply to every row.
 
 | Route | Current file:line owner | Required extension |
 | --- | --- | --- |
-| Initial mesh and remesh admission | `horizon-client-render/src/streaming.rs:2237` | Freeze one shared plan before dispatch |
-| Worker execution | `horizon-client-render/src/streaming.rs:1142`; `horizon-client-render/src/mesher.rs:1751` | Batch once; include empty sections |
-| Block writes and border edits | `horizon-client-render/src/world.rs:385` | Invalidate shared halo dependencies |
-| Remote chunk arrival | `horizon-client-render/src/streaming.rs:1302` | Capture replacement section and neighbour revisions |
-| Biome/light replacement | `horizon-client-render/src/streaming.rs:3455`, `:1342` | Rebuild dependent plans |
-| Resource and visibility refresh | `horizon-client-render/src/streaming.rs:1277`; `horizon-client/src/game/modding/native_render_visibility.rs:13` | Replace context and invalidate through one route |
-| Unload | `horizon-client-render/src/streaming.rs:516` | New lifetime on reload; remove mesh, cancel old jobs |
-| Abandoned/stale completion | `horizon-client-render/src/streaming.rs:1887` | Extend current sequence/column refusal with shared epoch token through upload |
+| Initial mesh and remesh admission | `sunrise-client-render/src/streaming.rs:2237` | Freeze one shared plan before dispatch |
+| Worker execution | `sunrise-client-render/src/streaming.rs:1142`; `sunrise-client-render/src/mesher.rs:1751` | Batch once; include empty sections |
+| Block writes and border edits | `sunrise-client-render/src/world.rs:385` | Invalidate shared halo dependencies |
+| Remote chunk arrival | `sunrise-client-render/src/streaming.rs:1302` | Capture replacement section and neighbour revisions |
+| Biome/light replacement | `sunrise-client-render/src/streaming.rs:3455`, `:1342` | Rebuild dependent plans |
+| Resource and visibility refresh | `sunrise-client-render/src/streaming.rs:1277`; `sunrise-client/src/game/modding/native_render_visibility.rs:13` | Replace context and invalidate through one route |
+| Unload | `sunrise-client-render/src/streaming.rs:516` | New lifetime on reload; remove mesh, cancel old jobs |
+| Abandoned/stale completion | `sunrise-client-render/src/streaming.rs:1887` | Extend current sequence/column refusal with shared epoch token through upload |
 
 ## Acceptance matrix
 

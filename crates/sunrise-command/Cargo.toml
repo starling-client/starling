@@ -1,0 +1,17 @@
+[package]
+name = "sunrise-command"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Commands (Brigadier): the vanilla command tree, argument types, selectors, parsing, suggestions and the network form of the tree"
+
+[dependencies]
+sunrise-client-core = { path = "../sunrise-client-core" }
+sunrise-core = { path = "../sunrise-core" }
+sunrise-items = { path = "../sunrise-items" }
+sunrise-protocol = { path = "../sunrise-protocol" }
+sunrise-world = { path = "../sunrise-world" }
+
+[lints]
+workspace = true

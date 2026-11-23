@@ -11,10 +11,10 @@ A creative bot sends creative-slot packets, then the console reads its inventory
 A second bot sends stone ×100: its codec takes counts of 1 to 99, so vanilla fails the packet and
 disconnects the player.
 
-horizon-bots stand in for the clients (`--give`). The server runs in a fresh folder with fresh HORIZON_HOME
+sunrise-bots stand in for the clients (`--give`). The server runs in a fresh folder with fresh SUNRISE_HOME
 and XDG folders (lab.game_env), on a free port. Build first:
-    cargo build --profile fast -p horizon-game --bin horizon-client
-    cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p sunrise-game --bin sunrise-client
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 import json
@@ -29,7 +29,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
-from server_horizon_only_e2e import Failed, server  # noqa: E402
+from server_sunrise_only_e2e import Failed, server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 STONE, DIAMOND_SWORD, ENDER_PEARL = 1, 1050, 1265
@@ -43,7 +43,7 @@ def bot(bins, port, out, name, give, seconds):
     report = out / f'{name}.json'
     spec = ','.join(f'{s}:{i}:{c}' for s, i, c in give)
     return report, subprocess.Popen(
-        [bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
+        [bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
          '--height', '0', '--seconds', str(seconds), '--name', name, '--give', spec, '--report', report],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

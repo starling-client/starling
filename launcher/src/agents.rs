@@ -1,12 +1,12 @@
-//! Connecting an AI agent (docs/agent-control.md): the launcher's MCP server, `horizon-launcher
-//! mcp`, as each common client wants it configured. `horizon-launcher agent-config` prints it and
+//! Connecting an AI agent (docs/agent-control.md): the launcher's MCP server, `sunrise-launcher
+//! mcp`, as each common client wants it configured. `sunrise-launcher agent-config` prints it and
 //! the Settings page's "Connect an AI agent" shows it. Nothing here runs a client's command: the
 //! window runs one only when the player clicks its button, and shows it first.
 use serde_json::{json, Value};
 use std::path::Path;
 
 /// The name the server is added under in every client.
-pub const SERVER_NAME: &str = "horizon";
+pub const SERVER_NAME: &str = "sunrise";
 
 pub struct Client {
     /// `claude-code`, `codex`, `cursor` or `generic`.
@@ -131,7 +131,7 @@ pub fn self_test(exe: &Path) -> Result<usize, String> {
         .spawn()
         .map_err(|e| format!("Could not start {}: {e}", exe.display()))?;
     let lines = [
-        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "horizon-launcher-test", "version": "1" } } }),
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "sunrise-launcher-test", "version": "1" } } }),
         json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
         json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
     ];
@@ -188,26 +188,26 @@ mod tests {
 
     #[test]
     fn configs_name_the_launcher_and_quote_its_path() {
-        let exe = Path::new("/Applications/Horizon Launcher.app/Contents/MacOS/horizon-launcher");
+        let exe = Path::new("/Applications/Sunrise Launcher.app/Contents/MacOS/sunrise-launcher");
         let all = clients(exe);
         let claude = &all[0];
         assert_eq!(
             claude.add_line().unwrap(),
-            "claude mcp add --scope user horizon -- '/Applications/Horizon Launcher.app/Contents/MacOS/horizon-launcher' mcp"
+            "claude mcp add --scope user sunrise -- '/Applications/Sunrise Launcher.app/Contents/MacOS/sunrise-launcher' mcp"
         );
         let parsed: Value = serde_json::from_str(&claude.config).unwrap();
-        assert_eq!(parsed["mcpServers"]["horizon"]["args"], json!(["mcp"]));
+        assert_eq!(parsed["mcpServers"]["sunrise"]["args"], json!(["mcp"]));
         assert_eq!(
-            parsed["mcpServers"]["horizon"]["command"],
+            parsed["mcpServers"]["sunrise"]["command"],
             exe.display().to_string()
         );
         let codex = &all[1];
         assert!(codex
             .config
-            .contains("command = \"/Applications/Horizon Launcher.app"));
+            .contains("command = \"/Applications/Sunrise Launcher.app"));
         assert_eq!(
-            toml_string(r#"C:\Horizon\"x".exe"#),
-            r#""C:\\Horizon\\\"x\".exe""#
+            toml_string(r#"C:\Sunrise\"x".exe"#),
+            r#""C:\\Sunrise\\\"x\".exe""#
         );
         assert!(all.iter().any(|c| c.id == "cursor" && c.add.is_none()));
     }

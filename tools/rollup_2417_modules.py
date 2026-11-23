@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract preset additions into sibling modules without moving game areas."""
 from pathlib import Path
-root = Path('crates/horizon-client/src')
+root = Path('crates/sunrise-client/src')
 def cut(path, start, end, target, replacement, prefix='', suffix=''):
     p = root / path
     s = p.read_text(); a = s.index(start); b = s.index(end, a)

@@ -41,9 +41,9 @@ public final class DiagnosticsActivity extends Activity {
      * marker of a start that died in the driver goes too, or that start would turn the choice back
      * into OpenGL ES (graphics.rs `RENDERER_MARKER`, `after_driver_crash`).
      */
-    private static final String GRAPHICS_FILE = "horizon-graphics.txt";
+    private static final String GRAPHICS_FILE = "sunrise-graphics.txt";
     private static final String GRAPHICS_KEY = "graphicsApi:";
-    private static final String RENDERER_MARKER = "horizon-renderer-pending";
+    private static final String RENDERER_MARKER = "sunrise-renderer-pending";
     private static final String[] APIS = {"auto", "vulkan", "opengl"};
     private static final int[] API_LABELS = {
         R.string.diagnostics_api_auto, R.string.diagnostics_api_vulkan, R.string.diagnostics_api_opengl,
@@ -255,7 +255,7 @@ public final class DiagnosticsActivity extends Activity {
             @Override public void run() {
                 try {
                     // Lazy: even a broken native library cannot prevent the system window opening.
-                    System.loadLibrary("horizon_android");
+                    System.loadLibrary("sunrise_android");
                     final String result = makeReport(privateFolder, game, export);
                     runOnUiThread(new Runnable() {
                         @Override public void run() {

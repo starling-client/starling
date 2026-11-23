@@ -4,11 +4,11 @@ Native mods run with your rights. Read their source and dependencies before allo
 Install them into the selected instance from the Mods page, then choose **Build**, or run:
 
 ```sh
-horizon-launcher native-build path/to/mod --instance INSTANCE --trust-native-code
+sunrise-launcher native-build path/to/mod --instance INSTANCE --trust-native-code
 ```
 
 Omit the folder to build the instance's enabled native mods. The launcher keeps the instance on
-its pinned Horizon commit; `--update` selects a newer installed base and rebuilds the mods against
+its pinned Sunrise commit; `--update` selects a newer installed base and rebuilds the mods against
 that commit's SDK.
 
 ## Build steps
@@ -55,10 +55,10 @@ transformations are refusals, not reasons to build the game locally.
 
 ## Mods made for another build
 
-A native mod is made for one game build (its `[native] horizon` pin). On another build the
+A native mod is made for one game build (its `[native] sunrise` pin). On another build the
 launcher compiles it when it fits: the mod uses only the mod API (no `[native.*]` table, no
 internals), its package lists what it uses (`uses.json`, written by
-`cargo horizon-mod build`), and every item on that list is unchanged in the build's
+`cargo sunrise-mod build`), and every item on that list is unchanged in the build's
 `surface.json`. The compile stays the final check: a mod that fits and still doesn't compile is
 left out of that build and the others build.
 
@@ -78,7 +78,7 @@ fails stops the build with nothing changed.
 
 ## Where SDKs come from
 
-SDK releases are read from this repository's releases. `HORIZON_SDK_BASE` replaces that base with
+SDK releases are read from this repository's releases. `SUNRISE_SDK_BASE` replaces that base with
 a mirror URL or a folder holding `sdk-<build id>/` folders (and the game releases' folders, for
 their build ids), for example a copy for building offline. Every base is checked the same way,
 against the release signature. Offline, a build whose SDK files are already kept works; one whose

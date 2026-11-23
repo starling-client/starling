@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Horizon simulation geometry with the checksum-pinned vanilla binaries."""
+"""Compare Sunrise simulation geometry with the checksum-pinned vanilla binaries."""
 import argparse
 from collections import Counter
 import json
@@ -280,16 +280,16 @@ def main():
     commands = list(corpus())
     inputs = base / "inputs.txt"
     inputs.write_text("\n".join(commands) + "\n", encoding="utf-8")
-    oracle = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaGeometryOracle.java"
-    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/horizon-core/Cargo.toml", *sorted((lab.ROOT / "crates/horizon-core/src").rglob("*.rs"))]
+    oracle = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaGeometryOracle.java"
+    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/sunrise-core/Cargo.toml", *sorted((lab.ROOT / "crates/sunrise-core/src").rglob("*.rs"))]
     tested_sources = test_rust_parity.source_hashes(sources)
     classes = base / "classes"
     classes.mkdir()
     dependency_path = os.pathsep.join(map(str, libraries))
     test_rust_parity.run(["javac", "--release", "25", "-proc:none", "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(oracle)])
-    test_rust_parity.run(["cargo", "build", "--release", "--bin", "horizon-geometry-parity"])
+    test_rust_parity.run(["cargo", "build", "--release", "--bin", "sunrise-geometry-parity"])
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
-    binary = Path(metadata["target_directory"]) / "release" / ("horizon-geometry-parity.exe" if os.name == "nt" else "horizon-geometry-parity")
+    binary = Path(metadata["target_directory"]) / "release" / ("sunrise-geometry-parity.exe" if os.name == "nt" else "sunrise-geometry-parity")
     candidate = base / "rust.txt"
     with inputs.open("rb") as stdin, candidate.open("wb") as stdout:
         test_rust_parity.run([str(binary)], stdin=stdin, stdout=stdout)
@@ -297,7 +297,7 @@ def main():
     for side, jar in jars.items():
         reference = base / f"vanilla-{side}.txt"
         with (base / f"vanilla-{side}.log").open("wb") as log:
-            test_rust_parity.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]), "dev.horizonlab.parity.VanillaGeometryOracle", str(inputs), str(reference)], stdout=log, stderr=subprocess.STDOUT)
+            test_rust_parity.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]), "dev.sunriselab.parity.VanillaGeometryOracle", str(inputs), str(reference)], stdout=log, stderr=subprocess.STDOUT)
         matched = test_rust_parity.compare(reference, candidate)
         references.append({"side": side, "jar_sha256": lab.digest(jar, "sha256"), "output_sha256": lab.digest(reference, "sha256"), "matched_output_lines": matched})
         print(f"{side}: {matched:,} geometry output lines match", flush=True)

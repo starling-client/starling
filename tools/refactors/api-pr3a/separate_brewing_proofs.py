@@ -6,7 +6,7 @@ construction and key reads. No recipe matching or brewing implementation moves.
 """
 from pathlib import Path
 
-path = Path("crates/horizon-client-render/src/brewing.rs")
+path = Path("crates/sunrise-client-render/src/brewing.rs")
 text = path.read_text()
 start = text.index("    use mod_api::Flow;")
 fixture_start = text.index("        let set = |ids: &[&str]|", start)

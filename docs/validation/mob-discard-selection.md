@@ -36,7 +36,7 @@ Run in a separate target with prepared resources and JDK25:
 python3 tools/test_mob_discard_parity.py \
   --game-dir /private/path/to/minecraft/26.3 \
   --resources /private/path/to/prepared/26.3
-cargo clippy --offline --locked -p horizon-client --lib --tests -- -D warnings
+cargo clippy --offline --locked -p sunrise-client --lib --tests -- -D warnings
 cargo fmt --all -- --check
 python3 tools/check_public_tree.py
 git diff --check
@@ -54,5 +54,5 @@ vehicle is discarded. The new save guard prevents a discarded passenger from
 being serialized regardless of that transient mount state.
 
 Original upstream validation (not a claim about the fork sync): the actual Game regression, all eight compared fields on
-both real26.3 JARs, full `horizon-client` library/test Clippy with warnings
+both real26.3 JARs, full `sunrise-client` library/test Clippy with warnings
 denied and no exceptions, workspace formatting, public-tree and diff checks.

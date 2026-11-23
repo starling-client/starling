@@ -16,8 +16,8 @@ pub(super) fn settings_json(s: &backend::Settings) -> serde_json::Value {
         "while_playing": s.while_playing.name(),
         "language": s.language.map_or("system", |l| l.code()),
         "accent": s.accent.name(),
-        "background": horizon_launcher::themes::background(&backend::data_dir(), s.background.as_deref()),
-        "cache_limit_gib": s.cache_limit_gib.unwrap_or(horizon_launcher::storage::policy::DEFAULT_LIMIT_GIB),
+        "background": sunrise_launcher::themes::background(&backend::data_dir(), s.background.as_deref()),
+        "cache_limit_gib": s.cache_limit_gib.unwrap_or(sunrise_launcher::storage::policy::DEFAULT_LIMIT_GIB),
         "no_ai": backend::no_ai(),
     })
 }

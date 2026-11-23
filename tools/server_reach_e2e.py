@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vanilla's attack reach on Horizon's dedicated server, end to end.
+"""Vanilla's attack reach on Sunrise's dedicated server, end to end.
 
 ServerGamePacketListenerImpl.handleAttack drops an attack unless `Player.isWithinAttackRange(mainHandItem,
 targetBox, 3.0)`: without an `attack_range` item, the eyes within the entity interaction range (3, 5 in
@@ -8,7 +8,7 @@ refuse what the range doesn't allow.
 
     python3 tools/server_reach_e2e.py --bin-dir target/fast
 
-A survival dedicated server in a flat world; pairs of horizon-bots stand on the ground (`--behaviour stand`),
+A survival dedicated server in a flat world; pairs of sunrise-bots stand on the ground (`--behaviour stand`),
 placed by the console's /tp 200 blocks from the other pairs (side by side first, so the attacker knows its
 victim's entity id, as a cheat would). In each pair the attacker sends
 ServerboundAttackPacket at its victim twice a second (`--attack`) from:
@@ -21,9 +21,9 @@ ServerboundAttackPacket at its victim twice a second (`--attack`) from:
 - 9 blocks (creative): refused.
 
 A hit shows in the victim's health (SetHealth, in the bots' report). The server runs in a fresh folder with
-fresh HORIZON_HOME and XDG folders (lab.game_env), on a free port. Build first:
-    cargo build --profile fast -p horizon-game --bin horizon-client
-    cargo build --profile fast -p horizon-bots
+fresh SUNRISE_HOME and XDG folders (lab.game_env), on a free port. Build first:
+    cargo build --profile fast -p sunrise-game --bin sunrise-client
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -73,7 +73,7 @@ class Failed(Exception):
 
 def bot(bins, port, out, name, *extra):
     report = out / f'{name}.json'
-    subprocess.run([bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1',
+    subprocess.run([bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1',
                     '--behaviour', 'stand', '--seconds', str(SECONDS), '--name', name, '--report', report, *extra],
                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=SECONDS + 180)
     return json.loads(report.read_text())['per_bot'][0]
@@ -85,7 +85,7 @@ def run(bins, folder, out):
     props = dict(PROPERTIES, **{'server-port': str(port)})
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (folder / 'eula.txt').write_text('eula=true\n')
-    command = [bins / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / f'sunrise-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / 'server.log')
     try:
         server.wait_for(DONE, 300)

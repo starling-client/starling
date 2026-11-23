@@ -70,7 +70,7 @@ class ArtifactTests(unittest.TestCase):
                                   "server": {"sha1": lock["minecraft"]["server_sha1"]}}}
         with tempfile.TemporaryDirectory() as temp, mock.patch("urllib.request.urlopen") as request, \
                 mock.patch.dict("os.environ", {}, clear=False) as environment:
-            environment.pop("HORIZON_SERVER_JAR", None)
+            environment.pop("SUNRISE_SERVER_JAR", None)
             launcher, cache = Path(temp) / "minecraft", Path(temp) / "cache"
             version = launcher / "versions" / "26.3"
             version.mkdir(parents=True)
@@ -176,13 +176,13 @@ class ArtifactTests(unittest.TestCase):
 class PublicationTests(unittest.TestCase):
     def test_private_paths_rejected(self):
         for path in [".local/minecraft/source.java", "decompiled/Foo.txt", "game.JAR", "capture.jfr", "source/Foo.java",
-                     "fixtures/26.3/horizon-data.bin"]:
+                     "fixtures/26.3/sunrise-data.bin"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
-        for path in ["tools/lab.py", "crates/horizon-core/src/lib.rs", "Cargo.lock", "docs/analysis.md",
-                     "mods/horizon/src/main/java/dev/horizonlab/HorizonLab.java",
-                     "mods/horizon-lab/src/main/java/dev/horizonlab/HorizonLab.java"]:
+        for path in ["tools/lab.py", "crates/sunrise-core/src/lib.rs", "Cargo.lock", "docs/analysis.md",
+                     "mods/sunrise/src/main/java/dev/sunriselab/SunriseLab.java",
+                     "mods/sunrise-lab/src/main/java/dev/sunriselab/SunriseLab.java"]:
             self.assertFalse(check_public_tree.prohibited(path), path)
-        self.assertTrue(check_public_tree.prohibited("mods/horizon/src/main/java/net/minecraft/Client.java"))
+        self.assertTrue(check_public_tree.prohibited("mods/sunrise/src/main/java/net/minecraft/Client.java"))
         for path in ["tools/JfrSummary.java", "tests/java/JfrFixture.java",
                      "packaging/android/java/io/github/juanluci/starling/StarlingActivity.java",
                      "packaging/android/java/io/github/juanluci/starling/LauncherActivity.java"]:
@@ -214,7 +214,7 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(check().returncode, 0, check().stderr)
             for path, text in [("crates/a/src/items.rs", flattening), ("data/states.txt", states),
                                ("data/states.json", json.dumps(states.splitlines())),
-                               ("crates/horizon-world/src/datafix/block_state_data.txt", "retired\n")]:
+                               ("crates/sunrise-world/src/datafix/block_state_data.txt", "retired\n")]:
                 with self.subTest(path=path):
                     commit(path, text)
                     result = check()
@@ -383,7 +383,7 @@ class GameEnvScreenTests(unittest.TestCase):
                 os.environ.pop("DISPLAY", None)
                 env = agent_control_e2e.game_env("e2e", home=home)
                 run.assert_not_called()
-                self.assertEqual(env["HORIZON_HOME"], home)
+                self.assertEqual(env["SUNRISE_HOME"], home)
                 self.assertNotIn("VSCREEN", env)
 
 

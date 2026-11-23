@@ -26,29 +26,29 @@ glint overrides; every removal; and cached wire bytes. Item defaults apply inste
 
 ### Trying the icon surfaces
 
-The runnable datapack `crates/horizon-client/tests/fixtures/advancement-icons`
+The runnable datapack `crates/sunrise-client/tests/fixtures/advancement-icons`
 contains two root advancements with wooden-pickaxe icons, count 3 and damage 7:
-`horizon_test:glint` explicitly enables glint; `horizon_test:plain` disables it.
+`sunrise_test:glint` explicitly enables glint; `sunrise_test:plain` disables it.
 Its titles and descriptions use vanilla translations.
 
 Copy the fixture directory into a **fresh test world's** `datapacks/` directory,
 then run `/reload`. With cheats/operator permission:
 
 ```text
-/advancement grant @s only horizon_test:plain
-/advancement grant @s only horizon_test:glint
+/advancement grant @s only sunrise_test:plain
+/advancement grant @s only sunrise_test:glint
 ```
 
 Watch the two toasts: only the second pickaxe shimmers, both show count 3 and a
 partially depleted durability bar. Press **L** to open Advancements, select the
 fixture's glint tab, then hover its pickaxe widget. The tab, widget and hover must
 all shimmer and retain the count and damage bar; the plain tab must not shimmer.
-Repeat on a second Horizon client connected to the test world's LAN server.
+Repeat on a second Sunrise client connected to the test world's LAN server.
 To replay the toast, revoke that advancement and grant it again:
 
 ```text
-/advancement revoke @s only horizon_test:glint
-/advancement grant @s only horizon_test:glint
+/advancement revoke @s only sunrise_test:glint
+/advancement grant @s only sunrise_test:glint
 ```
 
 The native regression

@@ -9,7 +9,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNTIME = ROOT / "crates/horizon-mod-runtime"
+RUNTIME = ROOT / "crates/sunrise-mod-runtime"
 MOVED = ["attachments.rs", "attachments/index.rs", "attachments/lifetime.rs",
          "attachments/observer.rs", "attachments/resident.rs"]
 
@@ -37,7 +37,7 @@ def move():
             changed.add(path)
 
     for name in MOVED:
-        source = ROOT / "crates/horizon-world/src" / name
+        source = ROOT / "crates/sunrise-world/src" / name
         if not source.exists():
             assert name == "attachments/resident.rs", name
             continue
@@ -45,8 +45,8 @@ def move():
         destination.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "mv", str(source), str(destination)], cwd=ROOT, check=True)
         changed.add(destination)
-    write("crates/horizon-mod-runtime/Cargo.toml", '''[package]
-name = "horizon-mod-runtime"
+    write("crates/sunrise-mod-runtime/Cargo.toml", '''[package]
+name = "sunrise-mod-runtime"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -55,18 +55,18 @@ publish = false
 description = "Engine-independent mod storage, attachment indexes and registry slot tables"
 
 [dependencies]
-horizon-core = { path = "../horizon-core" }
+sunrise-core = { path = "../sunrise-core" }
 
 [lints]
 workspace = true
 ''')
-    write("crates/horizon-mod-runtime/src/lib.rs", '''//! Engine-independent storage and registration machinery shared by the game and mod API.
+    write("crates/sunrise-mod-runtime/src/lib.rs", '''//! Engine-independent storage and registration machinery shared by the game and mod API.
 pub mod attachments;
 /// Load-owned registry names and numeric slots, without game or API key types.
 pub mod registry_keys;
 ''')
     # The only engine-free game helper becomes generic over an already resolved holder.
-    path = ROOT / "crates/horizon-client/src/game/modding/attachment_index/mod.rs"
+    path = ROOT / "crates/sunrise-client/src/game/modding/attachment_index/mod.rs"
     text = path.read_text()
     bind = extract(text, "pub(super) fn bind_entity_map(", "#[cfg(test)]")
     text = text.replace(bind, "")
@@ -75,7 +75,7 @@ pub mod registry_keys;
         "bind_entity_map(map, index, mod_api::EntityRef::new(level.epoch(), id), slot);",
         "slot.bind(map, index, AttachmentHolder::Entity(mod_api::EntityRef::new(level.epoch(), id)));")
     write(path, text)
-    path = ROOT / "crates/horizon-mod-runtime/src/attachments/lifetime.rs"
+    path = ROOT / "crates/sunrise-mod-runtime/src/attachments/lifetime.rs"
     text = path.read_text()
     method = bind.replace("pub(super) fn bind_entity_map(", "pub fn bind<H: Copy + Eq + std::hash::Hash + Send + Sync + 'static>(\n    &mut self,")
     method = method.replace("map: &mut Attachments", "map: &mut super::Attachments")
@@ -87,7 +87,7 @@ pub mod registry_keys;
     method = method.replace("Arc<Mutex<", "std::sync::Arc<std::sync::Mutex<")
     text = replace(text, "impl AttachmentLifetime {", "impl AttachmentLifetime {\n    /// Bind an authoritative entity's map to its already resolved holder identity.\n" + method)
     write(path, text)
-    path = ROOT / "crates/horizon-client/src/game/modding/mod_api_host.rs"
+    path = ROOT / "crates/sunrise-client/src/game/modding/mod_api_host.rs"
     text = path.read_text()
     text = replace(text, "super::attachment_index::bind_entity_map(", "self.paintings[i].attachment_lifetime.bind(")
     text = replace(text, "                        &mut self.paintings[i].attachment_lifetime,\n", "")
@@ -95,27 +95,27 @@ pub mod registry_keys;
     write(path, text)
 
     # Split the generic name tables from API keys and the owning Parts state.
-    path = ROOT / "crates/horizon-mod-api/src/content/registry_keys.rs"
+    path = ROOT / "crates/sunrise-mod-api/src/content/registry_keys.rs"
     api = path.read_text()
     tables = extract(api, "#[derive(Clone, Default)]", "impl BlockKey {")
-    api = api.replace(tables, "use horizon_mod_runtime::registry_keys::{Effects, Names, Requests};\n\n")
+    api = api.replace(tables, "use sunrise_mod_runtime::registry_keys::{Effects, Names, Requests};\n\n")
     tables = tables.replace("pub(crate)", "pub")
     tables = tables.replace("    entries:", "    pub entries:").replace("    utf16_slots:", "    pub utf16_slots:").replace("    world_fluids:", "    pub world_fluids:")
     tables = tables.replace("struct Request {", "pub struct Request {").replace("    id: String,", "    pub id: String,").replace("    mods: Vec<&'static str>,", "    pub mods: Vec<&'static str>,")
     tables = tables.replace("Vec<Option<FluidKey>>", "Vec<Option<u32>>")
-    tables = tables.replace("!horizon_mod_package::content::namespaced_id(&id)", "horizon_core::identifier::Identifier::parse_namespaced(&id).is_none()")
+    tables = tables.replace("!sunrise_mod_package::content::namespaced_id(&id)", "sunrise_core::identifier::Identifier::parse_namespaced(&id).is_none()")
 
     dimensions = extract(api, "/// The vanilla dimensions,", "impl DimensionKey {")
     api = api.replace(dimensions, "")
     funcs = extract(api, "/// The key of dimension `id`,", "/// A fluid requested by a mod")
     api = api.replace(funcs, '''/// The key of dimension `id`, numbering it when the game meets it for the first time.
 pub fn dimension_key(id: &str) -> DimensionKey {
-    DimensionKey(horizon_mod_runtime::registry_keys::dimension_slot(id))
+    DimensionKey(sunrise_mod_runtime::registry_keys::dimension_slot(id))
 }
 
 /// The name of a dimension's key, None for a slot the game never gave out.
 pub fn dimension_id(key: DimensionKey) -> Option<&'static str> {
-    horizon_mod_runtime::registry_keys::dimension_id(key.0)
+    sunrise_mod_runtime::registry_keys::dimension_id(key.0)
 }
 
 ''')
@@ -129,7 +129,7 @@ pub fn resolve_effects<'a>(
     ids: impl IntoIterator<Item = &'a str>,
     resolve: impl FnMut(&str) -> Option<usize>,
 ) -> Result<(), Vec<String>> {
-    let effects = horizon_mod_runtime::registry_keys::resolve_effects(
+    let effects = sunrise_mod_runtime::registry_keys::resolve_effects(
         &crate::part_table::requested_keys().effects, ids, resolve,
     )?;
     let _ = crate::part_table::resolved_effects().set(effects);
@@ -139,7 +139,7 @@ pub fn resolve_effects<'a>(
 ''')
     effects = effects.replace("pub(crate)", "pub").replace("    keys: Vec<EffectKey>", "    pub keys: Vec<u32>")
     effects = replace(effects, '''pub fn resolve_effects() -> Result<(), Vec<String>> {
-    use horizon_client_core::potions;
+    use sunrise_client_core::potions;
     let installed = crate::part_table::requested_keys();
     let all: Vec<_> = potions::all_effects().collect();
     let mut names = installed.effects.clone();''', '''pub fn resolve_effects<'a>(
@@ -150,7 +150,7 @@ pub fn resolve_effects<'a>(
     let all: Vec<_> = ids.into_iter().collect();
     let mut names = requests.clone();''')
     effects = replace(effects, "for def in &all {", "for id in &all {")
-    effects = replace(effects, '.request("horizon", potions::namespaced(def.id))', '.request("horizon", id)')
+    effects = replace(effects, '.request("sunrise", potions::namespaced(def.id))', '.request("sunrise", id)')
     effects = replace(effects, "|id| all.iter().position(|def| potions::namespaced(def.id) == id)", "&mut resolve")
     effects = effects.replace("vec![EffectKey(u32::MAX); all.len()]", "vec![u32::MAX; all.len()]").replace("keys[index] = EffectKey(slot as u32)", "keys[index] = slot as u32")
     effects = replace(effects, "let _ = crate::part_table::resolved_effects().set(Effects {", "Ok(Effects {")
@@ -162,7 +162,7 @@ pub fn resolve_block_entity_types<'a, T>(
     ids: impl IntoIterator<Item = &'a str>,
     resolve: impl FnMut(&str) -> Option<T>,
 ) -> Result<(), Vec<String>> {
-    let names = horizon_mod_runtime::registry_keys::resolve_block_entity_types(
+    let names = sunrise_mod_runtime::registry_keys::resolve_block_entity_types(
         &crate::part_table::requested_keys().block_entity_types, ids, resolve,
     )?;
     let _ = crate::part_table::resolved_block_entity_types().set(names);
@@ -171,7 +171,7 @@ pub fn resolve_block_entity_types<'a, T>(
 
 ''')
     be = replace(be, '''pub fn resolve_block_entity_types(
-    types: &horizon_client_core::block_entity_types::BlockEntityTypes,
+    types: &sunrise_client_core::block_entity_types::BlockEntityTypes,
 ) -> Result<(), Vec<String>> {
     let mut names = crate::part_table::requested_keys()
         .block_entity_types
@@ -188,15 +188,15 @@ pub fn resolve_block_entity_types<'a, T>(
     api = replace(api, "        .flatten()", "        .flatten()\n        .map(FluidKey)")
     api = replace(api, "        .copied()\n}", "        .copied()\n        .map(EffectKey)\n}")
     # Parts state uses the runtime types directly, not a crate-private re-export.
-    for p in (ROOT / "crates/horizon-mod-api/src/part_table").glob("*.rs"):
+    for p in (ROOT / "crates/sunrise-mod-api/src/part_table").glob("*.rs"):
         src = p.read_text()
         for name in ("Requests", "Names", "Effects"):
-            src = src.replace(f"super::registry_keys::{name}", f"horizon_mod_runtime::registry_keys::{name}")
+            src = src.replace(f"super::registry_keys::{name}", f"sunrise_mod_runtime::registry_keys::{name}")
         if src != p.read_text():
             write(p, src)
-    api = api.replace("use horizon_mod_runtime::registry_keys::{Effects, Names, Requests};\n", "")
+    api = api.replace("use sunrise_mod_runtime::registry_keys::{Effects, Names, Requests};\n", "")
     write(path, api)
-    write("crates/horizon-mod-runtime/src/registry_keys.rs", '''//! Load-owned declarations and resolved mappings for registration-slot keys.
+    write("crates/sunrise-mod-runtime/src/registry_keys.rs", '''//! Load-owned declarations and resolved mappings for registration-slot keys.
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
@@ -210,7 +210,7 @@ use std::sync::{LazyLock, RwLock};
         text = path.read_text()
         previous = text
         pattern = re.compile(r"((?:crate::registry_keys|mod_api::__private)::resolve_effects)\(\)")
-        text = pattern.sub(lambda m: m[1] + "(horizon_client_core::potions::all_effects().map(|def| horizon_client_core::potions::namespaced(def.id)), |id| horizon_client_core::potions::effect(id).map(|def| def.index))", text)
+        text = pattern.sub(lambda m: m[1] + "(sunrise_client_core::potions::all_effects().map(|def| sunrise_client_core::potions::namespaced(def.id)), |id| sunrise_client_core::potions::effect(id).map(|def| def.index))", text)
         pattern = re.compile(r"((?:crate::registry_keys|mod_api::__private)::resolve_block_entity_types)\(")
         # Existing arguments may be constructor calls, so match balanced parentheses.
         for match in reversed(list(pattern.finditer(text))):
@@ -234,34 +234,34 @@ use std::sync::{LazyLock, RwLock};
     for path in (ROOT / "crates").rglob("*.rs"):
         text = path.read_text()
         old = text
-        text = text.replace("horizon_world::attachments", "horizon_mod_runtime::attachments")
-        text = text.replace("horizon_world::impl_attachment_lifetime", "horizon_mod_runtime::impl_attachment_lifetime")
-        pattern = re.compile(r"horizon_world::\{\s*attachments::(\{[^{}]*\}|\w+),", re.S)
+        text = text.replace("sunrise_world::attachments", "sunrise_mod_runtime::attachments")
+        text = text.replace("sunrise_world::impl_attachment_lifetime", "sunrise_mod_runtime::impl_attachment_lifetime")
+        pattern = re.compile(r"sunrise_world::\{\s*attachments::(\{[^{}]*\}|\w+),", re.S)
         def imports(match):
             prefix, body = match[1], match[2]
-            updated = pattern.sub(lambda m: "horizon_mod_runtime::attachments::" + m[1] + ", horizon_world::{", body)
+            updated = pattern.sub(lambda m: "sunrise_mod_runtime::attachments::" + m[1] + ", sunrise_world::{", body)
             if updated != body and not body.lstrip().startswith("{"):
                 updated = "{" + updated + "}"
             return prefix + updated + ";"
         text = re.sub(r"((?:pub )?use )([^;]+);", imports, text)
-        if path == ROOT / "crates/horizon-world/src/lib.rs":
+        if path == ROOT / "crates/sunrise-world/src/lib.rs":
             text = replace(text, "pub mod attachments;\n", "")
         if text != old:
             write(path, text)
 
-    path = ROOT / "crates/horizon-mod-api-gen/src/wasm/index.rs"
+    path = ROOT / "crates/sunrise-mod-api-gen/src/wasm/index.rs"
     write(path, replace(path.read_text(),
-        '("horizon_core", "crates/horizon-core/src"),',
-        '("horizon_core", "crates/horizon-core/src"),\n    ("horizon_mod_runtime", "crates/horizon-mod-runtime/src"),'))
+        '("sunrise_core", "crates/sunrise-core/src"),',
+        '("sunrise_core", "crates/sunrise-core/src"),\n    ("sunrise_mod_runtime", "crates/sunrise-mod-runtime/src"),'))
     # Every crate compiling the affected sources needs a direct dependency. The
-    # client-lib manifest uses sources physically stored in horizon-client.
-    for crate in ["horizon-world", "horizon-client", "horizon-client-lib", "horizon-client-render", "horizon-mod-api", "horizon-protocol"]:
+    # client-lib manifest uses sources physically stored in sunrise-client.
+    for crate in ["sunrise-world", "sunrise-client", "sunrise-client-lib", "sunrise-client-render", "sunrise-mod-api", "sunrise-protocol"]:
         path = ROOT / "crates" / crate / "Cargo.toml"
         text = path.read_text()
-        text = replace(text, "[dependencies]\n", '[dependencies]\nhorizon-mod-runtime = { path = "../horizon-mod-runtime" }\n')
+        text = replace(text, "[dependencies]\n", '[dependencies]\nsunrise-mod-runtime = { path = "../sunrise-mod-runtime" }\n')
         write(path, text)
     path = ROOT / "Cargo.toml"
-    write(path, replace(path.read_text(), '    "crates/horizon-core",', '    "crates/horizon-core",\n    "crates/horizon-mod-runtime",'))
+    write(path, replace(path.read_text(), '    "crates/sunrise-core",', '    "crates/sunrise-core",\n    "crates/sunrise-mod-runtime",'))
     # Source-path references outside Rust: no stale old attachment paths in docs,
     # port maps, internals or workflow inputs. Do not rewrite this script/proof.
     for name in subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).splitlines():
@@ -275,17 +275,17 @@ use std::sync::{LazyLock, RwLock};
             text = data.decode()
         except UnicodeDecodeError:
             continue
-        new = text.replace("crates/horizon-world/src/attachments", "crates/horizon-mod-runtime/src/attachments").replace("horizon_world::attachments", "horizon_mod_runtime::attachments")
+        new = text.replace("crates/sunrise-world/src/attachments", "crates/sunrise-mod-runtime/src/attachments").replace("sunrise_world::attachments", "sunrise_mod_runtime::attachments")
         if name == "AGENTS.md":
-            row = "| `horizon-world` |"
-            new = replace(new, row, "| `horizon-mod-runtime` | Engine-independent mod attachment storage, query index and generic registry slot tables; depends only on `horizon-core` |\n" + row)
+            row = "| `sunrise-world` |"
+            new = replace(new, row, "| `sunrise-mod-runtime` | Engine-independent mod attachment storage, query index and generic registry slot tables; depends only on `sunrise-core` |\n" + row)
         if new != text:
             write(path, new)
-    write("crates/horizon-mod-runtime/tests/registry_keys.rs",
+    write("crates/sunrise-mod-runtime/tests/registry_keys.rs",
           (Path(__file__).parent / "registry_tests.rs").read_text())
     path = ROOT / "docs/modding/src/concepts/trait-mods/028-server-attachments.md"
     text = path.read_text()
-    text += '\nThe API owns these public names. Their engine-independent storage and query index\nlive in `horizon-mod-runtime`, which depends only on the shared vocabulary in\n`horizon-core`; world and game storage use the same implementation.\n'
+    text += '\nThe API owns these public names. Their engine-independent storage and query index\nlive in `sunrise-mod-runtime`, which depends only on the shared vocabulary in\n`sunrise-core`; world and game storage use the same implementation.\n'
     write(path, text)
     subprocess.run(["rustfmt", "--edition", "2024", "--config", "skip_children=true", *map(str, sorted(changed))], cwd=ROOT, check=True)
     # Resolve the workspace graph without compiling. --no-deps does not refresh

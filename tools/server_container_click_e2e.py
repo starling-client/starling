@@ -9,10 +9,10 @@ throws (click type 4, button 1: the whole stack) from slot 63, past the menu: no
 stone in the player's first inventory row (slot 9) stays. Before the fix, slot 63 reached that stone and
 threw it.
 
-horizon-bots stand in for the client (`--click`). The server runs in a fresh folder with fresh HORIZON_HOME
+sunrise-bots stand in for the client (`--click`). The server runs in a fresh folder with fresh SUNRISE_HOME
 and XDG folders (lab.game_env), on a free port. Build first:
-    cargo build --profile fast -p horizon-game --bin horizon-client
-    cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p sunrise-game --bin sunrise-client
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 import os
@@ -26,7 +26,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
-from server_horizon_only_e2e import Failed, server  # noqa: E402
+from server_sunrise_only_e2e import Failed, server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 CHEST = (2, -60, 0)
@@ -56,7 +56,7 @@ def check(bins, scratch, out):
             s.console(line)
         click = '{},{},{}:{}:1:{}'.format(*CHEST, 63, THROW)
         bot = subprocess.Popen(
-            [bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
+            [bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
              '--height', '0', '--seconds', '8', '--name', 'Click', '--click', click],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:

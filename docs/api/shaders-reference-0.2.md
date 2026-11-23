@@ -1,17 +1,17 @@
 # Shader API reference (0.2)
 
-Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
+Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test reference`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
-with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+**Experimental** ([stability.md](stability.md)): `sunrise-shader check` takes 0.2 packs, the game draws them only
+with `SUNRISE_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
 The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
 
 Every colour a 0.2 stage reads or returns is **linear light**: BT.709 (sRGB) primaries by default, scene-referred,
 1.0 is vanilla's white at paper white, more is brighter. A pack may ask for BT.2020 primaries, which hold colours
-outside sRGB, with `[frame] primaries` (below). Horizon decodes vanilla's values with a 2.2 power (vanilla's, not
+outside sRGB, with `[frame] primaries` (below). Sunrise decodes vanilla's values with a 2.2 power (vanilla's, not
 the piecewise sRGB curve), replacing negatives and NaN with 0 first, and encodes a stage's result the same way where
 the frame stores gamma (`[frame] blend`, below).
 
@@ -21,7 +21,7 @@ the frame stores gamma (`[frame] blend`, below).
   `opaque_color`, `reflection`, `shadow_color`).
 - **Data, as in 0.1:** depth, normals, `light` levels, `emission`, every channel of the LabPBR maps, and the pack's
   `[[textures]]`.
-- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Horizon decodes
+- **`[[lights]]` and `[[particle_lights]]` colours** are written as in 0.1, in vanilla's gamma, and Sunrise decodes
   them: `block_light_color` and `colored_light` are linear. `block_light_colors` holds them as written; read it through
   `block_light_color`.
 - **Alpha is coverage only**, never light: brightness is in rgb alone. A post pass's alpha is ignored.
@@ -30,13 +30,13 @@ the frame stores gamma (`[frame] blend`, below).
 
 `Frame`, the stage inputs (`SkyInput`, `VertexInput`, `MaterialInput`, `DisplacementInput`, `WeatherInput`,
 `PostInput`, `TonemapInput`, `EntityInput`) and `surface_at`'s `SurfaceData` may gain fields in later releases. Read
-their fields and pass them along, but don't construct them: `horizon-shader check` refuses `PostInput(...)` and the
+their fields and pass them along, but don't construct them: `sunrise-shader check` refuses `PostInput(...)` and the
 like. `Surface` is yours to construct and keeps its one field; later material outputs come as helpers.
 
 **New names reach a stage only if the pack asked for them.** A later release puts a new name before your files (a
 helper, a struct, a resource, a constant) only under a manifest key the pack sets, or in a stage added later, whose
 prelude is its own. A stage a pack has today keeps the names it has today, so a name of your own that is free now
-stays yours: an addition doesn't break a pack that didn't ask for it. Names starting with `horizon_` are Horizon's
+stays yours: an addition doesn't break a pack that didn't ask for it. Names starting with `sunrise_` are Sunrise's
 already, and new fields can't collide, since you don't construct those structs.
 
 ## The display
@@ -45,18 +45,18 @@ already, and new fields can't collide, since you don't construct those structs.
 on, where the device keeps the HUD on a layer of its own, a 0.2 pack sees the display's: `hdr` 1, `paper_white` and
 `peak` in nits, `headroom` the peak over paper white (at least 1) and `black_level` the display's black in nits.
 Otherwise it sees SDR: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0, and its picture ends on an
-8-bit frame, clipped at white, before the camera overlays and the HUD draw. Horizon lifts the shadows onto
+8-bit frame, clipped at white, before the camera overlays and the HUD draw. Sunrise lifts the shadows onto
 `black_level` after `[tonemap]`: read it, but don't apply it.
 
 ## `[frame] blend`
 
-`blend = "gamma"` (the default) keeps the frame in vanilla's gamma, values above 1 kept: Horizon encodes the material,
+`blend = "gamma"` (the default) keeps the frame in vanilla's gamma, values above 1 kept: Sunrise encodes the material,
 sky and weather stages' results before they are stored and blended, so glass, water, clouds and particles blend as
-vanilla's. `blend = "linear"` stores linear light, so see-through draws blend as light does: Horizon stores those
+vanilla's. `blend = "linear"` stores linear light, so see-through draws blend as light does: Sunrise stores those
 stages' results as they are and decodes its own draws (entities, particles, clouds, weather, the stages a pack leaves
 out), so a solid surface looks as under `"gamma"`. A stage sees the same values either way. Where the device can't
 draw a float frame the pack draws on an 8-bit one, in gamma. Under `"linear"` resource packs' `core/sky`,
-`core/stars` and `core/rendertype_lines` shaders, which write gamma, give way to Horizon's own sky, stars and block
+`core/stars` and `core/rendertype_lines` shaders, which write gamma, give way to Sunrise's own sky, stars and block
 outline.
 
 ## `[frame] primaries`
@@ -67,13 +67,13 @@ It needs `blend = "linear"`, since a change of primaries is only right in linear
 space the pack's colours are in, and `frame.luminance` holds that space's luminance weights: compute luminance as
 `dot(color, frame.luminance)` and it is right in either. `"bt2020"` passes the check; the game doesn't serve it yet.
 
-A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the
+A stage is a function your WGSL defines, with the signature below; Sunrise puts the prelude (these structs, the
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
-bindings and no entry points, and no names starting with `horizon_`.
+bindings and no entry points, and no names starting with `sunrise_`.
 
 ## Stages
 
-| Stage | In `horizon-shaders.toml` | Your function |
+| Stage | In `sunrise-shaders.toml` | Your function |
 | --- | --- | --- |
 | sky | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` |
 | vertex | `[vertex]` | `fn vertex(input: VertexInput) -> vec3<f32>` |
@@ -162,7 +162,7 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 
 ### `Surface`
 
-What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent) and fog.
+What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Sunrise then applies the alpha test (cutout and translucent) and fog.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -314,7 +314,7 @@ pass reads a blank one in place of the target it writes).
 
 ### `TonemapInput`
 
-One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).
+One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Sunrise clamps it there).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -333,12 +333,12 @@ Resources (bind group 3):
 
 It is a pure mapping from the scene's light to the output its `frame` describes, run once per pixel of
 each output, after the post chain and before the camera overlays and the HUD. Today the display is the
-only output; Horizon may add others for the same frame, such as an SDR screenshot or icon, where `frame`'s
+only output; Sunrise may add others for the same frame, such as an SDR screenshot or icon, where `frame`'s
 display fields describe SDR (`hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0). Its
 only output is the colour it returns, so nothing carries from one call to the next. A pack without it gets
-Horizon's: a clip at white in SDR, and in HDR the curve Horizon uses without a pack, which keeps light up
-to 60% of the peak as it is and rolls it off into the peak above. Either runs once: Horizon doesn't map a pack's
-result again. Horizon holds the result to 0 to `frame.headroom`, then lifts the shadows onto
+Sunrise's: a clip at white in SDR, and in HDR the curve Sunrise uses without a pack, which keeps light up
+to 60% of the peak as it is and rolls it off into the peak above. Either runs once: Sunrise doesn't map a pack's
+result again. Sunrise holds the result to 0 to `frame.headroom`, then lifts the shadows onto
 `frame.black_level`.
 
 ## entity
@@ -368,8 +368,8 @@ One point of the surface of an entity, a block entity, an item or a particle, fo
 
 `entity` lights what is no block terrain: `input.kind` says which. It returns the same `Surface` as `material` (rgb
 linear light, 0 or more and unbounded; alpha its coverage), so a pack writes its lighting once and calls it from both
-stages. Around it Horizon keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
-added on top, then fog. `horizon-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
+stages. Around it Sunrise keeps vanilla's order: the alpha test on the returned alpha, then the enchantment glint
+added on top, then fog. `sunrise-shader check` takes the stage; **the game doesn't draw it yet** and refuses a pack
 that has it. A pack without `[entity]` is drawn as before, and sees none of this stage's names. Until the game draws
 the stage its prelude may still gain names; from then on the rule for new names holds for it too.
 
@@ -387,7 +387,7 @@ fn entity(input: EntityInput) -> Surface {
 
 Without a flash (`overlay.a` 0) that is `albedo * tint * shade * lightmap`. In linear light alone,
 `mix(base, input.overlay.rgb, input.overlay.a) * input.lightmap` is the same flash a little brighter. The shade and
-the light act on rgb only. `lightmap` holds no coloured light: where `colored_light` is above 0, Horizon's own draw
+the light act on rgb only. `lightmap` holds no coloured light: where `colored_light` is above 0, Sunrise's own draw
 adds it to the light colour, and the expression above leaves it out.
 
 Resources (bind group 3):
@@ -478,8 +478,8 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 ## Anti-aliasing
 
 While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`
-and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the
-last post pass draws the picture itself and Horizon's own resolve, which does TAA, FXAA and TAA upscaling, is the
+and `upscaling` in `sunrise-graphics.txt` have no effect, and the frame's projection is never jittered, because the
+last post pass draws the picture itself and Sunrise's own resolve, which does TAA, FXAA and TAA upscaling, is the
 step it replaces. The world is still rendered at `resolutionScale` before the pack reads it.
 
 A pack that wants smooth edges draws them itself, in a post pass: a spatial filter (FXAA, SMAA and the like) works on
@@ -509,7 +509,7 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 ## The check
 
-A pack runs only after it passes `horizon_shader_api::check` (the game when it loads a pack, the launcher before it
+A pack runs only after it passes `sunrise_shader_api::check` (the game when it loads a pack, the launcher before it
 installs one, the registry's CI): each stage is parsed and validated by naga, checked against its signature and
 the rules above, and translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL) with its options at their
 defaults, minimums and maximums. Every option must be an `override` of its type in some stage; an `override`

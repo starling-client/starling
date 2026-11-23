@@ -10,7 +10,7 @@
 # would also let an admin merge without the checks; here both checks stay required for everyone, admins and Ludovic
 # included (enforce_admins stays on), and only the review requirement has an exception, for him alone.
 #
-# Apply it only once agents open, push and merge pull requests as the horizon-agent GitHub App, not as ludovic111:
+# Apply it only once agents open, push and merge pull requests as the sunrise-agent GitHub App, not as ludovic111:
 # while agents use his token, his bypass is theirs too, and their changes to listed files would skip his review.
 #
 #   tools/ci/protect_pipeline.sh            # print the protection it would set, change nothing

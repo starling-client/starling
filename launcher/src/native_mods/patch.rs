@@ -1,6 +1,6 @@
 //! Function replacement (fn-replace): `[[native.mixin]]` rows built against the prebuilt game, with no
 //! game rebuild. Each function the rows target is copied out of the pinned source into one patch
-//! crate (`horizon_mod_api_gen::patch`), horizon-mixins applies every mod's rows to those copies
+//! crate (`sunrise_mod_api_gen::patch`), horizon-mixins applies every mod's rows to those copies
 //! in one pass (one combined copy per function, in the tool's order), rustc compiles the crate
 //! against the prebuilt game and the mods, and the generated `main` installs each copy through
 //! its point's replacement slot. What can't take this route is refused by name; nothing here
@@ -8,13 +8,13 @@
 use super::{api, prebuilt::Identity, Bundle};
 use crate::i18n::trf;
 use crate::rust_toolchain::Toolchain;
-use horizon_platform::mod_build::api_gen;
+use sunrise_platform::mod_build::api_gen;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The patch crate's name: the copies' ids and the executable's `--extern` use it.
-pub(super) const CRATE: &str = "horizon_patch";
+pub(super) const CRATE: &str = "sunrise_patch";
 
 /// The compiled patch crates, `(crate name, rlib)`, and the installation result expressions the
 /// generated `main` installs.
@@ -212,11 +212,11 @@ pub(super) fn build(
 pub(super) fn sdk_externs(game: &Path, sdk: &Identity) -> Result<Vec<(String, PathBuf)>, String> {
     let deps = game.join("deps");
     let mut externs = vec![(
-        "horizon_client".to_owned(),
-        super::prebuilt::library(&deps, "horizon_client")?,
+        "sunrise_client".to_owned(),
+        super::prebuilt::library(&deps, "sunrise_client")?,
     )];
     for krate in sdk.facade_crates() {
-        if krate != "horizon_client" {
+        if krate != "sunrise_client" {
             externs.push((
                 krate.to_owned(),
                 super::prebuilt::facade_library(&deps, krate, sdk)?,
@@ -248,8 +248,8 @@ impl Prepared<'_> {
 /// replaces or redirects a filled loop's entry (anything but `HEAD` and `RETURN`, which compose
 /// around the loop), are refused by name.
 fn loop_slots(game: &Path, bundles: &[&Bundle]) -> Result<Vec<api_gen::patch::LoopSlots>, String> {
-    use horizon_mod_package::manifest::mixin::Kind;
-    let rows: Vec<(&Bundle, &horizon_mod_package::manifest::loops::Loop)> = bundles
+    use sunrise_mod_package::manifest::mixin::Kind;
+    let rows: Vec<(&Bundle, &sunrise_mod_package::manifest::loops::Loop)> = bundles
         .iter()
         .flat_map(|bundle| bundle.native().r#loop.iter().map(move |row| (*bundle, row)))
         .collect();
@@ -261,7 +261,7 @@ fn loop_slots(game: &Path, bundles: &[&Bundle]) -> Result<Vec<api_gen::patch::Lo
     }
     let published = match fs::read_to_string(&path) {
         Ok(text) => {
-            horizon_mod_package::build_data::read::<Loops>(api_gen::loops::FILE, &text)
+            sunrise_mod_package::build_data::read::<Loops>(api_gen::loops::FILE, &text)
                 .map_err(|e| format!("{}: {e}", path.display()))?
                 .1
                 .loops
@@ -366,7 +366,7 @@ fn function_index(game: &Path, commit: &str) -> Result<api_gen::functions::Funct
         )
     })?;
     let (build, index): (_, api_gen::functions::FunctionIndex) =
-        horizon_mod_package::build_data::read(FILE, &text)
+        sunrise_mod_package::build_data::read(FILE, &text)
             .map_err(|e| format!("E_MIXIN_INDEX: {e}"))?;
     if build.commit != commit {
         return Err(format!(
@@ -627,13 +627,13 @@ mod refusal_tests {
         std::fs::write(
             game.path().join("functions.json"),
             format!(
-                r#"{{"schema":1,"build":{{"commit":"{commit}"}},"crates":{{"horizon_client":{{"library":"horizon_client","modules":{{"horizon_client::game":[]}}}}}},"functions":{{"horizon_client::game::f":{{"module":"horizon_client::not a path!","file":"crates/horizon-client/src/game.rs","span":[0,1],"signature_hash":"","sha256":""}}}},"refused":{{}}}}"#
+                r#"{{"schema":1,"build":{{"commit":"{commit}"}},"crates":{{"sunrise_client":{{"library":"sunrise_client","modules":{{"sunrise_client::game":[]}}}}}},"functions":{{"sunrise_client::game::f":{{"module":"sunrise_client::not a path!","file":"crates/sunrise-client/src/game.rs","span":[0,1],"signature_hash":"","sha256":""}}}},"refused":{{}}}}"#
             ),
         )
         .unwrap();
         let error = super::function_index(game.path(), &commit).unwrap_err();
         assert!(
-            error.starts_with("E_MIXIN_INDEX: functions.json: function `horizon_client::game::f` is in `horizon_client::not a path!`"),
+            error.starts_with("E_MIXIN_INDEX: functions.json: function `sunrise_client::game::f` is in `sunrise_client::not a path!`"),
             "{error}"
         );
     }
@@ -647,7 +647,7 @@ mod refusal_tests {
         // The patch library's entry module hands its installs to the loader, which passes them
         // to the startup gate before any mod's entries are registered.
         let template =
-            include_str!("../../../crates/horizon-client/src/native_mod_entry.rs.template");
+            include_str!("../../../crates/sunrise-client/src/native_mod_entry.rs.template");
         let installs = template.find("fn installs()").unwrap();
         assert!(template[installs..].find("/* MOD_REDIRECTS */").is_some());
     }

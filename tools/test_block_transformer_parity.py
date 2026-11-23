@@ -3,7 +3,7 @@
 
 The Java oracle (VanillaBlockTransformerOracle) evaluates the registry's
 BlockStateProviders on a stand-in level; the Rust example
-(block_transform_fixture) evaluates horizon_client::block_transform. Cases are
+(block_transform_fixture) evaluates sunrise_client::block_transform. Cases are
 every block state any transformer mentions (plus a random sample of all states)
 under each transformer, with a few blocks above and three clicked faces.
 """
@@ -50,7 +50,7 @@ def main():
                 cases.append('\t'.join([transformer, face, state, rng.choice(ABOVE)]))
     (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases))
     vanilla.run('VanillaBlockTransformerOracle', work / 'cases.txt', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'block_transform_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'block_transform_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
     total = lib.compare(cases, work / 'native.txt', work / 'rust.txt',
                         lambda case, line: case.split('\t')[0] + ' ' + line.split('\t')[0][:12], None, args.limit)
     raise SystemExit(1 if total else 0)

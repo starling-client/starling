@@ -23,10 +23,10 @@ def old(path):
     return subprocess.check_output(['git', 'show', f'{BASE}:{path}'], text=True)
 
 
-phase = old('crates/horizon-mod-api/src/world/phase.rs')
+phase = old('crates/sunrise-mod-api/src/world/phase.rs')
 metadata = set(re.findall(r'"(\w+)"', phase[phase.index('    let metadata ='):phase.index('    let settings =')]))
 expected = {}
-files = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', BASE, 'crates/horizon-client/src/game/host'], text=True).splitlines()
+files = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', BASE, 'crates/sunrise-client/src/game/host'], text=True).splitlines()
 for path in files:
     for impl, body, _ in blocks(old(path), r"impl (\w+) for Game<'_>\s*\{"):
         owner = impl[1]
@@ -50,7 +50,7 @@ for path in files:
                 call = 'self'
             expected[f'{owner}::{name}'] = {'access': access, 'call': call}
 
-out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(max(glob.glob(str(ROOT / 'target/debug/build/horizon-client-*/out/game_host_modules.rs')), key=os.path.getmtime))
+out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(max(glob.glob(str(ROOT / 'target/debug/build/sunrise-client-*/out/game_host_modules.rs')), key=os.path.getmtime))
 actual = {}
 source = out.read_text()
 for impl, body, _ in blocks(source, r"impl mod_api::prelude::(\w+) for Game<'_>\s*\{"):

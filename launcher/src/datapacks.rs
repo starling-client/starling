@@ -70,7 +70,7 @@ fn check(file: &Path) -> Result<(), String> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let archive = fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let zip = horizon_port_pack::zip_intake::open(archive)
+    let zip = sunrise_port_pack::zip_intake::open(archive)
         .map_err(|e| format!("{}: {e}", file.display()))?;
     if zip.index_for_name("pack.mcmeta").is_none() {
         return Err(format!("{name} is not a pack: it has no pack.mcmeta."));
@@ -206,7 +206,7 @@ const WORLDGEN_READ: [&str; 14] = [
 /// A data pack's files by kind (`function`, `worldgen`, `item tag`...), with how many each.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Coverage {
-    /// What Horizon runs.
+    /// What Sunrise runs.
     pub read: Vec<(String, usize)>,
     /// What it doesn't read yet.
     pub unread: Vec<(String, usize)>,
@@ -216,7 +216,7 @@ impl Coverage {
     /// "Runs its 12 functions, 1 predicate. Not read yet: 40 worldgen, 3 recipes."
     pub fn summary(&self) -> String {
         let runs = match self.read.is_empty() {
-            true => "Nothing in it runs in Horizon yet.".to_string(),
+            true => "Nothing in it runs in Sunrise yet.".to_string(),
             false => format!("Runs its {}.", counts(&self.read)),
         };
         match self.unread.is_empty() {
@@ -225,7 +225,7 @@ impl Coverage {
         }
     }
 
-    /// "1077 worldgen, 653 loot tables, 16 recipes": what Horizon doesn't read yet, the six
+    /// "1077 worldgen, 653 loot tables, 16 recipes": what Sunrise doesn't read yet, the six
     /// biggest kinds and how many other kinds.
     pub fn not_read(&self) -> String {
         let mut biggest = self.unread.clone();
@@ -257,7 +257,7 @@ fn counts(list: &[(String, usize)]) -> String {
 /// it doesn't yet.
 pub fn coverage(file: &Path) -> Result<Coverage, String> {
     let archive = fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let zip = horizon_port_pack::zip_intake::open(archive)
+    let zip = sunrise_port_pack::zip_intake::open(archive)
         .map_err(|e| format!("{}: {e}", file.display()))?;
     let mut kinds = std::collections::BTreeMap::<String, usize>::new();
     let names: Vec<_> = zip

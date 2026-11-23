@@ -7,15 +7,15 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Hosts a file may come from: Modrinth's and CurseForge's file servers, and the release assets
-/// of Horizon's registry (and, see [`github_release_asset`], of the repository a registry entry
+/// of Sunrise's registry (and, see [`github_release_asset`], of the repository a registry entry
 /// names).
 const HOSTS: [&str; 5] = [
     "https://cdn.modrinth.com/",
     "https://edge.forgecdn.net/",
     "https://mediafilez.forgecdn.net/",
-    horizon_mod_package::index::FILE_HOST,
+    sunrise_mod_package::index::FILE_HOST,
     // The registry's files at their address before the move to horizon-rust (GitHub redirects it).
-    "https://github.com/ludovic111/horizon-mods/releases/download/",
+    "https://github.com/ludovic111/sunrise-mods/releases/download/",
 ];
 /// `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`: a release asset of a mod's
 /// own repository, which the registry's index lists once its release passed the registry's checks
@@ -47,10 +47,10 @@ const MAX: u64 = 1 << 30;
 /// be a handshake per file, and a modpack brings hundreds.
 pub(super) fn agent(url: &str) -> ureq::Agent {
     let spec = crate::proxy::spec_for(url);
-    horizon_port_pack::net::keep("browser", spec.as_deref(), |proxy| {
+    sunrise_port_pack::net::keep("browser", spec.as_deref(), |proxy| {
         let builder = ureq::AgentBuilder::new()
             .user_agent(&format!(
-                "{} horizon-launcher/{} (github.com/{})",
+                "{} sunrise-launcher/{} (github.com/{})",
                 crate::backend::REPO,
                 crate::backend::VERSION,
                 crate::backend::REPO
@@ -68,7 +68,7 @@ pub(super) fn agent(url: &str) -> ureq::Agent {
 pub fn refuse(file: &FileRef) -> Option<String> {
     if !HOSTS.iter().any(|h| file.url.starts_with(h)) && !github_release_asset(&file.url) {
         return Some(format!(
-            "{} isn't on Modrinth's, CurseForge's or Horizon's file servers, or a GitHub release.",
+            "{} isn't on Modrinth's, CurseForge's or Sunrise's file servers, or a GitHub release.",
             file.url
         ));
     }

@@ -63,26 +63,26 @@ class AreaTests(unittest.TestCase):
     def test_paths(self):
         cases = {
             "launcher/src/main.rs": "launcher",
-            "crates/horizon-world/src/worldgen/structure/mod.rs": "worldgen",
-            "crates/horizon-client/src/mobs/ai.rs": "mobs",
-            "crates/horizon-client/src/game/mobs/wither.rs": "mobs",
-            "crates/horizon-client-render/src/gfx/cull.rs": "rendering",
-            "crates/horizon-client-render/src/terrain.wgsl": "rendering",
-            "crates/horizon-client/src/game/interface/dedicated/status.rs": "server",
-            "crates/horizon-server-files/src/lib.rs": "server",
-            "crates/horizon-client/src/lan/hub.rs": "multiplayer",
-            "crates/horizon-client/src/game/network/remote_vehicles.rs": "multiplayer",
-            "crates/horizon-protocol/src/packets/play.rs": "multiplayer",
-            "crates/horizon-mod-package/src/lib.rs": "mods",
-            "crates/horizon-client/src/game/native_hooks/mod.rs": "mods",
-            "crates/horizon-world/src/datafix/v3.rs": "saves",
-            "crates/horizon-client/src/game/administration/commands/admin.rs": "commands",
-            "crates/horizon-command/src/args.rs": "commands",
-            "crates/horizon-client-render/src/sound_engine.rs": "audio",
-            "crates/horizon-client-render/src/streaming.rs": "chunks",
-            "crates/horizon-world/src/level/redstone.rs": "blocks",
-            "crates/horizon-client/src/title/worlds.rs": "ui",
-            "crates/horizon-client-render/src/options_ui.rs": "ui",
+            "crates/sunrise-world/src/worldgen/structure/mod.rs": "worldgen",
+            "crates/sunrise-client/src/mobs/ai.rs": "mobs",
+            "crates/sunrise-client/src/game/mobs/wither.rs": "mobs",
+            "crates/sunrise-client-render/src/gfx/cull.rs": "rendering",
+            "crates/sunrise-client-render/src/terrain.wgsl": "rendering",
+            "crates/sunrise-client/src/game/interface/dedicated/status.rs": "server",
+            "crates/sunrise-server-files/src/lib.rs": "server",
+            "crates/sunrise-client/src/lan/hub.rs": "multiplayer",
+            "crates/sunrise-client/src/game/network/remote_vehicles.rs": "multiplayer",
+            "crates/sunrise-protocol/src/packets/play.rs": "multiplayer",
+            "crates/sunrise-mod-package/src/lib.rs": "mods",
+            "crates/sunrise-client/src/game/native_hooks/mod.rs": "mods",
+            "crates/sunrise-world/src/datafix/v3.rs": "saves",
+            "crates/sunrise-client/src/game/administration/commands/admin.rs": "commands",
+            "crates/sunrise-command/src/args.rs": "commands",
+            "crates/sunrise-client-render/src/sound_engine.rs": "audio",
+            "crates/sunrise-client-render/src/streaming.rs": "chunks",
+            "crates/sunrise-world/src/level/redstone.rs": "blocks",
+            "crates/sunrise-client/src/title/worlds.rs": "ui",
+            "crates/sunrise-client-render/src/options_ui.rs": "ui",
             "docs/api/shaders.md": "website",
             "roadmap/roadmap.toml": "website",
         }
@@ -90,14 +90,14 @@ class AreaTests(unittest.TestCase):
             self.assertEqual(pl.area_of(path), area, path)
 
     def test_no_area(self):
-        for path in ("tools/parity.py", "crates/horizon-client/src/game.rs", "Cargo.lock", "docs/README.md",
-                     "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobOracle.java",
-                     "crates/horizon-client/examples/mob_ai_probe.rs"):
+        for path in ("tools/parity.py", "crates/sunrise-client/src/game.rs", "Cargo.lock", "docs/README.md",
+                     "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMobOracle.java",
+                     "crates/sunrise-client/examples/mob_ai_probe.rs"):
             self.assertIsNone(pl.area_of(path), path)
 
     def test_biggest_three_with_a_tenth_each(self):
-        files = [("launcher/src/a.rs", 50), ("crates/horizon-client/src/mobs/a.rs", 30),
-                 ("crates/horizon-command/src/a.rs", 10), ("crates/horizon-client-render/src/audio.rs", 9),
+        files = [("launcher/src/a.rs", 50), ("crates/sunrise-client/src/mobs/a.rs", 30),
+                 ("crates/sunrise-command/src/a.rs", 10), ("crates/sunrise-client-render/src/audio.rs", 9),
                  ("tools/x.py", 1)]
         self.assertEqual(pl.areas(files), ["launcher", "mobs", "commands"])
         self.assertEqual(pl.areas([("tools/x.py", 95), ("launcher/src/a.rs", 5)]), [])

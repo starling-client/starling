@@ -6,23 +6,23 @@ explains why the engine stack and API stack remain distinct owned types.
 ## Can we just borrow the existing stack?
 
 **Not through the existing boundary.** The menus already borrow an engine stack,
-not an API stack: `crates/horizon-client/src/menu.rs:615–636` and
-`crates/horizon-client/src/lan/menu.rs:460–501`. Both belong to client-lib (whose
+not an API stack: `crates/sunrise-client/src/menu.rs:615–636` and
+`crates/sunrise-client/src/lan/menu.rs:460–501`. Both belong to client-lib (whose
 manifest uses these source paths). `Game::menu_ops` delegates through `menu_session`
-(`crates/horizon-client/src/game.rs:9506–9585`); its `Env` lends only loop context
+(`crates/sunrise-client/src/game.rs:9506–9585`); its `Env` lends only loop context
 and player identities (`menu.rs:88–97`). `LoopContext` contains registry/settings
-snapshots, not entity storage (`crates/horizon-world/src/native_load_context.rs:193–215`).
+snapshots, not entity storage (`crates/sunrise-world/src/native_load_context.rs:193–215`).
 
 The engine stack owns `Arc<str>` and boxed extra data
-(`crates/horizon-items/src/items.rs:417`); the API stack owns keys and an optional
-`Arc<Components>` (`crates/horizon-mod-vocab/src/item/item_stack.rs:62`). They cannot
+(`crates/sunrise-items/src/items.rs:417`); the API stack owns keys and an optional
+`Arc<Components>` (`crates/sunrise-mod-vocab/src/item/item_stack.rs:62`). They cannot
 be reborrowed as the same type. The existing slot adapter converts before borrowing
 (`game/modding/api_values.rs:1192–1208`, under the client source root). Even ordinary
 Host-backed borrowed-stack hooks are not a zero-copy precedent: `native_use_item`
 (`game/native_hooks/base.rs:3477`) calls generated dispatch whose crossing creates
-an API value (`crates/horizon-mod-api-gen/src/dispatch.rs:909–942`). The generator
+an API value (`crates/sunrise-mod-api-gen/src/dispatch.rs:909–942`). The generator
 passes Game itself as Host, not a newly allocated Host
-(`crates/horizon-mod-api-gen/src/host_param.rs:109–115`).
+(`crates/sunrise-mod-api-gen/src/host_param.rs:109–115`).
 
 | Option | Engine/bridge allocations per candidate slot |
 | --- | --- |
@@ -32,7 +32,7 @@ passes Game itself as Host, not a newly allocated Host
 | Prepare one API stack before slot traversal, then borrow it | 0 during traversal; preparation is payload-dependent and still needs a real Host/entity boundary |
 
 Conversion evidence: `api_values.rs:711–728`,
-`crates/horizon-items/src/item_data.rs:1110`, and API `set_components` at
+`crates/sunrise-items/src/item_data.rs:1110`, and API `set_components` at
 `item/item_stack.rs:337`. Thus **hoisting conversion makes borrowing sufficient for
 the stack cost**, without a new public stack representation, but does not remove
 the need for the following small Host boundary.

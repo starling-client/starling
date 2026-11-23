@@ -53,7 +53,7 @@ def build(body, commit, out):
     if code != 0 or not (built / "build.json").exists():
         return failed(server.why_failed(log))
     about = json.loads((built / "build.json").read_text())
-    shutil.move(built / "libhorizon_android.so", out / "libhorizon_android.so")
+    shutil.move(built / "libsunrise_android.so", out / "libsunrise_android.so")
     return {"state": "done", "sha256": about["sha256"], "size": about["size"], "build": about}
 
 

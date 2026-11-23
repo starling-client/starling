@@ -25,7 +25,7 @@ class WhyFailed(unittest.TestCase):
     def test_a_refused_injection_names_its_mod(self):
         said = why_failed(
             '{\n  "code": "E_UNSUPPORTED_CONTROL_FLOW",\n  "message": "closures are unsupported",\n'
-            '  "file": "crates/horizon-client/src/game.rs",\n  "mod_id": "jade",\n'
+            '  "file": "crates/sunrise-client/src/game.rs",\n  "mod_id": "jade",\n'
             '  "injection_id": "tooltip"\n}\n'
         )
         self.assertEqual(
@@ -52,7 +52,7 @@ class WhyFailed(unittest.TestCase):
 def bundle(mod_id):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as archive:
-        archive.writestr("horizon-native.json", json.dumps({"id": mod_id}))
+        archive.writestr("sunrise-native.json", json.dumps({"id": mod_id}))
         archive.writestr(f"mixins/{mod_id}/horizon-mixin.toml", "")
     data = out.getvalue()
     return len(data).to_bytes(4, "big") + data

@@ -19,7 +19,7 @@ pub trait Hooks {
     fn hello(&self) -> String;
 }
 
-/// What a mod library hands the game, as `horizon_native_mod_v1` does.
+/// What a mod library hands the game, as `sunrise_native_mod_v1` does.
 pub struct Entry {
     pub id: &'static str,
     pub hooks: Box<dyn Hooks>,

@@ -9,8 +9,8 @@ starting code. This checklist does not authorize changing #14224 or another cont
 
 - `V/` means the local decompiled `net/minecraft/client/` reference tree. Names and method/line
   anchors below locate evidence; do not commit that tree or copy Java source into the PR.
-- `R/` means `crates/horizon-client/src/`; `S` means
-  `crates/horizon-client-render/src/social.rs`. Old Rust line ranges refer to PR #14224 at
+- `R/` means `crates/sunrise-client/src/`; `S` means
+  `crates/sunrise-client-render/src/social.rs`. Old Rust line ranges refer to PR #14224 at
   `fab141996690de2816e8758dabb2c13a1fe7ab16`, not the new implementation baseline.
 - Size columns are **estimated production-code review budgets**, including hook/glue edits;
   report tests, additions and deletions separately as well. They are not measured candidate
@@ -23,7 +23,7 @@ starting code. This checklist does not authorize changing #14224 or another cont
 
 ## Existing-backend structure prerequisites
 
-Before adding Part 2 behaviour, separate the existing `horizon-client-render::social`
+Before adding Part 2 behaviour, separate the existing `sunrise-client-render::social`
 responsibilities below. These are small **pure-move** review units, not implementation of B1
 or permission to open a public overlay. Keep `social.rs` as the compatible public facade;
 private submodules serve existing production callers without adding unused APIs.
@@ -225,7 +225,7 @@ ship disabled buttons or placeholder flows as completed parity.
 | ID / budget | Allowed files and reference | Acceptance / non-goals |
 | --- | --- | --- |
 | P0 / <=400 per pure move | If needed, extract existing title/game/HUD responsibilities into sibling modules, before adding overlay behaviour. | No behaviour change; compare before/after existing tests and screenshots where visible. Record move additions/deletions separately. No compression trick or NUL loss. Split multiple relocations rather than mixing them. |
-| W0 / 80-200 per generic fix | Existing `horizon-client-render/src/ui.rs` Caret/sprite helpers only when U3/U8 needs a demonstrably missing generic contract. | Check existing editor/sprite consumers as well as overlay. Blink after cursor moves and scroll-to are separate behaviours if their diff needs splitting. No overlay-specific branch in generic widgets. |
+| W0 / 80-200 per generic fix | Existing `sunrise-client-render/src/ui.rs` Caret/sprite helpers only when U3/U8 needs a demonstrably missing generic contract. | Check existing editor/sprite consumers as well as overlay. Blink after cursor moves and scroll-to are separate behaviours if their diff needs splitting. No overlay-specific branch in generic widgets. |
 | I1 / 180-350 | New `R/game/friends_overlay.rs` adapter; small dispatch replacement in gameplay screen/render/input paths. Reuse pause layout, do not edit the host/share implementation. | `PauseScreen.createPauseMenu`/`FriendsOverlayScreen.extractBackground`: correct demo/offline gate, consent, badge1..5/more, background draw without hover then blur, actual-parent return, pause semantics, listener cleanup, resize; no fifth icon unless separately approved. Dynamic registered pause rows remain intact. |
 | I2 / 200-400 | New `R/title/friends_overlay.rs` adapter; minimal title mode/dispatch replacement; P0 first where necessary. | `TitleScreen.init/tick`: same vanilla gate/positioning, badge refresh, consent, Escape/outside restores actual title state, panorama/background blur, no lost notifications during startup/world entry; leave Join by Code reachable through agreed extension entry. Do not add another renderer/skin worker. |
 | I3 / 100-220 | Existing rebindable Friends action + global input dispatcher; no hardcoded O check, no duplicate binding. | `Minecraft.handleGlobalKeyPress/toggleFriendsScreen`: null/title/pause/current-overlay routes; reject unrelated screens and focused input capture; debug modifier suppression; demo/offline restriction; toggle closes to actual parent, including no screen. No simulated pause parent for direct in-world opening. |

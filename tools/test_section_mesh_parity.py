@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Horizon's section mesher with the client's own ModelBlockRenderer and FluidRenderer.
+"""Compare Sunrise's section mesher with the client's own ModelBlockRenderer and FluidRenderer.
 
 Both sides mesh the same scenes (block states by registry ID, per-cell sky/block
 light, constant biome colours, overworld or Nether cardinal lighting). The Java
@@ -446,7 +446,7 @@ def compare(scene, client, rust, states, report, limit):
                 if blend_zero and cp[3] == 0 and cq[3] == 255:
                     # With biomeBlendRadius 0 the client uses the resolver's colour as is,
                     # and biome colours given as plain RGB have alpha 0: tinted vertices come
-                    # out fully transparent. Horizon keeps them opaque; RGB is compared.
+                    # out fully transparent. Sunrise keeps them opaque; RGB is compared.
                     cp[3] = 255
                 if cp != cq:
                     problems.add('color' if max(abs(x - y) for x, y in zip(cp, cq)) > 1 else 'color_rounding')
@@ -474,15 +474,15 @@ def main():
     parser.add_argument('--quick', action='store_true', help='skip the all-states catalogue and most dense scenes')
     args = parser.parse_args()
     lock, jars, _ = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     BUILD.mkdir(parents=True, exist_ok=True)
     report_path = BUILD / 'report.json'
     report_path.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSectionMeshOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSectionMeshOracle.java'
     helpers = [oracle.with_name(n + '.java') for n in ['VanillaCuboidModelOracle', 'VanillaHeightmapOracle']]
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/test_rust_parity.py', oracle, *helpers,
-               lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/horizon-client/examples/probe/section_mesh_fixture.rs']
-    for crate in ['horizon-core', 'horizon-world', 'horizon-assets', 'horizon-client']:
+               lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/sunrise-client/examples/probe/section_mesh_fixture.rs']
+    for crate in ['sunrise-core', 'sunrise-world', 'sunrise-assets', 'sunrise-client']:
         sources += [lab.ROOT / 'crates' / crate / 'Cargo.toml', *sorted((lab.ROOT / 'crates' / crate / 'src').rglob('*.rs'))]
     tested = base.source_hashes(sources)
     states = States(resources)
@@ -500,12 +500,12 @@ def main():
     classes = BUILD / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['client'], *baking.client_libraries()]))
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'), '-cp', dependencies, '-d', classes, oracle, *helpers], 'compile-java')
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'), '-cp', dependencies, '-d', classes, oracle, *helpers], 'compile-java')
     env_jobs = os.environ.get('CARGO_BUILD_JOBS', '3')
-    run(['cargo', 'build', '--locked', '--profile', 'fast', '-j', env_jobs, '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+    run(['cargo', 'build', '--locked', '--profile', 'fast', '-j', env_jobs, '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'], cwd=lab.ROOT))
     binary = Path(metadata['target_directory']) / 'fast/examples' / ('client_probe.exe' if os.name=='nt' else 'client_probe')
-    java = ['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaSectionMeshOracle']
+    java = ['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaSectionMeshOracle']
     run([binary, 'section_mesh_fixture',resources, inputs, BUILD / 'rust.jsonl'], 'rust')
     run([*java, inputs, BUILD / 'client.jsonl', resources], 'client')
     run([*java, 'facts', BUILD / 'client-facts.jsonl', resources], 'client-facts')

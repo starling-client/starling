@@ -16,19 +16,19 @@ calls a [support module](5-support-modules.md) of the same mod, so the example k
 ```toml
 [[native.module]]
 id = "runtime"
-file = "crates/horizon-client/src/game/world/autosave.rs"
+file = "crates/sunrise-client/src/game/world/autosave.rs"
 name = "fnr_runtime"
 source = "src/runtime.rs"
 
 [[native.bridge]]
 id = "ticks"
 kind = "GET_MUT"
-target = "horizon_client::game::Game"
+target = "sunrise_client::game::Game"
 member = "ticks_until_autosave"
 
 [[native.mixin]]
 id = "head"
-target = "horizon_client::game::autosave::Game<'_>::on_tick_rate_changed"
+target = "sunrise_client::game::autosave::Game<'_>::on_tick_rate_changed"
 kind = "HEAD"
 helper = "src/mixins/head.rs"
 bindings = [{ name = "game", ty = "&mut Game<'_>", value = "&mut *self" }]
@@ -54,7 +54,7 @@ So use only letters, digits, `_` and `-` in a bridge id, and keep ids distinct a
 
 | `kind` | Method | `target` | `member` |
 | --- | --- | --- | --- |
-| `GET` | `fn(&self) -> &T` | The struct: `horizon_client::game::Game` | The field's name, or its index in a tuple struct as a string (`"0"`) |
+| `GET` | `fn(&self) -> &T` | The struct: `sunrise_client::game::Game` | The field's name, or its index in a tuple struct as a string (`"0"`) |
 | `GET_MUT` | `fn(&mut self) -> &mut T` | The struct | The field |
 | `SET` | `fn(&mut self, value: T)` | The struct | The field |
 | `INVOKE` | The method's own signature, renamed | The method, written like a [mixin target](2-mixins.md#naming-the-target) | leave it out |
@@ -63,7 +63,7 @@ So use only letters, digits, `_` and `-` in a bridge id, and keep ids distinct a
 bridge is called as `value.__horizon_mixins_<mod>_<id>(…)`, or `Type::__horizon_mixins_<mod>_<id>(…)` for a
 function without `self`.
 
-Name a field bridge's struct by the module that declares it, without lifetimes (`horizon_client::game::Game`).
+Name a field bridge's struct by the module that declares it, without lifetimes (`sunrise_client::game::Game`).
 Mixin helpers on game-crate functions can call the method. Your mod's own crate cannot, so
 read the value in a helper and pass it to your crate.
 
@@ -78,7 +78,7 @@ read the value in a helper and pass it to your crate.
 
 Limits:
 
-- The struct or method is in the game crate, `horizon_client`.
+- The struct or method is in the game crate, `sunrise_client`.
 - A field bridge's struct may be generic over lifetimes, not types or consts.
 - An `INVOKE` target's type and method are not generic.
 - An `INVOKE` bridge qualifies associated items such as `Self::Error` through the target's trait when it

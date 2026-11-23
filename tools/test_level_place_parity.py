@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare horizon-world's placement port (BlockItem placement state) with pinned vanilla.
+"""Compare sunrise-world's placement port (BlockItem placement state) with pinned vanilla.
 
 Generates random neighbourhoods and use-item-on-block actions for random block
 items, resolves the placed position and state with the native oracle
@@ -90,7 +90,7 @@ def main():
     parser.add_argument('--seed', type=int, default=1)
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'level-place-parity'
     work.mkdir(parents=True, exist_ok=True)
     cases = list(obstruction_cases(resources)) + generate(resources, args.count, args.seed)
@@ -98,14 +98,14 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    parity = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+    parity = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
     sources = [parity / 'VanillaBlockPlacementOracle.java', parity / 'VanillaHeightmapOracle.java', parity / 'VanillaLevelShapeOracle.java']
-    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'), '-nowarn', '-cp', dependencies,
+    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'), '-nowarn', '-cp', dependencies,
                     '-d', str(classes), *map(str, sources)], check=True)
     subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies,
-                    'dev.horizonlab.parity.VanillaBlockPlacementOracle', str(resources), str(work / 'cases.jsonl'),
+                    'dev.sunriselab.parity.VanillaBlockPlacementOracle', str(resources), str(work / 'cases.jsonl'),
                     str(work / 'native.txt')], check=True)
-    subprocess.run(['cargo', 'run', '-q', '-j2', '--release', '-p', 'horizon-world', '--example', 'world_probe', '--',
+    subprocess.run(['cargo', 'run', '-q', '-j2', '--release', '-p', 'sunrise-world', '--example', 'world_probe', '--',
                     'level_place_fixture', str(resources), str(work / 'cases.jsonl'), str(work / 'rust.txt')], check=True, cwd=lab.ROOT)
     native = (work / 'native.txt').read_text().splitlines()
     rust = (work / 'rust.txt').read_text().splitlines()

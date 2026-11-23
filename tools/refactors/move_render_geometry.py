@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 import subprocess
 
-SOURCE = 'crates/horizon-mod-render/src/render.rs'
-TARGET = 'crates/horizon-client-render/src/render_geometry.rs'
+SOURCE = 'crates/sunrise-mod-render/src/render.rs'
+TARGET = 'crates/sunrise-client-render/src/render_geometry.rs'
 START = '/// An entity, item and effect vertex'
 END = '#[doc(hidden)]\npub mod built'
 
@@ -24,4 +24,4 @@ else:
     original = path.read_text()
     moved = geometry(original)
     Path(TARGET).write_text(moved)
-    path.write_text(original.replace(moved, 'pub use horizon_client_render::render_geometry::{EntitySpan, Vertex};\n\n'))
+    path.write_text(original.replace(moved, 'pub use sunrise_client_render::render_geometry::{EntitySpan, Vertex};\n\n'))

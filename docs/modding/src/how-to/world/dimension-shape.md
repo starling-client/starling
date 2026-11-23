@@ -31,7 +31,7 @@ including custom types sent by another server.
 `Hooks::register`:
 
 ```rust,ignore
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         r.register_dimension(
@@ -63,7 +63,7 @@ range: the level's fluids, mobs, beds and time follow the type the server sent, 
 whether or not the client has the mod that registered the level.
 
 `sky_color`, `fog_color` (`#rrggbb`) and `cloud_height` set the sky overhead, the fog at the
-horizon and the clouds' height; left as None they are the Overworld's. A client of a server draws a
+sunrise and the clouds' height; left as None they are the Overworld's. A client of a server draws a
 level of a mod or a pack with the sky the server's type gives it, as the host does.
 
 `day_cycle` picks the timelines and the clock the dimension type names: `overworld` (the day and moon

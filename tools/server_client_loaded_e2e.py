@@ -8,10 +8,10 @@ pass, vanilla ignores the player's moves and actions. A bot that never sends tha
 spawn (0.5 blocks a tick): after 1.5 s the server still has it where it spawned; after 6 s its moves
 are taken. A bot that sends it moves at once.
 
-horizon-bots stand in for the clients (`--no-loaded`). The server runs in a fresh folder with fresh
-HORIZON_HOME and XDG folders (lab.game_env), on a free port. Build first:
-    cargo build --profile fast -p horizon-game --bin horizon-client
-    cargo build --profile fast -p horizon-bots
+sunrise-bots stand in for the clients (`--no-loaded`). The server runs in a fresh folder with fresh
+SUNRISE_HOME and XDG folders (lab.game_env), on a free port. Build first:
+    cargo build --profile fast -p sunrise-game --bin sunrise-client
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 import os
@@ -25,14 +25,14 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
-from server_horizon_only_e2e import Failed, server  # noqa: E402
+from server_sunrise_only_e2e import Failed, server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 
 
 def bot(bins, port, name, *extra):
     return subprocess.Popen(
-        [bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
+        [bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1', '--behaviour', 'idle',
          '--seconds', '10', '--name', name, *extra],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

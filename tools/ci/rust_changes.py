@@ -50,8 +50,8 @@ UNKNOWN_CHANGE = "Cargo.lock"
 
 def needs_sample(paths):
     return any(path in ROOT_RUST or path == "tools/ci/check_machine_sample.py"
-               or path.startswith(("crates/horizon-mod-", "crates/horizon-core/",
-                                   "crates/horizon-game-discovery/")) for path in paths)
+               or path.startswith(("crates/sunrise-mod-", "crates/sunrise-core/",
+                                   "crates/sunrise-game-discovery/")) for path in paths)
 
 
 def needs_tooling(changes):

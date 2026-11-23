@@ -1,4 +1,4 @@
-"""Native macOS input for desktop harnesses. Never sends input through horizon-ctl.
+"""Native macOS input for desktop harnesses. Never sends input through sunrise-ctl.
 
 Requires Accessibility permission for the invoking process. Only use while the person
 at the desktop has agreed to let the harness take focus and move the pointer.

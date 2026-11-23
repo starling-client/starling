@@ -63,7 +63,7 @@ fn mob_spawn_placement_check(&self, _: &dyn mod_api::Host, event: &mut mod_api::
 ```
 
 The position check also gets `event.mob`, the mob about to spawn, as an `UnspawnedMobRef` with the same reads as
-`finalize_spawn`'s (no editor: the hook only reads). Vanilla creates the mob before this check; Horizon creates it there
+`finalize_spawn`'s (no editor: the hook only reads). Vanilla creates the mob before this check; Sunrise creates it there
 only when the hook has a listener, the same way the spawn would, and the spawn then goes on with that very mob, so what
 the listener read is what joins the level. A refused check drops the mob: it never joins the level. Creating it draws
 nothing from the level's random, so a listener that answers `Default` changes no draw.
@@ -144,7 +144,7 @@ A natural spawn adds mobs of one type to a group until the group reaches the typ
 
 ```rust,ignore
 struct ZombiePacks;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::EntityPart for ZombiePacks {
     fn spawn_cluster_size(
         &self,
@@ -204,7 +204,7 @@ A level's natural spawning (`NaturalSpawner.spawnForChunk`) also has a policy a 
 
 - `spawn_limits(host)` and `set_spawn_limits(host, limits)`: a `SpawnLimits` with each spawning category's `getMaxInstancesPerChunk`, `SpawnLimits::VANILLA` (70 monsters, 10 creatures, 15 ambient, 5 axolotls, underground water and water creatures each, 20 water ambient) until a mod sets others. A limit caps the category twice, as vanilla's does: over the level, under `limit * spawnable chunks / 289`, and around each player near the chunk, under `limit`. A limit of 0 stops the category.
 - `spawn_flags(host)` and `set_spawn_flags(host, flags)`: a `SpawnFlags` with `monsters` and `friendlies`, both on until a mod turns one off. Off keeps that side out of the level's natural spawning; neither turns monsters on against the `spawn_monsters` rule or anything on with `spawn_mobs` off.
-- `can_spawn_entities_in_chunk(host, [x, z])`: `ServerLevel.canSpawnEntitiesInChunk`, the question natural spawning asks of a spawn position outside the chunk it started in. Horizon's spawner answers it as "the chunk is loaded", and so does this call.
+- `can_spawn_entities_in_chunk(host, [x, z])`: `ServerLevel.canSpawnEntitiesInChunk`, the question natural spawning asks of a spawn position outside the chunk it started in. Sunrise's spawner answers it as "the chunk is loaded", and so does this call.
 
 ```rust,ignore
 fn level_load(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::LevelLoadEvent<'_>) {

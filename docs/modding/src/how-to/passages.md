@@ -1,6 +1,6 @@
 # Passages within a level
 
-A passage is an opening in a level that leads somewhere else in the same level, as an Immersive Portals portal does. A mod's server side registers it with its level; the engine numbers it and tells every Horizon client that tracks the passage's chunk. A client mod then moves the player through it, and the server follows. A passage may name another open level as its destination, but a player cannot cross into it yet (see [Into another level](#into-another-level)).
+A passage is an opening in a level that leads somewhere else in the same level, as an Immersive Portals portal does. A mod's server side registers it with its level; the engine numbers it and tells every Sunrise client that tracks the passage's chunk. A client mod then moves the player through it, and the server follows. A passage may name another open level as its destination, but a player cannot cross into it yet (see [Into another level](#into-another-level)).
 
 ```rust,ignore
 let passage = mod_api::Passage {
@@ -32,7 +32,7 @@ match level.register_passage(host, passage) {
   - `NoIdsLeft`: every id was given (`u64::MAX` of them), and an id is never given twice.
   - `UnknownLevel`: `destination_level` is a level that is not open, or the passage's own level.
 - **Caps.** A level holds 256 passages and a chunk 8. The chunk is the one that holds `origin` (`passage.chunk()`). A client is sent every passage of the chunks it tracks, so the level cap bounds what a client holds, whatever its view distance. The chunk cap bounds what goes out with one chunk, and how many passages a client looks through around a moving player.
-- **Who hears of it.** At the end of the server's tick, a registration goes to every Horizon client that tracks the passage's chunk (`ChunkMap.isChunkTracked`). A client that gets the chunk later is sent the passage right after the chunk, at the chunk's `chunk_sent`. A client forgets a passage with its chunk, and a removal reaches the clients that still track the chunk. Vanilla clients are never sent passages.
+- **Who hears of it.** At the end of the server's tick, a registration goes to every Sunrise client that tracks the passage's chunk (`ChunkMap.isChunkTracked`). A client that gets the chunk later is sent the passage right after the chunk, at the chunk's `chunk_sent`. A client forgets a passage with its chunk, and a removal reaches the clients that still track the chunk. Vanilla clients are never sent passages.
 - **Lifetime.** A passage holds until `remove_passage`, until its level closes, or until the world closes; a failed open drops what the open registered. Passages are not saved, and a datapack reload does not bring them back: a mod registers its own again in `level_load`. Numbers are never given again while the game runs. `remove_passage` returns false for an id from another level, an unknown id, a stale handle and a client.
 - **Churn.** A passage registered and removed before the end of the tick is never sent. The changes the server keeps for its clients are bounded by the live passages and the removed ones it already told.
 - **On the client.** A client keeps a passage only if it passes the same checks as a registration, its chunk is one the client holds, and it has fewer than 256. It drops the rest and logs why.

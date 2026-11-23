@@ -2,7 +2,7 @@
 
 Part of #1608 and #1852. Diverges from upstream: fork-only.
 
-The converter is `horizon_client::json_nbt::json_to_tag(&Value) -> Result<Tag, JsonNbtError>`.
+The converter is `sunrise_client::json_nbt::json_to_tag(&Value) -> Result<Tag, JsonNbtError>`.
 It lives on the game side, so no JSON signature is added to mod_api. The API3
 crafting custom-data, structure-config, Text and loot layers should all call
 this converter rather than copying number/list conversion rules. This commit

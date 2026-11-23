@@ -64,7 +64,7 @@ def cases(build):
     for easing in [json.dumps(e) for e in EASINGS] + [json.dumps({'cubic_bezier': b}) for b in BEZIERS] + BAD_EASINGS:
         lines += [f'ease\t{easing}\t{x!r}' for x in xs]
 
-    timelines = lab.LOCAL / 'horizon-client/26.3/data/minecraft/timeline'
+    timelines = lab.LOCAL / 'sunrise-client/26.3/data/minecraft/timeline'
     for name in ('day', 'moon', 'early_game'):
         data = json.loads((timelines / f'{name}.json').read_text())
         for attribute, track in data['tracks'].items():
@@ -119,5 +119,5 @@ if __name__ == '__main__':
         'environment-timeline-parity', 'VanillaEnvironmentTimelineOracle', 'environment_timeline_fixture', cases,
         'EasingType and Ease, AttributeTrack codec and validatePeriod, KeyframeTrack validation, '
         'KeyframeTrackSampler segments and sampling, argumentKeyframeLerp and the modifiers',
-        sources=[lab.ROOT / 'crates/horizon-world/src/environment_attributes.rs',
-                 lab.ROOT / 'crates/horizon-world/src/environment_timeline.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-world/src/environment_attributes.rs',
+                 lab.ROOT / 'crates/sunrise-world/src/environment_timeline.rs'])

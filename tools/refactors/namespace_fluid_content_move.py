@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/mod_content.rs"
+source = root / "crates/sunrise-client/src/mod_content.rs"
 target = source.with_name("mod_content_fluid_declarations.rs")
 text = source.read_text()
 start = text.index("/// Joins the world fluids native mods declare")

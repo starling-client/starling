@@ -3,7 +3,7 @@
 
 The Java oracle (VanillaRecipeOracle) loads the data pack's recipe registry and
 answers craft/cook/stonecut/smith commands; the Rust example (recipe_fixture)
-answers the same commands from horizon_client::crafting and ::stations.
+answers the same commands from sunrise_client::crafting and ::stations.
 Crafting cases are built from every recipe's own ingredients (placed at random
 offsets, mirrored, perturbed) plus focused generators for the special recipes
 (banners, books, fireworks, dyeing, repair, pots, tipped arrows, maps) and
@@ -285,7 +285,7 @@ def main():
         cases = list(smithing_transform_cases())
         (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases))
         vanilla.run('VanillaRecipeOracle', work / 'cases.txt', work / 'native.txt')
-        lib.cargo_example('horizon-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
+        lib.cargo_example('sunrise-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
         raise SystemExit(bool(lib.compare(cases, work / 'native.txt', work / 'rust.txt', lambda *_: 'smithing transform', limit=args.limit)))
     vanilla.run('VanillaRecipeOracle', 'dump', work / 'recipes.jsonl')
     recipes = [json.loads(line) for line in (work / 'recipes.jsonl').read_text().splitlines()]
@@ -319,7 +319,7 @@ def main():
     cases += list(smithing_transform_cases())
     (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases))
     vanilla.run('VanillaRecipeOracle', work / 'cases.txt', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
 
     def key(case, native_line):
         kind = case.split('\t')[0]

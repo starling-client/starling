@@ -19,7 +19,7 @@ except ImportError:
 def corpus(catalog):
     def bits(v):return struct.pack('>d',float(v)).hex()
     def op(mode,attribute,**kw):
-        value=dict(mode=mode,attribute=attribute,id='horizon:a',amount=bits(.125),operation=0,base=bits(7));value.update(kw);return value
+        value=dict(mode=mode,attribute=attribute,id='sunrise:a',amount=bits(.125),operation=0,base=bits(7));value.update(kw);return value
     n=len(catalog['attributes'])
     values=[-float('inf'),-1e30,-1.,-0.,0.,1e-40,.1,1.,2.,1e16,1e30,float('inf'),float('nan')]
     for entity in catalog['entities']:
@@ -32,7 +32,7 @@ def corpus(catalog):
     for _ in range(1000):
         entity=rng.choice(entities);ops=[]
         for __ in range(rng.randrange(20,160)):
-            ops.append(op(rng.choice(['has','base','value','modifier','has_modifier','reset','ensure','ack_update','ack_sync','set','add','update','permanent','remove','clear']),rng.randrange(n),id=rng.choice(['horizon:a','horizon:b','horizon:c']),amount=bits(rng.choice(values)),base=bits(rng.choice(values)),operation=rng.randrange(3)))
+            ops.append(op(rng.choice(['has','base','value','modifier','has_modifier','reset','ensure','ack_update','ack_sync','set','add','update','permanent','remove','clear']),rng.randrange(n),id=rng.choice(['sunrise:a','sunrise:b','sunrise:c']),amount=bits(rng.choice(values)),base=bits(rng.choice(values)),operation=rng.randrange(3)))
         yield dict(entity=entity,ops=ops)
 
 
@@ -42,19 +42,19 @@ def main():
     report_path=build/'report.json';report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEntityAttributeOracle.java'
-    sources=[oracle,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/entity_attribute_fixture.rs']
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEntityAttributeOracle.java'
+    sources=[oracle,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/entity_attribute_fixture.rs']
     tested_sources=base.source_hashes(sources)
     classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle],'compile-java')
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaEntityAttributeOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaEntityAttributeOracle',mode,path],side+'-'+mode)
     java('server','export',build);states=json.loads((build/'catalog.json').read_text());fixtures=list(corpus(states));inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(value,separators=(',',':'))+'\n' for value in fixtures),encoding='utf-8')
     fixture_paths=[inputs,build/'catalog.json'];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
     binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'entity_attribute_fixture',build],'rust');references=[]

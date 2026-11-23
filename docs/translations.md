@@ -1,7 +1,7 @@
 # Translations
 
-Horizon's own text (its menus, settings and the launcher) is translated into about 85 languages. Vanilla's text
-comes from the player's own Minecraft install and is not translated here. Most of Horizon's translations were
+Sunrise's own text (its menus, settings and the launcher) is translated into about 85 languages. Vanilla's text
+comes from the player's own Minecraft install and is not translated here. Most of Sunrise's translations were
 written by machine, and players reported some of them as wrong, so the project decided on 2026-11-09 that every
 machine-written string carries an **unreviewed** mark until a person who speaks the language has read it. Players see
 no difference: the mark lives in a file the game and the launcher never read.
@@ -10,8 +10,8 @@ no difference: the mark lives in a file the game and the launcher never read.
 
 | | Files | Keys | Read by |
 |---|---|---|---|
-| Game | `crates/horizon-client/assets/horizon/lang/<code>.json` (`fr_fr`, `de_de`...) | `horizon.options.foo` style; `en_us.json` is the reference | `crates/horizon-client-core/src/lang.rs` (`Text::tr`, `lang::get`); a missing key falls back to English |
-| A crate's own text | `crates/<name>/assets/lang/<code>.json`, the same shape | the crate's own keys, never one of the engine's | the same, once the crate registers them ([layers.md](layers.md#lang-files-horizon_platformlang)) |
+| Game | `crates/sunrise-client/assets/sunrise/lang/<code>.json` (`fr_fr`, `de_de`...) | `sunrise.options.foo` style; `en_us.json` is the reference | `crates/sunrise-client-core/src/lang.rs` (`Text::tr`, `lang::get`); a missing key falls back to English |
+| A crate's own text | `crates/<name>/assets/lang/<code>.json`, the same shape | the crate's own keys, never one of the engine's | the same, once the crate registers them ([layers.md](layers.md#lang-files-sunrise_platformlang)) |
 | Launcher | `launcher/lang/<code>.json` (`fr`, `de`, `pt-br`...) | the English sentence itself | `launcher/src/i18n.rs` (`tr("…")`, `trf("… {arg} …")`) |
 | Review record | `tools/lang_review/game/<code>.json`, `tools/lang_review/<crate name>/<code>.json`, `tools/lang_review/launcher/<code>.json` | the same keys, with the text a person checked | `tools/lang_coverage.py` only |
 
@@ -29,7 +29,7 @@ python3 tools/lang_coverage.py --json                      # the same, for a scr
 
 ## Reviewing a language
 
-Review happens in **#translations on Horizon's Discord** ([discord.gg/playhorizon](https://discord.gg/playhorizon)).
+Review happens in **#translations on Sunrise's Discord** ([discord.gg/playsunrise](https://discord.gg/playsunrise)).
 
 1. **Report a wrong string**: post the language, where you saw it (screen, setting, launcher page), the current text
    and the better text. Anyone can do this; you don't need GitHub.
@@ -40,7 +40,7 @@ Review happens in **#translations on Horizon's Discord** ([discord.gg/playhorizo
    the checked entries as reviewed:
 
    ```sh
-   python3 tools/lang_coverage.py --lang fr_fr --mark-reviewed horizon.options.foo horizon.options.bar
+   python3 tools/lang_coverage.py --lang fr_fr --mark-reviewed sunrise.options.foo sunrise.options.bar
    python3 tools/lang_coverage.py --lang fr --mark-reviewed --keys-file checked.txt   # one key per line
    ```
 
@@ -67,7 +67,7 @@ or checked, and say in the pull request which language you speak.
 On 2026-11-09 every entry of every lang file was traced to the commit that last changed it (`git blame -M`). An entry
 counts as written by a person, and went into the record, only when that commit:
 
-- was not made under an agent's identity (`Ludovic Marie`, which his agents commit as, `Horizon agent`, `Claude`,
+- was not made under an agent's identity (`Ludovic Marie`, which his agents commit as, `Sunrise agent`, `Claude`,
   bots) and is not a merge,
 - has no AI co-author or AI mention in its message (Claude, Codex, GPT, Copilot, Cursor, Gemini, DeepSeek,
   opencode...),

@@ -15,8 +15,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DIRECTORY = Path("crates/horizon-client/src/game/native_hooks")
-CATALOG = Path("crates/horizon-mod-vocab/src/hooks")
+DIRECTORY = Path("crates/sunrise-client/src/game/native_hooks")
+CATALOG = Path("crates/sunrise-mod-vocab/src/hooks")
 
 
 def run(*args, source=None):
@@ -140,7 +140,7 @@ def main():
     parser.add_argument("--base", metavar="B1_REVISION", help="reproduce the split from git")
     args = parser.parse_args()
     metadata = json.loads(run("cargo", "metadata", "--no-deps", "--format-version", "1"))
-    run("cargo", "build", "-q", "-p", "horizon-mod-api-gen", "--bin", "native-hook-layout")
+    run("cargo", "build", "-q", "-p", "sunrise-mod-api-gen", "--bin", "native-hook-layout")
     executable = "native-hook-layout.exe" if sys.platform == "win32" else "native-hook-layout"
     binary = Path(metadata["target_directory"]) / "debug" / executable
     path = DIRECTORY / "mod.rs"
@@ -174,8 +174,8 @@ def main():
 
 
 def retarget(source, areas):
-    source = re.sub(r"horizon_client::game::native_hooks::(Game(?:Level)?|HitLevel)(<'_>)?::(native_\w+)",
-                    lambda m: f"horizon_client::game::native_hooks::{areas[m[3]]}::{m[1]}{m[2] or ''}::{m[3]}", source)
+    source = re.sub(r"sunrise_client::game::native_hooks::(Game(?:Level)?|HitLevel)(<'_>)?::(native_\w+)",
+                    lambda m: f"sunrise_client::game::native_hooks::{areas[m[3]]}::{m[1]}{m[2] or ''}::{m[3]}", source)
     return source.replace("in `native_hooks.rs`", "in `native_hooks/<area>.rs`")
 
 

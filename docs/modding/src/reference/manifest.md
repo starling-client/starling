@@ -1,7 +1,7 @@
 # The manifest and the package
 
-A `.hmod` is one mod: content, native code, or both. `horizon_mod_package::Package` reads the shared manifest and
-validates the package; `horizon_mod_package::Content` reads its resources, and `horizon_mod_package::index::native::Bundle`
+A `.smod` is one mod: content, native code, or both. `sunrise_mod_package::Package` reads the shared manifest and
+validates the package; `sunrise_mod_package::Content` reads its resources, and `sunrise_mod_package::index::native::Bundle`
 reads its code.
 
 ## The zip
@@ -15,8 +15,8 @@ reads its code.
 ## Project and archive layout
 
 ```text
-my_mod.hmod
-├── horizon-mod.toml
+my_mod.smod
+├── sunrise-mod.toml
 ├── icon.png                # optional
 ├── assets/my_mod/
 ├── data/my_mod/
@@ -33,13 +33,13 @@ my_mod.hmod
 - Inconsistent code declarations and files refuse the package. `mod.wasm` anywhere else, undeclared, or
   declared but missing, refuses it; so does any other executable file.
 
-There is no mod-id directory level inside the archive. `horizon-mod.toml` is the only manifest and the only
+There is no mod-id directory level inside the archive. `sunrise-mod.toml` is the only manifest and the only
 source of the mod's id and version; Cargo's package name and version are not mod identity. IDs are plain
 `[a-z0-9_]{1,64}` names, also used as resource namespaces. The launcher writes `horizon-mixin.toml` in its
-staging area when needed. Hand-written tool manifests, `horizon-native.json`, and input `native/` or `rust/`
+staging area when needed. Hand-written tool manifests, `sunrise-native.json`, and input `native/` or `rust/`
 folders are unsupported.
 
-## `horizon-mod.toml`
+## `sunrise-mod.toml`
 
 The shared [manifest fields](../how-to/content-mods.md#the-manifest) include `id`, `name`, `version`, `api = "0.2"`
 and `capabilities = ["registries"]`. The content API is checked for exact equality. Unknown fields
@@ -49,7 +49,7 @@ refuse the manifest. Native mods may declare top-level `internals`, an array of 
 | Field | Type | Rule |
 | --- | --- | --- |
 | `game` | string | not empty, the Minecraft version (`"26.3"`) |
-| `horizon` | string | the exact Horizon commit, 40 lowercase hex characters |
+| `sunrise` | string | the exact Sunrise commit, 40 lowercase hex characters |
 | `mixins` | string | the exact horizon-mixins commit, 40 lowercase hex characters |
 | `module` | array of tables | optional support modules, written as `[[native.module]]` |
 
@@ -70,7 +70,7 @@ file that receives it, a `name` that is a Rust module identifier, and a `source`
 use `[[native.mixin]]` with `id`, `target`, uppercase `kind`, `helper` and the other
 horizon-mixins options ([Mixins](../concepts/native-route/2-mixins.md)). `[[native.loop]]`, `[[native.bridge]]` and `[[native.module]]` complete the route; `[[native.state]]` is refused. See [The native route](../concepts/native-route.md) for every table, its fields and its refusals.
 
-A wasm mod adds `[wasm]` instead, written by `cargo horizon-mod build --wasm`
+A wasm mod adds `[wasm]` instead, written by `cargo sunrise-mod build --wasm`
 ([Building to `mod.wasm`](../how-to/wasm-mods.md)):
 
 | Field | Type | Rule |
@@ -86,7 +86,7 @@ package with its reason.
 A wasm mod or library may declare the memory it expects its dependency group to have, as top-level
 `wasm_memory_mib`: an integer from 1 to 4096 (wasm32's 4 GiB), in MiB. The group gets the largest value any
 member declares; with none declared it gets 1024 (1 GiB). The instance's cap (`wasm.memory_cap_mib` in
-`horizon-mods.txt`, 4096 unless the player lowers it) bounds it: a declaration above the cap refuses the whole
+`sunrise-mods.txt`, 4096 unless the player lowers it) bounds it: a declaration above the cap refuses the whole
 group at load, naming the group and both numbers. Native mods are not wasm groups: they share the game's memory,
 and the key means nothing to them. See [Memory](../how-to/wasm-mods.md#memory).
 
@@ -97,7 +97,7 @@ Top-level `[dependencies]` declares other mods by ID: a semver requirement strin
 base = { version = "^1", optional = false, side = "both", order = "after", reason = "Provides the shared API", url = "https://example.org/base" }
 ```
 
-Versions refer to `horizon-mod.toml`, not Cargo metadata. `optional` defaults to false;
+Versions refer to `sunrise-mod.toml`, not Cargo metadata. `optional` defaults to false;
 `side` defaults to `"both"`; `order` is `"after"` (default), `"before"` or `"none"`.
 After means the dependency's listeners/content precede the owner's; before reverses that
 **dispatch** edge; none removes it. Reason is at most 512 bytes and URL must start with
@@ -111,7 +111,7 @@ selection. A missing required dependency, incompatible installed version or disp
 refuses loading; an absent optional dependency is ignored. Content, native and wasm manifests
 share the installed-set rule resolver, including mixed content/code relationships.
 
-**Horizon addition: physical linking is separate from dispatch policy.** A code package's
+**Sunrise addition: physical linking is separate from dispatch policy.** A code package's
 `[dependencies]` also declares real API library requirements. `before`, `none`, and instance
 overrides do not remove Cargo/wasm imports, reverse compiler staging, bypass ABI/hash/toolchain
 checks, or manufacture a missing library. Physical libraries still resolve dependency-first
@@ -152,7 +152,7 @@ owner's reason and link; a matching discouraged mod loads with a warning in the 
 both affected installed rows in the Mods page. Every notice remains visible in the scrollable
 panel, even when a row is off or failed; registration notices are retained too.
 
-A player can override a rule in `horizon-mods/dependency-overrides.toml`: a table per mod that owns
+A player can override a rule in `sunrise-mods/dependency-overrides.toml`: a table per mod that owns
 the rule, mapping the other mod's ID to `"drop"` (remove its logical validation/dispatch edge)
 or `"discourage"` (warn instead of refusing). This also applies to ordinary required/optional
 manifest dependencies; the physical code-library requirements above remain enforced. Every
@@ -161,8 +161,8 @@ no overrides; malformed files refuse loading with their path in the diagnostic. 
 IDs use the same validated ID syntax as manifests.
 
 The game reads this file from its game directory. Native builds read the policy and selected
-content from `horizon-mods` beside the source folder (the normal source folder is
-`horizon-native-mods`), and apply the target installation side. A standalone server export
+content from `sunrise-mods` beside the source folder (the normal source folder is
+`sunrise-native-mods`), and apply the target installation side. A standalone server export
 has a separate runtime instance: its operator supplies that instance's policy if overrides
 are needed at runtime; source-instance policy is not an implicit global setting.
 
@@ -174,7 +174,7 @@ old_lib = "discourage"
 ## Original Java jar layers
 
 Content and code mods can list ordered `[[jar]]` references. Use
-[`cargo horizon-mod use-jar`](../how-to/content-mods.md#java-jars-as-external-assets) to record the
+[`cargo sunrise-mod use-jar`](../how-to/content-mods.md#java-jars-as-external-assets) to record the
 original `id`, `version` and exact file's `sha512`, without copying it into the mod.
 
 **Pack order.** From bottom to top, assets use vanilla, then each mod's jars in
@@ -211,7 +211,7 @@ every owner of a shared missing file. The game never downloads jars.
 
 A code package contains root `Cargo.toml`, optional `Cargo.lock` and `build.rs`, `.rs` and `.toml` files under `src/`,
 and root text files named `README*`, `LICENSE*`, `LICENCE*`, `COPYING*` or `NOTICE*`.
-Your root `impl Hooks` uses `#[mod_api::horizon_mod]`; the attribute generates the factory
+Your root `impl Hooks` uses `#[mod_api::sunrise_mod]`; the attribute generates the factory
 ([Writing hooks](../start/writing-hooks.md)).
 
 Folder packaging selects source and resource files, excluding `.git/` and `target/`. It validates selected
@@ -233,5 +233,5 @@ the mod list. The scaffold does not create a default icon.
 | A registry file, as downloaded | 64 MiB |
 | Selected native source files, excluding the manifest, icon and resources | 511 files, 64 MiB unpacked in total |
 | Content files | 65,536 files, 16 MiB each, 512 MiB in total |
-| `horizon-mod.toml` | 32 MiB |
+| `sunrise-mod.toml` | 32 MiB |
 | `icon.png` | 256 KiB encoded, 512 × 512 pixels |

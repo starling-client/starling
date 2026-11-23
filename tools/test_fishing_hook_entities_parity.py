@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fishing bobber against armor stands and boats on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator in survival holding a fishing rod. LocatorBarClient (a player made of
 vanilla's protocol code) casts the rod ahead and down at an armor stand, a marker armor stand and a boat two and a half
 blocks away (ServerboundUseItemPacket) and reels it in. `Projectile.canHitEntity` lets the bobber hook what

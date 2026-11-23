@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split crates/horizon-mod-vocab/src/exports/part_table.rs into one export fragment per parts source file.
+"""Split crates/sunrise-mod-vocab/src/exports/part_table.rs into one export fragment per parts source file.
 
 part_table.rs re-exported items of `crate::parts` in two wrapped brace lists that every PR adding a Parts export
 edited (AGENTS.md, "No conflict hotspots"). `crate::parts` is assembled by the generator (parts_modules.rs) from a
@@ -21,7 +21,7 @@ Proof (read-only), run once on each tree:
 
     python3 tools/refactors/split_part_table.py --exports-digest TREE [--target-dir DIR]
 
-builds `cargo check -p horizon-mod-vocab` in TREE, reads the generated `mod_api_exports_*.rs` from the crate's
+builds `cargo check -p sunrise-mod-vocab` in TREE, reads the generated `mod_api_exports_*.rs` from the crate's
 OUT_DIR (taken from cargo's build-script message, not guessed), turns each into its sorted list of exported paths
 (one line per leaf of every `use`, with its attributes and visibility; module path attributes made relative to TREE)
 and prints a SHA-256 per file and one over all of them. The other files of that OUT_DIR (the wire code with its
@@ -37,11 +37,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-VOCAB = "crates/horizon-mod-vocab/src"
+VOCAB = "crates/sunrise-mod-vocab/src"
 PARTS = f"{VOCAB}/parts"
 EXPORTS = f"{VOCAB}/exports"
 OLD = f"{EXPORTS}/part_table.rs"
-# Items of `crate::parts` written by the generator (crates/horizon-mod-api-gen/src/parts.rs) into parts/mod.rs's
+# Items of `crate::parts` written by the generator (crates/sunrise-mod-api-gen/src/parts.rs) into parts/mod.rs's
 # include, not by a parts file: their owner is `mod` (parts/mod.rs), whose fragment is parts.rs.
 GENERATED = {"tests": "mod", "installation": "mod"}
 UNATTRIBUTED = "shared"
@@ -358,8 +358,8 @@ def split(root, dry_run):
 # ---- proof --------------------------------------------------------------------------------------------------------
 
 def out_dir(tree, target_dir):
-    """Builds `cargo check -p horizon-mod-vocab` in `tree`; the OUT_DIR cargo reports for its build script."""
-    command = ["cargo", "check", "-q", "-p", "horizon-mod-vocab", "--message-format=json"]
+    """Builds `cargo check -p sunrise-mod-vocab` in `tree`; the OUT_DIR cargo reports for its build script."""
+    command = ["cargo", "check", "-q", "-p", "sunrise-mod-vocab", "--message-format=json"]
     if target_dir:
         command += ["--target-dir", str(target_dir)]
     p = subprocess.run(command, cwd=tree, capture_output=True, text=True)
@@ -367,9 +367,9 @@ def out_dir(tree, target_dir):
         raise SystemExit(f"cargo check failed in {tree}:\n{p.stderr[-4000:]}")
     for line in p.stdout.splitlines():
         message = json.loads(line)
-        if message.get("reason") == "build-script-executed" and "horizon-mod-vocab" in message["package_id"]:
+        if message.get("reason") == "build-script-executed" and "sunrise-mod-vocab" in message["package_id"]:
             return Path(message["out_dir"])
-    raise SystemExit(f"cargo reported no build script output for horizon-mod-vocab in {tree}")
+    raise SystemExit(f"cargo reported no build script output for sunrise-mod-vocab in {tree}")
 
 
 def exported_paths(code, tree):

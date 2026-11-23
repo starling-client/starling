@@ -394,7 +394,7 @@ fn signed_in(store: &MemoryStore, secrets: &Secrets) -> Accounts {
 fn nowhere() -> PathBuf {
     std::env::temp_dir()
         .join(format!(
-            "horizon-launcher-no-accounts-{}",
+            "sunrise-launcher-no-accounts-{}",
             std::process::id()
         ))
         .join("accounts.json")
@@ -430,7 +430,7 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     // No network: Cal can't be renewed and Dan doesn't own the game; neither stops the launch.
     let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut accounts);
     let (key, json) = &env[0];
-    assert_eq!(*key, "HORIZON_ACCOUNT_SESSIONS");
+    assert_eq!(*key, "SUNRISE_ACCOUNT_SESSIONS");
     let list: Vec<Value> = serde_json::from_str(json).unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list[0]["name"], "Bea");
@@ -464,13 +464,13 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     std::fs::create_dir_all(&dir).unwrap();
     assert!(!splitscreen_on(&dir));
     std::fs::write(
-        dir.join("horizon-extras.txt"),
+        dir.join("sunrise-extras.txt"),
         "zoom:false\nsplitscreen:false\n",
     )
     .unwrap();
     assert!(!splitscreen_on(&dir));
     std::fs::write(
-        dir.join("horizon-extras.txt"),
+        dir.join("sunrise-extras.txt"),
         "zoom:false\nsplitscreen:true\n",
     )
     .unwrap();
@@ -724,7 +724,7 @@ fn the_game_plays_only_as_an_account_that_owns_it() {
 
 #[test]
 fn files_from_launchers_with_offline_names_load_and_lose_them_on_save() {
-    let dir = std::env::temp_dir().join(format!("horizon-old-offline-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-old-offline-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("skins")).unwrap();
     let store = MemoryStore::default();
@@ -1108,7 +1108,7 @@ fn only_the_typed_macos_removed_executable_failure_gets_the_restart_message() {
 
 #[test]
 fn session_files_are_private_and_complete() {
-    let dir = std::env::temp_dir().join(format!("horizon-launcher-session-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-launcher-session-{}", std::process::id()));
     let account = Account {
         uuid: UUID.into(),
         name: "Notch".into(),
@@ -1147,17 +1147,17 @@ fn session_files_are_private_and_complete() {
 #[test]
 fn client_id_is_configuration() {
     // The run-time variable overrides; empty means not configured.
-    std::env::set_var("HORIZON_MSA_CLIENT_ID", " ");
+    std::env::set_var("SUNRISE_MSA_CLIENT_ID", " ");
     assert_eq!(client_id(), None);
     std::env::set_var(
-        "HORIZON_MSA_CLIENT_ID",
+        "SUNRISE_MSA_CLIENT_ID",
         "00000000-1111-2222-3333-444444444444",
     );
     assert_eq!(
         client_id().as_deref(),
         Some("00000000-1111-2222-3333-444444444444")
     );
-    std::env::remove_var("HORIZON_MSA_CLIENT_ID");
+    std::env::remove_var("SUNRISE_MSA_CLIENT_ID");
 }
 
 #[test]
@@ -1209,7 +1209,7 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
 
 /// A secrets file of the test's own, gone first.
 fn secrets_file(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("horizon-secrets-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-secrets-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir.join("launcher").join(SECRETS_FILE)
 }
@@ -1372,7 +1372,7 @@ fn a_file_sealed_under_the_old_key_is_read_and_sealed_again() {
     remove_secrets_dir(&path);
 }
 
-const WRITER: &str = "HORIZON_TEST_SECRETS_WRITER";
+const WRITER: &str = "SUNRISE_TEST_SECRETS_WRITER";
 
 /// One of the processes [`processes_sharing_the_secrets_file_lose_nothing`] starts: does nothing
 /// unless it gives the file and the writer's number.
@@ -2017,7 +2017,7 @@ fn a_refresh_saves_a_renewed_profile_and_leaves_an_unchanged_one() {
     let store = MemoryStore::default();
     let accounts = signed_in(&store, &secrets("original-minecraft", true));
     let (_, ep) = mock(|_| {});
-    let dir = std::env::temp_dir().join(format!("horizon-launcher-refresh-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-launcher-refresh-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let file = dir.join("accounts.json");
     accounts.save_to(&file).unwrap();
@@ -2042,7 +2042,7 @@ fn a_running_game_gets_a_renewed_session_only_when_ready() {
     let store = MemoryStore::default();
     signed_in(&store, &secrets("old-minecraft", true));
     let (_, ep) = mock(|_| {});
-    let dir = std::env::temp_dir().join(format!("horizon-launcher-renew-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-launcher-renew-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let file =
         session::renew_for_game_with(&ep, Some("test-client"), &store, &notch(), &nowhere(), &dir)
@@ -2170,7 +2170,7 @@ ok",
     ];
     let agent = builder().resolver(Interleaved(Fixed(addrs))).build();
     let body = agent
-        .get("http://horizon.test/")
+        .get("http://sunrise.test/")
         .call()
         .unwrap()
         .into_string()
@@ -2546,7 +2546,7 @@ fn joining_a_service_id_tells_mojangs_session_server() {
 #[test]
 fn a_launch_saving_late_keeps_sign_ins_and_outs_made_meanwhile() {
     let store = MemoryStore::default();
-    let dir = std::env::temp_dir().join(format!("horizon-launcher-late-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-launcher-late-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let file = dir.join("accounts.json");
     let other = |uuid: &str, name: &str| Account {

@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "horizon-core"
+name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "libm",
@@ -12,10 +12,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-runtime"
+name = "sunrise-mod-runtime"
 version = "0.1.0"
 dependencies = [
- "horizon-core",
+ "sunrise-core",
 ]
 
 [[package]]
@@ -28,7 +28,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 name = "join-locate-probe"
 version = "0.0.0"
 dependencies = [
- "horizon-mod-runtime",
+ "sunrise-mod-runtime",
 ]
 
 [[package]]

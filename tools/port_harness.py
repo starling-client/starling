@@ -4,7 +4,7 @@ harness against the new version").
 
 Used through `version_port.py harnesses NEW` after `regen NEW`:
 
-1. horizon-prepare in the candidate (.local/horizon-client/NEW and its exporters' outputs), then its `sounds` and
+1. sunrise-prepare in the candidate (.local/sunrise-client/NEW and its exporters' outputs), then its `sounds` and
    `panorama` steps from the version store's launcher-shaped copy, whose asset index and the objects those steps
    copy are downloaded once per version (sha1 checked);
 2. tools/parity.py there: every harness, or the ones named;
@@ -30,8 +30,8 @@ except ImportError:
     import port_regen
 
 RESOURCES_URL = "https://resources.download.minecraft.net"
-# What horizon-prepare's sounds and panorama steps copy from the launcher's asset store
-# (crates/horizon-prepare/src/sounds.rs is_sound, is_panorama).
+# What sunrise-prepare's sounds and panorama steps copy from the launcher's asset store
+# (crates/sunrise-prepare/src/sounds.rs is_sound, is_panorama).
 PANORAMA = [f"minecraft/textures/gui/title/background/panorama_{i}.png" for i in range(6)] + [
     "minecraft/textures/gui/title/background/panorama_overlay.png"]
 
@@ -41,7 +41,7 @@ def wanted_asset(name):
 
 
 def launcher_assets(tree, manifest, jobs=8):
-    """The asset index and the objects horizon-prepare's sounds and panorama steps read, in the launcher-shaped
+    """The asset index and the objects sunrise-prepare's sounds and panorama steps read, in the launcher-shaped
     tree (assets/indexes, assets/objects/xx/HASH)."""
     info = manifest["assetIndex"]
     index = lab.download(info["url"], tree / "assets" / "indexes" / f"{info['id']}.json", info["sha1"])
@@ -59,7 +59,7 @@ def launcher_assets(tree, manifest, jobs=8):
 
 def own_reports(root):
     """Replace the candidate's link to the store's data generator reports (regen reads them) by nothing:
-    horizon-prepare runs the data generator itself, and it must write into the candidate, not through the link
+    sunrise-prepare runs the data generator itself, and it must write into the candidate, not through the link
     into the version store (the generator also deletes the link as stale)."""
     reports = root / ".local" / "datagen" / "out" / "reports"
     if reports.is_symlink():
@@ -67,16 +67,16 @@ def own_reports(root):
 
 
 def prepare_resources(root, version, store):
-    """horizon-prepare against the candidate's version: {status: ok | failed, error, compile_errors}."""
+    """sunrise-prepare against the candidate's version: {status: ok | failed, error, compile_errors}."""
     own_reports(root)
-    log = root / ".local" / "port-regen" / "horizon-prepare.log"
+    log = root / ".local" / "port-regen" / "sunrise-prepare.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CARGO_TARGET_DIR=str(root / ".local" / "port-target"))
     jobs = os.environ.get("FLEET_LOAD_JOBS")
     try:
-        port_regen.run(["cargo", "build", "--release", "-p", "horizon-prepare", *(["-j", jobs] if jobs else [])],
+        port_regen.run(["cargo", "build", "--release", "-p", "sunrise-prepare", *(["-j", jobs] if jobs else [])],
                        root, env=env)
-        binary = root / ".local/port-target/release/horizon-prepare"
+        binary = root / ".local/port-target/release/sunrise-prepare"
         port_regen.run([binary, "--root", root], root, log=log)
         found = json.loads((store / "prepared.json").read_text())["paths"]
         manifest = json.loads(Path(found["version_json"]).read_text())
@@ -85,7 +85,7 @@ def prepare_resources(root, version, store):
             launcher_assets(tree, manifest)
             for step in ("sounds", "panorama"):
                 port_regen.run([binary, step, "--root", root, "--minecraft-dir", tree], root,
-                               log=log.with_name(f"horizon-prepare-{step}.log"))
+                               log=log.with_name(f"sunrise-prepare-{step}.log"))
         return {"status": "ok"}
     except (RuntimeError, OSError, ValueError, KeyError) as error:
         output = getattr(error, "output", str(error))
@@ -94,7 +94,7 @@ def prepare_resources(root, version, store):
 
 
 def named_logs(output):
-    """The logs horizon-prepare's errors point to ("…; see /path/export.log"): its javac errors are there."""
+    """The logs sunrise-prepare's errors point to ("…; see /path/export.log"): its javac errors are there."""
     text = ""
     # A log path is absolute on every host: "/tmp/x.log" or "C:\tmp\x.log".
     for name in sorted(set(re.findall(r"see ((?:/|[A-Za-z]:[\\/])\S+\.log)", output))):
@@ -177,7 +177,7 @@ def harnesses(version, store, root, baseline=None, names=None, timeout=None, pre
             prepared["compile_errors"] = port_regen.compile_errors(named_logs(prepared.get("error", "")))
         state = json.loads((root / ".local" / "parity-runner" / "state.json").read_text())
     else:
-        print(f"horizon-prepare in {root}", flush=True)
+        print(f"sunrise-prepare in {root}", flush=True)
         prepared = prepare_resources(root, version, store)
         print(f"  {prepared['status']}", flush=True)
         print("tools/parity.py " + (" ".join(names) if names else "--all"), flush=True)

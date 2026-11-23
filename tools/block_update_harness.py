@@ -125,19 +125,19 @@ TREE_LOOKUP_ERROR = 'error IllegalStateException net.minecraft.core.RegistryAcce
 def execute(name, cases, args, facts, origin_of=None):
     """Run both sides; return failing cases, counting mismatches and oracle errors."""
     lock, jars, libraries = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / name
     work.mkdir(parents=True, exist_ok=True)
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-                    '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaBlockUpdateOracle.java')])
-    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaBlockUpdateOracle',
+                    '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaBlockUpdateOracle.java')])
+    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaBlockUpdateOracle',
                     str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    run(['cargo', 'run', '-q', '--release', '-p', 'horizon-world', '--example', 'world_probe', '--',
+    run(['cargo', 'run', '-q', '--release', '-p', 'sunrise-world', '--example', 'world_probe', '--',
                     'block_update_fixture', str(resources), str(work / 'cases.jsonl'), str(work / 'rust.txt')], cwd=lab.ROOT, env={**os.environ, 'CARGO_BUILD_JOBS': '3'})
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix)
     native = split_cases((work / 'native.txt').read_text(), ignore)
@@ -214,7 +214,7 @@ def describe_case(case, facts):
 
 def load_facts():
     lock, _, _ = base.verify_artifacts()
-    return Facts(lab.LOCAL / 'horizon-client' / lock['minecraft']['version'])
+    return Facts(lab.LOCAL / 'sunrise-client' / lock['minecraft']['version'])
 
 
 def state_pool(facts, only):

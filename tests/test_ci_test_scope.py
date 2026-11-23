@@ -78,11 +78,11 @@ class RealWorkspaceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.workspace = Workspace(cargo_metadata())
 
-    def test_horizon_client_lib_is_built_from_horizon_clients_files(self):
-        chosen = self.workspace.scope(["crates/horizon-client/src/game/x.rs"])
-        self.assertLessEqual({"horizon-client", "horizon-client-lib", "horizon-client-core"}, chosen)
-        self.assertNotIn("horizon-release-sign", chosen)
-        self.assertIn("horizon-client-lib", self.workspace.scope(["crates/horizon-client/tests/lan_bot.rs"]))
+    def test_sunrise_client_lib_is_built_from_sunrise_clients_files(self):
+        chosen = self.workspace.scope(["crates/sunrise-client/src/game/x.rs"])
+        self.assertLessEqual({"sunrise-client", "sunrise-client-lib", "sunrise-client-core"}, chosen)
+        self.assertNotIn("sunrise-release-sign", chosen)
+        self.assertIn("sunrise-client-lib", self.workspace.scope(["crates/sunrise-client/tests/lan_bot.rs"]))
 
     def test_every_reader_names_a_package_and_a_path_in_the_tree(self):
         tracked = subprocess.check_output(["git", "ls-files"]).decode().split("\n")
@@ -105,10 +105,10 @@ class RealWorkspaceTests(unittest.TestCase):
 
     def test_the_scan_finds_the_reads_the_table_was_built_from(self):
         found = reads(self.workspace)
-        self.assertIn("crates/horizon-client/assets/horizon/lang", found["horizon-client-core"])
-        self.assertIn("docs/api/server-reference.md", found["horizon-server"])
-        self.assertIn("crates/horizon-core", found["horizon-world"])
-        self.assertIn("crates", found["horizon-client-core"])
+        self.assertIn("crates/sunrise-client/assets/sunrise/lang", found["sunrise-client-core"])
+        self.assertIn("docs/api/server-reference.md", found["sunrise-server"])
+        self.assertIn("crates/sunrise-core", found["sunrise-world"])
+        self.assertIn("crates", found["sunrise-client-core"])
 
 
 if __name__ == "__main__":

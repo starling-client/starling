@@ -32,7 +32,7 @@ refused. The call returns the `BiomeRegionError`, and the mods stop at startup w
 
 ## A world keeps the regions it was made with
 
-A new world saves the installed mods' regions, their points and weights, in `data/horizon/biome_regions.dat` before its
+A new world saves the installed mods' regions, their points and weights, in `data/sunrise/biome_regions.dat` before its
 first chunk generates. From then on that file decides, not the mods:
 
 - **A changed region** (new points or weight) or **a new mod's region** does not reach an existing world on its own.

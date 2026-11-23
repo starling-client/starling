@@ -410,7 +410,7 @@ struct PrivateCapabilities {
     /// [`VK_KHR_shader_float16_int8`]: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_shader_float16_int8.html
     /// [see spec]: https://registry.khronos.org/vulkan/specs/latest/man/html/VkPhysicalDeviceShaderFloat16Int8Features.html#extension-features-shaderInt8
     shader_int8: bool,
-    /// Starling: a pipeline can shade coarser (`HORIZON_PACK_VRS`, `#vrs2x2` in its label).
+    /// Starling: a pipeline can shade coarser (`SUNRISE_PACK_VRS`, `#vrs2x2` in its label).
     pipeline_fragment_shading_rate: bool,
 
     /// This is done to panic before undefined behavior, and is imperfect.
@@ -537,7 +537,7 @@ struct DeviceShared {
 
     empty_descriptor_set_layout: vk::DescriptorSetLayout,
 
-    /// Horizon: the cache a pipeline made without one of its own goes through, kept on disk
+    /// Sunrise: the cache a pipeline made without one of its own goes through, kept on disk
     /// between runs ([`disk_cache`]); null when the application named no file for it.
     fallback_pipeline_cache: vk::PipelineCache,
 

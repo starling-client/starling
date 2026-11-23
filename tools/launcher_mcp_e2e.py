@@ -2,16 +2,16 @@
 """End-to-end check of the launcher's MCP playing the game through its game_* tools.
 
 A scratch launcher home gets one "installed" version made of this checkout's builds
-(horizon-client and horizon-ctl) and the prepared resources in .local/horizon-client. An MCP
-client then talks to `horizon-launcher mcp` alone. It first plays a game started from its window with
+(sunrise-client and sunrise-ctl) and the prepared resources in .local/sunrise-client. An MCP
+client then talks to `sunrise-launcher mcp` alone. It first plays a game started from its window with
 Agent Control on, and a game on the launcher's own endpoint wins over it. Then every CLI command is
 listed as a tool of the same name (versions, settings, mods_search...), a destructive one needs confirm,
 the game tools are listed, a call before the game runs says to start it, play starts it under control, and
 game_wait_ready, game_state, game_ui and game_screenshot play it until game_quit. Then No AI is turned on with
-`horizon-launcher no-ai on`: `horizon-launcher mcp` refuses to start, and a session already running
+`sunrise-launcher no-ai on`: `sunrise-launcher mcp` refuses to start, and a session already running
 refuses its next call.
 
-    python3 tools/launcher_mcp_e2e.py --bin-dir target/fast --launcher launcher/target/debug/horizon-launcher
+    python3 tools/launcher_mcp_e2e.py --bin-dir target/fast --launcher launcher/target/debug/sunrise-launcher
 
 On macOS the game renders offscreen (it runs in a locked session or over SSH); on Linux it needs
 a display (vscreen on the desktop). Games started here have no audio.
@@ -72,7 +72,7 @@ class Mcp:
 def scenario(m, out):
     init = m.rpc('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
                                 'clientInfo': {'name': 'launcher_mcp_e2e', 'version': '1'}})
-    assert init['serverInfo']['name'] == 'horizon-launcher', init
+    assert init['serverInfo']['name'] == 'sunrise-launcher', init
     tools = {t['name'] for t in m.rpc('tools/list', {})['tools']}
     for name in ['play', 'server', 'versions', 'settings', 'mods_search', 'modpack_list', 'servers_list',
                  'account_list', 'game_args', 'game_state', 'game_ui', 'game_click',
@@ -140,12 +140,12 @@ def window_game_scenario(m, client, resources, work):
         args = [str(client), '--resources', str(resources), *extra]
         if sys.platform == 'darwin':
             args.append('--offscreen')
-        return subprocess.Popen(args, cwd=home, env=dict(m.env, HORIZON_HOME=str(home)),
+        return subprocess.Popen(args, cwd=home, env=dict(m.env, SUNRISE_HOME=str(home)),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     window_home = work / 'window-home'
     window_home.mkdir()
-    (window_home / 'horizon-extras.txt').write_text('agentControl:true\n')
+    (window_home / 'sunrise-extras.txt').write_text('agentControl:true\n')
     own = work / 'launcher' / ('game-control.sock' if os.name == 'posix' else 'game-control.json')
     games = [start(window_home)]
     try:
@@ -182,7 +182,7 @@ def no_ai_scenario(launcher, env, home):
                          'clientInfo': {'name': 'launcher_mcp_e2e', 'version': '1'}})
     r = run('no-ai', 'on')
     assert r.returncode == 0, r
-    assert 'noAi:true' in (home / 'horizon-extras.txt').read_text()
+    assert 'noAi:true' in (home / 'sunrise-extras.txt').read_text()
     try:
         m.call('links')
         raise AssertionError('links ran under No AI')
@@ -203,33 +203,33 @@ def no_ai_scenario(launcher, env, home):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', required=True, help='horizon-client and horizon-ctl built from this checkout')
-    parser.add_argument('--launcher', required=True, help='a horizon-launcher binary')
+    parser.add_argument('--bin-dir', required=True, help='sunrise-client and sunrise-ctl built from this checkout')
+    parser.add_argument('--launcher', required=True, help='a sunrise-launcher binary')
     parser.add_argument('--out', default=str(ROOT / '.local/launcher-mcp-e2e'), help='the screenshot goes here')
     args = parser.parse_args()
     bins = Path(args.bin_dir).resolve()
     resources = (lab.RESOURCES).resolve()
-    if not (resources / 'horizon-resources.json').exists():
+    if not (resources / 'sunrise-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='hzlm-'))
     version = work / 'launcher/versions' / TAG
-    (version / '.local/horizon-client').mkdir(parents=True)
+    (version / '.local/sunrise-client').mkdir(parents=True)
     suffix = '.exe' if sys.platform == 'win32' else ''
-    for name in ['horizon-client', 'horizon-ctl']:
+    for name in ['sunrise-client', 'sunrise-ctl']:
         # Linking a file on Windows needs Developer Mode or an administrator; a hard link needs neither.
         link = os.link if sys.platform == 'win32' else os.symlink
         link(bins / (name + suffix), version / (name + suffix))
-    lab.link_dir(resources, version / '.local/horizon-client' / lab.VERSION)
+    lab.link_dir(resources, version / '.local/sunrise-client' / lab.VERSION)
     (version / '.installed').write_text('')
     (work / 'home').mkdir()
     # Isolate the game control endpoint from any player session.
-    env = lab.game_env(HORIZON_LAUNCHER_HOME=work / 'launcher', HORIZON_HOME=work / 'home',
-                       HORIZON_CONTROL=work / 'default.sock')
+    env = lab.game_env(SUNRISE_LAUNCHER_HOME=work / 'launcher', SUNRISE_HOME=work / 'home',
+                       SUNRISE_CONTROL=work / 'default.sock')
     m = Mcp(Path(args.launcher).resolve(), env)
     try:
-        summary = window_game_scenario(m, bins / ('horizon-client' + suffix), resources, work)
+        summary = window_game_scenario(m, bins / ('sunrise-client' + suffix), resources, work)
         summary.update(scenario(m, out))
         summary.update(no_ai_scenario(Path(args.launcher).resolve(), env, work / 'home'))
         print(f'[launcher-mcp] PASS: {summary}')

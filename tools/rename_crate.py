@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rename the package crate only; never rename the player's horizon-mods folder.
+"""Rename the package crate only; never rename the player's sunrise-mods folder.
 
 Declared edits: crate paths, Cargo package/dependency/feature names, whole Rust crate
 identifiers (including linker and source-index strings), generated Cargo package
@@ -14,19 +14,19 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-OLD, NEW = "horizon-mods", "horizon-mod-package"
+OLD, NEW = "sunrise-mods", "sunrise-mod-package"
 OLD_PATH, NEW_PATH = "crates/" + OLD, "crates/" + NEW
 OWN_FILES = {"tools/rename_crate.py", "tests/test_rename_crate.py"}
-LOCKS = {"Cargo.lock", "launcher/Cargo.lock", "crates/horizon-mod-registry/Cargo.lock"}
+LOCKS = {"Cargo.lock", "launcher/Cargo.lock", "crates/sunrise-mod-registry/Cargo.lock"}
 PACKAGE_TOOLS = {"tools/pr_ready.py", "tests/test_pr_ready.py"}
 STAGING_CHECK = b'''        assert_eq!(
-            game["dependencies"]["horizon-mod-package"]["path"].as_str(),
-            Some("../horizon-mod-package")
+            game["dependencies"]["sunrise-mod-package"]["path"].as_str(),
+            Some("../sunrise-mod-package")
         );
         assert!(!game["dependencies"]
             .as_table()
             .unwrap()
-            .contains_key("horizon-mods"));
+            .contains_key("sunrise-mods"));
 '''
 
 
@@ -39,27 +39,27 @@ def destination(path):
 
 
 def rewrite(path, source):
-    if path in OWN_FILES or path.startswith("crates/horizon-client/assets/horizon/lang/"):
+    if path in OWN_FILES or path.startswith("crates/sunrise-client/assets/sunrise/lang/"):
         return source
     source = re.sub(re.escape(OLD_PATH) + r"(?=[^a-zA-Z0-9_-]|$)", NEW_PATH, source)
-    source = re.sub(r"\bhorizon_mods\b", "horizon_mod_package", source)
+    source = re.sub(r"\bsunrise_mods\b", "sunrise_mod_package", source)
     if Path(path).name == "Cargo.toml":
-        source = re.sub(r"(?m)^horizon-mods(?=\s*=)", NEW, source)
-        source = re.sub(r"(?m)^(name|package)(\s*=\s*[\"'])horizon-mods([\"'])",
+        source = re.sub(r"(?m)^sunrise-mods(?=\s*=)", NEW, source)
+        source = re.sub(r"(?m)^(name|package)(\s*=\s*[\"'])sunrise-mods([\"'])",
                         lambda m: m[1] + m[2] + NEW + m[3], source)
-        source = source.replace("../horizon-mods\"", "../horizon-mod-package\"")
-        source = source.replace("../horizon-mods'", "../horizon-mod-package'")
-        source = source.replace("dependencies.horizon-mods]", "dependencies.horizon-mod-package]")
-    if path in {"crates/cargo-horizon-mod/src/check.rs", "crates/horizon-mod-registry/tests/submit.rs"}:
-        source = source.replace("../horizon-mods/tests/", "../horizon-mod-package/tests/")
+        source = source.replace("../sunrise-mods\"", "../sunrise-mod-package\"")
+        source = source.replace("../sunrise-mods'", "../sunrise-mod-package'")
+        source = source.replace("dependencies.sunrise-mods]", "dependencies.sunrise-mod-package]")
+    if path in {"crates/cargo-sunrise-mod/src/check.rs", "crates/sunrise-mod-registry/tests/submit.rs"}:
+        source = source.replace("../sunrise-mods/tests/", "../sunrise-mod-package/tests/")
     if path == "launcher/src/native_mods/api.rs":
-        source = re.sub(r'(?m)^(\s*)"horizon-mods",$', rf'\1"{NEW}",', source)
+        source = re.sub(r'(?m)^(\s*)"sunrise-mods",$', rf'\1"{NEW}",', source)
     if path in LOCKS:
-        source = source.replace('"horizon-mods"', '"horizon-mod-package"')
+        source = source.replace('"sunrise-mods"', '"sunrise-mod-package"')
     if path in PACKAGE_TOOLS:
         source = source.replace(OLD, NEW)
     if path == "AGENTS.md":
-        source = source.replace("`horizon-mods`", "`horizon-mod-package`")
+        source = source.replace("`sunrise-mods`", "`sunrise-mod-package`")
     return source
 
 
@@ -74,7 +74,7 @@ def normalized(path, data):
 
 
 def text_paths(base=None):
-    args = ["git", "grep", "-Ilz", "-e", OLD, "-e", "horizon_mods"]
+    args = ["git", "grep", "-Ilz", "-e", OLD, "-e", "sunrise_mods"]
     output = run(*args, *([base] if base else []))
     return {name.removeprefix(base + ":") if base else name
             for name in output.decode().split("\0") if name}
@@ -122,7 +122,7 @@ def report(path):
     rows = []
     for name in sorted(text_paths() - OWN_FILES):
         for line, text in enumerate((ROOT / name).read_text().splitlines(), 1):
-            if OLD in text or "horizon_mods" in text:
+            if OLD in text or "sunrise_mods" in text:
                 rows.append(f"{name}:{line}: {text}")
     path.write_text("Old-name hits retained for review (player paths, registry URLs, prose, test names, and negative checks):\n\n" + "\n".join(rows) + "\n")
     print(f"Retained {len(rows)} old-name lines for review in {path}")
@@ -145,7 +145,7 @@ def main():
                 (ROOT / path).write_bytes(updated)
         if move:
             run("git", "mv", OLD_PATH, NEW_PATH)
-        for manifest in ["Cargo.toml", "launcher/Cargo.toml", "crates/horizon-mod-registry/Cargo.toml"]:
+        for manifest in ["Cargo.toml", "launcher/Cargo.toml", "crates/sunrise-mod-registry/Cargo.toml"]:
             run("cargo", "metadata", "--offline", "--format-version", "1", "--manifest-path", manifest)
     else:
         verify(args.verify)

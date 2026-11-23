@@ -3,7 +3,7 @@
 in its brightest state, alone in dark tunnels, to judge and tune how light sources shine
 in HDR output (#1441).
 
-  hdr_gallery.py --world SAVES/MyWorld [--resources .local/horizon-client/26.3]
+  hdr_gallery.py --world SAVES/MyWorld [--resources .local/sunrise-client/26.3]
 
 Then, in the world (creative, on a flat open spot, high up is easiest):
 
@@ -17,8 +17,8 @@ on grass (stone around fire and lava), against the far wall of a stone tunnel; t
 tunnels sit side by side around where the function runs. index.txt in the datapack
 lists every cell.
 
-HDR's light sources are tuned with Brightness and Smooth Lighting at Horizon's defaults, HDR10 at
-Paper White 200 and Peak 500 nits, and HORIZON_HDR_DEBUG=1 to see which pixels lift: judge
+HDR's light sources are tuned with Brightness and Smooth Lighting at Sunrise's defaults, HDR10 at
+Paper White 200 and Peak 500 nits, and SUNRISE_HDR_DEBUG=1 to see which pixels lift: judge
 under the same. The block list and light levels come from the prepared resources
 (gameplay-facts.json, facts.json), so the gallery follows the pinned version.
 """
@@ -237,7 +237,7 @@ def gallery(names, states):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--world", type=Path, required=True, help="the world's save folder")
-    parser.add_argument("--resources", type=Path, default=ROOT / ".local/horizon-client/26.3")
+    parser.add_argument("--resources", type=Path, default=ROOT / ".local/sunrise-client/26.3")
     args = parser.parse_args()
     if not (args.world / "level.dat").exists():
         sys.exit(f"{args.world}: no level.dat, not a world folder")
@@ -255,7 +255,7 @@ def main():
     functions = pack / "data" / "hdr" / "function"
     functions.mkdir(parents=True, exist_ok=True)
     (pack / "pack.mcmeta").write_text(
-        json.dumps({"pack": {"description": "Horizon HDR test gallery", "pack_format": 94}}))
+        json.dumps({"pack": {"description": "Sunrise HDR test gallery", "pack_format": 94}}))
     (functions / "setup.mcfunction").write_text(SETUP)
     index = []
     for fn, names in (("gallery", short), ("gallery_full", full)):

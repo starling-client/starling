@@ -85,8 +85,8 @@ fn move_file(source: &Path, destination: &Path) -> Result<bool, String> {
 }
 
 pub fn run(root: &Path) -> Result<(), String> {
-    let source = root.join("crates/horizon-mod-vocab/src/parts");
-    let destination = root.join("crates/horizon-mod-api/src/parts");
+    let source = root.join("crates/sunrise-mod-vocab/src/parts");
+    let destination = root.join("crates/sunrise-mod-api/src/parts");
     if destination.exists() {
         return Err("Parts authoring destination already exists".into());
     }

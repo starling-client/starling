@@ -14,7 +14,7 @@
 /run/
 /logs/
 /dist/
-/mods/horizon/build/
+/mods/sunrise/build/
 /saves/
 /backups/
 /tools/logs/
@@ -22,24 +22,24 @@
 # What the client writes to its working directory when run from the repo root.
 /options.txt
 /debug-profile.json
-/horizon.txt
-/horizon-graphics.txt
-/horizon-controller.txt
-/horizon-extras.txt
-/horizon-player.txt
+/sunrise.txt
+/sunrise-graphics.txt
+/sunrise-controller.txt
+/sunrise-extras.txt
+/sunrise-player.txt
 /servers.dat
 /touch-layout.json
 /resourcepacks/
-/horizon-mods/
+/sunrise-mods/
 /screenshots/
-/.horizon-cache/
+/.sunrise-cache/
 # The same cache real-Game tests write, from the crate's own directory.
-/crates/horizon-client/.horizon-cache/
-/crates/horizon-client/horizon-player.txt
+/crates/sunrise-client/.sunrise-cache/
+/crates/sunrise-client/sunrise-player.txt
 /crash-reports/
 /debug/
 
 # Mod storage the game writes beside a mod it runs (--dev-mod of a source folder).
-.horizon-mod-data/
+.sunrise-mod-data/
 # Release-only compiled original exporter bundle.
 /exporters/

@@ -1,5 +1,5 @@
 //! One deferred native-code action. Declining never invokes its installer or builder.
-use horizon_launcher::{
+use sunrise_launcher::{
     backend::Settings,
     browser::{installed::Entry, java, Project, SourceId},
     github_mods::Resolved,
@@ -52,7 +52,7 @@ pub(super) fn resolve(
                 java::set_all_enabled(home, &ids, false)?;
             }
             PendingConsent::Toggle(entry) => {
-                if let Some(id) = horizon_launcher::browser::horizon::mod_id(&entry) {
+                if let Some(id) = sunrise_launcher::browser::sunrise::mod_id(&entry) {
                     java::set_enabled(home, id, false)?;
                 }
             }
@@ -70,13 +70,13 @@ mod tests {
     #[test]
     fn cancel_escape_and_allow_consume_only_the_pending_toggle() {
         // Settings is process-global: exercise this transition in its own isolated process.
-        if std::env::var_os("HORIZON_CONSENT_TEST_CHILD").is_none() {
+        if std::env::var_os("SUNRISE_CONSENT_TEST_CHILD").is_none() {
             let home = tempfile::tempdir().unwrap();
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "native_consent::tests::cancel_escape_and_allow_consume_only_the_pending_toggle"])
-                .env("HORIZON_CONSENT_TEST_CHILD", "1")
-                .env("HORIZON_LAUNCHER_HOME", home.path())
-                .env("HORIZON_HOME", home.path())
+                .env("SUNRISE_CONSENT_TEST_CHILD", "1")
+                .env("SUNRISE_LAUNCHER_HOME", home.path())
+                .env("SUNRISE_HOME", home.path())
                 .status().unwrap();
             assert!(status.success());
             return;
@@ -113,7 +113,7 @@ mod tests {
         assert!(resolve(&mut unsupported, true, false, &mut settings, home.path()).is_err());
         assert!(unsupported.is_some());
         assert!(Settings::load().native_mods_allowed_at.is_none());
-        if horizon_launcher::rust_toolchain::host().is_some() {
+        if sunrise_launcher::rust_toolchain::host().is_some() {
             let mut pending = Some(PendingConsent::Local("sample".into()));
             let action = resolve(&mut pending, true, true, &mut settings, home.path())
                 .unwrap()

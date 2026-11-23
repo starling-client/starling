@@ -11,7 +11,7 @@ claim of full NeoForge parity.
 ## Evidence and limits
 
 Vanilla 26.3 was inspected only through `tools/rea_vanilla.py` from
-`/workspace/horizon`: `class MainTarget` (fully qualified
+`/workspace/sunrise`: `class MainTarget` (fully qualified
 `com.mojang.blaze3d.pipeline.MainTarget`), and methods `allocateAttachments`,
 `allocateColorAttachment`, `allocateDepthAttachment`, plus callers of
 `createFrameBuffer`. Allocation asserts the render thread, tries dimensions with
@@ -27,9 +27,9 @@ was inaccessible on 2026-11-09. No NeoForge source or patches were consulted.
 Do not adopt this narrower field set as its full contract: public documentation
 of each field and timing is a prerequisite to approving implementation.
 
-Verified Horizon owners at this revision (all paths relative to the repository):
+Verified Sunrise owners at this revision (all paths relative to the repository):
 
-- `crates/horizon-client-render/src/gfx.rs:2911`: renderer construction;
+- `crates/sunrise-client-render/src/gfx.rs:2911`: renderer construction;
   `:3082`: frame configuration selection before pipeline construction.
 - `gfx.rs:5515`: offscreen target helper, single sample, one mip/layer,
   renderer-selected format and usage.

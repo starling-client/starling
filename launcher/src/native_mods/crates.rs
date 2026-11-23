@@ -145,7 +145,7 @@ pub(super) fn wanted(
                 ));
             }
             let get = |name: &str| dep.get(name).and_then(|v| v.as_str());
-            if get("package").unwrap_or(key) == "horizon-client" {
+            if get("package").unwrap_or(key) == "sunrise-client" {
                 return Err(super::api::ProjectError::GameDependency {
                     mod_id: mod_id.clone(),
                     key: key.clone(),
@@ -448,7 +448,7 @@ mod tests {
         fn new() -> Self {
             let root = loop {
                 let root = std::env::temp_dir().join(format!(
-                    "horizon-native-sibling-{}-{}",
+                    "sunrise-native-sibling-{}-{}",
                     std::process::id(),
                     NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
                 ));
@@ -579,8 +579,8 @@ mod tests {
         assert!(super::wanted(stage.root(), &declared).is_ok());
         let root = stage.root().join(DIR).join("bake/Cargo.toml");
         for (package, path, valid) in [
-            ("horizon-mod-api", "../../crates/horizon-mod-api", true),
-            ("horizon-mod-api", "../../other/horizon-mod-api", false),
+            ("sunrise-mod-api", "../../crates/sunrise-mod-api", true),
+            ("sunrise-mod-api", "../../other/sunrise-mod-api", false),
         ] {
             fs::write(&root, format!("[package]\nname='bake'\nversion='1'\n[dependencies]\napi={{package='{package}',path='{path}'}}\n")).unwrap();
             assert_eq!(super::wanted(stage.root(), &BTreeMap::new()).is_ok(), valid);

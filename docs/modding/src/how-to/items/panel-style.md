@@ -18,7 +18,7 @@ is hidden; it is not a saved player preference.
   Nonempty searches with no matches are red; other Classic search text is white.
 
 For Classic, `window_width: 0` uses the container's own bounds. A positive value reserves at least
-that much width for a centred recipe window. This width option is Horizon's own, not a JEI 1.12
+that much width for a centred recipe window. This width option is Sunrise's own, not a JEI 1.12
 setting. The Classic wrench opens the owning mod's page in **Options > Mods**, not a shared
 viewer configuration screen. Only the page arrows are tinted; the wrench retains its own colours.
 

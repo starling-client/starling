@@ -32,7 +32,7 @@ POLICIES = {
 
 class RecursiveWire(unittest.TestCase):
     def test_every_cycle_has_a_policy(self):
-        self.assertEqual(set(POLICIES), set(recursive_types(extra_paths=[ROOT / "crates/horizon-core/src/nbt.rs"])))
+        self.assertEqual(set(POLICIES), set(recursive_types(extra_paths=[ROOT / "crates/sunrise-core/src/nbt.rs"])))
 
     def test_discovers_direct_and_indirect_cycles_not_variant_names(self):
         with tempfile.TemporaryDirectory() as directory:

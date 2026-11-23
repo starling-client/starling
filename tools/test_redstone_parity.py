@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare vanilla redstone circuits with horizon-world, tick by tick.
+"""Compare vanilla redstone circuits with sunrise-world, tick by tick.
 
 A small floor carries randomly placed redstone components (wire, repeaters,
 comparators, torches, observers, pistons, lamps, rails, plates, buttons...). A power

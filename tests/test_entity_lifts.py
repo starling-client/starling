@@ -19,7 +19,7 @@ RAW_TAKE = re.compile(
 
 class EntityLifts(unittest.TestCase):
     def test_game_entity_lists_have_no_raw_takes(self):
-        source = ROOT / "crates/horizon-client/src"
+        source = ROOT / "crates/sunrise-client/src"
         violations = []
         for path in [source / "game.rs", *sorted((source / "game").rglob("*.rs"))]:
             # Byte-identical upstream source, excluded from discovery and compiled

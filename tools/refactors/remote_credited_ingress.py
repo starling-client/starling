@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-remote = root / "crates/horizon-client/src/game/network/remote"
+remote = root / "crates/sunrise-client/src/game/network/remote"
 path = remote / "mod.rs"
 source = path.read_text()
 start = source.index("        // Chunk packets start decoding now; the frame that reaches one in")

@@ -1,41 +1,41 @@
 # Launch API
 
-What another launcher (Prism Launcher, MultiMC, ATLauncher, Modrinth App, HMCL or your own) needs to start Horizon:
-the options `horizon-client` takes, how it hands over an account, and how it ends. `horizon-launcher` is the
+What another launcher (Prism Launcher, MultiMC, ATLauncher, Modrinth App, HMCL or your own) needs to start Sunrise:
+the options `sunrise-client` takes, how it hands over an account, and how it ends. `sunrise-launcher` is the
 reference implementation. Proposed in horizon-rust/horizon#3545.
 
 ## Overview
 
 | | |
 | --- | --- |
-| Version | 0.1.1, printed by `horizon-client --launch-api` and `horizon-prepare --launch-api` |
+| Version | 0.1.1, printed by `sunrise-client --launch-api` and `sunrise-prepare --launch-api` |
 | Level | experimental ([stability.md](stability.md)): preview once preparing and the guide are covered too |
-| Covers | starting `horizon-client`: its options, the session JSON, the exit codes, the crash report's path; preparing with `horizon-prepare`: `--launch-api`, `--output`, `--check`, `--complete`, `--progress json` |
+| Covers | starting `sunrise-client`: its options, the session JSON, the exit codes, the crash report's path; preparing with `sunrise-prepare`: `--launch-api`, `--output`, `--check`, `--complete`, `--progress json` |
 | Not yet | finding a build (see Not there yet) |
 
 ## Guide
 
 The whole way, from picking a build to playing: [launch-guide.md](launch-guide.md). In short:
 
-1. Start Horizon only for a player signed in with a Microsoft account that owns Minecraft: Java Edition, and
+1. Start Sunrise only for a player signed in with a Microsoft account that owns Minecraft: Java Edition, and
    hand over that account's session (`--session-stdin`, or `--session-file`), never on the command line. This
-   is the same owner gate `horizon-launcher` applies before every start. Horizon never downloads Mojang's
+   is the same owner gate `sunrise-launcher` applies before every start. Sunrise never downloads Mojang's
    files; a launcher that does downloads them only for that owner.
-2. Ask the build what it takes: `horizon-client --launch-api` prints JSON with `launch_api` (the version),
+2. Ask the build what it takes: `sunrise-client --launch-api` prints JSON with `launch_api` (the version),
    `options` and `content` (which mods, shader packs and packs it loads). Pass only options it lists: any other is
    refused with exit code 2.
 3. Start it with a folder per instance:
 
    ```sh
-   horizon-client --resources PREPARED --game-dir INSTANCE --home INSTANCE --width 1280 --height 720 --session-stdin
+   sunrise-client --resources PREPARED --game-dir INSTANCE --home INSTANCE --width 1280 --height 720 --session-stdin
    ```
 
-4. Watch the exit code. On 2, stderr names the refused option (`Horizon: --width: …`). On 1 or 101, the last
+4. Watch the exit code. On 2, stderr names the refused option (`Sunrise: --width: …`). On 1 or 101, the last
    line on stderr names the crash report.
 
 ## Reference
 
-[launch-reference.md](launch-reference.md), generated from `crates/horizon-client/src/game/runtime/launch_api.rs`: every
+[launch-reference.md](launch-reference.md), generated from `crates/sunrise-client/src/game/runtime/launch_api.rs`: every
 option, the `--launch-api` reply and the exit codes.
 
 ### The session JSON
@@ -51,24 +51,24 @@ The account the game joins online-mode servers with ([microsoft-account.md](../m
 - `--session-stdin`: write the JSON to the game's standard input and close it.
 - `--session-file PATH`: a file the game reads once and deletes at once. On Unix its mode must be 0600; a file
   older than two minutes is refused (and deleted).
-- A session the game can't read is reported on stderr (`Horizon: not signed in: …`), and online-mode servers
+- A session the game can't read is reported on stderr (`Sunrise: not signed in: …`), and online-mode servers
   will refuse the player.
 
 ## Preparing
 
-`horizon-prepare` turns the player's own Minecraft files into the resources `horizon-client --resources` reads. It
+`sunrise-prepare` turns the player's own Minecraft files into the resources `sunrise-client --resources` reads. It
 downloads nothing: it reads the files of a Minecraft the player owns (Guide, step 1) and checks each against the
 pins in `research-lock.json`.
 
 ```sh
-horizon-prepare --launch-api
-horizon-prepare --prepare --output PREPARED --complete --progress json
-horizon-prepare --check --output PREPARED
+sunrise-prepare --launch-api
+sunrise-prepare --prepare --output PREPARED --complete --progress json
+sunrise-prepare --check --output PREPARED
 ```
 
 - `--launch-api`: prints one JSON object on stdout and exits 0 (1, with an `error:` line, when there is no
   `research-lock.json` beside it or at `--root`). `launch_api` is the version, the same as
-  `horizon-client --launch-api`'s; `horizon` is the preparer's own; `minecraft` and `java_major` are the pins it
+  `sunrise-client --launch-api`'s; `sunrise` is the preparer's own; `minecraft` and `java_major` are the pins it
   prepares for (the game files it needs, and the Java `--java-home` must give); `schema` and `output_version`
   are the layout and contents of the resources it writes, the ones `--check` compares; `options` lists the
   options above and below as `{"name", "value"}` (`value` is the placeholder, null for a flag) and
@@ -85,9 +85,9 @@ horizon-prepare --check --output PREPARED
   for a launcher whose files aren't laid out like the official launcher's, each names what `--minecraft-dir`
   would give. Every file is still checked against the pins. When an earlier import beside the preparer is still
   verified, it is reused and these files aren't read.
-- `--server-jar PATH`: the first `--prepare` needs the server jar, which no launcher keeps. Horizon never
+- `--server-jar PATH`: the first `--prepare` needs the server jar, which no launcher keeps. Sunrise never
   downloads it; a launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account
-  that owns Java Edition, as `horizon-launcher` does.
+  that owns Java Edition, as `sunrise-launcher` does.
 - `--java-home PATH`: a Java of the pinned version that the launcher manages, tried after `JAVA_HOME` and the
   `PATH`, before the official launcher's runtimes.
 - Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
@@ -104,8 +104,8 @@ horizon-prepare --check --output PREPARED
 ## Examples
 
 ```sh
-horizon-client --launch-api
-printf '%s' "$SESSION_JSON" | horizon-client --resources ~/horizon/prepared --game-dir ~/instances/a --session-stdin --fullscreen
+sunrise-client --launch-api
+printf '%s' "$SESSION_JSON" | sunrise-client --resources ~/sunrise/prepared --game-dir ~/instances/a --session-stdin --fullscreen
 ```
 
 ## Stability
@@ -120,10 +120,10 @@ test keeps the contract and the code together.
 
 ## Changelog
 
-- 0.1.1: `horizon-client` advertises `--developer-single-player` and the
+- 0.1.1: `sunrise-client` advertises `--developer-single-player` and the
   `developer_single_player` capability for unsigned developer launches; the shared preparer
   version moves with the game's Launch API.
-- 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--player-dir`, `--fullscreen`,
-  `--session-stdin`, `--launch-api` (with `content`), exit code 2 for a refused command line; `horizon-prepare`'s `--launch-api`,
+- 0.1.0 (not released yet, so still one version): `sunrise-client`'s `--game-dir`, `--home`, `--player-dir`, `--fullscreen`,
+  `--session-stdin`, `--launch-api` (with `content`), exit code 2 for a refused command line; `sunrise-prepare`'s `--launch-api`,
   `--output`, `--check`, `--complete`, `--progress json`, `--version-json`, `--client-jar`, `--libraries-dir`,
   `--assets-dir` and `--java-home`.

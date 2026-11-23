@@ -1,5 +1,5 @@
 //! Executable link policy shared by source executables and prebuilt SDK metadata.
-#[path = "../crates/horizon-guest-stack/src/guest_stack_constants.rs"]
+#[path = "../crates/sunrise-guest-stack/src/guest_stack_constants.rs"]
 mod stack;
 
 pub fn arguments(target_os: &str, target_env: &str) -> Vec<String> {

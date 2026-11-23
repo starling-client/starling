@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Goat voice event names and metadata on real Java/Horizon dedicated servers.
+"""Goat voice event names and metadata on real Java/Sunrise dedicated servers.
 
 Silent ambient suppression is a separate gap: record those two controls, but
 gate only their hurt/death phases. Death follows 21 actual cooldown ticks.
@@ -159,32 +159,32 @@ def checks(result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'goat-voices-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(),
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(),
                             '--dedicated', '--nogui']}
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     report = {label: checks(result) for label, result in results.items()}
@@ -195,7 +195,7 @@ def main():
         print(f"{label}: {case['checks'] - len(case['failures'])}/{case['checks']} scoped checks pass", flush=True)
         for failure in case['failures']:
             print(json.dumps(failure), flush=True)
-    assert not report['horizon']['failures'], f'scoped goat voice failures; see {out}'
+    assert not report['sunrise']['failures'], f'scoped goat voice failures; see {out}'
 
 
 if __name__ == '__main__':

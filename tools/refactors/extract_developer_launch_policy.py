@@ -22,7 +22,7 @@ def save(path, text):
     path.write_text(text)
 
 
-game_path = Path('crates/horizon-client/src/game.rs')
+game_path = Path('crates/sunrise-client/src/game.rs')
 game = game_path.read_text()
 game, read = cut(game, '    fn read(mut o: Self)', '    /// The command line alone: no file is read and nothing changes.')
 read = read.replace('    fn read(', '    pub(super) fn read(', 1)
@@ -30,7 +30,7 @@ game, validation = cut(game, '        if o.developer_single_player\n', '        
 game = game.replace('        Ok(Some(o))', '        o.validate_developer_single_player()?;\n        Ok(Some(o))', 1)
 save(game_path, game)
 
-lan_path = Path('crates/horizon-client/src/game/network/lan/mod.rs')
+lan_path = Path('crates/sunrise-client/src/game/network/lan/mod.rs')
 lan = lan_path.read_text()
 lan_doc = '    /// Start the network side and the play-state hub: for the LAN (with the\n    /// host\'s own profile reserved) or for a dedicated server (no host).\n'
 assert lan.count(lan_doc) == 1
@@ -38,7 +38,7 @@ lan = lan.replace(lan_doc, '', 1)
 lan = lan.replace('    pub(super) fn lan_host(', '    pub(super) fn start_lan_hub(', 1)
 lan_guard = '''        if self.options.developer_single_player && net.listen {
             return Err(
-                horizon_client::lang::get("horizon.developer_offline.single_player").into(),
+                sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
             );
         }
 '''
@@ -46,13 +46,13 @@ assert lan.count(lan_guard) == 1
 lan = lan.replace(lan_guard, '', 1)
 save(lan_path, lan)
 
-remote_path = Path('crates/horizon-client/src/game/network/remote/mod.rs')
+remote_path = Path('crates/sunrise-client/src/game/network/remote/mod.rs')
 remote = remote_path.read_text()
 remote, local = cut(remote, '    /// Join single player\'s integrated server through memory.\n', '    fn join_server(')
 remote, header = cut(remote, '    fn join_server(', '        if local.is_none() && self.options.developer_single_player {')
 remote_guard = '''        if local.is_none() && self.options.developer_single_player {
             return Err(
-                horizon_client::lang::get("horizon.developer_offline.single_player").into(),
+                sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
             );
         }
 '''
@@ -60,7 +60,7 @@ assert remote.count(remote_guard) == 1
 remote = remote.replace(remote_guard, header.replace('    fn join_server(', '    pub(super) fn connect_remote_session(', 1), 1)
 save(remote_path, remote)
 
-policy = '//! Developer single-player startup and network-entry policy.\nuse super::*;\nuse super::lan::LanSettings;\nuse horizon_client::lan::{NetConfig, hub::HubConfig};\n\nimpl Options {\n'
+policy = '//! Developer single-player startup and network-entry policy.\nuse super::*;\nuse super::lan::LanSettings;\nuse sunrise_client::lan::{NetConfig, hub::HubConfig};\n\nimpl Options {\n'
 policy += read
 policy += '    pub(super) fn validate_developer_single_player(&self) -> Result<()> {\n'
 policy += validation.replace('o.', 'self.')
@@ -80,7 +80,7 @@ policy += remote_guard + '''        self.connect_remote_session(address, name, l
     }
 }
 '''
-save('crates/horizon-client/src/game/interface/developer_launch.rs', policy)
+save('crates/sunrise-client/src/game/interface/developer_launch.rs', policy)
 
 backend_path = Path('launcher/src/backend.rs')
 backend = backend_path.read_text()

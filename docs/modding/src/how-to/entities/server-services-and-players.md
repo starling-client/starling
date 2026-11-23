@@ -102,7 +102,7 @@ field that is present and wrong (`color`, `shadow_color`, the format flags,
 `click_event`, `hover_event`, `insertion`, `font`) refuses the whole component.
 A translation's `fallback` and an `nbt` component's `interpret`, `plain` and
 `separator` of the wrong kind are dropped instead. An object whose only content
-key is `index` is refused, as in vanilla; Horizon follows vanilla there. JSON
+key is `index` is refused, as in vanilla; Sunrise follows vanilla there. JSON
 escapes such as `\u0041` are decoded.
 
 `host.text_from_legacy("§cRed")` reads `§` formatting codes as

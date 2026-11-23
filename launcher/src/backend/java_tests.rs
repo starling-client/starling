@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn selected_jdk_reaches_external_preparers() {
-    const CHILD: &str = "HORIZON_LAUNCHER_JAVA_TEST";
+    const CHILD: &str = "SUNRISE_LAUNCHER_JAVA_TEST";
     if let Some(root) = std::env::var_os(CHILD) {
         let root = PathBuf::from(root);
         let home = java(25, true, &[], &root.join("missing.json"), &|_| {}).unwrap();
@@ -30,13 +30,13 @@ fn selected_jdk_reaches_external_preparers() {
         return;
     }
 
-    let root = std::env::temp_dir().join(format!("horizon-launcher-java-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("sunrise-launcher-java-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let executable =
         |bin: &Path, name: &str| bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     let probe = executable(&root, "probe");
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/horizon-prepare/tests/support/java_probe.rs");
+        .join("../crates/sunrise-prepare/tests/support/java_probe.rs");
     let output = crate::process::command("rustc")
         .arg(source)
         .arg("-o")

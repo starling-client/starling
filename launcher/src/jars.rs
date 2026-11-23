@@ -1,8 +1,8 @@
 //! Resolve a mod set's passive Java jars before a launcher-managed launch.
 mod launch;
 use crate::i18n::{tr, trf};
-use horizon_mod_package::manifest::{JarRef, JarRequirement, MissingJar};
-use horizon_port_pack::{fetch, modrinth};
+use sunrise_mod_package::manifest::{JarRef, JarRequirement, MissingJar};
+use sunrise_port_pack::{fetch, modrinth};
 pub use launch::{prepare_launch, LaunchError};
 use std::{
     collections::BTreeMap,

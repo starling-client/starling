@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def split(area):
-    path = ROOT / f'crates/horizon-mod-api/src/parts/{area}.rs'
+    path = ROOT / f'crates/sunrise-mod-api/src/parts/{area}.rs'
     source = path.read_text()
     start = source.index('pub mod tests {') + len('pub mod tests {\n')
     end = source.index('\n}\n', start)

@@ -1,4 +1,4 @@
-"""Exclusive-checkout runtime mutation proof; set HORIZON_TEST_RESOURCES first.
+"""Exclusive-checkout runtime mutation proof; set SUNRISE_TEST_RESOURCES first.
 
 Each case omits one production call (not a test/model). Compile failures do not
 count as kills. Originals are restored even on interruption. Logs stay in target.
@@ -15,15 +15,15 @@ def terminate(signum, _frame):
 
 
 signal.signal(signal.SIGTERM, terminate)
-if not os.environ.get('HORIZON_TEST_RESOURCES'):
-    raise SystemExit('Set HORIZON_TEST_RESOURCES')
-lan = Path('crates/horizon-client/src/game/network/lan_entities.rs')
-dragon = Path('crates/horizon-client/src/game/mobs/dragon.rs')
+if not os.environ.get('SUNRISE_TEST_RESOURCES'):
+    raise SystemExit('Set SUNRISE_TEST_RESOURCES')
+lan = Path('crates/sunrise-client/src/game/network/lan_entities.rs')
+dragon = Path('crates/sunrise-client/src/game/mobs/dragon.rs')
 originals = {p: p.read_text() for p in (lan, dragon)}
 subprocess.run(['git', 'diff', 'HEAD', '--exit-code', '--', str(lan), str(dragon)], check=True)
 logs = Path('target/tracking-id-proof')
 logs.mkdir(parents=True, exist_ok=True)
-command = ['cargo', 'test', '-p', 'horizon-client', '--lib']
+command = ['cargo', 'test', '-p', 'sunrise-client', '--lib']
 def check_production(label):
     for test in ['tracking_ids_', 'late_dragon_ids_']:
         result = subprocess.run(command + [test, '--', '--ignored'], capture_output=True, text=True)

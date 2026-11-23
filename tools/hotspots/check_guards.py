@@ -9,7 +9,7 @@ today stays and only growth fails:
   falls back to it (launcher/src/i18n/tests.rs). A rollup or an upstream sync carries other PRs' changes and is not
   checked; it is recognised by its `rollup` or `sync` label, or by the branch name our rollups and syncs use
   (CI passes the branch only for a pull request from this repository, so a fork cannot borrow the name);
-- crates/horizon-mod-vocab/src/hooks/notes.rs may not grow.
+- crates/sunrise-mod-vocab/src/hooks/notes.rs may not grow.
 
     python3 tools/hotspots/check_guards.py --base origin/main [--branch NAME] [--labels "a b"]
 """
@@ -31,7 +31,7 @@ BOOK_SRC = "docs/modding/src"
 SUMMARY = f"{BOOK_SRC}/SUMMARY.md"
 LANG = "launcher/lang/"
 LANG_LIMIT = 5
-NOTES = "crates/horizon-mod-vocab/src/hooks/notes.rs"
+NOTES = "crates/sunrise-mod-vocab/src/hooks/notes.rs"
 # A chapter line, with an optional trailing HTML comment (mdBook still renders the chapter).
 SUMMARY_LINE = re.compile(r"^(\s*)(?:[-*] )?\[([^\]]*)\]\(([^)]*)\)\s*(?:<!--.*-->\s*)?$")
 # The labels and branch names of rollup and upstream-sync pull requests (AGENTS.md, handbook "Rollups"):
@@ -147,7 +147,7 @@ def notes_problems(before, now):
         return []
     return [f"{NOTES}: {now} lines, {before} on the base; this file may not grow. Put prose about one hook in that "
             "hook's own `#[notes]`, and other prose in a `Notes` trait in a new file under "
-            "crates/horizon-mod-vocab/src/hooks/."]
+            "crates/sunrise-mod-vocab/src/hooks/."]
 
 
 def line_count(text):

@@ -2,7 +2,7 @@
 #![cfg(windows)]
 
 mod support;
-use horizon_launcher::{
+use sunrise_launcher::{
     backend::{self, Job, Msg},
     process,
 };
@@ -56,7 +56,7 @@ fn exporters_write_to_their_log_file_without_a_console() {
     let root = probe().parent().unwrap();
     let path = root.join("exporter.log");
     let log = fs::File::create(&path).unwrap();
-    let jdk = horizon_platform::prepare::java::Jdk {
+    let jdk = sunrise_platform::prepare::java::Jdk {
         java: probe().into(),
         javac: probe().into(),
     };
@@ -73,14 +73,14 @@ fn exporters_write_to_their_log_file_without_a_console() {
 
 #[test]
 fn cli_keeps_redirected_stdout_and_stderr() {
-    let executable = env!("CARGO_BIN_EXE_horizon-launcher");
+    let executable = env!("CARGO_BIN_EXE_sunrise-launcher");
     let version = process::command(executable)
         .arg("--version")
         .output()
         .unwrap();
     assert!(version.status.success());
     assert!(String::from_utf8_lossy(&version.stdout)
-        .starts_with(horizon_launcher::identity::VERSION_PREFIX));
+        .starts_with(sunrise_launcher::identity::VERSION_PREFIX));
     let invalid = process::command(executable)
         .arg("--unknown-option")
         .output()
@@ -91,8 +91,8 @@ fn cli_keeps_redirected_stdout_and_stderr() {
 
 #[test]
 fn mcp_keeps_its_stdio_transport() {
-    let executable = Path::new(env!("CARGO_BIN_EXE_horizon-launcher"));
-    assert!(horizon_launcher::agents::self_test(executable).unwrap() > 0);
+    let executable = Path::new(env!("CARGO_BIN_EXE_sunrise-launcher"));
+    assert!(sunrise_launcher::agents::self_test(executable).unwrap() > 0);
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn desktop_executable_uses_the_windows_gui_subsystem() {
     const SUBSYSTEM_OFFSET: usize = 68;
     const WINDOWS_GUI_SUBSYSTEM: u16 = 2;
 
-    let executable = fs::read(env!("CARGO_BIN_EXE_horizon-launcher")).unwrap();
+    let executable = fs::read(env!("CARGO_BIN_EXE_sunrise-launcher")).unwrap();
     let header = u32::from_le_bytes(
         executable[PE_HEADER_POINTER..PE_HEADER_POINTER + 4]
             .try_into()

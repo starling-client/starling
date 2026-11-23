@@ -4,13 +4,13 @@
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
 //! Not in the mockup, kept in its patterns: the appearance, the Home background, the data and
-//! logs folders and the applications menu (About's rows), the AI clients and the hidden developer options. The mockup's About tiles for Horizon and
+//! logs folders and the applications menu (About's rows), the AI clients and the hidden developer options. The mockup's About tiles for Sunrise and
 //! the launcher open Updates here, beside the switches that decide how updates install. The mockup's Native mods switch is the
 //! native mods' build profile here: they are always on.
 
 use super::*;
 use crate::glass_ui::{self as ui, white};
-use horizon_theme::glass::{fill, ink, radius};
+use sunrise_theme::glass::{fill, ink, radius};
 
 /// The list's entries: name and icon. The settings sections.
 const SECTIONS: [(&str, &str); 9] = [
@@ -32,8 +32,8 @@ pub(super) struct Built {
     pub opening: Stateful<Div>,
     pub menu_entry: Stateful<Div>,
     pub appearance: AnyElement,
-    pub horizon: String,
-    pub horizon_action: Option<AnyElement>,
+    pub sunrise: String,
+    pub sunrise_action: Option<AnyElement>,
     pub launcher: String,
     pub launcher_action: Option<AnyElement>,
 }
@@ -120,7 +120,7 @@ impl Launcher {
                         .px(px(if wide { 12. } else { 10. }))
                         .rounded(px(radius::ROW))
                         .cursor_pointer()
-                        .font_family(horizon_theme::glass::FONT)
+                        .font_family(sunrise_theme::glass::FONT)
                         .text_size(px(14.))
                         .when(on, |d| {
                             d.bg(white(fill::ACTIVE))
@@ -243,7 +243,7 @@ impl Launcher {
         )
     }
 
-    /// The Game card's switch for registry mods' automatic updates (`horizon::auto`).
+    /// The Game card's switch for registry mods' automatic updates (`sunrise::auto`).
     fn mods_auto_update_row(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let on = self.settings.auto_updates_mods();
@@ -252,7 +252,7 @@ impl Launcher {
             Some(
                 div()
                     .child(tr(
-                        "At start and before you play, content installed from Horizon's registry moves to its newest version for this game. Never inside a modpack. Code mods and updates that would remove blocks or items wait for you.",
+                        "At start and before you play, content installed from Sunrise's registry moves to its newest version for this game. Never inside a modpack. Code mods and updates that would remove blocks or items wait for you.",
                     ))
                     .into_any_element(),
             ),
@@ -268,12 +268,12 @@ impl Launcher {
         )
     }
 
-    /// Updates' two tiles (the mockup's `AboutTile`s): Horizon and its update, the launcher and its
+    /// Updates' two tiles (the mockup's `AboutTile`s): Sunrise and its update, the launcher and its
     /// own.
     fn update_tiles(
         &mut self,
-        horizon: String,
-        horizon_action: Option<AnyElement>,
+        sunrise: String,
+        sunrise_action: Option<AnyElement>,
         launcher: String,
         launcher_action: Option<AnyElement>,
     ) -> Div {
@@ -288,7 +288,7 @@ impl Launcher {
                     .map_or(tag.clone(), |r| update_name(r).to_owned()),
                 _ => tag,
             });
-        let tone = if self.updates.horizon.is_some() {
+        let tone = if self.updates.sunrise.is_some() {
             ui::Tone::Accent(ui::look().accent_soft)
         } else if self.update_error.is_some() {
             ui::Tone::Warn
@@ -309,7 +309,7 @@ impl Launcher {
             .text_size(px(13.))
             .text_color(ink)
             .child(ui::dot(tone))
-            .child(div().min_w_0().truncate().child(horizon));
+            .child(div().min_w_0().truncate().child(sunrise));
         let launcher_mark = div()
             .flex()
             .items_center()
@@ -326,8 +326,8 @@ impl Launcher {
             .when(!wide, |d| d.flex_col())
             .gap(px(8.))
             .child(tile(
-                self.horizon_mark(42.),
-                "Horizon".into(),
+                self.sunrise_mark(42.),
+                "Sunrise".into(),
                 installed.unwrap_or_else(|| tr("Nightly").to_string()),
                 div()
                     .flex()
@@ -335,7 +335,7 @@ impl Launcher {
                     .items_start()
                     .gap(px(12.))
                     .child(status)
-                    .children(horizon_action)
+                    .children(sunrise_action)
                     .into_any_element(),
             ))
             .child(tile(
@@ -352,7 +352,7 @@ impl Launcher {
         let n = 0;
         let account = card().child(self.glass_account(cx));
         let updates = card()
-            .child(self.update_tiles(b.horizon, b.horizon_action, b.launcher, b.launcher_action))
+            .child(self.update_tiles(b.sunrise, b.sunrise_action, b.launcher, b.launcher_action))
             .child(index_row(
                 0,
                 tr("Install new versions automatically"),
@@ -439,7 +439,7 @@ impl Launcher {
                     0,
                     tr("Applications menu"),
                     note(if self.settings.desktop_entry() {
-                        "Horizon and its icon are in your desktop's menu."
+                        "Sunrise and its icon are in your desktop's menu."
                     } else {
                         "Not in your desktop's menu."
                     }),

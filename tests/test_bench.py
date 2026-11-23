@@ -75,7 +75,7 @@ class SetupTests(unittest.TestCase):
 
 class TableTests(unittest.TestCase):
     def test_table_marks_missing_numbers(self):
-        run = {'server': 'horizon', 'bots': 5, 'tps': 20.0, 'mspt': {'average': 3.0, 'p99': 9.0},
+        run = {'server': 'sunrise', 'bots': 5, 'tps': 20.0, 'mspt': {'average': 3.0, 'p99': 9.0},
                'bytes_per_player_second': None, 'join_ms': {'p50': 80, 'worst': 120}}
         text = bench.table([run, {'server': 'pumpkin', 'error': 'no start\nmore'}])
         self.assertIn('| TPS | 20.0 |', text)

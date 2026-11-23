@@ -12,7 +12,7 @@ again.
 
 | Shelf | Where from | Goes to | Then |
 |---|---|---|---|
-| Mods | Horizon's registry of reviewed mods | `horizon-native-mods/` or `horizon-mods/` | A native mod gets its Compile button ([starling-native-mods.md](starling-native-mods.md)); a content mod loads at the next start |
+| Mods | Sunrise's registry of reviewed mods | `sunrise-native-mods/` or `sunrise-mods/` | A native mod gets its Compile button ([starling-native-mods.md](starling-native-mods.md)); a content mod loads at the next start |
 | Resource packs | Modrinth | `resourcepacks/` | The Resource Packs page lists it at once; the player turns it on |
 | Shader packs | Modrinth's Iris and OptiFine packs; a search also finds the registry's | `shaderpacks/` | The player chooses it |
 
@@ -21,7 +21,7 @@ again.
   leaves that out.
 - **Resource packs for other versions** stay hidden while the toggle says **Other game versions: Off**. With it on,
   each says what it was made for.
-- **Modrinth's shader packs** aren't in the desktop browser, because the desktop's own format is `.hshader`.
+- **Modrinth's shader packs** aren't in the desktop browser, because the desktop's own format is `.sshader`.
   `starling-catalog` searches them itself, the most downloaded first, downloads the newest ZIP (one made for this
   version of the game, if any), checks its SHA-512 and that it holds a `shaders/` folder. Whether it runs well is up to
   the converter and the phone.
@@ -30,5 +30,5 @@ again.
 ## Testing without a phone
 
 `cargo test -p starling-catalog` runs what needs no network, the list's pages and the finger on it among them. The
-browser's own tests stay in the launcher's workspace. `cargo test -p horizon-client-render --lib options_ui` covers the
+browser's own tests stay in the launcher's workspace. `cargo test -p sunrise-client-render --lib options_ui` covers the
 pages' Catalog buttons and the Resource Packs page's list after an install.

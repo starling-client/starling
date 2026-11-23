@@ -15,10 +15,10 @@ same typed tables and thread-local state as before. No runtime logic moves crate
 
 ## Replay
 
-Build the existing developer tool with `cargo build -p horizon-mod-api-gen --bin
+Build the existing developer tool with `cargo build -p sunrise-mod-api-gen --bin
 part-table-layout`, then run `python3 tools/refactors/api-pr2b/move.py` on an unmoved
 tree. It uses `git mv` and changes only imports, visibility, enclosing scopes and
-paths. A repeated run rewrites paths only, including paths in `horizon-mod-runtime`
+paths. A repeated run rewrites paths only, including paths in `sunrise-mod-runtime`
 if it exists. This is required on `registry_keys.rs` if #1624 lands first. Do not
 restore an old copy of that file over #1624's work.
 
@@ -54,10 +54,10 @@ module imports. No bodies, constants, conditions or dispatch logic change.
 The PR 1 gate compares WIT, hook dispatch and the host manifest. Also compare
 `mod-api.wit` directly: for this move it is byte-identical, without reordering.
 
-Focused local checks: `cargo test -p horizon-mod-api --lib parts::`,
-`cargo test -p horizon-mod-api-gen exports::tests`, and
+Focused local checks: `cargo test -p sunrise-mod-api --lib parts::`,
+`cargo test -p sunrise-mod-api-gen exports::tests`, and
 `python3 -m unittest tests.test_mod_api_boundary`. A development build with
-`cargo build -p horizon-mod-api --features testing` checks the non-unit fixture
+`cargo build -p sunrise-mod-api --features testing` checks the non-unit fixture
 configuration too; test-only imports carry `#[cfg(test)]`, while public fixture
 exports retain their original visibility. Workspace checks and wasm32 are
 left to CI under the room's no-local-CI rule. No in-game trigger applies to a

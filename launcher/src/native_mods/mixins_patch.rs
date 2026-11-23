@@ -1,4 +1,4 @@
-//! The horizon-mixins tool for `[[native.mixin]]` builds (`horizon_mod_package::mixins_tool`):
+//! The horizon-mixins tool for `[[native.mixin]]` builds (`sunrise_mod_package::mixins_tool`):
 //! once per pin and patch the launcher downloads the prebuilt tool from its release, and where
 //! that release has none for this computer it downloads the tool's source at the pin, applies the
 //! carried patch only to the exact text it was written against, and builds it.
@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use horizon_mod_package::mixins_tool::{self, PATCH, PATCH_NAME};
+use sunrise_mod_package::mixins_tool::{self, PATCH, PATCH_NAME};
 use sha2::{Digest, Sha256};
 
 use super::{root, run, Step, MIXINS_REV};
@@ -51,7 +51,7 @@ pub(super) fn tool(rust: &Toolchain, progress: &impl Fn(Step)) -> Result<PathBuf
     let target = rust.host.target;
     let release = format!(
         "{}/{}",
-        horizon_addresses::MIXINS_TOOL_RELEASES,
+        sunrise_addresses::MIXINS_TOOL_RELEASES,
         mixins_tool::release_tag()
     );
     let get = |name: &str| {
@@ -128,7 +128,7 @@ fn install(
 fn build(rust: &Toolchain, dir: &Path) -> Result<(), String> {
     let partial = dir.join(".source");
     let top = super::unpack_archive(
-        &format!("{}/{MIXINS_REV}", horizon_addresses::HORIZON_MIXINS_SOURCE),
+        &format!("{}/{MIXINS_REV}", sunrise_addresses::HORIZON_MIXINS_SOURCE),
         &partial,
         256 << 20,
     )?;

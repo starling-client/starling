@@ -58,7 +58,7 @@ with at most eight arrays. A pack that needs more layers than those arrays hold
 is rejected rather than silently losing textures.
 
 The shared GUI/entity atlas follows the GPU's 2D texture limit. Android uses
-Horizon Android's skyline packing for small atlases so gaps below shorter
+Sunrise Android's skyline packing for small atlases so gaps below shorter
 images remain usable. Its fitting policy preserves GUI, fonts and dynamic
 slots, reducing eligible non-UI sprites only when packing still fails.
 Android OpenGL panoramas use the fork's 256-pixel box-filtered faces and an
@@ -86,10 +86,10 @@ installer's renderer.
 Smaller requested heaps stay smaller. This bounds JVM heap reservations, not
 total Java/Rust/native memory; very low-memory devices can still run out of RAM.
 
-APKs carry Horizon's original compiled exporter bundle, checked against its
+APKs carry Sunrise's original compiled exporter bundle, checked against its
 source/pin key and class hashes. A host JDK 25 compiles and link-checks it while
 building the APK; pinned Minecraft jars/libraries stay in the ignored build
-cache and are never packaged. `HORIZON_MINECRAFT_DIR` can supply those inputs;
+cache and are never packaged. `SUNRISE_MINECRAFT_DIR` can supply those inputs;
 otherwise the build fetches and verifies them. No Minecraft assets are needed
 for building the bundle. ARM32's Java runtime has no `jdk.compiler` module, so
 preparation executes the shipped classes and does not invoke javac on the phone.

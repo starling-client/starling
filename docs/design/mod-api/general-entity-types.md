@@ -51,9 +51,9 @@ The remaining sections describe the wider design, not shipped lifecycle support.
 
 ## Evidence and limits
 
-Vanilla 26.3 was queried from `/workspace/horizon` with `python3 tools/rea_vanilla.py`: `method net.minecraft.server.level.ServerLevel tickNonPassenger` runs commonTick, tick, then passenger ticking. `--overload-index 0 method net.minecraft.world.entity.EntityType loadEntityRecursive` delegates compound input through registry-aware TagValueInput and a problem reporter; this wrapper alone does not establish unknown-type recovery. `callers net.minecraft.server.level.ServerLevel addFreshEntity` reports 36 callers, including dispenser vehicles, loot drops, TNT, hatching and dragon creation. Creation is consequently wider than summon. Exact recursive-load internals, passenger tick semantics and global vanilla iteration ordering remain unverified; do not infer them from these queries.
+Vanilla 26.3 was queried from `/workspace/sunrise` with `python3 tools/rea_vanilla.py`: `method net.minecraft.server.level.ServerLevel tickNonPassenger` runs commonTick, tick, then passenger ticking. `--overload-index 0 method net.minecraft.world.entity.EntityType loadEntityRecursive` delegates compound input through registry-aware TagValueInput and a problem reporter; this wrapper alone does not establish unknown-type recovery. `callers net.minecraft.server.level.ServerLevel addFreshEntity` reports 36 callers, including dispenser vehicles, loot drops, TNT, hatching and dragon creation. Creation is consequently wider than summon. Exact recursive-load internals, passenger tick semantics and global vanilla iteration ordering remain unverified; do not infer them from these queries.
 
-The issue names NeoForge 26.3 RegisterEvent and Registries.ENTITY_TYPE. The permitted [entity guide](https://docs.neoforged.net/docs/entities/) describes registered singleton types, instance behavior, separate renderers, server insertion and configurable tracking. It is explicitly labelled **26.1**, not 26.3. The [26.3 RegisterEvent Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/neoforged/neoforge/registries/RegisterEvent.html) was inaccessible through the web reader. Exact NeoForge 26.3 registration, lifecycle ordering, persistence and tracking contracts are **unverified**. No NeoForge source, patches or other project's implementation was read. The following is an explicit Horizon proposal, not asserted NeoForge equivalence.
+The issue names NeoForge 26.3 RegisterEvent and Registries.ENTITY_TYPE. The permitted [entity guide](https://docs.neoforged.net/docs/entities/) describes registered singleton types, instance behavior, separate renderers, server insertion and configurable tracking. It is explicitly labelled **26.1**, not 26.3. The [26.3 RegisterEvent Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/neoforged/neoforge/registries/RegisterEvent.html) was inaccessible through the web reader. Exact NeoForge 26.3 registration, lifecycle ordering, persistence and tracking contracts are **unverified**. No NeoForge source, patches or other project's implementation was read. The following is an explicit Sunrise proposal, not asserted NeoForge equivalence.
 
 ## Registration and ownership
 
@@ -67,7 +67,7 @@ EntityPart is shared behavior, not mutable per-instance storage. Follow [PR #232
 
 At the authoritative entity phase, walk eligible general rows once in stable join order, with an indexed iteration schedule maintained on mutation rather than sorting each tick. For each root run common bookkeeping, its subscribed server behavior, then its passenger subtree. A passenger is not also ticked as a root. Newly committed spawns first tick next phase; a row removed before its turn receives no tick. Buffer structural edits until safe boundaries. Revalidate deferred operations after listener writes and refuse stale decisions without recomputing.
 
-Join ordering and next-phase spawn visibility are proposed Horizon choices pending vanilla oracle comparison. They must not reorder existing vanilla families incidentally. Client interpolation/render updates never execute authoritative behavior.
+Join ordering and next-phase spawn visibility are proposed Sunrise choices pending vanilla oracle comparison. They must not reorder existing vanilla families incidentally. Client interpolation/render updates never execute authoritative behavior.
 
 Use #1606's residency journal and visibility boundary for insert, lift, restore, move and retirement. Unloaded or parked entities persist but do not tick; ordinary entities do not acquire chunk tickets merely by existing. Temporary lift is not removal and cannot retire attachments or emit a tracking despawn. Commit publishes changes once; abort restores the original join identity, row and attachments. Save refuses while a lifted pass or entity transaction is open. Dimension transfer preserves UUID and data, invalidates source-scoped handles, removes source tracking and creates destination tracking atomically. World close invalidates its epoch.
 
@@ -91,15 +91,15 @@ Paths below are verified existing integration owners relative to this repository
 
 | Route | Existing file:line owner; required treatment |
 | --- | --- |
-| Part registration and dispatch | `crates/horizon-mod-vocab/src/parts/entities.rs:124` registers behavior; `:53` resolves a type's Parts. Resolve into slots at load. |
-| Mod spawning, including callers using level handles | `crates/horizon-client/src/game/modding/native_level_spawning.rs:15` owns level_spawn_mob. Add a general insertion path without pretending every entity is a mob. |
-| Natural/spawner policy | `crates/horizon-client/src/game/mobs/natural_spawning.rs:43` gates eligible chunks. General MISC types do not gain natural spawning implicitly. Explicit spawn adapters use the same insertion boundary. |
-| Identity, reads and queries | `crates/horizon-client/src/game/modding/native_entity_refs.rs:101` resolves targets, `:176` creates refs, `:245` queries entities. Extend all three to general rows; do not scan families for each lookup. |
-| Temporary lift | `crates/horizon-client/src/game/modding/native_entity_refs.rs:86` owns held-out access. General rows must retain residency visibility and balance restoration after panic. |
-| Residency insert/remove/unload/restore/world reset | `crates/horizon-client/src/join_seq/residency.rs:95` journals events, `:108` drains them, `:121` resets epoch. Integrate the general owner here; retirement waits for root commit. |
-| Save and chunk reload | `crates/horizon-client/src/save.rs:3101` loads entity tags; `:3316` and `:3320` save synchronously/asynchronously. Both consume the same committed general snapshots, including quarantine. |
-| Dimension/passenger transfer | `crates/horizon-client/src/game/entities/vehicle_teleport.rs:231` transfers vehicles, `:391` passengers. Validate the entire tree before moving any row. |
-| Server tracking and ids | `crates/horizon-client/src/game/network/lan_entities.rs:130` runs native tracking, `:197` builds object states, `:578` supplies UUIDs, `:590` assigns ids. Include general rows once. |
+| Part registration and dispatch | `crates/sunrise-mod-vocab/src/parts/entities.rs:124` registers behavior; `:53` resolves a type's Parts. Resolve into slots at load. |
+| Mod spawning, including callers using level handles | `crates/sunrise-client/src/game/modding/native_level_spawning.rs:15` owns level_spawn_mob. Add a general insertion path without pretending every entity is a mob. |
+| Natural/spawner policy | `crates/sunrise-client/src/game/mobs/natural_spawning.rs:43` gates eligible chunks. General MISC types do not gain natural spawning implicitly. Explicit spawn adapters use the same insertion boundary. |
+| Identity, reads and queries | `crates/sunrise-client/src/game/modding/native_entity_refs.rs:101` resolves targets, `:176` creates refs, `:245` queries entities. Extend all three to general rows; do not scan families for each lookup. |
+| Temporary lift | `crates/sunrise-client/src/game/modding/native_entity_refs.rs:86` owns held-out access. General rows must retain residency visibility and balance restoration after panic. |
+| Residency insert/remove/unload/restore/world reset | `crates/sunrise-client/src/join_seq/residency.rs:95` journals events, `:108` drains them, `:121` resets epoch. Integrate the general owner here; retirement waits for root commit. |
+| Save and chunk reload | `crates/sunrise-client/src/save.rs:3101` loads entity tags; `:3316` and `:3320` save synchronously/asynchronously. Both consume the same committed general snapshots, including quarantine. |
+| Dimension/passenger transfer | `crates/sunrise-client/src/game/entities/vehicle_teleport.rs:231` transfers vehicles, `:391` passengers. Validate the entire tree before moving any row. |
+| Server tracking and ids | `crates/sunrise-client/src/game/network/lan_entities.rs:130` runs native tracking, `:197` builds object states, `:578` supplies UUIDs, `:590` assigns ids. Include general rows once. |
 
 Every creation source must reach the general insertion coordinator: summon, mod/fake-player spawn, item use, dispenser, projectile creation, breeding, natural and block spawners, conversion, chunk load and dimension arrival. Every exit must reach retirement: discard, death, despawn, conversion, chunk unload, dimension departure, disconnect-owned cleanup and world close. Client spawn/update/remove packets and renderer disposal require parallel coverage. Exact leaf owners for those sources, the authoritative general tick seam and client renderer/packet dispatch are **not yet verified** by this note; implementation must trace and record file:line callers before enabling them. Existing vanilla-only routes remain unchanged until explicitly migrated. This is a coverage gap, not an exhaustive verified caller inventory.
 
@@ -134,7 +134,7 @@ Future implementation tests, not results of this documentation change:
 | Native panic / wasm trap during tick | Counter and listener edits rolled back, balanced lift, zero outbound deltas; next valid built-in step succeeds. |
 | No Parts on 1000 general entities | 1000 common ticks, zero callback calls and zero callback payload allocations; no per-entity scans. |
 
-Run the scene on integrated, LAN and dedicated servers for both targets. Pin ordinary entity ordering and lifecycle behavior against vanilla oracles separately from Horizon-specific expected values.
+Run the scene on integrated, LAN and dedicated servers for both targets. Pin ordinary entity ordering and lifecycle behavior against vanilla oracles separately from Sunrise-specific expected values.
 
 ## Proposed stages (file none)
 
@@ -147,7 +147,7 @@ Run the scene on integrated, LAN and dedicated servers for both targets. Pin ord
 
 ## Open questions
 
-- Exact NeoForge 26.3 contract remains unavailable. Recommendation: obtain its public Javadoc before claiming counterpart parity; ask Ari to approve explicit Horizon choices where public documentation is silent.
+- Exact NeoForge 26.3 contract remains unavailable. Recommendation: obtain its public Javadoc before claiming counterpart parity; ask Ari to approve explicit Sunrise choices where public documentation is silent.
 - Must general ticks share one order with all vanilla families immediately? Recommendation: maintain stable general join order initially and require oracle evidence before migrating existing family scheduling.
 - Missing-mod recovery versus fail-open world load? Recommendation: quarantine losslessly with visible diagnostics; malformed/oversized records require explicit recovery, never silent deletion.
 - Which exact bounds are acceptable? Recommendation: start with the provisional limits above, measure valid workloads and agree aggregate world/connection quotas before enablement.

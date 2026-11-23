@@ -6,7 +6,7 @@ For each listed version, the official server jar (cached under
 gets a scene of block entities, entities and items in that version's own save
 format (tools/datafix_scene.py), and a bot player joins (with its inventory filled)
 so that player data exists. The saved world is kept in datafix/worlds/VERSION in the private writable root
-(default .local/datafix; override with HORIZON_DATAFIX_ROOT).
+(default .local/datafix; override with SUNRISE_DATAFIX_ROOT).
 
   datafix_worlds.py [--force] [VERSION...]      (default: every version below)
 """

@@ -7,7 +7,7 @@ a tick, 200 ticks, release build:
 - `BreakBlock`: breaking a stone block, put back before each break.
 
 ```sh
-HORIZON_TEST_RESOURCES=.local/horizon-client/26.3 cargo test --release -p horizon-client --lib --bins --tests \
+SUNRISE_TEST_RESOURCES=.local/sunrise-client/26.3 cargo test --release -p sunrise-client --lib --bins --tests \
   fakes_acting_each_tick_cost -- --ignored --nocapture
 ```
 

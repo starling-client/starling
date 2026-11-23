@@ -2,7 +2,7 @@
 """A wolf and a boat leashed to a leash knot by its UUID on a dedicated server, against vanilla's, seen by a vanilla
 client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator. A leash knot with a fixed UUID is summoned on a fence, then a wolf
 (NoAI) and a boat whose `leash` names that UUID. `Leashable.restoreLeashFromSave` finds the holder with
 `ServerLevel.getEntity(uuid)`, any entity, the knot included, and ties them to it; a holder still missing after 100

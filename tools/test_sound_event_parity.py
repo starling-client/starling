@@ -6,7 +6,7 @@ The oracle builds the real `SoundManager` registry from the client asset root
 subtitles, file validation against the listed .ogg resources, event references
 weighing as much as their event) and resolves seeded `SimpleSoundInstance`s:
 `getOrResolve`, `getVolume`, `getPitch`, `Sound.getAttenuationDistance`, the
-stream/preload/type fields and the instance random's next draw. Horizon's
+stream/preload/type fields and the instance random's next draw. Sunrise's
 `SoundRegistry` + `SoundEngine::resolve` replay the same inputs.
 """
 import json
@@ -30,7 +30,7 @@ def fixtures():
         seeds = [0, 1, -1, 42] + [rng.getrandbits(64) - (1 << 63) for _ in range(max(4, 2 * count))]
         for seed in seeds:
             lines.append(f'{event} {seed} {h.bits(rng.choice(volumes))} {h.bits(rng.choice(pitches))}')
-    for event in ['minecraft:intentionally_empty', 'minecraft:empty', 'minecraft:not.a.sound', 'horizon:missing', 'block.stone.break', 'music.game']:
+    for event in ['minecraft:intentionally_empty', 'minecraft:empty', 'minecraft:not.a.sound', 'sunrise:missing', 'block.stone.break', 'music.game']:
         for seed in [0, 7, -99]:
             lines.append(f'{event} {seed} {h.bits(1.0)} {h.bits(1.0)}')
     return lines

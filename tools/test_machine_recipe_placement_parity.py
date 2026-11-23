@@ -319,8 +319,8 @@ def admit(f):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    # tools/parity.py runs every harness with no arguments: build the Horizon binary and run both sides.
-    p.add_argument('--binary',type=Path,help='A Horizon client binary; built when omitted')
+    # tools/parity.py runs every harness with no arguments: build the Sunrise binary and run both sides.
+    p.add_argument('--binary',type=Path,help='A Sunrise client binary; built when omitted')
     p.add_argument('--build',default='h234-machine-recipe-placement')
     p.add_argument('--side',choices=['java','native','both'],default='both')
     args=p.parse_args();lock,build,java,native,client=net.sides(args.build,args.binary.resolve() if args.binary else None)

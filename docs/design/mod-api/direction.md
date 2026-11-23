@@ -7,7 +7,7 @@ today; the [project board](https://github.com/users/arismoko/projects/1) and the
 
 ## One clean break
 
-A mod is written against one API, `mod_api` (the crate `horizon-mod-api`), and the API keeps one hook per
+A mod is written against one API, `mod_api` (the crate `sunrise-mod-api`), and the API keeps one hook per
 moment. A hook whose NeoForge 26.3 counterpart exists takes its name, side and full contract. Two hooks at the
 same vanilla call site, `_v1` and `_v2` pairs included, are one hook, and the old one is deleted, not kept
 beside it. A veto before an action and a notice after it stay separate when vanilla runs code between them. A
@@ -18,7 +18,7 @@ branches. An old mod rebuilds, and the compiler says what moved. Removing a path
 catalog, these docs, the tests and the sample mod in the same change. A hook with no NeoForge counterpart is
 judged on its merits like any other.
 
-Every hook is declared once, in the catalog (`crates/horizon-mod-vocab/src/hooks/`): its name, side, contract,
+Every hook is declared once, in the catalog (`crates/sunrise-mod-vocab/src/hooks/`): its name, side, contract,
 scope and `doc`. The generator writes everything repeated from it: the `Hooks` trait, the part traits, the
 `Host` traits, the dispatch and the [reference](../../modding/src/reference/api.md). A hook is added by declaring it, not by
 editing match arms.
@@ -102,7 +102,7 @@ and [Parts](../../modding/src/concepts/parts.md).
 | Mod configs | `register_configs` | Config phase on the owning side, once at startup for Client/Common and per world for Server | After the file is read and the mod receives its config loading callback. |
 
 [Content mods](../../modding/src/how-to/content-mods.md) declare identities and data such as blocks, items, entity types
-and menus in `data/<id>/horizon/`. These declarations supply the game's registry entries, models or
+and menus in `data/<id>/sunrise/`. These declarations supply the game's registry entries, models or
 templates and other data. The startup `blocks` and `items` hooks can submit the same declaration types
 from code and go through the same content checks. Attaching a Part or providing a callback adds behaviour
 to an identity. For example, a menu declaration describes its slots, while a `MenuPart` supplies code for
@@ -192,7 +192,7 @@ identities, and a per-hook part method stays when a system joins it.
 A mod can be built two ways, from the same source: native, compiled into the game, or to `mod.wasm`, which the
 game's one sandboxed runtime runs with no rebuild. The only difference between them is the build target.
 
-- `[dependencies]` in `horizon-mod.toml` means the same for both: required and optional dependencies, semver
+- `[dependencies]` in `sunrise-mod.toml` means the same for both: required and optional dependencies, semver
   against the manifest's versions, dispatch in dependency order, and a mod publishing functions and statics its
   dependents call. Native links through Cargo; wasm links through the runtime's linker, with one copy of each
   library shared by its dependents. Both targets use one resolver, keep bundle-order ties, and refuse cycles.
@@ -212,7 +212,7 @@ checked against the game, because they differ in what they link to:
 | Pinned to | the exact game build, in `[native]` | the interface: the hooks it imports |
 | Refused when | the build differs | an import it needs is missing or changed |
 
-A wasm mod keeps running on a newer game while the hooks it imports are unchanged. `horizon-mod-api` therefore
+A wasm mod keeps running on a newer game while the hooks it imports are unchanged. `sunrise-mod-api` therefore
 always builds for `wasm32-unknown-unknown`: a hook that needs an engine type takes a plain-data type of the
 API's own, converted on the game side.
 

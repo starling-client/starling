@@ -105,20 +105,20 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--prepare',action='store_true');args=parser.parse_args()
     build=lab.LOCAL/'rust-tree-feature-parity';build.mkdir(parents=True,exist_ok=True);report_path=build/'report.json';report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
-    lock,jars,libraries=base.verify_artifacts();parity=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity'
+    lock,jars,libraries=base.verify_artifacts();parity=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity'
     oracle=parity/'VanillaTreeFeatureOracle.java';exporter=parity/'VanillaSimpleBlockOracle.java'
     helpers=[parity/(name+'.java') for name in ['VanillaPlacementOracle','VanillaBlockSurvivalOracle','VanillaBlockPropertiesOracle','VanillaBlockSupportOracle','VanillaBlockStateCodecOracle','VanillaCollisionOracle','VanillaHeightmapOracle']]
     sources=[oracle,exporter,*helpers,Path(__file__),*[lab.ROOT/'tools'/name for name in ['test_block_survival_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',
-             *sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/tree_feature_fixture.rs']
+             *sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/tree_feature_fixture.rs']
     tested_sources=base.source_hashes(sources);classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=7200,stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    def java(main_class,side,mode,path):run(['java','-Xmx2G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.'+main_class,mode,path],side+'-'+mode)
+    def java(main_class,side,mode,path):run(['java','-Xmx2G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.'+main_class,mode,path],side+'-'+mode)
     tags=worldgen.tag_resources(jars['server']);fluid_tags=survival.fluid_tag_resources(jars['server']);resources=feature_resources(jars['server'])
     if tags!=worldgen.tag_resources(jars['client']) or fluid_tags!=survival.fluid_tag_resources(jars['client']) or resources!=feature_resources(jars['client']):raise ValueError('reference resources differ')
     for name,value in [('tags.json',tags),('fluid-tags.json',fluid_tags),('vanilla-features.json',resources)]:(build/name).write_text(json.dumps(value,separators=(',',':')))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,exporter,*helpers],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,exporter,*helpers],'compile-java')
     for side in jars:
         export=build/(side+'-definitions');export.mkdir(exist_ok=True);java('VanillaSimpleBlockOracle',side,'export',export)
     for path in (build/'server-definitions').iterdir():
@@ -135,7 +135,7 @@ def main():
             output.write(json.dumps(fixture,separators=(',',':'))+'\n');count+=1
     fixtures=[inputs,*sorted(build.glob('*.nbt')),*[p for p in sorted(build.glob('*.json')) if p.name!='report.json']];tested_fixtures=fixture_hashes(fixtures)
     print(f'Prepared {count:,} feature fixtures',flush=True)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
     binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'tree_feature_fixture',build],'rust');references=[]

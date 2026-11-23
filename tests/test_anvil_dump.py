@@ -32,7 +32,7 @@ def named_root(entries: list[bytes]) -> bytes:
 
 
 LEVEL = named_root([
-    entry(8, "LevelName", tag_string("Horizon")),
+    entry(8, "LevelName", tag_string("Sunrise")),
     entry(1, "Difficulty", struct.pack(">b", 2)),
     entry(3, "Version", struct.pack(">i", 42)),
     entry(4, "Seed", struct.pack(">q", 1234567890123)),
@@ -106,7 +106,7 @@ class DumpTests(unittest.TestCase):
         result = run(self.path, "level.dat")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {
-            "LevelName": "Horizon",
+            "LevelName": "Sunrise",
             "Difficulty": 2,
             "Version": 42,
             "Seed": 1234567890123,
@@ -117,7 +117,7 @@ class DumpTests(unittest.TestCase):
     def test_a_path_selects_one_value(self):
         result = run(self.path, "level.dat", "LevelName")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), "Horizon")
+        self.assertEqual(json.loads(result.stdout), "Sunrise")
 
     def test_a_path_walks_into_a_list(self):
         result = run(self.path, "level.dat", "Spawn", "1")
@@ -138,7 +138,7 @@ class DumpTests(unittest.TestCase):
         (self.path / "zipped.dat").write_bytes(gzip.compress(LEVEL))
         result = run(self.path, "zipped.dat", "LevelName")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), "Horizon")
+        self.assertEqual(json.loads(result.stdout), "Sunrise")
 
     def test_a_region_file_lists_its_chunks(self):
         (self.path / "r.0.0.mca").write_bytes(region({(0, 0): CHUNK}))

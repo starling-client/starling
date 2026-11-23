@@ -7,7 +7,7 @@ warning changes and ticks, and for every frame runs WorldBorderRenderer's
 extract, prepare (the cached wall vertex buffer), prepareDynamicTransforms
 (colour, model offset, scrolling texture) and draw (which walls), and
 Hud.extractVignette (the red warning vignette colour). `examples/
-world_border_render_fixture` replays the same cases with `horizon_client::
+world_border_render_fixture` replays the same cases with `sunrise_client::
 worldborder`, `border_render` and `hud_overlays::vignette`; every value must agree
 bit for bit.
 
@@ -25,7 +25,7 @@ try:
 except ImportError:
     import lab, test_rust_parity as base, test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 
 
 def cases(count):
@@ -101,9 +101,9 @@ def main():
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          PARITY / 'VanillaWorldBorderRenderOracle.java'], 'compile-java')
-    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaWorldBorderRenderOracle',
+    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaWorldBorderRenderOracle',
          inputs, build / 'vanilla.jsonl'], 'vanilla')
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'world_border_render_fixture', inputs, build / 'rust.jsonl'], 'rust')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]

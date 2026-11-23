@@ -34,15 +34,15 @@ final class GameFolder {
             "resourcepacks",
             "datapacks",
             "shaderpacks",
-            "horizon-mods",
+            "sunrise-mods",
             "screenshots",
             "servers.dat",
-            "horizon-mods.txt",
-            "horizon-graphics.txt",
-            "horizon-extras.txt",
-            "horizon-controller.txt",
-            "horizon-player.txt",
-            "horizon.txt",
+            "sunrise-mods.txt",
+            "sunrise-graphics.txt",
+            "sunrise-extras.txt",
+            "sunrise-controller.txt",
+            "sunrise-player.txt",
+            "sunrise.txt",
             "touch-layout.json",
             "options.txt");
 
@@ -50,7 +50,7 @@ final class GameFolder {
     private static final List<String> LOGS = Arrays.asList("logs", "crash-reports");
 
     /** Made when the app's own files are listed: nothing can be added at their top. */
-    private static final String[] FOLDERS = {"saves", "resourcepacks", "shaderpacks", "horizon-mods"};
+    private static final String[] FOLDERS = {"saves", "resourcepacks", "shaderpacks", "sunrise-mods"};
 
     /** How many taken names a new document tries before it gives up. */
     private static final int NAME_TRIES = 1000;
@@ -71,7 +71,7 @@ final class GameFolder {
     /**
      * The folder the game uses, as android.rs game_folder chooses it: `shared` (null when not
      * allowed), once the game has made it and moved the player's files there at a start, else
-     * the app's own files. This never makes the shared folder: the game renames an older Horizon
+     * the app's own files. This never makes the shared folder: the game renames an older Sunrise
      * folder to it only when it is missing.
      */
     static GameFolder choose(File own, String shared) {

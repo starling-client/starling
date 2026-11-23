@@ -4,8 +4,8 @@ An SDK release is never deleted whole. Pruning deletes only the assets whose `ki
 `sdk.json` is `runtime`, `api` or `engine`. A pruned build keeps `sdk.json`, `surface.json`, `build-data.tar.xz`,
 `api-source.tar.xz`, `SHA256SUMS` and `SHA256SUMS.sig`, so for it:
 
-- `cargo horizon-mod sdk diff` and `fits`, and the launcher's fit test, keep working;
-- a mod project pinned to it still fetches its `.horizon/sdk/`;
+- `cargo sunrise-mod sdk diff` and `fits`, and the launcher's fit test, keep working;
+- a mod project pinned to it still fetches its `.sunrise/sdk/`;
 - building a mod against it on a player's computer needs its compiled slices, which are gone.
 
 The set kept whole is every build a current or dated Nightly ships, and the ten newest other SDKs. Automatic pruning

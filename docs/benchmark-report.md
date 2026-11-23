@@ -1,9 +1,9 @@
 # Benchmark report format (version 1)
 
-Every benchmark Horizon writes uses this one JSON format: `horizon-client --benchmark`, the launcher's own
+Every benchmark Sunrise writes uses this one JSON format: `sunrise-client --benchmark`, the launcher's own
 measurements, and `tools/perf_bench.py` (which also writes it for vanilla and vanilla with mods). The same
 file is the local log a player can attach to an issue by hand; nothing uploads it. The types, the statistics and the hardware
-detection are in `crates/horizon-bench`; nothing else builds a report by hand.
+detection are in `crates/sunrise-bench`; nothing else builds a report by hand.
 
 A report holds summaries and histogram counts, never raw frame streams: a 10-minute run is a few
 kilobytes whatever the frame rate. Measured numbers are rounded to 3 decimals.
@@ -12,11 +12,11 @@ kilobytes whatever the frame rate. Measured numbers are rounded to 3 decimals.
 
 ```json
 {
-  "format": "horizon-benchmark-report",
+  "format": "sunrise-benchmark-report",
   "version": 1,
   "kind": "game",
   "created": "2026-10-15T14:03:27Z",
-  "app": { "name": "horizon-client", "version": "0.21.0", "commit": "e96e1571" },
+  "app": { "name": "sunrise-client", "version": "0.21.0", "commit": "e96e1571" },
   "hardware": {
     "os": "macos", "os_version": "27.0", "arch": "aarch64",
     "cpu": "Apple M4 Pro", "cpu_threads": 14, "cpu_cores": 14, "ram_mb": 65536, "storage": "nvme", "form": "desktop",
@@ -45,16 +45,16 @@ kilobytes whatever the frame rate. Measured numbers are rounded to 3 decimals.
 
 ## Fields
 
-**`format`, `version`.** Always `"horizon-benchmark-report"` and `1`. A reader rejects other formats and
+**`format`, `version`.** Always `"sunrise-benchmark-report"` and `1`. A reader rejects other formats and
 newer versions. Adding an optional field keeps the version; renaming, removing or changing the meaning of
 one (histogram edges included) makes it 2.
 
-**`kind`.** `"game"` (a game run: Horizon, or vanilla from `tools/perf_bench.py`) or `"launcher"`.
+**`kind`.** `"game"` (a game run: Sunrise, or vanilla from `tools/perf_bench.py`) or `"launcher"`.
 
 **`created`.** When the run ended, UTC, `YYYY-MM-DDTHH:MM:SSZ`.
 
-**`app`.** What was measured: `name` (`horizon-client`, `horizon-launcher`, `minecraft`), `version`,
-optionally `commit` (Horizon builds) and `mods` (`[{ "name", "version" }]`, vanilla with mods).
+**`app`.** What was measured: `name` (`sunrise-client`, `sunrise-launcher`, `minecraft`), `version`,
+optionally `commit` (Sunrise builds) and `mods` (`[{ "name", "version" }]`, vanilla with mods).
 
 **`hardware`.** `os` (`macos`, `linux`, `windows`), `os_version`, `arch`, `cpu` (brand string; on Windows
 without one in the registry, `PROCESSOR_IDENTIFIER`), `cpu_threads`, `cpu_cores` (physical), `cpu_base_mhz` and
@@ -88,14 +88,14 @@ confidence interval of the mean, Student's t, null when `n` is 1). The unit is t
 | `memory.rss_peak_mb`, `memory.rss_steady_mb` | resident memory: peak over the run, median while flying |
 | `memory.gpu_mb`, `memory.<phase>.gpu_mb` | video memory the game allocated (or NVIDIA attributes to it), where readable |
 | `memory.<phase>.rss_mb` | resident memory, median over that phase's flight (perf_bench) |
-| `cpu.<phase>.p50_ms` | median CPU time of a frame (the frame minus its waits for the GPU, the display and the limiter; Horizon only) |
+| `cpu.<phase>.p50_ms` | median CPU time of a frame (the frame minus its waits for the GPU, the display and the limiter; Sunrise only) |
 | `gpu.<phase>.p50_ms` | median GPU time of a frame (timestamp queries; not on every device). Over a phase's blocks, as `cpu.<phase>.p50_ms`: the `travel` flight and the `hold` blocks of `--benchmark travel`, and the `ab.a` and `ab.b` blocks of `--benchmark ab:SWITCH` (with `fps.` and `cpu.` of the same phases) |
-| `tick.<phase>.client_ms` | mean time of one client tick during the phase (vanilla: `Minecraft.tick`; Horizon: the frames' tick phase over the ticks run) |
+| `tick.<phase>.client_ms` | mean time of one client tick during the phase (vanilla: `Minecraft.tick`; Sunrise: the frames' tick phase over the ticks run) |
 | `gpu_pass.<phase>.<pass>_ms` | GPU time of one of the game's render passes (`world`, `world_after_culling`, `occlusion_test`, `hud`...), the median of the last 15 timed frames in the 2 s before the flight, at its start; the flight itself is not timed per pass. In an A/B run the phases are `ab_a` and `ab_b`: each arm's passes, timed once after the blocks. Not on Metal, where passes overlap |
 | `power.package_w`, `power.battery_drain_pct` | power draw, battery used per hour (laptops; planned) |
 | `thermal.cpu_c`, `thermal.throttled_pct` | temperature, share of the run spent throttled (planned) |
 | `launcher.start_ms` | launcher process start to its first frame (a session) |
-| `launcher.cold_start_ms`, `launcher.warm_start_ms` | the same in `horizon-launcher benchmark`: its first start, then the others |
+| `launcher.cold_start_ms`, `launcher.warm_start_ms` | the same in `sunrise-launcher benchmark`: its first start, then the others |
 | `launcher.rss_mb`, `launcher.cpu_idle_pct` | launcher resident memory (sampled; `max` is the peak), CPU used while idle |
 | `launcher.release_list_ms` | fetching the release list |
 | `launcher.install_ms`, `launcher.update_ms` | downloading and unpacking a version: a new one, an update |
@@ -118,13 +118,13 @@ Bucket *i* counts frames from edge *i* (included) to edge *i* + 1; the last buck
 
 **`ab`.** Optional, present only in A/B runs (one setting switched between arms A and B). The blocks are ordinary
 `frames` entries with phase `ab.a` or `ab.b`, `repeat` being the block's position in time (`0..2*pairs-1`, order B A A B
-B A A B...), so `result` can be recomputed from the file alone (`horizon_bench::compare::Ab::from_frames`). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
+B A A B...), so `result` can be recomputed from the file alone (`sunrise_bench::compare::Ab::from_frames`). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
 `warmup_s`, `first_block_outside_range` (block 0, measured before any switch, lies outside the later B blocks: switching
 may reset what is measured) and `result`, by `gpu_p50_ms`, `cpu_p50_ms` and `frame_p50_ms` (a metric any block lacks is
 left out). Each is `pairs`, `a` and `b` (medians of the arm's block values), `diff` (B minus A), `diff_pct` (null when `a`
 is 0), `ci95` and `confidence` (null with fewer than 6 pairs), `noise` and `verdict`.
 
-The statistic, in `horizon_bench::compare`, exact and deterministic:
+The statistic, in `sunrise_bench::compare`, exact and deterministic:
 
 1. A block's value is the median of its frames; pair k is blocks 2k and 2k+1, adjacent in time, so linear drift cancels.
 2. `diff` is the Hodges-Lehmann estimate: the median of the Walsh averages `(d_i + d_j) / 2`, `i <= j`, of the per-pair differences `d = b - a`.

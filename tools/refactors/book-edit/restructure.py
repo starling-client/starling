@@ -10,7 +10,7 @@ Reads `layout.tsv` beside this script (`old<TAB>new`, relative to docs/modding/s
   and shifts its headings so the page starts at level 1;
 - creates the title-only group pages that `layout.tsv` implies and no page fills;
 - rewrites every link to a moved page or to an anchor of an aggregate page, across the repository:
-  relative Markdown links (catalog notes under crates/horizon-mod-vocab/src are relative to
+  relative Markdown links (catalog notes under crates/sunrise-mod-vocab/src are relative to
   reference/hook-notes.md, where the book renders them), published `.html` URLs and plain
   `docs/modding/src/...` mentions;
 - writes `SUMMARY.md` for the new layout.
@@ -26,8 +26,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "docs/modding/src"
 BOOK = "docs/modding/src"
-SITE = "https://arismoko.github.io/horizon/"
-NOTES = "crates/horizon-mod-vocab/src/"
+SITE = "https://arismoko.github.io/sunrise/"
+NOTES = "crates/sunrise-mod-vocab/src/"
 TEXT = (".md", ".rs", ".toml", ".py", ".json", ".txt", ".yml", ".html")
 AGGREGATES = {"concepts/trait-mods.md": "concepts/trait-mods", "how-to/native-mods.md": "how-to/native-mods"}
 GROUPS = {
@@ -51,7 +51,7 @@ for line in (Path(__file__).parent / "layout.tsv").read_text().splitlines():
 
 SUMMARY = """# Summary
 
-[Modding Horizon](introduction.md)
+[Modding Sunrise](introduction.md)
 
 # Getting started
 
@@ -92,7 +92,7 @@ SUMMARY = """# Summary
 # Reference
 
 - [The manifest and the package](reference/manifest.md)
-- [The registry index and `.hpack`](reference/registry-index.md)
+- [The registry index and `.spack`](reference/registry-index.md)
 - [The mod API (rustdoc)](reference/api.md)
 <!-- The hook-notes preprocessor supplies this chapter and its published URL from catalog notes. -->
 - [Hook notes]()

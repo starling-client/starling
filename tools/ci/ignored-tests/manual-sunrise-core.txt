@@ -1,0 +1,5 @@
+# sunrise-core's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-core paletted::tests::benchmark_pack by-hand manual # microbenchmark; run with --ignored --nocapture
+sunrise-core paletted::tests::benchmark_palette_ids by-hand manual # microbenchmark; run with --ignored --nocapture
+sunrise-core paletted::tests::benchmark_unpack by-hand manual # microbenchmark; run with --ignored --nocapture
+sunrise-core random::positional::tests::benchmark_legacy_positional_at by-hand manual # benchmark

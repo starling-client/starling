@@ -1,4 +1,4 @@
-//! Settings' accent colour and Home background rows (`horizon_launcher::themes`).
+//! Settings' accent colour and Home background rows (`sunrise_launcher::themes`).
 use super::*;
 use crate::glass_ui as ui;
 use crate::servers_page::Field;
@@ -6,7 +6,7 @@ use gpui::{
     canvas, fill, point, size, Bounds, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point,
 };
-use horizon_launcher::themes::{self, Accent};
+use sunrise_launcher::themes::{self, Accent};
 use std::path::PathBuf;
 
 /// Settings' two sliders of the glass look (the mockup's `Slider`).
@@ -49,12 +49,12 @@ impl Launcher {
         crate::theme::from_settings(&self.settings, window.appearance())
     }
 
-    /// Settings' launcher theme: Horizon's own sky, First Light or Nord, free for everyone.
+    /// Settings' launcher theme: Sunrise's own sky, First Light or Nord, free for everyone.
     /// Picking one brings its accent too; the accent row can change it after.
     pub(super) fn launcher_theme_row(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let current = themes::theme(self.settings.theme.as_deref()).map(|th| th.id);
-        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Horizon")];
+        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Sunrise")];
         options.extend(themes::THEMES.iter().map(|th| (Some(th.id), th.name)));
         let this = cx.entity().downgrade();
         let picker = segments("launcher-theme", &options, current, &t, move |id, _, cx| {
@@ -134,7 +134,7 @@ impl Launcher {
             Some(
                 div()
                     .child(tr(
-                        "Horizon's violet by default. Every colour keeps text as easy to read.",
+                        "Sunrise's violet by default. Every colour keeps text as easy to read.",
                     ))
                     .into_any_element(),
             ),
@@ -391,7 +391,7 @@ impl Launcher {
         }
     }
 
-    /// Reset to defaults: the card's options go back to how Horizon ships (the mockup's
+    /// Reset to defaults: the card's options go back to how Sunrise ships (the mockup's
     /// accent, glass, blur, language, while playing and opening; here the appearance and Home's
     /// background too, being in the same card).
     pub(super) fn reset_look_row(&mut self, cx: &mut Context<Self>) -> Div {
@@ -401,7 +401,7 @@ impl Launcher {
             Some(
                 div()
                     .child(tr(
-                        "Accent colour, glass, blur, language and the options above go back to how Horizon ships.",
+                        "Accent colour, glass, blur, language and the options above go back to how Sunrise ships.",
                     ))
                     .into_any_element(),
             ),
@@ -630,7 +630,7 @@ impl Launcher {
         let said = if custom {
             tr("Your picture, behind Home, cropped to fill it.")
         } else {
-            tr("Horizon's landscape. Pick a PNG, JPEG or WebP picture of your own.")
+            tr("Sunrise's landscape. Pick a PNG, JPEG or WebP picture of your own.")
         };
         let detail = div().flex().flex_col().child(said.to_string()).children(
             self.background_error

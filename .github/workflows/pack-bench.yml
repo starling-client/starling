@@ -1,5 +1,5 @@
 name: pack load bench
-# How long resource packs take to load: crates/horizon-client-render/examples/pack_load_bench.rs on generated packs
+# How long resource packs take to load: crates/sunrise-client-render/examples/pack_load_bench.rs on generated packs
 # (no game files), on the branch and then on `base` with the branch's copy of the bench, on the same runner, so a pull
 # request can show its numbers next to main's. Started by hand, or by a push to a `pack-bench/*` branch (a fork can't
 # start a workflow its main lacks), against horizon-rust/horizon's main.
@@ -18,14 +18,14 @@ permissions:
   contents: read
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
-  HORIZON_TELEMETRY_URL: "off"
+  SUNRISE_TELEMETRY_URL: "off"
   CARGO_TERM_COLOR: never
 
 jobs:
   bench:
-    # Our checks runners (label horizon-checks, docs/ci-runners.md): the branch and the base on the same machine, as
+    # Our checks runners (label sunrise-checks, docs/ci-runners.md): the branch and the base on the same machine, as
     # the comparison needs. SELF_HOSTED_CI=light or off: GitHub's.
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "sunrise-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +47,7 @@ jobs:
         env:
           SCALE: ${{ inputs.scale || '1' }}
         run: |
-          cargo run --profile fast -p horizon-client-render --example pack_load_bench -- --scale "$SCALE" > head.md
+          cargo run --profile fast -p sunrise-client-render --example pack_load_bench -- --scale "$SCALE" > head.md
       - name: Bench the base, with the branch's bench
         env:
           BASE: ${{ inputs.base || 'main' }}
@@ -58,11 +58,11 @@ jobs:
           git worktree remove --force ../base 2> /dev/null || rm -rf ../base
           git worktree prune
           git worktree add ../base FETCH_HEAD
-          cp crates/horizon-client-render/examples/pack_load_bench.rs ../base/crates/horizon-client-render/examples/
+          cp crates/sunrise-client-render/examples/pack_load_bench.rs ../base/crates/sunrise-client-render/examples/
           # A bench row that times a function the base lacks keeps it from building there: then
           # the branch's own rows compare the two ways.
           target=${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/target}
-          (cd ../base && CARGO_TARGET_DIR="$target" cargo run --profile fast -p horizon-client-render \
+          (cd ../base && CARGO_TARGET_DIR="$target" cargo run --profile fast -p sunrise-client-render \
             --example pack_load_bench -- --scale "$SCALE") > base.md \
             || echo "The bench does not build on the base." > base.md
       - name: Summary

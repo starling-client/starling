@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Packages the macOS launcher: Horizon.app (the binary, Info.plist, the icon), signed, then the
-# two release assets, horizon-launcher-macos-ARCH.zip (what the launcher updates itself from;
-# older launchers find the binary inside it) and horizon-launcher-macos-ARCH.dmg (the installer:
+# Packages the macOS launcher: Sunrise.app (the binary, Info.plist, the icon), signed, then the
+# two release assets, sunrise-launcher-macos-ARCH.zip (what the launcher updates itself from;
+# older launchers find the binary inside it) and sunrise-launcher-macos-ARCH.dmg (the installer:
 # the app and an Applications link over a background, to drag one onto the other). ARCH is the
 # binary's: arm64 (Apple Silicon, the default) or x64 (Intel).
 #
@@ -26,15 +26,15 @@ case "$arch" in
 esac
 # The asset names say which Macs the binary runs on: it must be built for that processor.
 [[ "$(lipo -archs "$binary")" == "$cpu" ]] || { echo "$binary is $(lipo -archs "$binary"), not $cpu" >&2; exit 1; }
-zip=horizon-launcher-macos-$arch.zip
-dmg=$out/horizon-launcher-macos-$arch.dmg
-app=$out/Horizon.app
+zip=sunrise-launcher-macos-$arch.zip
+dmg=$out/sunrise-launcher-macos-$arch.dmg
+app=$out/Sunrise.app
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary" "$app/Contents/MacOS/horizon-launcher"
-chmod 755 "$app/Contents/MacOS/horizon-launcher"
-cp "$here/../icons/horizon.icns" "$app/Contents/Resources/horizon.icns"
+cp "$binary" "$app/Contents/MacOS/sunrise-launcher"
+chmod 755 "$app/Contents/MacOS/sunrise-launcher"
+cp "$here/../icons/sunrise.icns" "$app/Contents/Resources/sunrise.icns"
 sed "s/@VERSION@/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 plutil -lint "$app/Contents/Info.plist"
@@ -49,18 +49,18 @@ else
 fi
 codesign --verify --strict --verbose=2 "$app"
 # Still starts under the hardened runtime.
-"$app/Contents/MacOS/horizon-launcher" --version
+"$app/Contents/MacOS/sunrise-launcher" --version
 notarize=$([[ "$identity" != "-" && -n "${MACOS_NOTARY_PROFILE:-}" ]] && echo yes || true)
 # The app first, so the zip and the .dmg both carry it stapled.
 [[ -z "$notarize" ]] || "$here/notarize.sh" "$app"
 
 rm -f "$out/$zip" "$dmg"
 # No resource forks or extended attributes: they would land as ._ files inside the bundle.
-(cd "$out" && ditto -c -k --norsrc --noextattr --noqtn --keepParent Horizon.app "$zip")
+(cd "$out" && ditto -c -k --norsrc --noextattr --noqtn --keepParent Sunrise.app "$zip")
 
 cat > "$out/dmg.json" <<JSON
 {
-  "title": "Horizon",
+  "title": "Sunrise",
   "icon-size": 128,
   "background": "$here/background.png",
   "window": { "position": { "x": 200, "y": 160 }, "size": { "width": 660, "height": 420 } },
@@ -71,7 +71,7 @@ cat > "$out/dmg.json" <<JSON
   ]
 }
 JSON
-"${DMGBUILD:-dmgbuild}" -s "$out/dmg.json" Horizon "$dmg"
+"${DMGBUILD:-dmgbuild}" -s "$out/dmg.json" Sunrise "$dmg"
 rm "$out/dmg.json"
 if [[ "$identity" != "-" ]]; then
   codesign --force --timestamp ${keychain[@]+"${keychain[@]}"} --sign "$identity" "$dmg"

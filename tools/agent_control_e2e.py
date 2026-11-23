@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""End-to-end check of agent control: play Horizon with horizon-ctl.
+"""End-to-end check of agent control: play Sunrise with sunrise-ctl.
 
 A script creates a world through the title menus, finds a tree it can walk to, breaks a log,
 checks the inventory, crafts planks in the inventory screen, places one and reads it back. It
-runs through the CLI (one horizon-ctl process per command) and through `horizon-ctl mcp` with a
+runs through the CLI (one sunrise-ctl process per command) and through `sunrise-ctl mcp` with a
 small JSON-RPC client, and saves a screenshot of each run. The ui scenario drives the menus by
 widget id instead: the title screen, the options (a slider set by id) and the inventory's slots;
 the options scenario reads and sets options.txt values by key; the events scenario waits for
@@ -17,7 +17,7 @@ middle-clicks slots (AbstractContainerScreen's cloning): a full stack in creativ
 and from an item tab, and nothing in survival;
 the suggestions scenario checks slash-command Tab completion on single player's connected client
 after a fresh launch; the no-ai scenario turns No AI on in a scratch game home and checks that
-horizon-ctl, its MCP server and the game's control socket all refuse.
+sunrise-ctl, its MCP server and the game's control socket all refuse.
 
     python3 tools/agent_control_e2e.py                 # both modes
     python3 tools/agent_control_e2e.py --mode mcp      # one of them
@@ -25,9 +25,9 @@ horizon-ctl, its MCP server and the game's control socket all refuse.
     python3 tools/agent_control_e2e.py --scenario ui   # menus by widget id only (a minute)
 
 Needs vscreen on Linux (the desktop); on macOS the game renders offscreen, so it also runs in a
-locked session or over SSH. It needs the prepared resources in .local/horizon-client and a build of
-horizon-client and horizon-ctl (built with the fast profile unless --bin-dir is given). Games
-started here have no audio (HORIZON_NO_AUDIO=1).
+locked session or over SSH. It needs the prepared resources in .local/sunrise-client and a build of
+sunrise-client and sunrise-ctl (built with the fast profile unless --bin-dir is given). Games
+started here have no audio (SUNRISE_NO_AUDIO=1).
 """
 import argparse
 import base64
@@ -74,11 +74,11 @@ class Failed(Exception):
 
 
 def game_env(screen, home=None):
-    """The environment of a game: lab.game_env with HORIZON_HOME `home` (a scratch folder when None),
+    """The environment of a game: lab.game_env with SUNRISE_HOME `home` (a scratch folder when None),
     and on Linux the virtual screen `screen` (macOS and Windows have none)."""
     extra = {}
     if home is not None:
-        extra['HORIZON_HOME'] = home
+        extra['SUNRISE_HOME'] = home
     if sys.platform in ('darwin', 'win32'):
         return lab.game_env(**extra)
     if not shutil.which('vscreen') and os.environ.get('DISPLAY'):
@@ -95,7 +95,7 @@ def game_env(screen, home=None):
 
 
 class Cli:
-    """One horizon-ctl process per command, as a shell script would."""
+    """One sunrise-ctl process per command, as a shell script would."""
     name = 'cli'
 
     def __init__(self, ctl, socket, cwd, env):
@@ -129,7 +129,7 @@ class Cli:
 
 
 class Mcp:
-    """`horizon-ctl mcp` driven over JSON-RPC, as an AI agent's client would."""
+    """`sunrise-ctl mcp` driven over JSON-RPC, as an AI agent's client would."""
     name = 'mcp'
 
     def __init__(self, ctl, socket, cwd, env):
@@ -139,7 +139,7 @@ class Mcp:
         self.cwd = cwd
         init = self.rpc('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
                                        'clientInfo': {'name': 'agent_control_e2e', 'version': '1'}})
-        assert init['serverInfo']['name'] == 'horizon-ctl', init
+        assert init['serverInfo']['name'] == 'sunrise-ctl', init
         self.notify('notifications/initialized')
         self.tools = {t['name']: t for t in self.rpc('tools/list', {})['tools']}
         print(f'[mcp] {len(self.tools)} tools: {", ".join(sorted(self.tools))}')
@@ -939,7 +939,7 @@ def manage_scenario(d, out):
     assert 'speed' in effects, effects
     d('xp', levels=5)
     assert d('lan', action='status') is not None
-    d('options', page='horizon')
+    d('options', page='sunrise')
     assert 'ai-agent' in widgets(d), widgets(d).keys()
     d('close')
     d('pause')
@@ -1000,23 +1000,23 @@ def scratch(mode, resources):
     """A scratch game home with the prepared resources, and the game's environment for it."""
     work = Path(tempfile.mkdtemp(prefix=f'hzac-{mode}-'))
     (work / '.local').mkdir()
-    (work / '.local/horizon-client').mkdir()
-    lab.link_dir(resources, work / '.local/horizon-client' / lab.VERSION)
+    (work / '.local/sunrise-client').mkdir()
+    lab.link_dir(resources, work / '.local/sunrise-client' / lab.VERSION)
     # A first launch shows the accessibility onboarding before the title (Gui.addInitialScreens): these
     # scenarios start at the title, as a player does after it.
     (work / 'options.txt').write_text('onboardAccessibility:false\n')
-    # horizon-ctl reads No AI in the game home: this one, not the player's.
+    # sunrise-ctl reads No AI in the game home: this one, not the player's.
     env = game_env(os.environ.get('VSCREEN', 'agent-control'), home=work)
     return work, env
 
 
 def no_ai_check(mode, ctl, resources):
-    """No AI on: horizon-ctl refuses (exit 4, kind denied), so does its MCP server, and the game
+    """No AI on: sunrise-ctl refuses (exit 4, kind denied), so does its MCP server, and the game
     started with --control-socket never opens it."""
     work, env = scratch(mode, resources)
     socket = work / 'c.sock'
     try:
-        (work / 'horizon-extras.txt').write_text('fps:true\nnoAi:true\n')
+        (work / 'sunrise-extras.txt').write_text('fps:true\nnoAi:true\n')
         if mode == 'cli':
             for words in (['state'], ['launch', '--world', 'NoAi'], ['logs']):
                 r = subprocess.run([str(ctl), '--socket', str(socket), *words], cwd=work, env=env,
@@ -1024,9 +1024,9 @@ def no_ai_check(mode, ctl, resources):
                 reply = json.loads(r.stdout.strip().splitlines()[-1])
                 log(mode, words, reply)
                 assert r.returncode == 4 and reply == {'error': REFUSAL, 'kind': 'denied'}, (r.returncode, reply)
-            client = ctl.with_name('horizon-client')
+            client = ctl.with_name('sunrise-client')
             args = [str(client), '--control-socket', str(socket), '--world', 'NoAi', '--world-frames', '30']
-            if sys.platform == 'darwin' or os.environ.get('HORIZON_E2E_HEADLESS'):
+            if sys.platform == 'darwin' or os.environ.get('SUNRISE_E2E_HEADLESS'):
                 args.append('--offscreen')
             r = subprocess.run(args, cwd=work, env=env, capture_output=True, text=True, timeout=600)
             text = r.stdout + r.stderr + ''.join(
@@ -1038,11 +1038,11 @@ def no_ai_check(mode, ctl, resources):
             r = subprocess.run([str(ctl), '--socket', str(socket), 'mcp'], cwd=work, env=env, input='',
                                capture_output=True, text=True, timeout=60)
             log(mode, ['mcp'], {'exit': r.returncode, 'stderr': r.stderr.strip()})
-            assert r.returncode == 4 and r.stderr.strip() == f'horizon-ctl mcp: {REFUSAL}', r
+            assert r.returncode == 4 and r.stderr.strip() == f'sunrise-ctl mcp: {REFUSAL}', r
             # Turned on during a session: the next call refuses.
-            (work / 'horizon-extras.txt').write_text('noAi:false\n')
+            (work / 'sunrise-extras.txt').write_text('noAi:false\n')
             m = Mcp(ctl, socket, work, env)
-            (work / 'horizon-extras.txt').write_text('noAi:true\n')
+            (work / 'sunrise-extras.txt').write_text('noAi:true\n')
             try:
                 m('state')
                 raise AssertionError('state ran under No AI')
@@ -1059,14 +1059,14 @@ def no_ai_check(mode, ctl, resources):
 
 
 def setting_check(mode, ctl, out, resources):
-    """Agent Control turned on in Horizon Settings > AI Agent: the game the player starts (no
+    """Agent Control turned on in Sunrise Settings > AI Agent: the game the player starts (no
     --control) opens the default endpoint, the page shows the agent connected, Copy Connection
     Details copies the socket, and turning the switch off closes the endpoint at once."""
     work, env = scratch(mode, resources)
     socket = work / 'c.sock'
-    env['HORIZON_CONTROL'] = str(socket)  # the default endpoint, this home's
-    (work / 'horizon-extras.txt').write_text('agentControl:true\n')
-    args = [str(ctl.with_name('horizon-client'))]
+    env['SUNRISE_CONTROL'] = str(socket)  # the default endpoint, this home's
+    (work / 'sunrise-extras.txt').write_text('agentControl:true\n')
+    args = [str(ctl.with_name('sunrise-client'))]
     if sys.platform == 'darwin':
         args.append('--offscreen')
     game = subprocess.Popen(args, cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1079,10 +1079,10 @@ def setting_check(mode, ctl, out, resources):
             time.sleep(0.5)
         d = (Cli if mode == 'cli' else Mcp)(ctl, socket, work, env)
         assert d('state')['screen'] == 'title'  # the player's own game, at its title screen
-        d('options', page='horizon')
+        d('options', page='sunrise')
         tree = widgets(d)
         assert {'ai-agent', 'no-ai'} <= set(tree), sorted(tree)
-        d('screenshot', path=str(out / f'{mode}-horizon-settings.png'))
+        d('screenshot', path=str(out / f'{mode}-sunrise-settings.png'))
         d('options', page='agent')
         tree = widgets(d)
         switch = next(w for w in tree.values() if w.get('label', '').startswith('Agent Control'))
@@ -1099,7 +1099,7 @@ def setting_check(mode, ctl, out, resources):
         while socket.exists():
             assert time.time() < deadline, 'Agent Control off, but the socket stayed'
             time.sleep(0.5)
-        assert 'agentControl:false' in (work / 'horizon-extras.txt').read_text()
+        assert 'agentControl:false' in (work / 'sunrise-extras.txt').read_text()
         assert game.poll() is None, 'the game exited when Agent Control went off'
         print(f'[{mode}] PASS: setting')
         return True
@@ -1131,7 +1131,7 @@ def run(mode, ctl, out, resources, which='survival'):
     started = time.time()
     try:
         driver('launch', wait=False,
-               offscreen=sys.platform == 'darwin' or bool(os.environ.get('HORIZON_E2E_HEADLESS')))
+               offscreen=sys.platform == 'darwin' or bool(os.environ.get('SUNRISE_E2E_HEADLESS')))
         summary = SCENARIOS[which](driver, out)
         print(f'[{mode}] PASS in {time.time() - started:.0f} s: {summary}')
         return True
@@ -1155,25 +1155,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--mode', choices=['cli', 'mcp', 'both'], default='both')
     parser.add_argument('--scenario', choices=[*SCENARIOS, 'no-ai', 'setting', 'all'], default='all')
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client and horizon-ctl (default: build with the fast profile)')
+    parser.add_argument('--bin-dir', help='prebuilt sunrise-client and sunrise-ctl (default: build with the fast profile)')
     parser.add_argument('--out', default=str(ROOT / '.local/agent-control-e2e'), help='screenshots go here')
     args = parser.parse_args()
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib', '--bins'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib', '--bins'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)
         bins = Path(meta['target_directory']) / 'fast'
     resources = (lab.RESOURCES).resolve()
-    if not (resources / 'horizon-resources.json').exists():
+    if not (resources / 'sunrise-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     modes = ['cli', 'mcp'] if args.mode == 'both' else [args.mode]
     scenarios = [*SCENARIOS, 'no-ai', 'setting'] if args.scenario == 'all' else [args.scenario]
-    results = {f'{m}/{s}': run(m, bins / 'horizon-ctl', out, resources, s) for m in modes for s in scenarios}
+    results = {f'{m}/{s}': run(m, bins / 'sunrise-ctl', out, resources, s) for m in modes for s in scenarios}
     print(json.dumps(results))
     sys.exit(0 if all(results.values()) else 1)
 

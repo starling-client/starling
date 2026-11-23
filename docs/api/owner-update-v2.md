@@ -1,7 +1,7 @@
 # What the registry's `owner-update` workflow must check (trailer v2)
 
 The registry repository (horizon-rust/horizon-mods) merges an owner's update on its own when the pull request carries
-an `owner-update` trailer that the submission service (`crates/horizon-mod-registry`, `update_trailer`) signed with
+an `owner-update` trailer that the submission service (`crates/sunrise-mod-registry`, `update_trailer`) signed with
 `REGISTRY_UPDATE_KEY`. Its workflow and `scripts/owner_update.py` live in that repository, not here. Since owner IDs,
 the trailer is v2, and the workflow must check all of the following before it merges. Any check that fails leaves the
 pull request to a reviewer (remove the label, comment why); it never merges partly.
@@ -46,14 +46,14 @@ owner-update-v2\n<id>\n<version>\n<sha256>\n<file>\n<submitter>\n<submitter_id>
    `owner_ids`, `key`, `kind`, `repo` and the page fields are identical (the service already only signs such updates;
    check again, since the pull request branch can be pushed to after it opened).
 6. **The file.** `staging` holds `<sha256>.<extension>` and its SHA-256 is `sha256`; the usual CI checks
-   (`cargo horizon-mod registry check`, the trial run, a signature when the entry has a `key`) pass at the head
+   (`cargo sunrise-mod registry check`, the trial run, a signature when the entry has a `key`) pass at the head
    that is merged.
 7. **The head merged is the head checked.** Merge with the head SHA the checks ran on (`gh pr merge --match-head-commit
    <sha>`), so a push between check and merge can't slip in.
 
 ## Today
 
-The registry repository has no `owner-update` workflow yet (checked at horizon-mods `e53ad82`): every owner update
+The registry repository has no `owner-update` workflow yet (checked at sunrise-mods `e53ad82`): every owner update
 waits for a reviewer, whatever its trailer says. Nothing merges on its own until a workflow doing every check above is
 written there. Until then the v2 trailer and `owner_ids` only make the review's notes and the service's refusals
 decide by ID.
@@ -61,7 +61,7 @@ decide by ID.
 ## Order of deployment
 
 1. In the registry repository: update `scripts/owner_update.py` and the workflow to the checks above, accepting v2
-   only; deploy the CI's `cargo horizon-mod` from a Horizon commit that knows `owner_ids` (older ones refuse the field).
+   only; deploy the CI's `cargo sunrise-mod` from a Sunrise commit that knows `owner_ids` (older ones refuse the field).
 2. Once a maintainer has read `tools/registry_backfill_owner_ids.py`, run it on a checkout (dry run, then `--write`)
    and merge its pull request by hand.
 3. Deploy the submission service with this change. Until step 1 is live, its v2 trailers fail verification and the

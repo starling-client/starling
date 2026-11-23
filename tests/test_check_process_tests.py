@@ -46,7 +46,7 @@ class ProcessTests(unittest.TestCase):
         source = """\
             use crate::runtime_leases::isolated_test as isolated;
             #[test] fn by_alias() { if isolated() { return; } }
-            #[test] fn by_path() { horizon_mod_wasm::fixture::cached_answer(&root, exe, &bytes); }
+            #[test] fn by_path() { sunrise_mod_wasm::fixture::cached_answer(&root, exe, &bytes); }
             #[test] fn unrelated() { other::answer(); }
             """
         self.assertEqual(names(source, ["isolated_test", "fixture::cached_answer"]),

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
-root = Path('crates/horizon-client')
+root = Path('crates/sunrise-client')
 if "pub mob_maps:" in (root / 'src/mobs.rs').read_text():
     raise SystemExit('snapshot threading already applied; run only on the migration parent')
 paths = subprocess.check_output(['git', 'ls-files', str(root)], text=True).splitlines()
@@ -39,7 +39,7 @@ for filename in paths:
         elif filename.endswith('/game/mobs/creatures/world_view.rs'):
             field = 'mob_maps: self.mob_maps(),'
         else:
-            field = 'mob_maps: horizon_client::neoforge_mob_maps::NeoForgeMobMaps::vanilla(),'
+            field = 'mob_maps: sunrise_client::neoforge_mob_maps::NeoForgeMobMaps::vanilla(),'
         edits.append((start, '\n' + indent + field))
     for start, insertion in reversed(edits):
         source = source[:start] + insertion + source[start:]

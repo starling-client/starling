@@ -44,22 +44,22 @@ def main():
         for file,prefix in [('types.json','data/minecraft/damage_type/'),('tags.json','data/minecraft/tags/damage_type/')]:
             resources={'minecraft:'+n[len(prefix):-5]:archive.read(n).decode('utf-8') for n in sorted(archive.namelist()) if n.startswith(prefix) and n.endswith('.json')};lab.write_json(damage_dir/file,resources)
 
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaRegisteredPlayerCombatOracle.java'
-    helper=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEntityAttributeOracle.java'
-    health_helper=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaPlayerHealthOracle.java'
-    damage_helper=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDamageSourceOracle.java'
-    sources=[oracle,helper,health_helper,damage_helper,lab.ROOT/'tools/test_server_player_combat_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/test_player_hurt_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/registered_player_combat_fixture.rs']
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaRegisteredPlayerCombatOracle.java'
+    helper=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEntityAttributeOracle.java'
+    health_helper=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaPlayerHealthOracle.java'
+    damage_helper=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaDamageSourceOracle.java'
+    sources=[oracle,helper,health_helper,damage_helper,lab.ROOT/'tools/test_server_player_combat_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/test_player_hurt_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/registered_player_combat_fixture.rs']
     tested_sources=base.source_hashes(sources)
     classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,helper,health_helper,damage_helper],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,helper,health_helper,damage_helper],'compile-java')
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaRegisteredPlayerCombatOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaRegisteredPlayerCombatOracle',mode,path],side+'-'+mode)
     java('server','export',build);states=json.loads((build/'catalog.json').read_text());damage=json.loads((damage_dir/'catalog.json').read_text());fixtures=list(corpus(states,damage));inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(value,separators=(',',':'))+'\n' for value in fixtures),encoding='utf-8')
     fixture_paths=[inputs,build/'catalog.json',build/'ids.json',build/'slots.json',build/'head.json',damage_dir/'catalog.json',damage_dir/'types.json',damage_dir/'tags.json'];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
     binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'registered_player_combat_fixture',build],'rust');references=[]

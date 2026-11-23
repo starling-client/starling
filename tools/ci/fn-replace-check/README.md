@@ -9,5 +9,5 @@ function with no `[[native.loop]]` row, so the copy is the game's own loop with 
 its own that counts only those.
 
 `api_only` has hooks and an `[[inject]]` listener and no `[native]` table row. Alone (`FNR_ROUTE=prebuilt-api`) it
-takes the API route: the package's prebuilt API executable with the launcher's `horizon_native_mods` library. In the
+takes the API route: the package's prebuilt API executable with the launcher's `sunrise_native_mods` library. In the
 main set, beside mods with `[[native.mixin]]` rows (`FNR_ROUTE=prebuilt`), the whole set takes the engine route.

@@ -5,7 +5,7 @@ import hashlib
 import re
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/game/world/persist.rs"
+source = root / "crates/sunrise-client/src/game/world/persist.rs"
 target = source.parent / "persist/object_memory.rs"
 names = {
     "mob_at", "mob_at_mut", "mob_object", "mob_object_mut", "mob_objects",

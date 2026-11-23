@@ -256,11 +256,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "horizon-assets"
+name = "sunrise-assets"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "horizon-core",
+ "sunrise-core",
  "log",
  "serde",
  "serde_json",
@@ -268,17 +268,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-client-core"
+name = "sunrise-client-core"
 version = "0.1.0"
 dependencies = [
- "horizon-assets",
- "horizon-core",
- "horizon-world",
+ "sunrise-assets",
+ "sunrise-core",
+ "sunrise-world",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-core"
+name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "libm",
@@ -287,35 +287,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-game-discovery"
+name = "sunrise-game-discovery"
 version = "0.1.0"
 dependencies = [
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "horizon-mod-api"
+name = "sunrise-mod-api"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
- "horizon-core",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-runtime",
- "horizon-mod-vocab",
+ "sunrise-core",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-runtime",
+ "sunrise-mod-vocab",
  "log",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-mod-api-gen"
+name = "sunrise-mod-api-gen"
 version = "0.1.0"
 dependencies = [
  "heck",
- "horizon-game-discovery",
- "horizon-mod-point-shape",
+ "sunrise-game-discovery",
+ "sunrise-mod-point-shape",
  "prettyplease",
  "proc-macro2",
  "quote",
@@ -328,17 +328,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-api-macros"
+name = "sunrise-mod-api-macros"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-point-shape",
+ "sunrise-mod-point-shape",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "horizon-mod-point-shape"
+name = "sunrise-mod-point-shape"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -349,36 +349,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-runtime"
+name = "sunrise-mod-runtime"
 version = "0.1.0"
 dependencies = [
- "horizon-core",
+ "sunrise-core",
 ]
 
 [[package]]
-name = "horizon-mod-vocab"
+name = "sunrise-mod-vocab"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
- "horizon-core",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-runtime",
+ "sunrise-core",
+ "sunrise-mod-api-gen",
+ "sunrise-mod-api-macros",
+ "sunrise-mod-runtime",
  "log",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "horizon-world"
+name = "sunrise-world"
 version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
  "flate2",
- "horizon-assets",
- "horizon-core",
+ "sunrise-assets",
+ "sunrise-core",
  "libm",
  "log",
  "lz4_flex",
@@ -682,9 +682,9 @@ dependencies = [
 name = "text-boundary-tests"
 version = "0.0.0"
 dependencies = [
- "horizon-client-core",
- "horizon-core",
- "horizon-mod-api",
+ "sunrise-client-core",
+ "sunrise-core",
+ "sunrise-mod-api",
  "serde_json",
 ]
 

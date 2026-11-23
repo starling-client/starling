@@ -4,7 +4,7 @@
     python3 tools/pad_parity_e2e.py                 # every case
     python3 tools/pad_parity_e2e.py --only drop_stack
 
-Each case starts its own isolated integrated-server game through horizon-ctl (fresh scratch homes from
+Each case starts its own isolated integrated-server game through sunrise-ctl (fresh scratch homes from
 `lab.game_env`), does one thing with the keyboard and the same thing with the virtual pad, and compares
 what the player can observe (item counts, files written). The keyboard result is the reference; a case
 whose keyboard side fails is reported as such, not as a controller failure.
@@ -16,8 +16,8 @@ Cases:
 - gameplay_drop: Q in play throws one and Ctrl+Q the rest; the pad's drop button tapped and held must too.
 - screenshot: key.screenshot bound to the pad takes a screenshot as F2 does.
 
-Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
-and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case matches.
+Needs built fast binaries (`cargo build --profile fast -p sunrise-game -p sunrise-client-lib --bins`)
+and prepared resources in .local/sunrise-client/26.3. Exit status 0 when every case matches.
 """
 import argparse
 import json
@@ -40,13 +40,13 @@ class Game:
     def __init__(self, args, name, controller=''):
         self.args = args
         self.home = Path(tempfile.mkdtemp(prefix=f'pad-parity-{name}-'))
-        homes = {key: self.home / key for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME',
+        homes = {key: self.home / key for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME',
                                                     'XDG_CONFIG_HOME')}
         for folder in homes.values():
             folder.mkdir()
         if controller:
-            (homes['HORIZON_HOME'] / 'horizon-controller.txt').write_text(controller)
-        self.game_home = homes['HORIZON_HOME']
+            (homes['SUNRISE_HOME'] / 'sunrise-controller.txt').write_text(controller)
+        self.game_home = homes['SUNRISE_HOME']
         self.env = lab.game_env(**homes)
         self.socket = self.home / 'ctl.json'
         self.ctl('launch', '--game', args.game, '--world', 'Parity', '--creative', '--offscreen', '--no-pause',
@@ -183,9 +183,9 @@ CASES = {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--game', type=Path, default=lab.cargo_target() / f'fast/horizon-client{EXE}')
-    parser.add_argument('--ctl', type=Path, default=lab.cargo_target() / f'fast/horizon-ctl{EXE}')
-    parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
+    parser.add_argument('--game', type=Path, default=lab.cargo_target() / f'fast/sunrise-client{EXE}')
+    parser.add_argument('--ctl', type=Path, default=lab.cargo_target() / f'fast/sunrise-ctl{EXE}')
+    parser.add_argument('--resources', type=Path, default=ROOT / '.local/sunrise-client/26.3')
     parser.add_argument('--only', nargs='*', choices=sorted(CASES), help='run only these cases')
     args = parser.parse_args()
     args.game, args.ctl, args.resources = args.game.resolve(), args.ctl.resolve(), args.resources.resolve()

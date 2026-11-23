@@ -1,6 +1,6 @@
 """Many-entity stress scenes for tools/perf_bench.py (`--scenes stress` or by name).
 
-Each scene is built by vanilla commands, the same lines for every game (Horizon through horizon-ctl `command`,
+Each scene is built by vanilla commands, the same lines for every game (Sunrise through sunrise-ctl `command`,
 vanilla and vanilla-mods through the bench driver mod), on a stone floor at y 289 high above the world spawn of
 seed 1234 (loaded already: no terrain to generate), then held still for the flight's seconds, looking along +Z at
 the scene. Its cleanup commands then remove every entity and block it made, before the next scene.
@@ -41,7 +41,7 @@ FRAMED = ["diamond_sword", "compass", "clock", "stone", "oak_planks", "apple", "
 CONTAINERS = ["chest", "trapped_chest", "ender_chest", "white_shulker_box"]
 BANNER = ('{patterns:[{pattern:"minecraft:stripe_top",color:"red"},{pattern:"minecraft:creeper",color:"black"},'
           '{pattern:"minecraft:border",color:"blue"}]}')
-SIGN_TEXT = '{front_text:{messages:["Horizon","stress","sign","wall"]}}'
+SIGN_TEXT = '{front_text:{messages:["Sunrise","stress","sign","wall"]}}'
 
 
 def num(v):

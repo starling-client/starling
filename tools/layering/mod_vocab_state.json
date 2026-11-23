@@ -40,27 +40,27 @@
     "reason": "The one addition to #2587: call and frame ownership stay local to avoid indirect callbacks on every subscribed dispatch."
   },
   "content/registry_keys.rs::ENCHANTMENTS": {
-    "type": "std::sync::LazyLock<std::sync::RwLock<Option<horizon_mod_runtime::registry_keys::Names>>,>",
+    "type": "std::sync::LazyLock<std::sync::RwLock<Option<sunrise_mod_runtime::registry_keys::Names>>,>",
     "category": "Parts lookup table",
     "reason": "Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests."
   },
   "content/registry_keys.rs::MENUS": {
-    "type": "std::sync::LazyLock<std::sync::RwLock<Option<horizon_mod_runtime::registry_keys::Names>>,>",
+    "type": "std::sync::LazyLock<std::sync::RwLock<Option<sunrise_mod_runtime::registry_keys::Names>>,>",
     "category": "Parts lookup table",
     "reason": "Resolved engine registry identity lookup, replaced on registry reload; it stores installed slot mappings, not authoring requests."
   },
   "content/registry_keys.rs::resolved_block_keys::EMPTY": {
-    "type": "std::sync::OnceLock<horizon_mod_runtime::block_definitions::Blocks>",
+    "type": "std::sync::OnceLock<sunrise_mod_runtime::block_definitions::Blocks>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
   "content/registry_keys.rs::resolved_entity_types::EMPTY": {
-    "type": "std::sync::OnceLock<horizon_mod_runtime::registry_keys::Names>",
+    "type": "std::sync::OnceLock<sunrise_mod_runtime::registry_keys::Names>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
   "content/registry_keys.rs::resolved_items::EMPTY": {
-    "type": "std::sync::OnceLock<horizon_mod_runtime::registry_keys::Names>",
+    "type": "std::sync::OnceLock<sunrise_mod_runtime::registry_keys::Names>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
@@ -70,17 +70,17 @@
     "reason": "Set-once platform callback registration; mutable platform storage lives above the engine."
   },
   "parts/block_entities.rs::resolved_block_entity_types::EMPTY": {
-    "type": "OnceLock<horizon_mod_runtime::registry_keys::Names>",
+    "type": "OnceLock<sunrise_mod_runtime::registry_keys::Names>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
   "parts/effects.rs::resolved_effects::EMPTY": {
-    "type": "OnceLock<horizon_mod_runtime::registry_keys::Effects>",
+    "type": "OnceLock<sunrise_mod_runtime::registry_keys::Effects>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
   "parts/fluids.rs::resolved_fluids::EMPTY": {
-    "type": "OnceLock<horizon_mod_runtime::registry_keys::Names>",
+    "type": "OnceLock<sunrise_mod_runtime::registry_keys::Names>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
@@ -125,7 +125,7 @@
     "reason": "Per-thread flag keeping a running feature's worldgen Part table stable."
   },
   "parts/shared.rs::requested_keys::EMPTY": {
-    "type": "LazyLock<horizon_mod_runtime::registry_keys::Requests>",
+    "type": "LazyLock<sunrise_mod_runtime::registry_keys::Requests>",
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },

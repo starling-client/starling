@@ -6,7 +6,7 @@
 //! [`wrap`] turns the game's command into one process that does all three, so the launcher still
 //! follows one program (its output, its exit, Stop):
 //!
-//! - Unix: `/bin/sh -c '(<pre-launch>) || exit; exec "$@"' horizon <wrapper…> <game> <args…>`.
+//! - Unix: `/bin/sh -c '(<pre-launch>) || exit; exec "$@"' sunrise <wrapper…> <game> <args…>`.
 //!   The pre-launch command is the player's own shell line, run in the instance's folder; the
 //!   game's words go through `"$@"`, so they are never parsed by the shell. `exec` makes the
 //!   shell become the wrapper (or the game).
@@ -137,9 +137,9 @@ pub struct Found {
     pub nvidia: bool,
 }
 
-/// `HORIZON_LAUNCHER_LINUX_TOOLS=gamemode,mangohud,gpu,nvidia`: what [`Found::here`] says is
+/// `SUNRISE_LAUNCHER_LINUX_TOOLS=gamemode,mangohud,gpu,nvidia`: what [`Found::here`] says is
 /// installed, on any system (for tests and screenshots).
-pub const TOOLS_ENV: &str = "HORIZON_LAUNCHER_LINUX_TOOLS";
+pub const TOOLS_ENV: &str = "SUNRISE_LAUNCHER_LINUX_TOOLS";
 
 pub(crate) fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -422,7 +422,7 @@ fn windows_quote(word: &OsStr) -> String {
 pub enum Plan {
     /// Run as given (`words[0]` is the program).
     Direct(Vec<OsString>),
-    /// `/bin/sh -c <script> horizon <words…>`.
+    /// `/bin/sh -c <script> sunrise <words…>`.
     Shell {
         script: String,
         words: Vec<OsString>,
@@ -481,7 +481,7 @@ pub fn wrap(mut cmd: Command, launch: &Launch) -> Command {
         }
         Plan::Shell { script, words } => {
             let mut c = Command::new("/bin/sh");
-            c.arg("-c").arg(script).arg("horizon").args(words);
+            c.arg("-c").arg(script).arg("sunrise").args(words);
             c
         }
         Plan::Cmd { line } => {

@@ -1,6 +1,6 @@
 # Security
 
-How Horizon keeps its code and its downloads safe while most of the work is done by AI agents and releases go out
+How Sunrise keeps its code and its downloads safe while most of the work is done by AI agents and releases go out
 by themselves, including when Ludovic isn't at his computer. In plain words: what someone could have done before,
 what stops them now, and what still needs Ludovic.
 
@@ -37,7 +37,7 @@ and some are waiting for Ludovic:
 | Fork pull requests need approval | **Live**: every outside contributor's workflows wait for a maintainer's approval. |
 | Private vulnerability reporting | **Live** (see the end of this page). |
 | Signed checksums on releases | **Live** for new releases (#1011): the `release` environment holds the key, and its public half is in `release-keys.txt` (#1023). Releases from before then are unsigned. |
-| Signed prebuilt native-mod builds | **Being built** (#11859): horizon-mods' `native-builds` environment (deployable from `main` only) holds `NATIVE_BUILD_SIGNING_KEY`, a key of its own, never the release key, because the registry compiles other people's code there. Its public half is in `native-build-keys.txt`. Each signature covers the build's request key (target, base commit, each mod's file SHA-256), its target and the archive's SHA-256 (`horizon_release_sign::native_build`), so it can't pass for another set's file or for a release. `tools/ci/sign_native_build.sh` signs with OpenSSL. |
+| Signed prebuilt native-mod builds | **Being built** (#11859): sunrise-mods' `native-builds` environment (deployable from `main` only) holds `NATIVE_BUILD_SIGNING_KEY`, a key of its own, never the release key, because the registry compiles other people's code there. Its public half is in `native-build-keys.txt`. Each signature covers the build's request key (target, base commit, each mod's file SHA-256), its target and the archive's SHA-256 (`sunrise_release_sign::native_build`), so it can't pass for another set's file or for a release. `tools/ci/sign_native_build.sh` signs with OpenSSL. |
 | Launchers and servers checking signatures | **Not yet**: #1014 waits as a draft until a signed stable game release and a signed launcher release exist. Until then they trust GitHub's checksum, as before. |
 | Smoke test and release-blocker before publishing | **Live**: since 2026-10-23 every release is the latest at once (one channel, Ludovic's decision), so it is published only after its smoke test passed and while no `release-blocker` is open. The 6-hour beta of the old Alpha, then stable flow (#1012) is gone. |
 | Reports marked suspicious | **Partly**: the scan of Discord for agents does it. Kira's issues do it once its pull request merges. |
@@ -58,8 +58,8 @@ and some are waiting for Ludovic:
   install by themselves, so the release run publishes it only after its smoke test passed (the game started and
   drew a world on the Mac mini) and only while no issue labelled `release-blocker` is open; otherwise nothing is
   published.
-- **Signed updates.** Each release carries a list of its files' checksums, signed with Horizon's release key. The
-  launcher (for the game and for itself) and `horizon-server update` check that signature against the public key
+- **Signed updates.** Each release carries a list of its files' checksums, signed with Sunrise's release key. The
+  launcher (for the game and for itself) and `sunrise-server update` check that signature against the public key
   built into them, then check the download against the list. Anything unsigned, signed with another key, signed
   for another version, or changed in any way is refused with a message saying why. Releases from before signing
   stay installable, for going back to an older version, but only with the exact files they had when signing
@@ -71,20 +71,20 @@ and some are waiting for Ludovic:
   A Nightly carries two signatures over the same `SHA256SUMS`. `SHA256SUMS.sig` is signed
   for the channel (`horizon release nightly`), for launchers and servers from before this change, which read only
   that one. `SHA256SUMS.v2.sig` is signed for the Nightly's own version (`horizon release nightly-<date>-<commit>`),
-  which its release title names (`Nightly <date> · <commit>`). Current launchers, `horizon-server update` and
+  which its release title names (`Nightly <date> · <commit>`). Current launchers, `sunrise-server update` and
   `install.sh` parse that title strictly, refuse a Nightly whose title doesn't parse, and install it only with a v2
   signature for exactly that version. That way an older Nightly can't be served as tonight's: its signature names its own date. Installing
   an older Nightly on purpose still works as a rollback, with a warning, and never happens as an automatic update.
   **The changeover:** Nightlies published before this change have no `SHA256SUMS.v2.sig`, so they can't be installed
   or picked with `--version` any more; they leave GitHub with the 7-day rotation. Until a v2 Nightly exists, a
   launcher has nothing to update to, so the first Nightly is built right after this merges. A server can still go back
-  to a build it already has with `horizon-server rollback`, which checks nothing it hasn't already checked.
+  to a build it already has with `sunrise-server rollback`, which checks nothing it hasn't already checked.
   **When the old signature can go:** once support for launchers and servers predating v2 is retired. The fork
   collects no telemetry, so it cannot determine this from usage data. Then drop `SHA256SUMS.sig` from nightly-build.yml's
-  publish step and the `--tag nightly` check before it, and remove `NIGHTLY` from horizon-release-sign. Releases (not
+  publish step and the `--tag nightly` check before it, and remove `NIGHTLY` from sunrise-release-sign. Releases (not
   Nightlies) keep their single `SHA256SUMS.sig`, which is already signed for their tag.
   **Fork releases (`arismoko/horizon`):** the launcher chooses keys by repository. Only
-  `crates/horizon-release-sign/fork-release-keys.txt` authorizes fork downloads; upstream's keys
+  `crates/sunrise-release-sign/fork-release-keys.txt` authorizes fork downloads; upstream's keys
   authorize only `horizon-rust/horizon`, and unknown repositories have no trusted keys. An empty
   fork key file refuses every fork release. Upstream's legacy checksum pins never authorize a
   fork archive: every fork game or launcher download needs a fork signature. The real private key
@@ -96,7 +96,7 @@ and some are waiting for Ludovic:
 - **Upstream release machinery needs the council.** The workflows, the release and signing tools, the update-checking code
   and the installers are listed in `.github/CODEOWNERS`. Once main's protection requires code owners' reviews, a
   change to any of them waits for a review from the `horizon-rust/council` team (council poll P35). Everything else still merges as soon as its checks pass.
-- **Agents get their own, smaller identity** (prepared, switched on by Ludovic). The `horizon-agent` GitHub App
+- **Agents get their own, smaller identity** (prepared, switched on by Ludovic). The `sunrise-agent` GitHub App
   can read and write code, pull requests and issues, and read the checks. It cannot change settings, workflows,
   secrets or members, and its tokens last an hour. Once agents use it, their pull requests are the app's, and
   Ludovic approves the rare pipeline change with one tap.

@@ -36,7 +36,7 @@ def main(collector="default"):
             assert row["observed_seconds"] > 0
         else:
             assert row["observed_allocated_bytes"] is None
-    fixture_row = next(row for row in summary["allocation_threads"] if row["thread"].startswith("Horizon JFR fixture"))
+    fixture_row = next(row for row in summary["allocation_threads"] if row["thread"].startswith("Sunrise JFR fixture"))
     assert '"quoted"\tthread' in fixture_row["thread"]
     assert fixture_row["observed_allocated_bytes"] > 1_000_000
     assert summary["gc_cycles"] == sum(e["type"] == "jdk.GarbageCollection" for e in events)

@@ -167,8 +167,8 @@ def main():
         if result.returncode:
             raise RuntimeError(f'{name}: {result.returncode}; see {out / (name+".log")}')
     if args.binary is None:
-        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], 'build', cwd=lab.ROOT)
-        binary = lab.cargo_target()/'fast'/('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+        run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], 'build', cwd=lab.ROOT)
+        binary = lab.cargo_target()/'fast'/('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     else:
         binary = args.binary.resolve(strict=True)
     if args.reference:
@@ -181,12 +181,12 @@ def main():
         classes = out/'classes'
         classes.mkdir()
         cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
-        oracle = lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandExecOracle.java'
+        oracle = lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandExecOracle.java'
         run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', cp, '-d', classes, oracle], 'javac')
         vanilla = out/'vanilla'
         vanilla.mkdir()
-        run(['java', '-XX:ActiveProcessorCount=2', '-Xmx3G', '-Dhorizon.parity.flat=true', '-Duser.timezone=UTC', '-cp', str(classes)+os.pathsep+cp,
-             'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla/'universe', script, out/'java.jsonl', 1], 'java', cwd=vanilla)
+        run(['java', '-XX:ActiveProcessorCount=2', '-Xmx3G', '-Dsunrise.parity.flat=true', '-Duser.timezone=UTC', '-cp', str(classes)+os.pathsep+cp,
+             'dev.sunriselab.parity.VanillaCommandExecOracle', vanilla/'universe', script, out/'java.jsonl', 1], 'java', cwd=vanilla)
         shutil.copyfile(vanilla/'universe/harness/data/minecraft/world_gen_settings.dat', out/'world_gen_settings.dat')
     java = [json.loads(line) for line in (out/'java.jsonl').read_text().splitlines()]
     java_gates, java_positions = evaluate(recorded, java)
@@ -197,8 +197,8 @@ def main():
     config.mkdir(parents=True)
     # Transfer only generator configuration, never chunks, actors, RNG or AI state.
     shutil.copyfile(out/'world_gen_settings.dat', config/'world_gen_settings.dat')
-    env = lab.game_env(HORIZON_PLAYER_NAME='Player', HORIZON_COMMAND_SCRIPT=script,
-                       HORIZON_COMMAND_OUTPUT=out/'rust.jsonl', HORIZON_HARNESS_TERRAIN_ONLY='1', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    env = lab.game_env(SUNRISE_PLAYER_NAME='Player', SUNRISE_COMMAND_SCRIPT=script,
+                       SUNRISE_COMMAND_OUTPUT=out/'rust.jsonl', SUNRISE_HARNESS_TERRAIN_ONLY='1', SUNRISE_API_DISCOVERY='http://127.0.0.1:9/')
     run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', 1, '--radius', 12],
         'rust', game=True, cwd=rust, env=env)
     native = [json.loads(line) for line in (out/'rust.jsonl').read_text().splitlines()]

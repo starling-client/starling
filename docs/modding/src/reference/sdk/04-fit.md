@@ -10,7 +10,7 @@ The launcher asks, for each enabled native mod of an instance, in this order:
 
 1. **Made for this build?** Then it is built, as always.
 2. **Exact by nature?** A mod with a `[native.*]` table (`mixin`, `module`, `bridge`, `state`, `loop`) or game
-   internals (an `internals` list, or a dependency on `horizon-internals`) changes or reads game code, so it works on
+   internals (an `internals` list, or a dependency on `sunrise-internals`) changes or reads game code, so it works on
    the build it was made for only. No test runs.
 3. **Does its package say what it uses?** Its `uses.json` must be one this launcher reads and be made for the mod's
    pin. A package without one (made by an older tool) works on the build it was made for only.
@@ -37,7 +37,7 @@ contract, as for any library.
 
 ## `uses.json`
 
-`cargo horizon-mod build` packs `uses.json` beside `horizon-mod.toml` in every code mod's package, except a mod with
+`cargo sunrise-mod build` packs `uses.json` beside `sunrise-mod.toml` in every code mod's package, except a mod with
 a `[native.*]` table or an `internals` list, or one whose source the scan cannot judge (the build says so and packs none). The list holds
 every surface item whose name occurs as an identifier in the mod's source or that its manifest names, then every
 item those items' signatures reference, transitively. A member counts only when its owner is reached. How the scan
@@ -58,8 +58,8 @@ reads source, and what it counts as doubt, is in
 | `entries[].version` | For a hook the manifest names a version of: that version. |
 
 A struct built with `..` (for example `..Default::default()`) keeps fitting when the struct gains a field; one built
-field by field does not. `cargo horizon-mod check --uses` says which of the mod's literals are which.
+field by field does not. `cargo sunrise-mod check --uses` says which of the mod's literals are which.
 
 A registry or a release page can tell which builds a published package fits from the package and each build's
-`surface.json` alone: `cargo horizon-mod fits <file.hmod> --build <name>`. Nothing from the build the mod was made for
+`surface.json` alone: `cargo sunrise-mod fits <file.smod> --build <name>`. Nothing from the build the mod was made for
 is needed, so pruning that build's compiled files never strands the mod.

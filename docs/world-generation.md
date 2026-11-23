@@ -1,11 +1,11 @@
 # World generation
 
-`crates/horizon-world/src/worldgen/` ports vanilla 26.3's generator stage by stage, in vanilla's order: structure
+`crates/sunrise-world/src/worldgen/` ports vanilla 26.3's generator stage by stage, in vanilla's order: structure
 starts and references (`structure/`), biomes (`biome_source/`, `climate/`), noise and density (`router.rs`,
-`terrain.rs`, `aquifer/`, on `horizon_core::density` and `horizon_core::noise`), surface rules (`material_*`), carvers
+`terrain.rs`, `aquifer/`, on `sunrise_core::density` and `sunrise_core::noise`), surface rules (`material_*`), carvers
 (`carver/`), then decoration (`feature_graph.rs`, `decoration*.rs`, `placement/`) and structure pieces. The entry point
 is `generator*.rs`; `generator/data.rs` owns seed-independent `GeneratorData` and its load boundary.
-`crates/horizon-client/src/vanillagen.rs` binds it to the streaming workers.
+`crates/sunrise-client/src/vanillagen.rs` binds it to the streaming workers.
 
 Each stage has its own harness against vanilla (`tools/test_<stage>_parity.py`; `python3 tools/parity.py --list`
 names them), and the whole-chunk harness below checks the stages together. `python3 tools/port_ledger.py where
@@ -15,10 +15,10 @@ Class.method` finds the Rust port of a vanilla method.
 
 `tools/test_chunk_generation_parity.py` generates chunks in actual vanilla classes (`VanillaChunkGenerationOracle`: structure starts and
 references, biomes, noise, surface, carvers, then biome decoration and structure pieces through real `WorldGenRegion`s) and with
-`crates/horizon-world/examples/probe/chunk_dump.rs`, and compares every block state, quart biome and block entity (canonical NBT) of each target
+`crates/sunrise-world/examples/probe/chunk_dump.rs`, and compares every block state, quart biome and block entity (canonical NBT) of each target
 chunk, and the scheduled block and fluid ticks each proto chunk carries into the live world. Cases are terrain sites for several seeds
 across the overworld, Nether and End, plus rectangles around every structure kind found by scanning the seed. `--phase structures`
-isolates terrain plus structure pieces, `--phase terrain` stops before features. `HORIZON_ORDER` (a file of `x z` lines) makes both sides
+isolates terrain plus structure pieces, `--phase terrain` stops before features. `SUNRISE_ORDER` (a file of `x z` lines) makes both sides
 decorate in that order instead of row-major.
 
 ### Data packs
@@ -28,19 +28,19 @@ A world's enabled data packs (`<world>/datapacks`, in `datapacks.json`'s order) 
 conditions, carvers, configured and placed features, structures, structure sets, template pools, processor lists, biomes, level stems), a
 higher pack's file for an id replacing a lower one's, and its block, fluid and biome tag files to the tag bundles in pack order.
 `GeneratorData::load_with` reads the bundles with them; the client caches the result per set of pack entries
-(`vanillagen::shared_data_with`). What Horizon leaves out is logged: a pack's new biomes (the game has no id, colours or sounds for them;
+(`vanillagen::shared_data_with`). What Sunrise leaves out is logged: a pack's new biomes (the game has no id, colours or sounds for them;
 their tag entries and climate points go with them) and folders the generator does not read. A pack's dimension types set each level's
 height ([world-height.md](world-height.md)); noise settings taller than the level generate only inside it, as `clampToHeightAccessor`. Sapling growth and bone
 meal still place vanilla's features.
 
-`tools/test_datapack_worldgen_parity.py` runs the whole-chunk harness with `HORIZON_DATAPACKS=tools/fixtures/datapacks` on both sides
+`tools/test_datapack_worldgen_parity.py` runs the whole-chunk harness with `SUNRISE_DATAPACKS=tools/fixtures/datapacks` on both sides
 (the oracle selects every pack of the folder after vanilla through vanilla's own pack repository): its pack overrides a noise, a density
 function, the overworld noise settings (sea level 70, no aquifers, a new final density with a new noise added), a placed feature and a
-biome tag. Every site must match vanilla with the pack and differ from Horizon without it.
+biome tag. Every site must match vanilla with the pack and differ from Sunrise without it.
 
 Packs must be written for 26.3: its worldgen formats differ from 26.2's (density functions take `left`/`right`, `gradient` replaces
 `y_clamped_gradient`, noises take `base_octave`/`octave_count`, block states are strings, surface rules became the `material_rule` and
-`material_condition` registries, configured features lost `config`). Vanilla 26.3 refuses a 26.2 worldgen pack as Horizon does.
+`material_condition` registries, configured features lost `config`). Vanilla 26.3 refuses a 26.2 worldgen pack as Sunrise does.
 
 ### Decoration order
 
@@ -64,13 +64,13 @@ Result on seed 12345 (overworld 42 sites / 372 chunks, Nether, End): structure p
 generation 4 differing chunks (3 blocks, 1 block entity) out of 372; Nether and End terrain sites 0 differences.
 
 Harness normalisations (not generation differences): sections above the noise height (Nether roof, End sky) are all air in vanilla and
-absent in Horizon; structure templates keep their stored NBT integer width; a vanilla block entity left as a `DUMMY` default is equal to no
-Horizon entry; `LootTableSeed` without a `LootTable` and a vault's default reward table are ignored.
+absent in Sunrise; structure templates keep their stored NBT integer width; a vanilla block entity left as a `DUMMY` default is equal to no
+Sunrise entry; `LootTableSeed` without a `LootTable` and a vault's default reward table are ignored.
 
 Generated containers keep their original `LootTable` and optional `LootTableSeed` tags
 in position-keyed chunk extras until inventory access. Generation, loading and raw
 `/data get block` reads do not roll them; absent seeds and explicit zero seeds stay
-unchanged on disk. Horizon-only: if a runtime inventory holds both items and a
+unchanged on disk. Sunrise-only: if a runtime inventory holds both items and a
 pending table, its first inventory access drops the table without rolling it,
 so emptying the inventory later cannot resurrect the table.
 

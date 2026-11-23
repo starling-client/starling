@@ -22,15 +22,15 @@ def cut(s, first, last):
     return s[:a] + s[b:]
 
 
-root = 'crates/horizon-client/src/'
-vocab = 'crates/horizon-mod-vocab/src/'
-protocol = 'crates/horizon-protocol/src/'
+root = 'crates/sunrise-client/src/'
+vocab = 'crates/sunrise-mod-vocab/src/'
+protocol = 'crates/sunrise-protocol/src/'
 for path in [protocol + 'mod_net.rs', vocab + 'hooks/net_from_client.rs', vocab + 'hooks/net_from_server.rs']:
     Path(path).unlink()
 change(protocol + 'lib.rs', lambda s: s.replace('pub mod mod_net;\n', ''))
 change(root + 'game/modding/native_net.rs', lambda s: (
     '//! Private custom-book connection state and client network services.\nuse super::Game;\n'
-    'use horizon_protocol::packets::{configuration::CustomPayload, play::Serverbound as S};\n'
+    'use sunrise_protocol::packets::{configuration::CustomPayload, play::Serverbound as S};\n'
     'use mod_api::{SendPacketError, ServerboundPlayPacket};\nuse std::collections::HashMap;\n'
     '#[derive(Default)]\npub(super) struct NativeNet {\n'
     + s[s.index('    pub(super) placement:'):s.index('    from_players:')]
@@ -44,12 +44,12 @@ for name in ['game/interface/dedicated/mod.rs', 'game/world/integrated.rs', 'gam
     change(root + name, lambda s: s.replace('        self.flush_native_net();\n', '').replace(
         '        if self.native_net_waiting() {\n            self.run_native_net();\n        }\n', ''))
 change(root + 'game/network/lan_actions/packets.rs', lambda s: re.sub(
-    r'            S::CustomPayload\(p\) if p.channel == horizon_protocol::mod_net::CHANNEL => \{\n                self.guest_native_net\(conn, &p.data\)\n            }\n', '', s))
+    r'            S::CustomPayload\(p\) if p.channel == sunrise_protocol::mod_net::CHANNEL => \{\n                self.guest_native_net\(conn, &p.data\)\n            }\n', '', s))
 change(root + 'game/modding/native_book_net.rs', lambda s: cut(s.replace(
     '        self.native_net.to_server = 0;\n', ''),
     '    pub(super) fn is_book_or_mod_channel', '    pub(super) fn clear_guest_book_connection'))
 change(root + 'lan/payload_bounds_tests.rs', lambda s: re.sub(
-    r'        \("horizon:mod_net", \|body\| \{\n            protocol::mod_net::decode\(body\).is_err\(\)\n        }\),\n', '', s).replace('Rejects); 12]', 'Rejects); 11]'))
+    r'        \("sunrise:mod_net", \|body\| \{\n            protocol::mod_net::decode\(body\).is_err\(\)\n        }\),\n', '', s).replace('Rejects); 12]', 'Rejects); 11]'))
 # Mechanical capability identifier changes; its codec and advertisement are corrected manually.
 for name in ['net.rs', 'game/network/remote/mod.rs', 'game/modding/native_book_net.rs',
              'game/native_hooks/shared/book_screen/lifecycle_tests.rs']:

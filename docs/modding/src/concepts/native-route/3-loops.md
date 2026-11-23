@@ -50,7 +50,7 @@ impl BlockEntityTickSlot for Throttle {
 ```
 
 Unlike a mixin helper, this file may hold any Rust items, `pub` or not, with no `use` lines. It sees what the module
-`horizon_client::game::block_entity_ticks` sees: `BlockEntityTickSlot`, `BlockEntityTick`, `LoopFlow`,
+`sunrise_client::game::block_entity_ticks` sees: `BlockEntityTickSlot`, `BlockEntityTick`, `LoopFlow`,
 `TickedKind`, `OwnBlockEntities`, `Game`, `BlockEntity` and the rest. Like a [mixin helper](2-mixins.md#writing-a-helper), it may
 call your mod's crate by its Rust crate name.
 
@@ -164,7 +164,7 @@ Its saved data is `entity.nbt`, its item slots `entity.items` and its menu data 
 
 ## Mixins on the loop
 
-The loop's entry is `horizon_client::game::block_entity_ticks::Game<'_>::tick_block_entities`. A `HEAD` or
+The loop's entry is `sunrise_client::game::block_entity_ticks::Game<'_>::tick_block_entities`. A `HEAD` or
 `RETURN` mixin and an `[[inject]]` listener on it run around the loop. To change a place inside the loop,
 target the loop's body, `…::tick_block_entities_with`. Such a mixin does not apply when the loop runs
 without slots, from inside a slot or after a panic.

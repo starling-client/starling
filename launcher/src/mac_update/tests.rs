@@ -9,7 +9,7 @@ impl Scratch {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).unwrap();
         let root = std::env::temp_dir().join(format!(
-            "horizon-mac-update-{}-{:x?}",
+            "sunrise-mac-update-{}-{:x?}",
             std::process::id(),
             nonce
         ));
@@ -17,10 +17,10 @@ impl Scratch {
         Self(root)
     }
     fn app(&self) -> PathBuf {
-        self.0.join("Horizon.app")
+        self.0.join("Sunrise.app")
     }
     fn retired(&self, generation: u32) -> PathBuf {
-        self.0.join(format!(".Horizon.app.old-1-{generation:032x}"))
+        self.0.join(format!(".Sunrise.app.old-1-{generation:032x}"))
     }
 }
 impl Drop for Scratch {
@@ -43,7 +43,7 @@ fn retired(work: &Scratch) -> Vec<PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(&work.0)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| is_retired(p.file_name().unwrap().to_str().unwrap(), "Horizon.app"))
+        .filter(|p| is_retired(p.file_name().unwrap().to_str().unwrap(), "Sunrise.app"))
         .collect();
     paths.sort();
     paths
@@ -88,8 +88,8 @@ fn cleanup_names_are_exactly_our_app_positive_pid_and_lowercase_nonce() {
     let hex = "0123456789abcdef0123456789abcdef";
     for pid in ["1", "4294967295"] {
         assert!(is_retired(
-            &format!(".Horizon.app.old-{pid}-{hex}"),
-            "Horizon.app"
+            &format!(".Sunrise.app.old-{pid}-{hex}"),
+            "Sunrise.app"
         ));
     }
     for suffix in [
@@ -106,17 +106,17 @@ fn cleanup_names_are_exactly_our_app_positive_pid_and_lowercase_nonce() {
         "123".into(),
     ] {
         assert!(
-            !is_retired(&format!(".Horizon.app.old-{suffix}"), "Horizon.app"),
+            !is_retired(&format!(".Sunrise.app.old-{suffix}"), "Sunrise.app"),
             "{suffix}"
         );
     }
     assert!(!is_retired(
         &format!(".Other.app.old-1-{hex}"),
-        "Horizon.app"
+        "Sunrise.app"
     ));
     assert!(!is_retired(
-        &format!(".Horizon.app.update-1-{hex}"),
-        "Horizon.app"
+        &format!(".Sunrise.app.update-1-{hex}"),
+        "Sunrise.app"
     ));
 }
 
@@ -148,8 +148,8 @@ fn cleanup_preserves_unknown_names_incomplete_bundles_and_every_symlink_componen
     let directory = work.retired(7);
     fs::create_dir_all(directory.join("Contents/MacOS").join(BINARY)).unwrap();
     for name in [
-        ".Horizon.app.old-123",
-        ".Horizon.app.old-1-not-a-nonce",
+        ".Sunrise.app.old-123",
+        ".Sunrise.app.old-1-not-a-nonce",
         ".Other.app.old-1-00000000000000000000000000000000",
     ] {
         bundle(&work.0.join(name), "keep");
@@ -232,7 +232,7 @@ fn failed_signature_before_or_after_swap_keeps_the_original_and_cleans_only_its_
         let new = work.0.join("release.app");
         bundle(&app, "original");
         bundle(&new, "replacement");
-        let unrelated = work.0.join(".Horizon.app.update-someone-elses-work");
+        let unrelated = work.0.join(".Sunrise.app.update-someone-elses-work");
         bundle(&unrelated, "preserve");
         let previous = work.retired(1);
         bundle(&previous, "previous generation still in use");
@@ -278,8 +278,8 @@ fn a_concurrent_cleanup_during_final_signature_cannot_destroy_the_rollback() {
             .join(".Other.app.old-1-00000000000000000000000000000000");
         let quarantine = work
             .0
-            .join(".Horizon.app.rollback-1-00000000000000000000000000000000");
-        let other_staging = work.0.join(".Horizon.app.update-another-transaction");
+            .join(".Sunrise.app.rollback-1-00000000000000000000000000000000");
+        let other_staging = work.0.join(".Sunrise.app.update-another-transaction");
         for path in [&foreign, &quarantine, &other_staging] {
             bundle(path, "unrelated");
         }
@@ -342,7 +342,7 @@ fn a_concurrent_cleanup_during_final_signature_cannot_destroy_the_rollback() {
         );
         assert!(!is_retired(
             quarantine.file_name().unwrap().to_str().unwrap(),
-            "Horizon.app"
+            "Sunrise.app"
         ));
         assert_eq!(version(&new), "v3");
         for path in [&foreign, &quarantine, &other_staging] {

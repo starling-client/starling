@@ -28,24 +28,24 @@ def metadata():
     return {
         "workspace_root": "/w",
         "packages": [
-            package("horizon-mod-api", kinds=("lib", "custom-build"),
-                    dependencies=[("horizon-mod-api-gen", "build", "/w/crates/horizon-mod-api-gen"),
+            package("sunrise-mod-api", kinds=("lib", "custom-build"),
+                    dependencies=[("sunrise-mod-api-gen", "build", "/w/crates/sunrise-mod-api-gen"),
                                   ("helper", "dev", "/w/crates/helper")]),
             package("vocab", "crates/nested/vocab"),
             package("macros", kinds=("proc-macro",)),
             package("shape"),
-            package("horizon-mod-api-gen"),
+            package("sunrise-mod-api-gen"),
             package("discovery"),
             package("helper"),
             package("serde", source="registry+https://github.com/rust-lang/crates.io-index"),
         ],
         "resolve": {"nodes": [
-            node("horizon-mod-api", ("vocab", None), ("macros", None), ("serde", None),
-                 ("horizon-mod-api-gen", "build"), ("helper", "dev")),
+            node("sunrise-mod-api", ("vocab", None), ("macros", None), ("serde", None),
+                 ("sunrise-mod-api-gen", "build"), ("helper", "dev")),
             node("vocab", ("serde", None)),
             node("macros", ("shape", None)),
             node("shape"),
-            node("horizon-mod-api-gen", ("discovery", None)),
+            node("sunrise-mod-api-gen", ("discovery", None)),
             node("discovery"),
             node("helper"),
             node("serde"),
@@ -56,7 +56,7 @@ def metadata():
 class ClosureTests(unittest.TestCase):
     def test_normal_and_proc_macro_dependencies_only(self):
         self.assertEqual(api_source.closure(metadata()), [
-            Crate("horizon-mod-api", "crates/horizon-mod-api", True),
+            Crate("sunrise-mod-api", "crates/sunrise-mod-api", True),
             Crate("macros", "crates/macros", False),
             Crate("shape", "crates/shape", False),
             Crate("vocab", "crates/nested/vocab", False),
@@ -64,7 +64,7 @@ class ClosureTests(unittest.TestCase):
 
     def test_a_generated_crate_not_two_folders_below_the_root_is_refused(self):
         data = metadata()
-        data["packages"][0]["manifest_path"] = "/w/crates/mod/horizon-mod-api/Cargo.toml"
+        data["packages"][0]["manifest_path"] = "/w/crates/mod/sunrise-mod-api/Cargo.toml"
         with self.assertRaises(Refusal) as refused:
             api_source.closure(data)
         self.assertEqual(refused.exception.code, "E_LAYOUT")
@@ -84,30 +84,30 @@ class ManifestTests(unittest.TestCase):
         "lints": {"clippy": {"type_complexity": "allow"}},
     }}
     API = {
-        "package": {"name": "horizon-mod-api", "version": "0.1.0", "edition": {"workspace": True},
+        "package": {"name": "sunrise-mod-api", "version": "0.1.0", "edition": {"workspace": True},
                     "license": {"workspace": True}, "publish": False},
         "lib": {"name": "mod_api"},
         "dependencies": {"vocab": {"path": "../nested/vocab"}, "log": "0.4",
                          "glam": {"workspace": True, "features": ["bytemuck"]},
                          "libm": {"version": "0.2", "default-features": False}},
         "target": {"cfg(unix)": {"dependencies": {"libc": "0.2"}}},
-        "build-dependencies": {"horizon-mod-api-gen": {"path": "../horizon-mod-api-gen"}},
+        "build-dependencies": {"sunrise-mod-api-gen": {"path": "../sunrise-mod-api-gen"}},
         "dev-dependencies": {"helper": {"path": "../helper"}},
         # Declared before what it names, so dropping it needs a second pass.
         "features": {"chained": ["fixture"], "testing": ["vocab/testing"],
-                     "fixture": ["horizon-mod-api-gen/fixture", "vocab/fixture"]},
+                     "fixture": ["sunrise-mod-api-gen/fixture", "vocab/fixture"]},
         "lints": {"workspace": True},
         "bin": [{"name": "tool", "path": "src/bin/tool.rs"}],
     }
     VOCAB = {
         "package": {"name": "vocab", "version": "0.1.0"},
         "dependencies": {},
-        "features": {"testing": [], "fixture": ["horizon-mod-api-gen/fixture"]},
+        "features": {"testing": [], "fixture": ["sunrise-mod-api-gen/fixture"]},
     }
 
     def test_features_naming_a_dropped_dependency_go_everywhere_they_reach(self):
-        kept = api_source.kept_features({"horizon-mod-api": self.API, "vocab": self.VOCAB})
-        self.assertEqual(kept, {"horizon-mod-api": {"testing": ["vocab/testing"]}, "vocab": {"testing": []}})
+        kept = api_source.kept_features({"sunrise-mod-api": self.API, "vocab": self.VOCAB})
+        self.assertEqual(kept, {"sunrise-mod-api": {"testing": ["vocab/testing"]}, "vocab": {"testing": []}})
 
     def test_a_feature_naming_an_optional_dependency_stays(self):
         manifest = {"package": {"name": "core", "version": "0.1.0"},
@@ -116,8 +116,8 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(api_source.kept_features({"core": manifest}), {"core": {"fast-math": ["libm"]}})
 
     def test_manifest_keeps_the_library_and_its_normal_dependencies(self):
-        crate = Crate("horizon-mod-api", "crates/horizon-mod-api", True)
-        crates = {"horizon-mod-api": crate, "vocab": Crate("vocab", "crates/nested/vocab", False)}
+        crate = Crate("sunrise-mod-api", "crates/sunrise-mod-api", True)
+        crates = {"sunrise-mod-api": crate, "vocab": Crate("vocab", "crates/nested/vocab", False)}
         # The game resolves glam with its defaults and three features, log with its defaults and `std`, and libm
         # with `arch` and no defaults.
         resolved = {"glam": ({"default", "std", "bytemuck", "serde"}, True), "log": ({"default", "std"}, True),
@@ -125,7 +125,7 @@ class ManifestTests(unittest.TestCase):
         written = api_source.normalise_manifest(self.API, self.WORKSPACE, crate, crates,
                                                 {"testing": ["vocab/testing"]}, resolved)
         self.assertEqual(tomllib.loads(written), {
-            "package": {"name": "horizon-mod-api", "version": "0.1.0", "edition": "2024", "license": "MIT",
+            "package": {"name": "sunrise-mod-api", "version": "0.1.0", "edition": "2024", "license": "MIT",
                         "publish": False, "autobins": False, "autoexamples": False, "autotests": False,
                         "autobenches": False, "build": "build.rs"},
             "lib": {"name": "mod_api"},
@@ -141,7 +141,7 @@ class ManifestTests(unittest.TestCase):
     def test_a_path_dependency_outside_the_api_source_is_refused(self):
         crate = Crate("vocab", "crates/nested/vocab", False)
         manifest = {"package": {"name": "vocab", "version": "0.1.0"},
-                    "dependencies": {"horizon-items": {"path": "../../horizon-items"}}}
+                    "dependencies": {"sunrise-items": {"path": "../../sunrise-items"}}}
         with self.assertRaises(Refusal) as refused:
             api_source.normalise_manifest(manifest, self.WORKSPACE, crate, {"vocab": crate}, {}, {})
         self.assertEqual(refused.exception.code, "E_PATH_DEPENDENCY")
@@ -159,7 +159,7 @@ class ManifestTests(unittest.TestCase):
 
 class FeatureTests(unittest.TestCase):
     TREE = "\n".join([
-        "0horizon-mod-host v0.1.0 (/w/crates/horizon-mod-host)|",
+        "0sunrise-mod-host v0.1.0 (/w/crates/sunrise-mod-host)|",
         "1bytemuck v1.25.2|bytemuck_derive,derive,extern_crate_alloc",
         "2bytemuck_derive v1.12.1 (proc-macro)|",
         "3proc-macro2 v1.0.107|default,proc-macro",
@@ -167,7 +167,7 @@ class FeatureTests(unittest.TestCase):
         "3syn v2.0.119|full",
         "1serde_json v1.0.151|default,raw_value,std",
         "2memchr v2.8.3|alloc,std",
-        "1horizon-mod-api-macros v0.1.0 (proc-macro) (/w/crates/horizon-mod-api-macros)|",
+        "1sunrise-mod-api-macros v0.1.0 (proc-macro) (/w/crates/sunrise-mod-api-macros)|",
         "2serde_json v1.0.151|default,std",
         "1memchr v2.8.3|alloc,default,std (*)",
         "1log v0.4.34|",
@@ -175,7 +175,7 @@ class FeatureTests(unittest.TestCase):
 
     def test_target_features_leave_proc_macros_and_their_trees_out(self):
         self.assertEqual(api_source.target_features(self.TREE), {
-            "horizon-mod-host 0.1.0": set(),
+            "sunrise-mod-host 0.1.0": set(),
             "bytemuck 1.25.2": {"bytemuck_derive", "derive", "extern_crate_alloc"},
             "serde_json 1.0.151": {"default", "raw_value", "std"},
             "memchr 2.8.3": {"alloc", "default", "std"},
@@ -242,7 +242,7 @@ class CollectTests(unittest.TestCase):
                                       self.messages("c", "pub struct Hook;\n")), "E_TARGET_DEPENDENT")
 
     def test_a_file_read_outside_the_crate_is_refused(self):
-        outside = self.messages("a", "", reads=("crates/api/src/lib.rs", "crates/horizon-client/src/game.rs"))
+        outside = self.messages("a", "", reads=("crates/api/src/lib.rs", "crates/sunrise-client/src/game.rs"))
         self.assertEqual(self.refusal(outside), "E_SOURCE_OUTSIDE_CRATE")
 
     def test_a_folder_or_other_file_in_the_build_scripts_output_is_refused(self):
@@ -261,23 +261,23 @@ class CollectTests(unittest.TestCase):
 
 
 class PackingTests(unittest.TestCase):
-    CRATES = [Crate("horizon-mod-api", "crates/horizon-mod-api", True), Crate("core", "crates/core", False)]
-    TRACKED = {"crates/horizon-mod-api/src/lib.rs", "crates/core/src/lib.rs"}
+    CRATES = [Crate("sunrise-mod-api", "crates/sunrise-mod-api", True), Crate("core", "crates/core", False)]
+    TRACKED = {"crates/sunrise-mod-api/src/lib.rs", "crates/core/src/lib.rs"}
 
     def files(self):
         return {
             "Cargo.toml": b"[workspace]\n",
             "Cargo.lock": b"version = 4\n",
-            "crates/horizon-mod-api/Cargo.toml": b"",
-            "crates/horizon-mod-api/build.rs": b"fn main() {}\n",
-            "crates/horizon-mod-api/generated/hooks.rs": b'#[path = "{horizon-api-source-root}/x.rs"] mod x;\n',
-            "crates/horizon-mod-api/src/lib.rs": b"",
+            "crates/sunrise-mod-api/Cargo.toml": b"",
+            "crates/sunrise-mod-api/build.rs": b"fn main() {}\n",
+            "crates/sunrise-mod-api/generated/hooks.rs": b'#[path = "{sunrise-api-source-root}/x.rs"] mod x;\n',
+            "crates/sunrise-mod-api/src/lib.rs": b"",
             "crates/core/Cargo.toml": b"",
             "crates/core/src/lib.rs": b"",
         }
 
     def check(self, files):
-        return api_source.check_files(files, self.CRATES, self.TRACKED, ["/home/dev/horizon"])
+        return api_source.check_files(files, self.CRATES, self.TRACKED, ["/home/dev/sunrise"])
 
     def refusal(self, files):
         with self.assertRaises(Refusal) as refused:
@@ -293,20 +293,20 @@ class PackingTests(unittest.TestCase):
 
     def test_a_file_naming_a_local_folder_is_refused(self):
         files = self.files()
-        files["crates/horizon-mod-api/generated/hooks.rs"] = b'#[path = "/home/dev/horizon/crates/x.rs"] mod x;\n'
+        files["crates/sunrise-mod-api/generated/hooks.rs"] = b'#[path = "/home/dev/sunrise/crates/x.rs"] mod x;\n'
         self.assertEqual(self.refusal(files), "E_ABSOLUTE_PATH")
 
     def test_a_folder_that_only_starts_like_a_local_one_is_no_path_to_it(self):
         files = self.files()
-        files["crates/core/src/lib.rs"] = b'// see /home/dev/horizon-site and /home/dev/horizons\n'
+        files["crates/core/src/lib.rs"] = b'// see /home/dev/sunrise-site and /home/dev/sunrises\n'
         self.assertEqual(len(self.check(files)), len(files))
-        for named in (b'"/home/dev/horizon"', b"/home/dev/horizon/crates/x.rs", b"/home/dev/horizon\n"):
+        for named in (b'"/home/dev/sunrise"', b"/home/dev/sunrise/crates/x.rs", b"/home/dev/sunrise\n"):
             with self.subTest(named):
                 self.assertEqual(self.refusal({**files, "crates/core/src/lib.rs": named}), "E_ABSOLUTE_PATH")
 
     def test_stray_files_are_refused(self):
         for stray in (".local/minecraft/client.jar", "crates/core/src/untracked.rs", "crates/core/build.rs",
-                      "crates/core/generated/hooks.rs", "crates/horizon-mod-api/generated/sub/hooks.rs",
+                      "crates/core/generated/hooks.rs", "crates/sunrise-mod-api/generated/sub/hooks.rs",
                       "crates/other/src/lib.rs", "/etc/passwd", "crates/core/../../secret"):
             with self.subTest(stray):
                 self.assertIn(self.refusal({**self.files(), stray: b""}), ("E_STRAY_FILE", "E_PATH"))
@@ -328,8 +328,8 @@ class RelocationTests(unittest.TestCase):
         forms = api_source.root_forms([Path("/w")], crate)
         code = '#[path = "/w/crates/vocab/../../crates/vocab/src/a.rs"] mod a; include!("/w/crates/vocab/src/b.rs");'
         self.assertEqual(api_source.relocate(code, forms),
-                         '#[path = "{horizon-api-source-root}/crates/vocab/src/a.rs"] mod a; '
-                         'include!("{horizon-api-source-root}/crates/vocab/src/b.rs");')
+                         '#[path = "{sunrise-api-source-root}/crates/vocab/src/a.rs"] mod a; '
+                         'include!("{sunrise-api-source-root}/crates/vocab/src/b.rs");')
 
     def test_dep_info_keeps_escaped_spaces(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -342,9 +342,9 @@ class LockTests(unittest.TestCase):
     def test_a_version_the_game_does_not_pin_is_named(self):
         registry = "registry+https://github.com/rust-lang/crates.io-index"
         game = {"package": [{"name": "serde", "version": "1.0.228", "source": registry, "checksum": "a"},
-                            {"name": "horizon-core", "version": "0.1.0"}]}
+                            {"name": "sunrise-core", "version": "0.1.0"}]}
         ours = {"package": [{"name": "serde", "version": "1.0.229", "source": registry, "checksum": "b"},
-                            {"name": "horizon-core", "version": "0.1.0"}]}
+                            {"name": "sunrise-core", "version": "0.1.0"}]}
         self.assertEqual(api_source.lock_disagreements(ours, game), ["serde 1.0.229"])
         self.assertEqual(api_source.lock_disagreements(game, game), [])
 

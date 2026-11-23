@@ -1,0 +1,28 @@
+[package]
+name = "sunrise-official"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The official game executable: the platform's game with Sunrise's own in-game parts plugged in (docs/layers.md)"
+
+[[bin]]
+name = "sunrise-official"
+path = "src/main.rs"
+
+[dependencies]
+sunrise-game = { path = "../sunrise-game" }
+sunrise-platform = { path = "../sunrise-platform" }
+sunrise-heartbeat = { path = "../sunrise-heartbeat" }
+sunrise-friends = { path = "../sunrise-friends", features = ["game"] }
+sunrise-official-servers = { path = "../sunrise-official-servers" }
+sunrise-discord = { path = "../sunrise-discord" }
+sunrise-perf-share = { path = "../sunrise-perf-share" }
+log = "0.4"
+
+[build-dependencies]
+# The build script runs on the host, but embeds resources based on the target OS.
+winresource = "0.1"
+
+[lints]
+workspace = true

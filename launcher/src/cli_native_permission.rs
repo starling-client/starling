@@ -16,7 +16,7 @@ pub(super) fn github_native(
     trust: bool,
 ) -> Result<(), String> {
     if java {
-        return Err("Native mods from GitHub are for Horizon instances.".into());
+        return Err("Native mods from GitHub are for Sunrise instances.".into());
     }
     println!("{}", found.label());
     println!("Source, to read: {}", found.source_url());
@@ -41,7 +41,7 @@ pub(super) fn github_native(
             o.sha256
         );
     }
-    println!("Build it next: horizon-launcher native-build --trust-native-code");
+    println!("Build it next: sunrise-launcher native-build --trust-native-code");
     Ok(())
 }
 

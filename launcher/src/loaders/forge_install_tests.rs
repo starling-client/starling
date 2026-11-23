@@ -37,7 +37,7 @@ fn zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 /// installers without their icon and library lists), with an installer carrying `data/client.lzma`.
 fn planned(profile: &str, minecraft: &str) -> (PathBuf, Vec<Step>) {
     let root = std::env::temp_dir().join(format!(
-        "horizon-plan-{}-{}",
+        "sunrise-plan-{}-{}",
         std::process::id(),
         sha1_hex(profile.as_bytes())
     ));
@@ -182,7 +182,7 @@ fn real_install_profiles_plan_their_client_steps() {
 #[test]
 fn an_installer_runs_its_processors_and_checks_what_they_make() {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("horizon-forge-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("sunrise-forge-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let dir = root.join("minecraft");
     let vanilla = b"the game's own jar".to_vec();
@@ -352,14 +352,14 @@ fn an_installer_runs_its_processors_and_checks_what_they_make() {
 
 /// The real repositories and installers on the Java Mojang ships (network, the game's jar
 /// downloaded by the owner gate first): `cargo test forge -- --ignored` with
-/// `HORIZON_FORGE_TEST_DIR` a game folder holding `versions/<mc>/`, `HORIZON_FORGE_TEST_JAVA`
-/// a `java`, and `HORIZON_FORGE_TEST` `kind:minecraft` (`neoforge:26.3`).
+/// `SUNRISE_FORGE_TEST_DIR` a game folder holding `versions/<mc>/`, `SUNRISE_FORGE_TEST_JAVA`
+/// a `java`, and `SUNRISE_FORGE_TEST` `kind:minecraft` (`neoforge:26.3`).
 #[test]
 #[ignore]
 fn a_real_installer_installs() {
-    let dir = PathBuf::from(std::env::var("HORIZON_FORGE_TEST_DIR").unwrap());
-    let java = PathBuf::from(std::env::var("HORIZON_FORGE_TEST_JAVA").unwrap());
-    let wanted = std::env::var("HORIZON_FORGE_TEST").unwrap();
+    let dir = PathBuf::from(std::env::var("SUNRISE_FORGE_TEST_DIR").unwrap());
+    let java = PathBuf::from(std::env::var("SUNRISE_FORGE_TEST_JAVA").unwrap());
+    let wanted = std::env::var("SUNRISE_FORGE_TEST").unwrap();
     let (kind, minecraft) = wanted.split_once(':').unwrap();
     let loader = crate::loaders::choose(kind, minecraft, None).unwrap();
     let id = crate::loaders::install(

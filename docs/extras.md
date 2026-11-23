@@ -1,4 +1,4 @@
-# Horizon extras
+# Sunrise extras
 
 Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
 Mouse Tweaks-style inventory controls, inventory sorting, a smooth chat and a music page. **Every one is off by default**: a fresh
@@ -9,17 +9,17 @@ again restores vanilla's behaviour completely.
 
 | Part | Code |
 |---|---|
-| Settings, parsing and saving | `crates/horizon-client-render/src/extras.rs` |
+| Settings, parsing and saving | `crates/sunrise-client-render/src/extras.rs` |
 | FPS and click counters (for native mods) | `extras.rs` (pure logic, unit tested) |
-| Dynamic lights: item glow, nearest sources | `crates/horizon-client-render/src/dynamic_light.rs` (unit tested), `game/interface/dynamic_lights.rs`, `terrain.wgsl` and `entity.wgsl` (`dynamic_block_light`) |
-| HUD drawing (a native mod's minimap, corner stacking) | `crates/horizon-client/src/extras_hud.rs` |
-| Minimap colours, tiles and image (for the Minimap native mod) | `crates/horizon-client-render/src/minimap.rs` |
-| Reconnect policy and backoff | `crates/horizon-client/src/reconnect.rs`; its game glue (connect, join, leave, the countdown) in `game/interface/extras/reconnect.rs` |
-| Game glue (input hooks, per-frame update) | `crates/horizon-client/src/game/interface/extras.rs`; each extra's own glue in a child module, `game/interface/extras/` |
-| Mouse Tweaks-style controls, sort buttons | `crates/horizon-client/src/game/interface/extras/mouse_tweaks.rs`, `game/interface/extras/sorting.rs` |
-| Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
-| The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
+| Dynamic lights: item glow, nearest sources | `crates/sunrise-client-render/src/dynamic_light.rs` (unit tested), `game/interface/dynamic_lights.rs`, `terrain.wgsl` and `entity.wgsl` (`dynamic_block_light`) |
+| HUD drawing (a native mod's minimap, corner stacking) | `crates/sunrise-client/src/extras_hud.rs` |
+| Minimap colours, tiles and image (for the Minimap native mod) | `crates/sunrise-client-render/src/minimap.rs` |
+| Reconnect policy and backoff | `crates/sunrise-client/src/reconnect.rs`; its game glue (connect, join, leave, the countdown) in `game/interface/extras/reconnect.rs` |
+| Game glue (input hooks, per-frame update) | `crates/sunrise-client/src/game/interface/extras.rs`; each extra's own glue in a child module, `game/interface/extras/` |
+| Mouse Tweaks-style controls, sort buttons | `crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs`, `game/interface/extras/sorting.rs` |
+| Sort order and its clicks | `crates/sunrise-client/src/inv_sort.rs` (pure, unit tested) |
+| The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/sunrise-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
+| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Sunrise Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
 
 The settings are grouped by extra, under a header each, one to a row, and the strip
 under the list says what the row in focus or under the pointer does. An
@@ -31,12 +31,12 @@ extras stay out of the way of other input and options work.
 
 ## Options storage
 
-`horizon-extras.txt` beside `options.txt`, in the same `key:value` format as
-`horizon-graphics.txt`. `options.txt` is untouched, so a vanilla client can share
+`sunrise-extras.txt` beside `options.txt`, in the same `key:value` format as
+`sunrise-graphics.txt`. `options.txt` is untouched, so a vanilla client can share
 the folder. Unknown or broken lines fall back to the defaults.
 
-Extras' keys (the sort key) are Horizon settings stored in that file and bound on
-the Extras page, not in vanilla's Key Binds screen: Horizon has no Horizon category
+Extras' keys (the sort key) are Sunrise settings stored in that file and bound on
+the Extras page, not in vanilla's Key Binds screen: Sunrise has no Sunrise category
 in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
@@ -76,10 +76,10 @@ in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 ### Moved to native mods
 
 The **FPS counter**, **Keystrokes**, **Zoom** and the **Minimap** are official native mods now (in
-horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/start/installing.md#horizons-official-mods)), with the same look and
+horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/start/installing.md#sunrises-official-mods)), with the same look and
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)). The game keeps
-the hook points they use (`crates/horizon-client/src/game/native_hooks/`), and `horizon-extras.txt` keeps the old
+the hook points they use (`crates/sunrise-client/src/game/native_hooks/`), and `sunrise-extras.txt` keeps the old
 keys and `movedToMods`. The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
 it is built in, else a note saying to install it from the Mods page.
 
@@ -133,7 +133,7 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   hundreds of blocks at once) then can't stop the pause menu's clicks.
 - Vanilla 26.3 gives all 247 to whatever starts first
   (`Library.acquireChannel` returns null once the pool is full); with the
-  extra off Horizon does exactly that. Below 231 sounds at once nothing
+  extra off Sunrise does exactly that. Below 231 sounds at once nothing
   changes either way. Streaming sounds (music, records) are untouched
   (`sound_engine.rs`, `listener_reserve`). Client-only.
 
@@ -204,7 +204,7 @@ and the container screen tests are unchanged).
 
 ### Splitscreen (`splitscreen`, default off)
 
-**Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
+**Options → Sunrise Settings... → Splitscreen...** turns local joining on or off at once.
 In P1's single-player world, a controller P1 isn't using can press a button, then A to join
 (or Y to play as P1, while P1 has no controller). Each
 player picks an instance-local profile with its own options and saved progress. LB/RB on
@@ -220,7 +220,7 @@ connect with their own sessions, skins and secure-chat keys. An account whose se
 unavailable appears as **(Offline)**: sign in again in the launcher and restart the game to
 use it on an online-mode server. Launcher accounts cannot be forgotten from this page.
 
-`HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
+`SUNRISE_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
 The Setup map previews the monitors, windows and player views. Click a player (its name turns
 yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
 window's players, or a monitor; then **Apply** to move the actual views. **Revert** and
@@ -240,7 +240,7 @@ it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (
 has a controller in a world) frees P1's controller and offers it to join, for a friend to
 press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. A player
 whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
-say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+say **Leave** for disconnecting. `SUNRISE_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
 On a server P1 joined on this computer or its local network (a dedicated server, another
 computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the
@@ -267,7 +267,7 @@ of P1: the others follow P1's answer.
 - **On/Off** at the right of a row takes a track out of every pool it plays in, so
   a situation with all its tracks off plays nothing. Every track is on by default,
   so vanilla's random selection is unchanged; the off ones are `musicOff` in
-  `horizon-extras.txt`.
+  `sunrise-extras.txt`.
 - The pools are filtered where they are picked (`sound_except` in
   `sound_events.rs`), the manager is `music.rs`, and the page is in `options_ui.rs`.
 
@@ -275,7 +275,7 @@ of P1: the others follow P1's answer.
 - NeoForge's client setting of the same name, with no Extras page entry. On, a
   resource pack or a mod that provides `minecraft:texts/splashes.txt` replaces
   the title screen's whole splash pool; off, every namespace's
-  `texts/splashes.txt` joins it (`crates/horizon-client/src/splashes.rs`). Read
+  `texts/splashes.txt` joins it (`crates/sunrise-client/src/splashes.rs`). Read
   on each resource reload.
 
 ## Shared rules

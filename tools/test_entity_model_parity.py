@@ -4,16 +4,16 @@
 The Java oracle bakes each vanilla model layer, builds the model's own render
 state class with the generated walk/age/head/attack inputs (plus per-species
 state fields), runs the real `setupAnim` and writes every part's pose.
-`examples/probe/entity_anim_fixture` replays the same inputs through Horizon's
+`examples/probe/entity_anim_fixture` replays the same inputs through Sunrise's
 `mobs::anim::setup` and the loaded model tree; the two must agree on every part
 pose and on the baked polygon count and vertex sums.
 
 Both sides then draw the posed model under LivingEntityRenderer's root transform
 (vanilla: ModelPart.render's PoseStack walk and Cube.compile into a capturing
-VertexConsumer; Horizon: `mobs::render::draw`) and compare every vertex's normal
+VertexConsumer; Sunrise: `mobs::render::draw`) and compare every vertex's normal
 as the signed bytes each puts in its vertex buffer: vanilla's BufferBuilder.setNormal
 truncates clamp(c) * 127 toward zero (normalIntValue) for the entity format's byte
-normal, Horizon packs its RGBA8_SNORM `Vertex.normal` the same way. A one-step
+normal, Sunrise packs its RGBA8_SNORM `Vertex.normal` the same way. A one-step
 difference is accepted only where vanilla's float lies within --normal-edge of a
 truncation step (float rounding); any other difference fails. A checksum of each
 drawn part's posed positions is compared too.
@@ -125,7 +125,7 @@ PART_SCALES = [[-1.0, -1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, -1.0, 1.0], [-0.75, 1
 
 
 def scaled_part(model):
-    """A part with cubes, preferably with children, whose name is unique in the tree (Horizon's
+    """A part with cubes, preferably with children, whose name is unique in the tree (Sunrise's
     poses are keyed by name)."""
     names, found = {}, []
     def walk(name, node, depth):
@@ -297,18 +297,18 @@ def species_cases(layer, base_cases):
 
 def compare_vertices(v, r, args, stats):
     """The posed model's per-vertex normals, as the signed bytes both clients put in the vertex
-    buffer (BufferBuilder.setNormal's normalIntValue; Horizon's RGBA8_SNORM `Vertex.normal`), and
+    buffer (BufferBuilder.setNormal's normalIntValue; Sunrise's RGBA8_SNORM `Vertex.normal`), and
     a checksum of each drawn part's posed positions."""
     bad = []
     vanilla, rust = v.get('vertices', {}), r.get('vertices', {})
     for path, ve in vanilla.items():
         ru = rust.get(path)
         if ru is None:
-            # Horizon does not draw a part scaled to zero: vanilla's vertices all collapse there.
+            # Sunrise does not draw a part scaled to zero: vanilla's vertices all collapse there.
             if ve['d']:
                 stats['degenerate'] += len(ve['n']) // 3
             else:
-                bad.append((path, 'drawn by vanilla, not by Horizon'))
+                bad.append((path, 'drawn by vanilla, not by Sunrise'))
             continue
         if len(ve['n']) != len(ru['n']):
             bad.append((path, f'{len(ve["n"]) // 3} vertices != {len(ru["n"]) // 3}'))
@@ -341,7 +341,7 @@ def compare_vertices(v, r, args, stats):
             bad.append((path, f'posed position sum {ve["p"]!r} != {ru["p"]!r}'))
     for path in rust:
         if path not in vanilla:
-            bad.append((path, 'drawn by Horizon, not by vanilla'))
+            bad.append((path, 'drawn by Sunrise, not by vanilla'))
     return bad
 
 
@@ -371,7 +371,7 @@ def main():
             lines.append(f'{layer} {cls}|{json.dumps(case)}')
     inputs = build / 'inputs.txt'; inputs.write_text('\n'.join(lines) + '\n')
     classes = build / 'classes'; classes.mkdir(exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEntityAnimOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEntityAnimOracle.java'
     dependencies = os.pathsep.join(map(str, [jars['client'], *libraries]))
     def run(command, name):
         with (build / (name + '.log')).open('w') as log:
@@ -379,9 +379,9 @@ def main():
         if result.returncode:
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', dependencies, '-d', classes, oracle], 'compile-java')
-    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaEntityAnimOracle',
+    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaEntityAnimOracle',
          inputs, build / 'vanilla.jsonl', jars['client']], 'vanilla')
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'entity_anim_fixture', resources, build / 'vanilla.jsonl', build / 'rust.jsonl'], 'rust')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]
@@ -403,7 +403,7 @@ def main():
         for path, expected in v['parts'].items():
             got = r['parts'].get(path)
             if got is None:
-                bad.append((path, 'missing in Horizon')); continue
+                bad.append((path, 'missing in Sunrise')); continue
             names = ['x', 'y', 'z', 'xRot', 'yRot', 'zRot', 'xScale', 'yScale', 'zScale', 'visible', 'polys', 'vsum']
             for i, (a, b) in enumerate(zip(expected, got)):
                 if i == 11 and abs(a - b) <= 1e-3 * max(1, abs(a)):
@@ -417,7 +417,7 @@ def main():
                     bad.append((path, f'{names[i]} {a!r} != {b!r}'))
         for path in r['parts']:
             if path not in v['parts']:
-                bad.append((path, 'extra in Horizon'))
+                bad.append((path, 'extra in Sunrise'))
         bad += compare_vertices(v, r, args, stats)
         if bad:
             mismatched.setdefault(layer, []).append((v['case'], bad))
@@ -429,7 +429,7 @@ def main():
     if errors:
         print('oracle errors:'); [print(' ', k, v) for k, v in sorted(errors.items())]
     if skipped:
-        print('layers without a Horizon species:', ', '.join(sorted(skipped)))
+        print('layers without a Sunrise species:', ', '.join(sorted(skipped)))
     for layer, items in sorted(mismatched.items()):
         parts = {}
         for case, bad in items:

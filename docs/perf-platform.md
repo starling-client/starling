@@ -1,4 +1,4 @@
-# Spec P: one performance platform: the `.hzperf` capture, the `horizon-perf` dev tool, and the web UI
+# Spec P: one performance platform: the `.hzperf` capture, the `sunrise-perf` dev tool, and the web UI
 
 The design behind #15304. The contract, meaning the `.proto` schema and the fixtures, changes through review like
 any other code (no CODEOWNERS).
@@ -12,8 +12,8 @@ questions about it. The web UI draws what that tool computes. Nothing new reads 
 
 Audiences, all from day one:
 
-- **AI agents**: `horizon-perf summary` (1,500 tokens) and `horizon-perf query`, from the CLI or `horizon-perf mcp`.
-- **Server owners**: `horizon-report` writes a file; they drag it into the web UI (§7).
+- **AI agents**: `sunrise-perf summary` (1,500 tokens) and `sunrise-perf query`, from the CLI or `sunrise-perf mcp`.
+- **Server owners**: `sunrise-report` writes a file; they drag it into the web UI (§7).
 - **Developers**: the same CLI, `diff` with statistics, and the web UI's tree, flame graph and compare mode.
 
 Line numbers are on `origin/main` = `1d63e0a5a3` unless a branch is named (`branch:path:line`). Vanilla citations are
@@ -25,40 +25,40 @@ in `.local/minecraft/26.3/sources/server/`.
 
 | Tool | What it is | Fate |
 |---|---|---|
-| `horizon-report [SECONDS\|stop\|status]` (dedicated console) and `horizon-server report` | `crates/horizon-client/src/game/dedicated/report.rs`; console parse `game/dedicated.rs:1651-1687`; recorder fed each tick `dedicated.rs:1343-1356`; max 600 s (`report.rs:23`). Writes `reports/perf-<time>.json` (`"format": 2`, keys `report.rs:370-393`) and a 9-line `.txt` (`report.rs:414-533`) in the server folder. `horizon-server report` POSTs the console line and polls `reports/` (`crates/horizon-server/src/cli.rs:289-347`). Nothing in `tools/` or CI reads `perf-*.json`. | **Folds.** The command names stay; the output becomes one `.hzperf` (§3). Ticks go to `health` and `span_blocks`; `spans`, `worst_ticks` and `chunk_workers` go to `spans` and `workers`; `mob_costs` and `levels` go to `world`; `network` goes to `net`; `machine`, `config` and `process` go to `Start`; `overhead` goes to `Stop.overhead`. The `.txt` is gone: `horizon-server report` prints a few lines from the capture (`horizon_perf_format::server_brief`: TPS, MSPT, CPU, memory, players, heaviest tick phases) and the file's path, and `horizon-perf summary` is the full text form. |
+| `sunrise-report [SECONDS\|stop\|status]` (dedicated console) and `sunrise-server report` | `crates/sunrise-client/src/game/dedicated/report.rs`; console parse `game/dedicated.rs:1651-1687`; recorder fed each tick `dedicated.rs:1343-1356`; max 600 s (`report.rs:23`). Writes `reports/perf-<time>.json` (`"format": 2`, keys `report.rs:370-393`) and a 9-line `.txt` (`report.rs:414-533`) in the server folder. `sunrise-server report` POSTs the console line and polls `reports/` (`crates/sunrise-server/src/cli.rs:289-347`). Nothing in `tools/` or CI reads `perf-*.json`. | **Folds.** The command names stay; the output becomes one `.hzperf` (§3). Ticks go to `health` and `span_blocks`; `spans`, `worst_ticks` and `chunk_workers` go to `spans` and `workers`; `mob_costs` and `levels` go to `world`; `network` goes to `net`; `machine`, `config` and `process` go to `Start`; `overhead` goes to `Stop.overhead`. The `.txt` is gone: `sunrise-server report` prints a few lines from the capture (`sunrise_perf_format::server_brief`: TPS, MSPT, CPU, memory, players, heaviest tick phases) and the file's path, and `sunrise-perf summary` is the full text form. |
 | `tick_profile.rs` | Mob cost by type, 1 tick in `SAMPLE_EVERY = 4` (`game/tick_profile.rs:16`); span users bitmask `SPANS_SPIKES/REPORT/MOD` (`:38-51`). | **Stays as a producer** of `world.entity_costs`. Its span-user switch gains `SPANS_CAPTURE`. |
-| `HORIZON_SPIKES=MS` slow-frame / slow-tick lines | `crates/horizon-client-render/src/spans.rs`; frame line `game.rs:20055-20058`, tick line `game/levels.rs:631-640`; dedicated default 250 ms (`dedicated.rs:673-676`). Parsed by `tools/pacing_bench.py:103` and by the ad-hoc scripts. | **Leaves the log entirely.** Slow ticks and frames go into the in-memory slow ring, which every capture carries (`slow`, §3). The env var stays as the ring's threshold. Vanilla's "Can't keep up!" warning is untouched (`dedicated.rs:316`, rate limit `:678`; vanilla `MinecraftServer.java:723`). |
-| `HORIZON_TRACE=FILE`, `horizon-ctl trace`, console `horizon-trace` | Chrome-trace JSON writer `spans.rs:303-454`, streamed with a 256 KiB buffer, global mutex per span while on; ctl row `commands.rs:587` (`mcp: false`); console max 300 s (`report.rs:563`). | **Folds.** The span timeline becomes `timeline` chunks of a capture, and Perfetto JSON becomes `horizon-perf export --perfetto`. The three entry points stay as aliases that start a timeline-only capture. |
-| `HORIZON_STARTUP_TRACE=FILE` | JSON-lines startup steps, marks and counters (`spans.rs:456-641`); read by `tools/startup_trace.py`. | **Stays for now.** It runs before the game home and reports folder exist, and it streams line by line so a startup crash keeps what ran. It could fold in once `HORIZON_PROFILE` covers startup (later). |
-| `gpu-passes [on\|off]`, F3 pass timings, `HORIZON_SHADER_PACK_TIMING` | `PassTiming` in `gfx/pack_timing.rs` (64 passes, 15-frame medians, `:16-20`, `:273-283`); ctl `game/control.rs:454-462`, row `commands.rs:586`; F3 `game/debug_lines.rs:160-176`; log line `pack_timing.rs:264-267`; bench metrics `benchmark.rs:119-150`. | **The producer folds into `gpu`.** `gpu-passes` stays as the live switch (`benchmark.rs` sends it in-process), and F3 stays as a live overlay. The `HORIZON_SHADER_PACK_TIMING` log line is retired: `profile client start --gpu` records the same data. |
-| `crates/horizon-bench` (benchmark report v1) and `--benchmark SCENARIO` | `FORMAT = "horizon-benchmark-report"`, `VERSION = 1` (`crates/horizon-bench/src/lib.rs:18-19`); `Report` `:222-243`; telemetry upload via `for_upload` `:295-303`; written to `<game_dir>/benchmarks/`. Also written by the launcher (`launcher/src/perf.rs`) and re-implemented by `tools/perf_bench.py:137-138`. | **Stays as the share and upload format** (telemetry contract, 128 KiB cap, launcher). A capture's `bench` field embeds reports verbatim. `horizon-perf` also reads a bare `benchmarks/*.json`, so `diff` compares benchmark reports too. |
-| `tools/server_bench.py` | Load driver: MSPT from `/tick query`, RSS/CPU, chunks/s, bot counts; report kind `horizon-server-benchmark` (`:595-609`). Compares Horizon with vanilla and other servers, which cannot write `.hzperf`. | **Stays as the driver.** It gains a `--profile[=ARGS]` flag, which runs `horizon-report` for the measure window and adds its run record with `horizon-perf attach`. This replaces `perf/streaming-caps`' `--horizon-report` and `perf/sampler`'s `--console-at`. |
-| `tools/perf_bench.py`, `graphics_bench.py`, `pacing_bench.py`, `entity_occlusion_bench.py`, `bench.py` | Client and server drivers with their own JSON. | **Stay as drivers**, out of scope. `pacing_bench.py` stops parsing `slow frame` log lines and runs `horizon-perf query ticks --worst` on its capture (it needs each frame's span list). |
-| `horizon-telemetry` (opt-in) | `Perf` payload ≤ 4 KiB, 12 a day (`payload.rs:9-50`, `:212-237`); consent switches off by default (`consent.rs:1-40`); scrubber `scrub.rs:1-10`. | **Stays separate.** Consent, size caps and the upload path are a different contract. Telemetry never queues or uploads a `.hzperf`. |
-| `alloc-census` | Compile feature; tagged mimalloc wrapper (`crates/horizon-threads/src/heap_census.rs:182`); output only as `heap_by_tag_mb` in `horizon-ctl memory` (`game/memory.rs:168-170`). | **Producer.** Its snapshot goes into `memory` at capture start, every 10 s and at stop. |
-| `horizon-ctl memory`, `status`, `stats`, `bench`, `fly … raw` | Live control replies (`control.rs:529-689`, `commands.rs:344-597`). | **Stay** as live state for agents and the benchmark driver. Captures reuse their producers; `FrameStats` feeds `health`. |
-| Dedicated `server-status`, supervisor metrics, Prometheus | `game/dedicated/status.rs:132-173`; supervisor 1 Hz samples `crates/horizon-server/src/supervisor.rs:619-680`; `/api/v1/metrics/prometheus` (`api.rs:51-65`). | **Stay** for live external monitoring. `health` uses the same field names (`tps`, `mspt`, `rss`, `cpu`). Exporting counters there is a later PR (§3.6). |
+| `SUNRISE_SPIKES=MS` slow-frame / slow-tick lines | `crates/sunrise-client-render/src/spans.rs`; frame line `game.rs:20055-20058`, tick line `game/levels.rs:631-640`; dedicated default 250 ms (`dedicated.rs:673-676`). Parsed by `tools/pacing_bench.py:103` and by the ad-hoc scripts. | **Leaves the log entirely.** Slow ticks and frames go into the in-memory slow ring, which every capture carries (`slow`, §3). The env var stays as the ring's threshold. Vanilla's "Can't keep up!" warning is untouched (`dedicated.rs:316`, rate limit `:678`; vanilla `MinecraftServer.java:723`). |
+| `SUNRISE_TRACE=FILE`, `sunrise-ctl trace`, console `sunrise-trace` | Chrome-trace JSON writer `spans.rs:303-454`, streamed with a 256 KiB buffer, global mutex per span while on; ctl row `commands.rs:587` (`mcp: false`); console max 300 s (`report.rs:563`). | **Folds.** The span timeline becomes `timeline` chunks of a capture, and Perfetto JSON becomes `sunrise-perf export --perfetto`. The three entry points stay as aliases that start a timeline-only capture. |
+| `SUNRISE_STARTUP_TRACE=FILE` | JSON-lines startup steps, marks and counters (`spans.rs:456-641`); read by `tools/startup_trace.py`. | **Stays for now.** It runs before the game home and reports folder exist, and it streams line by line so a startup crash keeps what ran. It could fold in once `SUNRISE_PROFILE` covers startup (later). |
+| `gpu-passes [on\|off]`, F3 pass timings, `SUNRISE_SHADER_PACK_TIMING` | `PassTiming` in `gfx/pack_timing.rs` (64 passes, 15-frame medians, `:16-20`, `:273-283`); ctl `game/control.rs:454-462`, row `commands.rs:586`; F3 `game/debug_lines.rs:160-176`; log line `pack_timing.rs:264-267`; bench metrics `benchmark.rs:119-150`. | **The producer folds into `gpu`.** `gpu-passes` stays as the live switch (`benchmark.rs` sends it in-process), and F3 stays as a live overlay. The `SUNRISE_SHADER_PACK_TIMING` log line is retired: `profile client start --gpu` records the same data. |
+| `crates/sunrise-bench` (benchmark report v1) and `--benchmark SCENARIO` | `FORMAT = "sunrise-benchmark-report"`, `VERSION = 1` (`crates/sunrise-bench/src/lib.rs:18-19`); `Report` `:222-243`; telemetry upload via `for_upload` `:295-303`; written to `<game_dir>/benchmarks/`. Also written by the launcher (`launcher/src/perf.rs`) and re-implemented by `tools/perf_bench.py:137-138`. | **Stays as the share and upload format** (telemetry contract, 128 KiB cap, launcher). A capture's `bench` field embeds reports verbatim. `sunrise-perf` also reads a bare `benchmarks/*.json`, so `diff` compares benchmark reports too. |
+| `tools/server_bench.py` | Load driver: MSPT from `/tick query`, RSS/CPU, chunks/s, bot counts; report kind `sunrise-server-benchmark` (`:595-609`). Compares Sunrise with vanilla and other servers, which cannot write `.hzperf`. | **Stays as the driver.** It gains a `--profile[=ARGS]` flag, which runs `sunrise-report` for the measure window and adds its run record with `sunrise-perf attach`. This replaces `perf/streaming-caps`' `--sunrise-report` and `perf/sampler`'s `--console-at`. |
+| `tools/perf_bench.py`, `graphics_bench.py`, `pacing_bench.py`, `entity_occlusion_bench.py`, `bench.py` | Client and server drivers with their own JSON. | **Stay as drivers**, out of scope. `pacing_bench.py` stops parsing `slow frame` log lines and runs `sunrise-perf query ticks --worst` on its capture (it needs each frame's span list). |
+| `sunrise-telemetry` (opt-in) | `Perf` payload ≤ 4 KiB, 12 a day (`payload.rs:9-50`, `:212-237`); consent switches off by default (`consent.rs:1-40`); scrubber `scrub.rs:1-10`. | **Stays separate.** Consent, size caps and the upload path are a different contract. Telemetry never queues or uploads a `.hzperf`. |
+| `alloc-census` | Compile feature; tagged mimalloc wrapper (`crates/sunrise-threads/src/heap_census.rs:182`); output only as `heap_by_tag_mb` in `sunrise-ctl memory` (`game/memory.rs:168-170`). | **Producer.** Its snapshot goes into `memory` at capture start, every 10 s and at stop. |
+| `sunrise-ctl memory`, `status`, `stats`, `bench`, `fly … raw` | Live control replies (`control.rs:529-689`, `commands.rs:344-597`). | **Stay** as live state for agents and the benchmark driver. Captures reuse their producers; `FrameStats` feeds `health`. |
+| Dedicated `server-status`, supervisor metrics, Prometheus | `game/dedicated/status.rs:132-173`; supervisor 1 Hz samples `crates/sunrise-server/src/supervisor.rs:619-680`; `/api/v1/metrics/prometheus` (`api.rs:51-65`). | **Stay** for live external monitoring. `health` uses the same field names (`tps`, `mspt`, `rss`, `cpu`). Exporting counters there is a later PR (§3.6). |
 | `/debug start\|stop`, `/jfr`, `/perf` | Vanilla commands (`game/commands/extra.rs:1006-1163`); `/perf` is listed but has no executor. | **Stay.** They are vanilla parity, not this platform; `/perf` is a separate parity item. Remote profiling borrows its permission level (§4.2). |
 | F3+2/F3+3 charts, performance overlay | `debug_chart.rs`, `perf_overlay.rs`. | **Stay** (live UI). |
 | `render-capture` / `scene_replay` | Input fixture: mesh state + camera, hundreds of MB to 1.45 GB, built from Mojang assets (spec B). | **Stays separate.** A scene capture is a renderer input, not a measurement. `scene_replay --json` results can be stored as a `bench` entry referencing the scene by `corpus_id`. |
-| `HORIZON_SPLIT_STATS`, `HORIZON_OCCLUSION_PROFILE` | Subsystem log lines every few seconds (`game/split/frames.rs:1-10`, `game/occlusion_culling.rs:856`). | **Fold when next touched**, as counters (§3.6). Nothing reads them yet. |
+| `SUNRISE_SPLIT_STATS`, `SUNRISE_OCCLUSION_PROFILE` | Subsystem log lines every few seconds (`game/split/frames.rs:1-10`, `game/occlusion_culling.rs:856`). | **Fold when next touched**, as counters (§3.6). Nothing reads them yet. |
 | `examples/*_bench.rs`, `*_profile.rs` | Microbenchmarks. | **Stay**, out of scope. |
 
 ### On local branches (not on main)
 
 | Branch | What it adds | Fate |
 |---|---|---|
-| `perf/sampler-core` ⊂ `-stackcopy` ⊂ `-report` ⊂ `perf/sampler` ⊂ `perf/sampler-viewer` (= `perf/sampler-tree`, same tree `d5dc833c75`); `perf/sampler-context` is an outdated sibling | SIGPROF/SIGRTMIN per-thread timers, rings, `.eh_frame` stack copies (`perf/sampler-viewer:crates/horizon-threads/src/sampler/linux.rs:39-77`, `sampler.rs:421-485`); context stores `horizon_threads::work` (`work.rs:117-180`); bounded trie aggregation (`profile/agg.rs:8-37`); in-process symbolization; writer emitting `profile-*.html` + `.pb.gz` + `.folded` (`profile/write.rs:29-105`), with `viewer.js` inlined into every HTML (`profile/viewer.rs:10`, `:209-212`); `horizon-report --profile`, `horizon-ctl profile`, F3+O, `HORIZON_PROFILE=DIR` (`crates/horizon-client/src/profiling.rs:104-308`). | **The producer lands; the outputs fold.** Sampler, stack copies, context stores, aggregation, symbolization and the commands land as spec H plans them. `html.rs`, `viewer.rs`, `viewer.js` and the folded writer do not land: the `samples` field replaces them, the web UI (§7) replaces the HTML, and `horizon-perf export` (§6.4) replaces the pprof and folded writers. **`perf/sampler-viewer` is not opened as is.** Its tree logic informs the web UI. |
-| `perf/alloc-count` | Per-thread alloc counters (`crates/horizon-threads/src/alloc_count.rs:35-171`) in `stats`/`bench` replies; `docs/memory.md`. | **The producer lands.** The counters become `health` fields (`allocs_per_s`, `alloc_mib_per_s`). `docs/memory.md` gains a capture section. Its conflict with `perf/sampler`'s 5-line `docs/memory.md` is resolved by keeping alloc-count's version. |
-| `perf/bench-ab-statistics-impl` (A PR 1) | Hodges–Lehmann + exact Wilcoxon signed-rank CI (`crates/horizon-bench/src/compare.rs:54-109`), verdicts, `Report.ab`; Python twin `tools/bench_stats.py`. | **Lands without `tools/bench_stats.py`.** The paired statistic stays in `horizon-bench`: the game computes `Report.ab` and the launcher shows it, so it must ship, and `horizon-perf` is not shipped. `horizon-perf` reads `Report.ab`; it does not recompute it (§6.6). The Python vectors become Rust tests in `horizon-bench`. |
-| `perf/bench-travel` (= `perf/bench-ab`) | `--benchmark travel`, `--benchmark-set` (`perf/bench-travel:crates/horizon-client/src/benchmark.rs:58-140`, `:476-518`). | **Lands as is.** It is a scenario, so a producer. `--benchmark … --profile` records the run as a capture. |
-| `perf/capture-format-v1`, `-packed`, `-journal` (= `perf/scene-corpus`) | Scene capture v1 (directory, `format`/`version` with `MAX_MAJOR`, `perf/capture-journal:crates/horizon-client-render/src/gfx/capture.rs:765-779`), journal `HZJ1`. | **Stays separate** (input fixture). |
-| `perf/gpu-pass-detail`, `-counters`, `-detail-output` (C PRs 1-3) | Dispatch parts, pipeline statistics, `gpu_pass_parts`/`gpu_counters` in stats JSON (`perf/gpu-pass-detail-output:crates/horizon-client-render/src/gfx/pack_timing.rs:852`), F3 lines, `HORIZON_GPU_PASS_DETAIL`. | **The producer lands.** Captures record the same data into `gpu`. `HORIZON_GPU_PASS_DETAIL` becomes an alias of `profile client start --gpu=detail`. |
-| `perf/streaming-caps` `212d478830` (S3-0) | Streaming `updates` and caps in `perf-*.json` (`perf/streaming-caps:crates/horizon-client/src/game/dedicated/report.rs:216-225`), `server_bench.py --horizon-report` (`:412-422`, `:477-478`). | **Absorbed.** `job_stats::take_updates()` (`streaming.rs:39-66`) feeds counters (`streaming.updates`, `streaming.cap{kind=decoration\|generation\|light}`). The bots-stderr fix lands alone; `--horizon-report` becomes `--profile`. |
-| `perf/hitch-fixes` | `culprit_with_wait`, `off-CPU` in the slow-frame line (`perf/hitch-fixes:crates/horizon-client-render/src/spans.rs:228-269`). | **Lands into the slow ring, not the log.** `slow` keeps `cpu_ms` per slow frame, so "waited" is a query (`spans --slow` reports `waited_ms`). |
-| `perf/tick-proof-tools` | Tick digest (`HORIZON_TICK_DIGEST`). | **Stays separate:** it is a determinism proof, not a timing tool. |
+| `perf/sampler-core` ⊂ `-stackcopy` ⊂ `-report` ⊂ `perf/sampler` ⊂ `perf/sampler-viewer` (= `perf/sampler-tree`, same tree `d5dc833c75`); `perf/sampler-context` is an outdated sibling | SIGPROF/SIGRTMIN per-thread timers, rings, `.eh_frame` stack copies (`perf/sampler-viewer:crates/sunrise-threads/src/sampler/linux.rs:39-77`, `sampler.rs:421-485`); context stores `sunrise_threads::work` (`work.rs:117-180`); bounded trie aggregation (`profile/agg.rs:8-37`); in-process symbolization; writer emitting `profile-*.html` + `.pb.gz` + `.folded` (`profile/write.rs:29-105`), with `viewer.js` inlined into every HTML (`profile/viewer.rs:10`, `:209-212`); `sunrise-report --profile`, `sunrise-ctl profile`, F3+O, `SUNRISE_PROFILE=DIR` (`crates/sunrise-client/src/profiling.rs:104-308`). | **The producer lands; the outputs fold.** Sampler, stack copies, context stores, aggregation, symbolization and the commands land as spec H plans them. `html.rs`, `viewer.rs`, `viewer.js` and the folded writer do not land: the `samples` field replaces them, the web UI (§7) replaces the HTML, and `sunrise-perf export` (§6.4) replaces the pprof and folded writers. **`perf/sampler-viewer` is not opened as is.** Its tree logic informs the web UI. |
+| `perf/alloc-count` | Per-thread alloc counters (`crates/sunrise-threads/src/alloc_count.rs:35-171`) in `stats`/`bench` replies; `docs/memory.md`. | **The producer lands.** The counters become `health` fields (`allocs_per_s`, `alloc_mib_per_s`). `docs/memory.md` gains a capture section. Its conflict with `perf/sampler`'s 5-line `docs/memory.md` is resolved by keeping alloc-count's version. |
+| `perf/bench-ab-statistics-impl` (A PR 1) | Hodges–Lehmann + exact Wilcoxon signed-rank CI (`crates/sunrise-bench/src/compare.rs:54-109`), verdicts, `Report.ab`; Python twin `tools/bench_stats.py`. | **Lands without `tools/bench_stats.py`.** The paired statistic stays in `sunrise-bench`: the game computes `Report.ab` and the launcher shows it, so it must ship, and `sunrise-perf` is not shipped. `sunrise-perf` reads `Report.ab`; it does not recompute it (§6.6). The Python vectors become Rust tests in `sunrise-bench`. |
+| `perf/bench-travel` (= `perf/bench-ab`) | `--benchmark travel`, `--benchmark-set` (`perf/bench-travel:crates/sunrise-client/src/benchmark.rs:58-140`, `:476-518`). | **Lands as is.** It is a scenario, so a producer. `--benchmark … --profile` records the run as a capture. |
+| `perf/capture-format-v1`, `-packed`, `-journal` (= `perf/scene-corpus`) | Scene capture v1 (directory, `format`/`version` with `MAX_MAJOR`, `perf/capture-journal:crates/sunrise-client-render/src/gfx/capture.rs:765-779`), journal `HZJ1`. | **Stays separate** (input fixture). |
+| `perf/gpu-pass-detail`, `-counters`, `-detail-output` (C PRs 1-3) | Dispatch parts, pipeline statistics, `gpu_pass_parts`/`gpu_counters` in stats JSON (`perf/gpu-pass-detail-output:crates/sunrise-client-render/src/gfx/pack_timing.rs:852`), F3 lines, `SUNRISE_GPU_PASS_DETAIL`. | **The producer lands.** Captures record the same data into `gpu`. `SUNRISE_GPU_PASS_DETAIL` becomes an alias of `profile client start --gpu=detail`. |
+| `perf/streaming-caps` `212d478830` (S3-0) | Streaming `updates` and caps in `perf-*.json` (`perf/streaming-caps:crates/sunrise-client/src/game/dedicated/report.rs:216-225`), `server_bench.py --sunrise-report` (`:412-422`, `:477-478`). | **Absorbed.** `job_stats::take_updates()` (`streaming.rs:39-66`) feeds counters (`streaming.updates`, `streaming.cap{kind=decoration\|generation\|light}`). The bots-stderr fix lands alone; `--sunrise-report` becomes `--profile`. |
+| `perf/hitch-fixes` | `culprit_with_wait`, `off-CPU` in the slow-frame line (`perf/hitch-fixes:crates/sunrise-client-render/src/spans.rs:228-269`). | **Lands into the slow ring, not the log.** `slow` keeps `cpu_ms` per slow frame, so "waited" is a query (`spans --slow` reports `waited_ms`). |
+| `perf/tick-proof-tools` | Tick digest (`SUNRISE_TICK_DIGEST`). | **Stays separate:** it is a determinism proof, not a timing tool. |
 
-### Ad-hoc scripts from the perf work → `horizon-perf query`
+### Ad-hoc scripts from the perf work → `sunrise-perf query`
 
 These scripts are the requirements for §6. A query answers each of them, so none is needed again.
 
@@ -66,7 +66,7 @@ These scripts are the requirements for §6. A query answers each of them, so non
 |---|---|---|
 | `slowticks.py` | Per span over slow-tick log lines: wall, cpu, waited ms per tick | `query spans --slow` |
 | `spikes.py` | Per span over slow frames: total, frame count, worst | `query spans --slow --side client --thread render` |
-| `inclusive.py` | Inclusive % per function from folded stacks, filtered by substring | `query hot --by total --match horizon` |
+| `inclusive.py` | Inclusive % per function from folded stacks, filtered by substring | `query hot --by total --match sunrise` |
 | `s1_breakdown.py` | Inclusive share and ms/tick for ~40 regex-named frames | `query frames '/tick_lan$/' '/Hub>::tick_level$/' …` |
 | `s1_children.py` | Children of the innermost `FUNC` frame, merged, as % and ms/tick | `query callees f:… --depth 1` |
 | `s1_table.py`, `s3_table.py` | Same key frames across several runs, one column each | `query frames NAMES A.hzperf B.hzperf C.hzperf` (one column per capture) |
@@ -76,32 +76,32 @@ These scripts are the requirements for §6. A query answers each of them, so non
 | `s3_windows.py` | Slow-tick spans per 30 s window, with bot count | `query series span:tick_lan span:streaming h:players --every 30` |
 | `h5_top.py` | Scraped tables out of the generated HTML | Obsolete: there is no HTML; `query hot` |
 | `h5_perf_top.py` | Top self symbols from `perf script` | `query hot --by self` (the sampler matched `perf` on 8 of the top 10) |
-| `*_profile.sh`, `*_fold.sh` | `perf record` + `inferno-collapse-perf` | `horizon-report 60` / `horizon-ctl profile start`; `horizon-perf export --folded` if a folded file is still wanted |
+| `*_profile.sh`, `*_fold.sh` | `perf record` + `inferno-collapse-perf` | `sunrise-report 60` / `sunrise-ctl profile start`; `sunrise-perf export --folded` if a folded file is still wanted |
 
 ## 2. Architecture
 
 Two crates. The game ships the small one; everything that reads a capture lives in the dev-only one.
 
 ```
- producers                                                    shipped: horizon-perf-format
- horizon-threads: sampler, work contexts, aggregation, symbols ─┐  ┌─ generated types (Capture, …)
- horizon-client-render: spans, FrameStats, PassTiming, streaming─┼─►│  gzip writer + writer thread
+ producers                                                    shipped: sunrise-perf-format
+ sunrise-threads: sampler, work contexts, aggregation, symbols ─┐  ┌─ generated types (Capture, …)
+ sunrise-client-render: spans, FrameStats, PassTiming, streaming─┼─►│  gzip writer + writer thread
  game: tick_profile, lan hub bytes, levels, memory              ─┘  └─ health recorder, counter registry
                                                                          │
                                                        reports/profile-*.hzperf
                                                                          │
-                                         dev-only, never shipped: horizon-perf (lib + bin)
+                                         dev-only, never shipped: sunrise-perf (lib + bin)
                                          reader · follow reader · query · stats · summary · ids · diff · export
                                               │                    │                     │
-                                       CLI subcommands      horizon-perf mcp     wasm32 build ──► web UI
-                                                                                                 (horizon-site)
+                                       CLI subcommands      sunrise-perf mcp     wasm32 build ──► web UI
+                                                                                                 (sunrise-site)
 ```
 
-### 2.1 `crates/horizon-perf-format` (shipped)
+### 2.1 `crates/sunrise-perf-format` (shipped)
 
 It holds exactly three things:
 
-- **The generated types.** It holds the `.proto` files under `proto/horizon/perf/v1/` and a `build.rs` that compiles
+- **The generated types.** It holds the `.proto` files under `proto/sunrise/perf/v1/` and a `build.rs` that compiles
   them with `protox` (a pure-Rust `.proto` compiler, so neither volunteers nor CI install `protoc`). `prost-build`'s
   `compile_fds` turns the descriptor set into Rust types. The runtime dependency is `prost`.
 - **The gzip writer.** It sits on `flate2` (pure-Rust backends only: `miniz_oxide` in standalone and wasm builds; in
@@ -111,46 +111,46 @@ It holds exactly three things:
 - **The in-memory health recorder and the counter registry** (§3.6), as pure data structures fed by the game.
 
 One recorded exception: `files` (capture file names, retention, the saved line, `is_complete`) lives here because
-`horizon-server` and the game both need it and the server cannot depend on `horizon-client` (§11, J).
+`sunrise-server` and the game both need it and the server cannot depend on `sunrise-client` (§11, J).
 
 Nothing else goes in: no reader, no query, no statistics, no JSON, no serde. It builds for `wasm32-unknown-unknown`, so
-`horizon-perf` and the web UI share its types. No size budget is set for now. If the crate grows, compile features
+`sunrise-perf` and the web UI share its types. No size budget is set for now. If the crate grows, compile features
 can gate parts of it later.
 
 New dependencies: `prost` (runtime), `protox` and `prost-build` (build only). None of them is in `Cargo.lock` on
 `1d63e0a5a3`.
 
-### 2.2 `crates/horizon-perf` (dev-only)
+### 2.2 `crates/sunrise-perf` (dev-only)
 
 It is a workspace member with `publish = false`, and no release workflow packages it. It is one library and one
-binary, `horizon-perf`. Modules: `read` (whole-file reader), `follow` (incremental reader), `ids` (§5.2), `query` (§6),
+binary, `sunrise-perf`. Modules: `read` (whole-file reader), `follow` (incremental reader), `ids` (§5.2), `query` (§6),
 `stats` (§6.6), `summary` (§5), `export` (pprof, folded, Perfetto), `attach`, `cli`, `mcp` (§8), `wasm` (C-ABI exports
 for the web UI, behind feature `wasm`).
 
-Dependencies: `horizon-perf-format`, `prost`, `flate2`, `serde_json` (query replies are JSON for agents; this is
+Dependencies: `sunrise-perf-format`, `prost`, `flate2`, `serde_json` (query replies are JSON for agents; this is
 not an export of the capture). It depends on no other internal crate. The library builds for `wasm32-unknown-unknown`,
 so it uses no `libc`, no threads, no clock and no file system outside `cli` and `mcp`.
 
-Benchmark reports are read through a small mirror struct of the fields `horizon-perf` queries, rather than by
-depending on `horizon-bench`. That crate pulls in `horizon-telemetry` (hardware probes, `getrandom`), which is not
-known to build for wasm32. A dev-dependency test checks that a report written by `horizon-bench` parses.
+Benchmark reports are read through a small mirror struct of the fields `sunrise-perf` queries, rather than by
+depending on `sunrise-bench`. That crate pulls in `sunrise-telemetry` (hardware probes, `getrandom`), which is not
+known to build for wasm32. A dev-dependency test checks that a report written by `sunrise-bench` parses.
 
 ### 2.3 Dependency direction
 
 | Crate | Depends on | Notes |
 |---|---|---|
-| `horizon-perf-format` | `prost`, `flate2` (pure-Rust backends); build: `protox`, `prost-build` | no internal crates |
-| `horizon-client-render` | `horizon-perf-format` | converts `horizon_threads` aggregates, spans and `PassTiming` into messages (`perf_capture.rs`) |
-| `horizon-client-lib`, `horizon-client` (game, dedicated server) | `horizon-perf-format` | triggers, the writer, the remote channel (§4.2) |
-| `horizon-threads` | nothing new | stays free of internal dependencies; it keeps producing its in-memory `Profile` |
-| `horizon-perf` | `horizon-perf-format` | never a dependency of anything shipped |
-| web UI (`horizon-rust/horizon-site`) | `horizon_perf.wasm`, a build artifact of this repo | draws only |
+| `sunrise-perf-format` | `prost`, `flate2` (pure-Rust backends); build: `protox`, `prost-build` | no internal crates |
+| `sunrise-client-render` | `sunrise-perf-format` | converts `sunrise_threads` aggregates, spans and `PassTiming` into messages (`perf_capture.rs`) |
+| `sunrise-client-lib`, `sunrise-client` (game, dedicated server) | `sunrise-perf-format` | triggers, the writer, the remote channel (§4.2) |
+| `sunrise-threads` | nothing new | stays free of internal dependencies; it keeps producing its in-memory `Profile` |
+| `sunrise-perf` | `sunrise-perf-format` | never a dependency of anything shipped |
+| web UI (`horizon-rust/horizon-site`) | `sunrise_perf.wasm`, a build artifact of this repo | draws only |
 
-The conversion from `horizon_threads::Profile` to the `samples` message lives in horizon-client-render. It replaces
-`profile/viewer.rs`, which today builds the same columnar data inside horizon-threads
-(`perf/sampler-viewer:crates/horizon-threads/src/profile/viewer.rs:77-206`).
+The conversion from `sunrise_threads::Profile` to the `samples` message lives in sunrise-client-render. It replaces
+`profile/viewer.rs`, which today builds the same columnar data inside sunrise-threads
+(`perf/sampler-viewer:crates/sunrise-threads/src/profile/viewer.rs:77-206`).
 
-`horizon-ctl` and `horizon-server` gain no reading code. They trigger captures, and the game prints the written path
+`sunrise-ctl` and `sunrise-server` gain no reading code. They trigger captures, and the game prints the written path
 and the web UI's address.
 
 ## 3. The capture: `.hzperf`
@@ -159,7 +159,7 @@ and the web UI's address.
 
 A `.hzperf` file is one gzip stream (RFC 1952, a single member) whose inflated bytes are one protobuf `Capture`
 message. Sections are fields of `Capture`. There are no frames, no index and no per-section codecs. The format offers no
-partial reads and no crash recovery: a reader inflates the whole stream. Readers are our own tools (`horizon-perf` and
+partial reads and no crash recovery: a reader inflates the whole stream. Readers are our own tools (`sunrise-perf` and
 the web UI's wasm), never raw `protoc --decode`.
 
 Why protobuf (decision Q2): the schema is the contract, decoding is fast and uses little memory, and the timeline
@@ -181,25 +181,25 @@ These rules let a reader watch a capture grow while it is being written.
    `gpu`, `net`, `workers` and `bench`. `Stop` is each side's last field.
 4. **Every top-level field except `format` is repeated, and every message except the capture-wide `Attachment` carries its `side`.** Two sides' streams
    can then be concatenated without a singular field of one overwriting the other's (§4.2).
-5. **The follow reader** (`horizon_perf::follow`) inflates incrementally, buffers, and yields each top-level field once
+5. **The follow reader** (`sunrise_perf::follow`) inflates incrementally, buffers, and yields each top-level field once
    its last byte has arrived. A side is complete when its `Stop` has arrived. A file whose sides lack a `Stop` is a
    capture still being written, or one cut short by a crash. The whole-file reader refuses such a file with
    `this capture has no end for its server side: it is still being written or the game stopped` and never tries to
    salvage it.
 
-The file is written under its final name, so `horizon-perf follow` can open it while it grows. Retention (§3.7)
+The file is written under its final name, so `sunrise-perf follow` can open it while it grows. Retention (§3.7)
 counts only finished files.
 
 ### 3.3 Schema and versioning
 
-- **The contract** is `crates/horizon-perf-format/proto/horizon/perf/v1/*.proto`. A change to it, or to the fixtures,
+- **The contract** is `crates/sunrise-perf-format/proto/sunrise/perf/v1/*.proto`. A change to it, or to the fixtures,
   needs the contract owner's review.
 - **Field rules are protobuf's.** Never reuse a field number. Removed fields are listed under `reserved`, both
   numbers and names. A new field is a new number; old readers skip it. A field never changes type or meaning. A change
   that would need that is a new field.
 - **`Capture.format`** is `1`. It changes only if the live-follow rules themselves change. A reader refuses a larger
-  value with `this capture is format N; this horizon-perf reads up to M: update it`.
-- **Frozen fixture:** `crates/horizon-perf-format/tests/fixtures/v1.hzperf`, a few KB, written once by hand-built
+  value with `this capture is format N; this sunrise-perf reads up to M: update it`.
+- **Frozen fixture:** `crates/sunrise-perf-format/tests/fixtures/v1.hzperf`, a few KB, written once by hand-built
   messages and never regenerated. It must always decode, with the values the test lists. Every later schema version
   adds its own frozen fixture beside it.
 - **Unknown fields:** `prost` drops unknown fields when it decodes. So the tools that rewrite a capture (`attach`, the
@@ -217,7 +217,7 @@ counts only finished files.
 
 ### 3.4 Writing
 
-- One writer thread per process, named `horizon-perf-writer`, owns the file and the deflate state. Producers send
+- One writer thread per process, named `sunrise-perf-writer`, owns the file and the deflate state. Producers send
   finished messages through a bounded channel (4,096 messages). A full channel drops the message and increments
   `Stop.overhead.dropped_messages`. A tick or frame never waits on the writer.
 - Strings in live data are interned: the first use of a string by a side appends a `StringEntry` (`side`, `id`, `text`),
@@ -235,7 +235,7 @@ capture, **end** means written once per side at stop, before `Stop`.
 
 ```proto
 syntax = "proto3";
-package horizon.perf.v1;
+package sunrise.perf.v1;
 
 message Capture {
   uint32 format = 1;                       // start: 1; the only singular field
@@ -259,7 +259,7 @@ message Capture {
   repeated GpuPasses gpu = 19;             // end: clients only
   repeated NetTraffic net = 20;            // end: servers, and a client's own bytes
   repeated BenchResult bench = 21;         // end
-  repeated Attachment attachments = 22;    // end: added by drivers through horizon-perf attach
+  repeated Attachment attachments = 22;    // end: added by drivers through sunrise-perf attach
   repeated Stop stop = 23;                 // end: the side's last field
   repeated GpuFrames gpu_frames = 24;      // live: clients only, the timed frames, a block about every second
 }
@@ -280,7 +280,7 @@ message Start {
   Options options = 8;                     // hz, threads, ticks_over_ms, wall, timeline, gpu mode, samples on/off
   Settings settings = 9;                   // typed allowlist: view/simulation distance, max players, compression threshold
   GameRules game_rules = 10;               // typed allowlist
-  HorizonOptions horizon_options = 11;     // typed allowlist of Horizon switches, boolean or numeric
+  SunriseOptions sunrise_options = 11;     // typed allowlist of Sunrise switches, boolean or numeric
   repeated Mod mods = 12;                  // id, version, kind, crate
   bool same_process = 13;                  // the integrated server shares the client's OS process
   uint32 players = 14;
@@ -387,7 +387,7 @@ Notes on fields:
   only when canonical metadata supplies one.
 - `Stop.overhead`: `spans_ms_per_tick`, `spans_share`, `sampler_share_of_thread`, `writer_core_share`,
   `dropped_samples`, `dropped_messages`, `timeline_stopped_t`, `heap_samples`, `heap_sample_ns`.
-- `Start.settings`, `game_rules` and `horizon_options` are typed allowlists, never a dump of a file or of the
+- `Start.settings`, `game_rules` and `sunrise_options` are typed allowlists, never a dump of a file or of the
   environment (§4).
 - `Start.build.symbols` tells the summary why inlined frames merged.
 - Clients fill the `frame_*` fields and `fps`; servers fill `tps` and `mspt_*`. `cpu_*_cores` are in cores, not
@@ -401,7 +401,7 @@ Notes on fields:
   `Start.options.ticks_over_ms` is left unset. Nodes are unique per (parent, function): addresses of one function under one
   caller share a node. Time blocks are `block_s` long (1 s, at most 1800 of them: 30 minutes); the last block takes whatever follows it. A time range in a query selects every block it overlaps and the reply's `selection.from`/`to` say the blocks it used.
 - Sample queries as built (they read `samples`; `meta`'s `Sections.samples` counts it):
-  - Functions are merged by normalized name (`horizon_perf::names`), so every monomorphization and address of one function is one row; ids are `f:` over that name, `p:` over the thread and the normalized frames.
+  - Functions are merged by normalized name (`sunrise_perf::names`), so every monomorphization and address of one function is one row; ids are `f:` over that name, `p:` over the thread and the normalized frames.
   - Weights are `count × kind.period`; "per tick" divides by the thread's units in the selection (`block_units` over the window's blocks; slow units are scaled by the window's share, with a warning).
   - A function's inclusive time counts a recursion once (the outermost call). Percentages are shares of the selection's weight.
   - `callers` and `callees` rows are merged over occurrences and carry `f:` ids; `tree` rows carry `p:` ids where one call path explains them, else `f:`. `--depth` counts levels of children (`tree`) or of rows (`callers`, `callees`).
@@ -424,12 +424,12 @@ Notes on fields:
 - `GpuPasses` holds `PassTiming` medians, C's dispatch parts and counters, `parts_mode` and `fragment_unit` (as
   `perf/gpu-pass-detail-output:…/pack_timing.rs:852`), plus adapter, backend and driver. The per-frame GPU time is the
   `frame_gpu_ms_p50` health field.
-  - **As built:** one `GpuPasses` per timer (`source`: Horizon's own passes or the shader pack's), written at stop
+  - **As built:** one `GpuPasses` per timer (`source`: Sunrise's own passes or the shader pack's), written at stop
     from the medians over each timer's last 15 timed frames. A pass has `ms` (unset when only its parts or counters
     were seen), its `parts`, and `GpuCounter`s with the totals, the target's `pixels` and the segments. The device
     carries `fragment_unit` and `fragments_per_pixel` is derived when reading (`query gpu`), so the unit travels
     with the counts. `--gpu` without a device that times passes writes `WARNING_CODE_GPU_UNAVAILABLE` and no field.
-    `Options.gpu` records `--gpu` as asked. `HORIZON_SHADER_PACK_TIMING` and `HORIZON_GPU_PASS_DETAIL` start a capture
+    `Options.gpu` records `--gpu` as asked. `SUNRISE_SHADER_PACK_TIMING` and `SUNRISE_GPU_PASS_DETAIL` start a capture
     (`--gpu`, `--gpu=detail`) at launch; the renderer no longer reads them.
   - **Per frame:** every frame a timer times during a capture goes into `gpu_frames` (`GpuFrame`: its start on the
     capture clock, `total_ms` from its first timestamp to its last, each pass and part with a name's occurrences
@@ -442,7 +442,7 @@ Notes on fields:
     verdict; `query gpu_frames` lists the frames, flagging those inside a slow frame.
 - `Mark.name` is the only free text in a capture. It is typed by the person profiling (`profile mark NAME`).
   `Warning`s are codes with numbers, so tools render them in their own language.
-- `BenchResult.report_json` embeds a `horizon-benchmark-report` v1 verbatim (or `scene_replay --json`, with
+- `BenchResult.report_json` embeds a `sunrise-benchmark-report` v1 verbatim (or `scene_replay --json`, with
   `corpus_id`).
 - The span, world, net, memory and workers messages are spelled out in `capture.proto`. Their conventions:
   - String id 0 means none: a root span's `parent`, or an unset counter unit.
@@ -461,15 +461,15 @@ Notes on fields:
     because the hub does not count packets yet.
   - `world` has the labels `start` and `stop`; `entity_costs` and `workers` come at the stop. Loose entities are
     counted as `minecraft:item`, `minecraft:experience_orb`, `minecraft:minecart` and `minecraft:boat`, and all
-    projectiles together as `horizon:projectile`.
-  - `Start.game_rules` and `Start.horizon_options` are the allowlists in `capture.proto`; a field is added there
+    projectiles together as `sunrise:projectile`.
+  - `Start.game_rules` and `Start.sunrise_options` are the allowlists in `capture.proto`; a field is added there
     when a switch starts to matter for what a tick costs.
   - `TickDetail.spans` holds the tick's own spans only; the spans recorded between ticks (the chunk pump) are left out
     of `span_blocks`, `spans` and a slow tick's `top`, so span sums stay consistent with the tick's wall time.
-  - `HorizonOptions.max_view_distance` is 0 when the far ring was not created, even if `server.toml` sets a distance.
+  - `SunriseOptions.max_view_distance` is 0 when the far ring was not created, even if `server.toml` sets a distance.
   - `Overhead.mob_timing_ms_per_tick` and `mob_timing_share` price the mob tick sampling next to `spans_*`.
-  - `memory` snapshots are `horizon-ctl memory` flattened (`game/memory.rs`, described in `docs/memory.md`), at the start, every 10 s and at the stop. A dedicated server names its columns `columns` (single player keeps `client_columns` and `server_columns`) and adds `entities`, `players`, `chunk_send`, `light_queue`, `generation_queue` and `allocator`. Every side has `named_mb` and `unattributed_mb`: `unattributed_mb = process.resident_mb - named_mb`, where `named_mb` adds the byte totals of the columns (a section the window and its server thread both hold once), `server_generation`, `entities`, `players`, `chunk_send`, the two queues, `renderer.cpu` (client) and the far tiles' `kept_mb`. All are estimates from capacities, so a negative `unattributed_mb` means overlap.
-- `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
+  - `memory` snapshots are `sunrise-ctl memory` flattened (`game/memory.rs`, described in `docs/memory.md`), at the start, every 10 s and at the stop. A dedicated server names its columns `columns` (single player keeps `client_columns` and `server_columns`) and adds `entities`, `players`, `chunk_send`, `light_queue`, `generation_queue` and `allocator`. Every side has `named_mb` and `unattributed_mb`: `unattributed_mb = process.resident_mb - named_mb`, where `named_mb` adds the byte totals of the columns (a section the window and its server thread both hold once), `server_generation`, `entities`, `players`, `chunk_send`, the two queues, `renderer.cpu` (client) and the far tiles' `kept_mb`. All are estimates from capacities, so a negative `unattributed_mb` means overlap.
+- `sunrise-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
   prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
 
 ### 3.6 Health recorder and counter registry
@@ -480,26 +480,26 @@ Notes on fields:
   15 minutes and last night. After that, `health` gets one sample per second.
 - **No health file.** Nothing is written to disk unless a capture runs. If a rolling health file is ever added, it is
   off by default.
-- **The slow ring** keeps the last 256 ticks or frames over the `HORIZON_SPIKES` threshold (dedicated default 250 ms,
+- **The slow ring** keeps the last 256 ticks or frames over the `SUNRISE_SPIKES` threshold (dedicated default 250 ms,
   `dedicated.rs:673-676`), each with its top 8 spans. Captures copy it into `slow_history` at start and append new ones
   to `slow`.
-- **Counters:** `horizon_perf_format::counter("streaming.cap", &[("kind", "light")])` returns a handle; `add` and
+- **Counters:** `sunrise_perf_format::counter("streaming.cap", &[("kind", "light")])` returns a handle; `add` and
   `set` are relaxed atomics. Names are dotted. Labels are part of a counter's identity from day one (`CounterDef.labels`),
   so a Prometheus exporter is one small PR later: it would map `CounterDef` straight onto metric names and labels.
   Counters are the one place where ad-hoc instrumentation goes, instead of new log lines like the `s3:` lines.
-- **Memory:** `horizon-ctl memory`'s reply (`game/memory.rs:153-170`), flattened to paths, at start, every 10 s and
-  at stop. Spec D's `flatten`/`diff` logic becomes `horizon-perf query memory --diff`.
+- **Memory:** `sunrise-ctl memory`'s reply (`game/memory.rs:153-170`), flattened to paths, at start, every 10 s and
+  at stop. Spec D's `flatten`/`diff` logic becomes `sunrise-perf query memory --diff`.
 
 ### 3.7 Files and lifecycle
 
 - **Where:** a dedicated server writes to `reports/` in its folder, as documented today (`docs/hosting.md:358-368`).
   A client writes to `<game home>/reports/`, beside `logs/` and `crash-reports/`. The game home is `--home`, else
-  `HORIZON_HOME`, else the platform data folder (`crates/horizon-client-render/src/logging.rs:111-121`). Today the
+  `SUNRISE_HOME`, else the platform data folder (`crates/sunrise-client-render/src/logging.rs:111-121`). Today the
   sampler branch writes into the working directory
-  (`perf/sampler-viewer:crates/horizon-client/src/game/profile_control.rs:10-12`). Moving to the game home also keeps
-  agent runs isolated by their scratch `HORIZON_HOME`. `HORIZON_PROFILE=DIR` overrides the folder.
+  (`perf/sampler-viewer:crates/sunrise-client/src/game/profile_control.rs:10-12`). Moving to the game home also keeps
+  agent runs isolated by their scratch `SUNRISE_HOME`. `SUNRISE_PROFILE=DIR` overrides the folder.
 - **Names:** `profile-<YYYYMMDD-HHMMSS>Z.hzperf` (UTC).
-- **On finish:** saving is local, Open is local, Share is the only upload, and none of the three reads the telemetry switches. An in-game `/profiler stop` saves the file and prints its name (a click opens the folder). Only a build with a captures part (`horizon-official`: `Hooks::captures`, `horizon-perf-share`) adds `[Open]` and `[Share]` to that line; they run `/profiler open <id>` and `/profiler share <id>`, `<id>` being the file's stem (no id: the last capture this player saved). Only the client's own buttons and the player's typing reach the local `/profiler`: a server's `run_command` click is sent to the server like any other, and on a server whose command tree has its own `profiler` a typed `/profiler` and its completion are the server's. Open serves the file once on 127.0.0.1 behind a random token and opens the viewer on it (`<viewer>#local=http://127.0.0.1:<port>/<token>`); Share uploads it (§7.3) and prints the link. A build without the part replies "not available in this build" and `profile stop` has no `open_at`. Control-socket, environment and dedicated-console captures print the local path; `horizon-ctl profile open|share FILE` and `horizon-perf open|share FILE` do the same from outside. A server capture a Horizon client asks for arrives in the client's `reports/` and gets the same buttons; a Java client on a Horizon server gets none, and a plain dedicated server (no captures part, by design) prints the file's path in its log. The viewer and upload addresses are `horizon-addresses`' `PERF_VIEWER` and `PERF_CAPTURES` (`HORIZON_PERF_VIEWER`, `HORIZON_PERF_CAPTURES` override them).
+- **On finish:** saving is local, Open is local, Share is the only upload, and none of the three reads the telemetry switches. An in-game `/profiler stop` saves the file and prints its name (a click opens the folder). Only a build with a captures part (`sunrise-official`: `Hooks::captures`, `sunrise-perf-share`) adds `[Open]` and `[Share]` to that line; they run `/profiler open <id>` and `/profiler share <id>`, `<id>` being the file's stem (no id: the last capture this player saved). Only the client's own buttons and the player's typing reach the local `/profiler`: a server's `run_command` click is sent to the server like any other, and on a server whose command tree has its own `profiler` a typed `/profiler` and its completion are the server's. Open serves the file once on 127.0.0.1 behind a random token and opens the viewer on it (`<viewer>#local=http://127.0.0.1:<port>/<token>`); Share uploads it (§7.3) and prints the link. A build without the part replies "not available in this build" and `profile stop` has no `open_at`. Control-socket, environment and dedicated-console captures print the local path; `sunrise-ctl profile open|share FILE` and `sunrise-perf open|share FILE` do the same from outside. A server capture a Sunrise client asks for arrives in the client's `reports/` and gets the same buttons; a Java client on a Sunrise server gets none, and a plain dedicated server (no captures part, by design) prints the file's path in its log. The viewer and upload addresses are `sunrise-addresses`' `PERF_VIEWER` and `PERF_CAPTURES` (`SUNRISE_PERF_VIEWER`, `SUNRISE_PERF_CAPTURES` override them).
 - **Retention:** after writing, the game deletes the oldest `profile-*.hzperf` beyond 30 files or 1 GiB in that folder,
   and logs what it deleted. Files that don't match the pattern, for example files the user renamed, are never touched.
   Old `perf-*.json` and `.txt` files are left alone.
@@ -508,7 +508,7 @@ Notes on fields:
 
 ### 3.8 Who writes what
 
-| Field | Dedicated `horizon-report` | Client `profile client` / `/profiler` | Single player, both sides | Remote server via `profile server` | `--benchmark --profile` |
+| Field | Dedicated `sunrise-report` | Client `profile client` / `/profiler` | Single player, both sides | Remote server via `profile server` | `--benchmark --profile` |
 |---|---|---|---|---|---|
 | start, history, slow, health, counters, marks, warnings, stop | server | client | both | server (on the server and in the client's file) | client |
 | span_blocks, spans | server | client | both | server | client |
@@ -516,10 +516,10 @@ Notes on fields:
 | gpu | — | with `--gpu` (on when F3 pass timing is on) | client | — | yes |
 | net | yes | its own bytes | server | server | — |
 | world, workers | yes | integrated server only | server | server | — |
-| timeline | `horizon-trace` | `--timeline`, `trace` | both | `--timeline` | — |
+| timeline | `sunrise-trace` | `--timeline`, `trace` | both | `--timeline` | — |
 | bench | — | — | — | — | yes |
 
-`horizon-report` samples by default. Its measured cost is about 0.05% of the tick thread plus 0.13% of a core for the
+`sunrise-report` samples by default. Its measured cost is about 0.05% of the tick thread plus 0.13% of a core for the
 writer (measured during the sampler work). `--no-samples` turns it off.
 
 ## 4. Capturing, permissions and privacy
@@ -527,10 +527,10 @@ writer (measured during the sampler work). `--no-samples` turns it off.
 ### 4.1 Triggers (in the game; they only start and stop the writer)
 
 ```
-horizon-ctl profile [server|client] start [--seconds S] [--hz N] [--over MS] [--threads main|all]
+sunrise-ctl profile [server|client] start [--seconds S] [--hz N] [--over MS] [--threads main|all]
                                           [--wall] [--gpu[=detail]] [--timeline] [--no-samples]
-horizon-ctl profile [server|client] stop|status
-horizon-ctl profile mark NAME
+sunrise-ctl profile [server|client] stop|status
+sunrise-ctl profile mark NAME
 ```
 
 - **No side given:** both sides, as separate sections (`side`) of one capture. In single player the server thread is
@@ -540,36 +540,36 @@ horizon-ctl profile mark NAME
   thread; when connected to a server, it is that server, through §4.2.
 - **`stop`** replies with the written path and the web UI's address. **`status`** gives the running sides, elapsed
   time and bytes written.
-- **`/profiler start|stop [client|server]`** in chat runs `profile start` / `profile stop`. **`HORIZON_PROFILE=DIR`** captures the whole run and
+- **`/profiler start|stop [client|server]`** in chat runs `profile start` / `profile stop`. **`SUNRISE_PROFILE=DIR`** captures the whole run and
   writes it into DIR at exit.
 - **As built:** in single player a bare `profile` writes both sides into the window's file. The server thread
   (`game/integrated/capture.rs`) is handed the file's writer, a clone of its sender, and the capture's start as an
   instant, so both sides' `t` count from the same zero; it writes `Start` (kind `INTEGRATED`), its ticks, spans,
   mob costs and `tick` thread samples, and its own `Stop`, and the window finishes the file once both are in. A bare
-  `profile start` before a world opens, `HORIZON_PROFILE` and `/profiler` are joined by the server when it comes up (once per
+  `profile start` before a world opens, `SUNRISE_PROFILE` and `/profiler` are joined by the server when it comes up (once per
   capture). `profile server start` makes a file of the server thread alone (on a server joined over the network, see §4.2).
   `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
   the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first; on `start` they are the sides asked for, and `status` and `stop` confirm which wrote. A `mark` reply's `t` is the window's game clock for every side, while the file stores it from the capture's start. With `--threads all`
   the window's sampler claims every opted-in thread, the server thread included, so the server side has no samples of its own.
-- **As built:** `crates/horizon-client/src/perf_net.rs` is the wire (a `Request` of `Start` or `Stop`, a `Reply` of
+- **As built:** `crates/sunrise-client/src/perf_net.rs` is the wire (a `Request` of `Start` or `Stop`, a `Reply` of
   `Started`, `Finished` or `Refused`, and the client's `Link` state) and `game/perf_remote.rs` the server's half. A request
-  is checked where it arrives: the guest must be a Horizon client (brand `horizon`) and at operator level 4, else
+  is checked where it arrives: the guest must be a Sunrise client (brand `sunrise`) and at operator level 4, else
   `Denied`; the guest's switches are held to `profile start`'s limits on decode and never carry a file or a GPU switch. A
   `Start` is carried out between two ticks by the server thread (`Target::Own`, trigger `REMOTE`) or by a dedicated
-  server's tick loop (`serve_perf_requests`, which maps it to the `horizon-report` capture); a second one while any
+  server's tick loop (`serve_perf_requests`, which maps it to the `sunrise-report` capture); a second one while any
   capture runs, the console's or `profile server` included, gets `AlreadyRunning`. Only the guest that started a
   capture may stop it (`NotRunning` otherwise). The server answers `Started` with its `reports/` file and `Finished` once
-  the file is whole, whichever way the capture ended (stop, window or shutdown), and logs `Horizon: NAME started a server
-  profile (...)` and `Horizon: NAME's server profile saved to PATH`. The client treats a server as Horizon when its brand
-  is `horizon`: `horizon:block_registry` is only sent when content mods are loaded, so it would miss ordinary Horizon
+  the file is whole, whichever way the capture ended (stop, window or shutdown), and logs `Sunrise: NAME started a server
+  profile (...)` and `Sunrise: NAME's server profile saved to PATH`. The client treats a server as Sunrise when its brand
+  is `sunrise`: `sunrise:block_registry` is only sent when content mods are loaded, so it would miss ordinary Sunrise
   servers. `profile server start|stop` on such a server waits for those answers (10 s for the first); a bare `profile start`
-  also sends `Start` and a refusal becomes the warning `SERVER_NOT_HORIZON`, `SERVER_DENIED` or `SERVER_ALREADY_RUNNING` in
+  also sends `Start` and a refusal becomes the warning `SERVER_NOT_SUNRISE`, `SERVER_DENIED` or `SERVER_ALREADY_RUNNING` in
   the client's file, and `Started` leaves the mark `server_started`. The server's file follows.
-  For tests only, `horizon-ctl lan op NAME LEVEL` sets a connected guest's operator level on a LAN host.
+  For tests only, `sunrise-ctl lan op NAME LEVEL` sets a connected guest's operator level on a LAN host.
 - **As built:** `Finished` carries the size of the server's file, and that many bytes follow as `Chunk` replies of at most
   32 KiB. The server sends a chunk only when one is due, at least 125 ms after the last (never above 256 KiB in any second), and
   only while the guest has at most 64 KiB queued, so gameplay packets go first. The client feeds the chunks to
-  `horizon_perf_format::PartMerger`, which inflates the stream and yields whole top-level fields without `format`, unknown fields
+  `sunrise_perf_format::PartMerger`, which inflates the stream and yields whole top-level fields without `format`, unknown fields
   included. A window capture that asked for the server (a bare `profile start`) keeps its writer open from `Started` on and appends
   those fields to its own stream, so its file finishes once the part has arrived. `profile server stop` alone saves the server's gzip
   bytes unchanged as a file of its own in the client's `reports/` (with retention) and replies with that path. A lost connection, a
@@ -577,36 +577,36 @@ horizon-ctl profile mark NAME
   and gets `SERVER_PART_INCOMPLETE` after the client's `Stop` (the cut is only known then), plus a server `Stop` with reason
   `DISCONNECTED` when the part had begun without one, so the whole-file reader still opens it; a file of its own is removed.
 - **As built:** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
-  `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
-  frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
+  `STOP_REASON_WINDOW_CAP`, so `SUNRISE_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
+  frames over `SUNRISE_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
   own so a frame never waits on `ps`.
-- **As built:** `--timeline` on `profile start` and `horizon-report`, `horizon-ctl trace FILE [SECONDS]`,
-  `HORIZON_TRACE=FILE` (client once the first hardware probe has finished, server from its first tick) and `horizon-trace [SECONDS]` start a
+- **As built:** `--timeline` on `profile start` and `sunrise-report`, `sunrise-ctl trace FILE [SECONDS]`,
+  `SUNRISE_TRACE=FILE` (client once the first hardware probe has finished, server from its first tick) and `sunrise-trace [SECONDS]` start a
   timeline-only capture; with FILE it is written exactly there and retention leaves the folder alone. One `timeline`
   chunk per thread per second, `start_us` since the capture began, `thread` a string id of the thread name (threads
   alive together under one name get `#2`, `#3`). The process has one timeline: a second capture asking for it
   records without. A thread keeps at most 262144 spans between two drains (one second); a thread busier than that drops
   the rest silently, so a very dense second can be incomplete. A cap warning carries `[seconds recorded, bytes written]`.
-- **Dedicated console:** `horizon-report [SECONDS|stop|status] [--no-samples]` and `horizon-server report` capture the
+- **Dedicated console:** `sunrise-report [SECONDS|stop|status] [--no-samples]` and `sunrise-server report` capture the
   server side.
-- The `profile` row in `horizon-ctl` stays a trigger; it has no reading subcommands.
+- The `profile` row in `sunrise-ctl` stays a trigger; it has no reading subcommands.
 
 ### 4.2 Profiling a dedicated or remote server from a client
 
-1. **Is it Horizon?** A Horizon server sends `horizon:block_registry` during configuration
-   (`crates/horizon-client/src/lan/conn.rs:1331`), and the client records it (`net.rs:1121`). Without it,
-   `profile server` fails with `this server isn't running Horizon` (translation key `horizon.perf.not_horizon`), and
+1. **Is it Sunrise?** A Sunrise server sends `sunrise:block_registry` during configuration
+   (`crates/sunrise-client/src/lan/conn.rs:1331`), and the client records it (`net.rs:1121`). Without it,
+   `profile server` fails with `this server isn't running Sunrise` (translation key `sunrise.perf.not_sunrise`), and
    `profile` with no side captures the client only, with that warning.
-2. **Request.** The client sends `Start` options on a Horizon-only custom payload channel, `horizon:perf`.
+2. **Request.** The client sends `Start` options on a Sunrise-only custom payload channel, `sunrise:perf`.
 3. **Permission.** The server requires operator level 4, as vanilla's `/perf` does
    (`net/minecraft/server/commands/PerfCommand.java:38`, `Commands.LEVEL_OWNERS`). A LAN host applies the same rule to
    its guests. A refusal replies `Denied`. As vanilla's `commands.perf.alreadyRunning` does, only one server capture
    runs at a time; a second request gets `AlreadyRunning`.
 4. **Log.** The server logs who profiled and when, at start and stop:
-   `Horizon: Steve started a server profile (60 s, samples on)` and `Horizon: Steve's server profile saved to
+   `Sunrise: Steve started a server profile (60 s, samples on)` and `Sunrise: Steve's server profile saved to
    reports/profile-20261107-143204Z.hzperf`. The capture names each connection's player too (§4.3).
 5. **Server copy.** The server writes its side as any server capture, into its own `reports/` (with retention).
-6. **Transfer.** At stop, the server sends the finished file's gzip bytes to the admin's client on `horizon:perf` in
+6. **Transfer.** At stop, the server sends the finished file's gzip bytes to the admin's client on `sunrise:perf` in
    chunks of 32 KiB, rate-limited to 256 KiB/s and lower under bandwidth pressure. Gameplay packets go first, so the
    transfer never delays them.
 7. **Merge.** Every top-level field of the server's stream carries `side = SERVER`, and only `format` is singular. So
@@ -631,7 +631,7 @@ and versions, function and file base names, and `Mark.name`.
 | World seed, world name, level folder name | not in any message; `settings` is an allowlist without `level-seed`/`level-name` |
 | Entity custom names, sign/book/chat/command text | contexts hold registry ids (entity type, block type), never component data |
 | User paths (home, game dir, working dir) | symbol file names are base names only (as the sampler already does, commit `bd412b6d62`); no paths in `Start` |
-| Environment variables, command line, host name, MAC, serials | `horizon_options` is an allowlist of Horizon switches with boolean or numeric values |
+| Environment variables, command line, host name, MAC, serials | `sunrise_options` is an allowlist of Sunrise switches with boolean or numeric values |
 | Block coordinates | only chunk coordinates |
 
 Included on purpose: chunk coordinates per dimension, entity and block type names, mod ids and versions. This is spec
@@ -643,17 +643,17 @@ sign and a connected player's IP. It writes a capture; the test inflates it and 
 occurs in the bytes, except the players' names, which `net` must hold.
 
 That is two checks. `a_capture_of_a_server_with_names_text_and_a_seed_holds_none_of_them` (in `report.rs`) has no
-connected player and is `#[ignore]`d: it needs `HORIZON_TEST_RESOURCES`, so run it with `--ignored`. IP addresses are
+connected player and is `#[ignore]`d: it needs `SUNRISE_TEST_RESOURCES`, so run it with `--ignored`. IP addresses are
 covered by `tools/server_perf_e2e.py`, which joins bots named `SteveSecret` from `127.0.0.1` to a fixture server and checks
-the capture names them in `net` (build with `cargo build --profile fast -p horizon-game -p horizon-bots -p horizon-perf`, then run
+the capture names them in `net` (build with `cargo build --profile fast -p sunrise-game -p sunrise-bots -p sunrise-perf`, then run
 `python3 tools/server_perf_e2e.py --bin-dir target/fast`). It is not in CI yet: run it by hand before merging a change to what a capture holds.
 
 Uploads (§7.3) change nothing in the file: what a shared capture holds is exactly what the local one holds. Sharing is
-an explicit action (the UI's Share button, `horizon-perf share`, or `[Share]` and `/profiler share` in game); a capture is never uploaded by stopping it;
+an explicit action (the UI's Share button, `sunrise-perf share`, or `[Share]` and `/profiler share` in game); a capture is never uploaded by stopping it;
 the upload server stores the bytes as sent, keeps no account data, logs no capture contents, and drops IPs from its
 logs after the rate-limit window.
 
-## 5. The agent report: `horizon-perf summary`
+## 5. The agent report: `sunrise-perf summary`
 
 ### 5.1 Rules
 
@@ -704,10 +704,10 @@ capture collide anyway, the later one in table order gets `~2` appended.
 
 ### 5.3 Example: a 200-bot server
 
-`horizon-perf summary reports/profile-20261107-143204Z.hzperf` (≈ 1,250 tokens):
+`sunrise-perf summary reports/profile-20261107-143204Z.hzperf` (≈ 1,250 tokens):
 
 ```
-profile-20261107-143204Z.hzperf: dedicated server, 120.0 s, 1152 ticks, Horizon 0.42.1 (1d63e0a5a3) release, Linux x86_64, 24 threads
+profile-20261107-143204Z.hzperf: dedicated server, 120.0 s, 1152 ticks, Sunrise 0.42.1 (1d63e0a5a3) release, Linux x86_64, 24 threads
 health  TPS 9.6/20 (1m 9.5, 5m 9.8, 15m 11.2) · MSPT p50 98.7 p95 141.3 p99 188.0 max 312.4 ms · 1152 of 1152 ticks over 50 ms
         CPU 3.1 cores (system 7.9 of 24) · RSS 5.8 GB (+212 MB over the window) · 200 players · 61,842 chunks · 9,310 entities
 tick phases            ms/tick  %MSPT  cpu ms  waited
@@ -737,7 +737,7 @@ memory  heap: chunk columns 2104 MB (+96) [m:heap_by_tag_mb[chunk columns]] · l
 workers generate 2.31 cores · light 0.88 · decorate 0.52 · mesh 0.00 (server)
 cost    spans 0.61 ms/tick (0.6% of MSPT) · sampler 0.05% of tick thread · writer 0.13% of a core · 0 samples dropped
 note    chunk coordinates and entity/block type names are included; no names, UUIDs, addresses, seed or world name
-next    horizon-perf query callers f:2n7xq4ka · horizon-perf query split s:tick_lan --by thread · horizon-perf query ticks --worst 5
+next    sunrise-perf query callers f:2n7xq4ka · sunrise-perf query split s:tick_lan --by thread · sunrise-perf query ticks --worst 5
 ```
 
 With `--baseline reports/profile-20261107-101500Z.hzperf`, the phase table becomes:
@@ -751,22 +751,22 @@ tick phases            ms/tick    Δ ms   verdict       [id]
 
 The header gains `baseline: profile-20261107-101500Z.hzperf, same build kind, 24 vs 24 blocks of 5 s`.
 
-## 6. Queries: `horizon-perf` subcommands
+## 6. Queries: `sunrise-perf` subcommands
 
 ### 6.1 Command grammar
 
 ```
-horizon-perf summary [FILE|latest] [--baseline FILE] [--budget TOKENS] [--side S] [--thread T] [--slow|--all] [--json]
-horizon-perf query   OP [ARGS] [FILE...] [FILTERS]                     JSON always
-horizon-perf diff    A B [--min-ms X] [--json]
-horizon-perf list    [DIR]                                             one line per capture
-horizon-perf follow  [FILE|latest] [--every S] [--json]                health and slow events as they are written
-horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side S] [--thread T] [--select K] [--slow]
-horizon-perf attach  FILE --name NAME --body JSONFILE                  adds an Attachment at the wire level
-horizon-perf mcp                                                       §8
+sunrise-perf summary [FILE|latest] [--baseline FILE] [--budget TOKENS] [--side S] [--thread T] [--slow|--all] [--json]
+sunrise-perf query   OP [ARGS] [FILE...] [FILTERS]                     JSON always
+sunrise-perf diff    A B [--min-ms X] [--json]
+sunrise-perf list    [DIR]                                             one line per capture
+sunrise-perf follow  [FILE|latest] [--every S] [--json]                health and slow events as they are written
+sunrise-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side S] [--thread T] [--select K] [--slow]
+sunrise-perf attach  FILE --name NAME --body JSONFILE                  adds an Attachment at the wire level
+sunrise-perf mcp                                                       §8
 ```
 
-`FILE` defaults to `latest`: the newest finished `.hzperf` in `--dir DIR`, else in `$HORIZON_HOME/reports`, else in
+`FILE` defaults to `latest`: the newest finished `.hzperf` in `--dir DIR`, else in `$SUNRISE_HOME/reports`, else in
 `./reports`. A bare `benchmarks/*.json` is accepted wherever a capture is.
 
 ### 6.2 Operations
@@ -820,7 +820,7 @@ Row shapes:
 
 | OP | Row |
 |---|---|
-| `hot` | `{"id": "f:2n7xq4ka", "name": "Waypoints::tick_level", "full": "horizon_client_lib::lan::waypoints::Waypoints::tick_level", "file": "waypoints.rs", "line": 211, "self": 6.10, "total": 12.2, "self_pct": 5.9, "total_pct": 11.7, "samples": 3513}` |
+| `hot` | `{"id": "f:2n7xq4ka", "name": "Waypoints::tick_level", "full": "sunrise_client_lib::lan::waypoints::Waypoints::tick_level", "file": "waypoints.rs", "line": 211, "self": 6.10, "total": 12.2, "self_pct": 5.9, "total_pct": 11.7, "samples": 3513}` |
 | `tree`, `callers`, `callees` | `{"id": "p:…", "function": "f:…", "name": "…", "total": 1.2, "self": 0.1, "pct": 1.1, "samples": 690, "children": [ … ], "folded": {"rows": 17, "total": 0.08}}` |
 | `split`, `group` | `{"by": "entity", "key": "e:zombie", "label": "zombie", "value": 3.1, "pct": 21.0, "samples": 1786}` |
 | `frames`, `spans` | `{"id": "s:tick_lan", "name": "tick_lan", "values": [41.3, 54.1], "cpu": [40.0, 52.2], "waited": [1.3, 1.9]}`, one value per capture |
@@ -832,11 +832,11 @@ Numbers are computed unrounded and printed rounded to 3 significant decimals, as
 
 ### 6.4 Exports
 
-- `--pprof`: the hand-encoded writer from `perf/sampler-viewer:crates/horizon-threads/src/profile/pprof.rs`, moved to
-  `horizon_perf::export`. It carries labels `span`, `entity`, `block`, `chunk`, `dim`, `slow` and `state`, and one
+- `--pprof`: the hand-encoded writer from `perf/sampler-viewer:crates/sunrise-threads/src/profile/pprof.rs`, moved to
+  `sunrise_perf::export`. It carries labels `span`, `entity`, `block`, `chunk`, `dim`, `slow` and `state`, and one
   sample type per kind.
   Samples also carry `side` and `thread` labels, and both sides share one function table.
-- All three: `horizon-perf export [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side] [--thread] [--select] [--slow]`;
+- All three: `sunrise-perf export [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side] [--thread] [--select] [--slow]`;
   without `--out` the bytes go to stdout.
 - `--folded`: one line per stack (`side;thread;frame;...;frame count`), for `inferno` and old scripts; it counts `--select` (cpu by default), and waiting wall samples end in `[waiting]`.
 - `--perfetto`: the Chrome trace JSON of `spans.rs:303-454` (the same `{"ph":"X"}` events and thread-name metadata),
@@ -847,23 +847,23 @@ Numbers are computed unrounded and printed rounded to 3 significant decimals, as
 
 Goal: the 200-bot server runs at TPS 9.6. Find what to fix, then check the fix.
 
-1. `horizon-perf summary` gives the report in §5.3. `tick_lan` is 40% of the tick and `lan_waypoints` takes
+1. `sunrise-perf summary` gives the report in §5.3. `tick_lan` is 40% of the tick and `lan_waypoints` takes
    12.4 ms/tick; `Waypoints::tick_level` has the most self time.
-2. `horizon-perf query callers f:2n7xq4ka --depth 3`:
+2. `sunrise-perf query callers f:2n7xq4ka --depth 3`:
    ```json
    {"ok": true, "op": "callers", "unit": "ms_per_tick", "rows": [
      {"id": "p:r8d2kq0m", "name": "Game::lan_update_waypoints", "total": 12.2, "pct": 11.7, "samples": 3513,
       "children": [{"id": "p:b1n6zx4e", "name": "Game::tick_lan", "total": 12.2, "pct": 11.7, "samples": 3513,
                     "children": [{"id": "p:h0w3vy7s", "name": "Game::tick_server", "total": 12.2, "samples": 3513}]}]}]}
    ```
-3. `horizon-perf query split f:2n7xq4ka --by dim` gives `overworld 11.9`, `the_nether 0.3`. Then
-   `horizon-perf query callees f:2n7xq4ka --depth 1` gives `Waypoints::update_or_create 7.4`, `waypoint_team 2.9`,
+3. `sunrise-perf query split f:2n7xq4ka --by dim` gives `overworld 11.9`, `the_nether 0.3`. Then
+   `sunrise-perf query callees f:2n7xq4ka --depth 1` gives `Waypoints::update_or_create 7.4`, `waypoint_team 2.9`,
    `(self) 6.1`. The cost is per player pair, not per dimension.
-4. `horizon-perf query series h:players span:lan_waypoints --every 30` shows `lan_waypoints` growing faster than the
+4. `sunrise-perf query series h:players span:lan_waypoints --every 30` shows `lan_waypoints` growing faster than the
    player count: `[3.1, 6.0, 9.8, 12.4]` ms/tick for `[50, 100, 150, 200]` players. That is quadratic, which matches
    spec S1.
 5. After the fix, take a new capture under the same load, then run
-   `horizon-perf diff reports/profile-20261107-101500Z.hzperf latest --min-ms 0.5`:
+   `sunrise-perf diff reports/profile-20261107-101500Z.hzperf latest --min-ms 0.5`:
    ```
    A profile-20261107-101500Z.hzperf  B profile-20261107-143204Z.hzperf  (24 vs 24 blocks of 5 s, server tick thread, CPU)
    MSPT p50         124.0 → 98.7    -25.3 ms   CI [-28.1, -22.0]  faster
@@ -874,10 +874,10 @@ Goal: the 200-bot server runs at TPS 9.6. Find what to fix, then check the fix.
    warning: A's MSPT drifts upward over its window (Theil–Sen +0.21 ms/s): bots were still joining
    ```
 
-While the capture in step 5 runs, `horizon-perf follow latest` prints one health line per second, so an agent sees
+While the capture in step 5 runs, `sunrise-perf follow latest` prints one health line per second, so an agent sees
 the load settle before stopping it.
 
-### 6.6 Statistics (`horizon_perf::stats`)
+### 6.6 Statistics (`sunrise_perf::stats`)
 
 - **Two captures** (two runs, not paired): each capture's window is cut into time blocks of `block_s` (default 5 s;
   at most 32 blocks).
@@ -895,8 +895,8 @@ the load settle before stopping it.
   - `slower` or `faster` otherwise.
 - **Drift warning:** the Theil–Sen slope of each side's per-block MSPT. If its CI excludes 0 and the slope × window
   exceeds 5% of the median, the result says the window was not steady.
-- **Paired designs** (spec A's B A A B blocks in one run): the game computes `Report.ab` with `horizon-bench`'s
-  Hodges–Lehmann and exact Wilcoxon code, which must ship for the launcher. `horizon-perf diff` on two benchmark
+- **Paired designs** (spec A's B A A B blocks in one run): the game computes `Report.ab` with `sunrise-bench`'s
+  Hodges–Lehmann and exact Wilcoxon code, which must ship for the launcher. `sunrise-perf diff` on two benchmark
   reports prints `ab` when present and never recomputes it. Without `ab`, each `Frames` repeat is a block for the
   two-capture statistic.
 - Spec B's nightly regression rule (permutation test, MAD history) stays in its own tool. It is a CI policy over a
@@ -906,8 +906,8 @@ the load settle before stopping it.
 
 ### 7.1 What it is and where it lives
 
-- **Location and stack.** The browser UI and upload API live in horizon-rust/horizon-site, the Next.js App Router website behind playhorizon.dev. The UI has its own root layout under `app/perf/`; helpers live under `lib/perf/`, translations under `messages/perf/`, and static assets under `public/perf/`. The routes are `/perf`, `/perf/c/<id>` and `/api/perf/captures`; configuration stays in environment variables. The game's defaults are playhorizon.dev's (`PERF_VIEWER` and `PERF_CAPTURES` in `horizon-addresses`), and `HORIZON_PERF_VIEWER` and `HORIZON_PERF_CAPTURES` point a build elsewhere.
-- **The wasm does the computing.** The page loads `horizon_perf.wasm`, the `horizon-perf` library built for
+- **Location and stack.** The browser UI and upload API live in horizon-rust/horizon-site, the Next.js App Router website behind playsunrise.net. The UI has its own root layout under `app/perf/`; helpers live under `lib/perf/`, translations under `messages/perf/`, and static assets under `public/perf/`. The routes are `/perf`, `/perf/c/<id>` and `/api/perf/captures`; configuration stays in environment variables. The game's defaults are playsunrise.net's (`PERF_VIEWER` and `PERF_CAPTURES` in `sunrise-addresses`), and `SUNRISE_PERF_VIEWER` and `SUNRISE_PERF_CAPTURES` point a build elsewhere.
+- **The wasm does the computing.** The page loads `sunrise_perf.wasm`, the `sunrise-perf` library built for
   `wasm32-unknown-unknown` with feature `wasm`, for reading, queries and statistics. The UI only draws, and every
   number it shows comes from a wasm call. So the web UI and the CLI cannot disagree, and no second implementation
   needs shared test vectors (as `bench_stats.py` did for `compare.rs`).
@@ -917,16 +917,16 @@ the load settle before stopping it.
   |---|---|
   | `hp_alloc(len) -> ptr`, `hp_free(ptr, len)` | memory for the UI to pass bytes in |
   | `hp_open(ptr, len) -> handle` | decodes a file; returns an error JSON on failure |
-  | `hp_query(handle, req_ptr, req_len) -> reply` | the request is the same op and filters as `horizon-perf query`, as JSON; the reply is §6.3's envelope |
+  | `hp_query(handle, req_ptr, req_len) -> reply` | the request is the same op and filters as `sunrise-perf query`, as JSON; the reply is §6.3's envelope |
   | `hp_summary(handle, req) -> text` | the §5 summary |
   | `hp_diff(a, b, req) -> reply` | the §6.6 statistics |
   | `hp_export(handle, kind) -> bytes` | pprof, folded or Perfetto |
   | `hp_close(handle)` | frees a decoded capture |
 
-  A ~60-line `horizon_perf.js` shipped beside the wasm wraps these, so the UI does not manage wasm memory itself.
+  A ~60-line `sunrise_perf.js` shipped beside the wasm wraps these, so the UI does not manage wasm memory itself.
   The wasm returns data, ids and warning codes, never English sentences except `summary`. UI strings live in the
   UI's own translation files (`messages/perf/` in the site repository, translation-ready from the start).
-- **The build.** `cargo xtask perf-wasm` writes `target/perf-wasm/{horizon_perf.wasm,horizon_perf.js}`. The `perf-wasm` workflow tests the ABI and uploads that bundle. The site imports the matching reader and wrapper with `npm run perf:import -- HORIZON_SOURCE_DIR PERF_WASM_DIR`, records their source revision and checksums, and checks them before every build. Normal site builds need Node only.
+- **The build.** `cargo xtask perf-wasm` writes `target/perf-wasm/{sunrise_perf.wasm,sunrise_perf.js}`. The `perf-wasm` workflow tests the ABI and uploads that bundle. The site imports the matching reader and wrapper with `npm run perf:import -- SUNRISE_SOURCE_DIR PERF_WASM_DIR`, records their source revision and checksums, and checks them before every build. Normal site builds need Node only.
 - **Local first, upload by choice.** The page opens a `.hzperf` from a file picker or drag and drop and reads it in
   the browser; nothing leaves the machine unless the user presses **Share**, which uploads and pins it through §7.3
   after a one-line notice of what the file holds (§4.3) and returns a link `…/perf/c/<id>`. Opening a link fetches the capture
@@ -939,9 +939,9 @@ These are spark-style features, plus what `perf/sampler-viewer` already had.
 | Feature | Data |
 |---|---|
 | Health bar: TPS 1/5/15 min, MSPT min/median/p95/max, CPU process and system, memory process/physical/swap, disk, allocator counts (in place of GC) | `history`, `health`, `Start` |
-| Metadata panel: platform, OS, CPU, uptime, capture duration; tabs for memory, network, flags (build features and Horizon switches), config (`settings`), world, game rules, mods; one tab per side | `Start`, `world`, `net`, `memory` |
+| Metadata panel: platform, OS, CPU, uptime, capture duration; tabs for memory, network, flags (build features and Sunrise switches), config (`settings`), world, game rules, mods; one tab per side | `Start`, `world`, `net`, `memory` |
 | Call tree "all": ms per tick, %, self %, samples; single-child chains collapsed (`a > b > c`, expandable); siblings under 0.05% folded into "N smaller"; lazy rendering of expanded rows only | `tree` (as `perf/sampler-viewer:…/viewer.js:62-117`) |
-| Colour by crate: `horizon_world`, `horizon_client*`, `horizon_*`, std/core/alloc, third-party, native mods | `functions.crate` |
+| Colour by crate: `sunrise_world`, `sunrise_client*`, `sunrise_*`, std/core/alloc, third-party, native mods | `functions.crate` |
 | Group by none/thread/span/entity/block/chunk/dimension; selection: all ticks, slow ticks only, wall running, wall waiting, allocations, live bytes; side and thread pickers | `group`, filters |
 | Detail panel: the selected node's split by every context (top 10 each) and its merged callers | `split`, `callers` |
 | Search (highlight, auto-open), focus a node, collapse all, auto-open the hottest path | `tree`, `hot` |
@@ -964,13 +964,13 @@ Same conventions as the site's API: JSON replies, `cache-control: no-store` on e
 
 | Method and path | Request | Reply |
 |---|---|---|
-| `POST /api/perf/captures` | body: the raw `.hzperf` bytes, `content-type: application/vnd.horizon.perf` (or `application/octet-stream`);  | `201 {"id": "k3m0d9tr2q", "url": "https://…/perf/c/k3m0d9tr2q", "delete_token": "…", "shared": false, "expires_utc": "<upload + 1 h>", "bytes": 182311, "summary": {"kind": "dedicated", "seconds": 120.0, "version": "0.42.1"}}` |
-| `GET /api/perf/captures/{id}` | | the raw bytes, `content-type: application/vnd.horizon.perf`, `cache-control: public, max-age=31536000, immutable` (a capture never changes) |
+| `POST /api/perf/captures` | body: the raw `.hzperf` bytes, `content-type: application/vnd.sunrise.perf` (or `application/octet-stream`);  | `201 {"id": "k3m0d9tr2q", "url": "https://…/perf/c/k3m0d9tr2q", "delete_token": "…", "shared": false, "expires_utc": "<upload + 1 h>", "bytes": 182311, "summary": {"kind": "dedicated", "seconds": 120.0, "version": "0.42.1"}}` |
+| `GET /api/perf/captures/{id}` | | the raw bytes, `content-type: application/vnd.sunrise.perf`, `cache-control: public, max-age=31536000, immutable` (a capture never changes) |
 | `GET /api/perf/captures/{id}/meta` | | `200 {"id", "bytes", "created_utc", "expires_utc", "summary"}`, `no-store` |
 | `POST /api/perf/captures/{id}/share` | header `authorization: Bearer <delete_token>` | `200 {"id", "url", "shared": true, "expires_utc"}`: pins the capture (§ retention) |
 | `DELETE /api/perf/captures/{id}` | header `authorization: Bearer <delete_token>` | `204` |
 
-- **Validation on upload:** the server decodes the capture with the same wasm/`horizon-perf` reader (built for the
+- **Validation on upload:** the server decodes the capture with the same wasm/`sunrise-perf` reader (built for the
   server's runtime) and refuses anything that is not a valid `.hzperf` (`415 invalid_capture`), a newer major format
   (`422 unsupported_format`) or over the size cap (`413 too_large`, default 64 MiB). It stores the bytes as uploaded,
   never re-encoded.
@@ -982,15 +982,15 @@ Same conventions as the site's API: JSON replies, `cache-control: no-store` on e
   90 % of its size (`PERF_S3_*`), new uploads get `507 storage_full`; shared captures are never evicted early.
 - **Abuse limits:** per-IP rate limit (default 20 uploads an hour), size cap, no executable content served (the bytes
   are only ever served with the capture content type).
-- **The CLI:** `horizon-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, else `HORIZON_PERF_CAPTURES`, else the address list's) and
-  prints the link and delete token; `horizon-perf upload FILE` makes a 1-hour temporary upload; `horizon-perf summary|query|diff` accept a share link wherever they accept a file.
+- **The CLI:** `sunrise-perf share FILE` uploads and pins (posts to `PERF_UPLOAD_URL`, else `SUNRISE_PERF_CAPTURES`, else the address list's) and
+  prints the link and delete token; `sunrise-perf upload FILE` makes a 1-hour temporary upload; `sunrise-perf summary|query|diff` accept a share link wherever they accept a file.
 - **The game:** nothing uploads by itself. `[Share]` or `/profiler share [id]` uploads the capture in the background and prints a clickable `/perf/c/<id>` link in chat; a failure keeps the file and offers `/profiler share` to retry. An adjacent `.hzperf.share.json` receipt stores the endpoint and owner/delete token (mode 0600 on Unix), so a retry after a failed share pin reuses the upload; when the server no longer has that upload (404 or 410 on the pin) the capture is uploaded again and the receipt replaced. Control-socket, environment and dedicated report captures remain local unless explicitly shared through the CLI. Do not share the owner receipt.
 
-## 8. `horizon-perf mcp`
+## 8. `sunrise-perf mcp`
 
-`horizon-perf mcp` is an MCP server on stdio, in the dev tool, registered by a developer or agent with for example
-`claude mcp add horizon-perf -- horizon-perf mcp`. It is a small JSON-RPC loop of its own, in the style of
-`crates/horizon-server/src/mcp.rs`, without depending on that crate. Each tool calls the same library function as the
+`sunrise-perf mcp` is an MCP server on stdio, in the dev tool, registered by a developer or agent with for example
+`claude mcp add sunrise-perf -- sunrise-perf mcp`. It is a small JSON-RPC loop of its own, in the style of
+`crates/sunrise-server/src/mcp.rs`, without depending on that crate. Each tool calls the same library function as the
 CLI subcommand of the same name, so CLI and MCP replies are identical.
 
 | Tool | Params | Returns |
@@ -1003,37 +1003,37 @@ CLI subcommand of the same name, so CLI and MCP replies are identical.
 
 The tools open only files ending in `.hzperf`; `perf_diff` also takes benchmark-report `.json`. Anything else is refused whatever it holds. A `perf_follow` cursor is the number of top-level fields already read; each call re-reads the file, so no state outlives it.
 
-What leaves the game: there are no `profile-summary`, `-query`, `-diff`, `-list` or `-export` rows in `horizon-ctl`
-(`crates/horizon-client/src/bin/horizon-ctl/commands.rs:314-617`). There are no such tools in `horizon-server mcp`
-(`crates/horizon-server/src/mcp.rs:32-207`), and no `game_profile_*` tools in the launcher's MCP
-(`launcher/src/game_tools.rs:1-4`). An agent drives the game with `horizon-ctl profile …`, as with every other
-`horizon-ctl` command, and reads the result with `horizon-perf`.
+What leaves the game: there are no `profile-summary`, `-query`, `-diff`, `-list` or `-export` rows in `sunrise-ctl`
+(`crates/sunrise-client/src/bin/sunrise-ctl/commands.rs:314-617`). There are no such tools in `sunrise-server mcp`
+(`crates/sunrise-server/src/mcp.rs:32-207`), and no `game_profile_*` tools in the launcher's MCP
+(`launcher/src/game_tools.rs:1-4`). An agent drives the game with `sunrise-ctl profile …`, as with every other
+`sunrise-ctl` command, and reads the result with `sunrise-perf`.
 
 ## 9. Migration
 
 | Today | After | Kept |
 |---|---|---|
-| `reports/perf-*.json` + `.txt` | `reports/profile-*.hzperf`; the command prints the path and the web UI's address | `horizon-report`, `horizon-server report` (same words); old files left in place |
-| `horizon-report --profile` (branch) | samples by default; `--no-samples` | `--profile` accepted as a no-op for one release |
-| `horizon-report monitor [MS\|off]` (branch) | sets the slow ring's threshold at runtime | same |
-| `profile-*.html/.pb.gz/.folded` (branch, never shipped) | not written; the web UI and `horizon-perf export` | none needed |
-| `horizon-ctl profile start\|stop\|status\|mark` (branch) | `horizon-ctl profile [server\|client] …`; no side means both | same words |
-| `HORIZON_PROFILE=DIR` | writes a `.hzperf` into DIR at exit | same |
-| `HORIZON_SPIKES=MS` + `slow tick … : spans` / `slow frame` lines | threshold of the slow ring; no log line at all | env var |
+| `reports/perf-*.json` + `.txt` | `reports/profile-*.hzperf`; the command prints the path and the web UI's address | `sunrise-report`, `sunrise-server report` (same words); old files left in place |
+| `sunrise-report --profile` (branch) | samples by default; `--no-samples` | `--profile` accepted as a no-op for one release |
+| `sunrise-report monitor [MS\|off]` (branch) | sets the slow ring's threshold at runtime | same |
+| `profile-*.html/.pb.gz/.folded` (branch, never shipped) | not written; the web UI and `sunrise-perf export` | none needed |
+| `sunrise-ctl profile start\|stop\|status\|mark` (branch) | `sunrise-ctl profile [server\|client] …`; no side means both | same words |
+| `SUNRISE_PROFILE=DIR` | writes a `.hzperf` into DIR at exit | same |
+| `SUNRISE_SPIKES=MS` + `slow tick … : spans` / `slow frame` lines | threshold of the slow ring; no log line at all | env var |
 | "Can't keep up!" (`dedicated.rs:316`) | unchanged, exactly as vanilla prints it | — |
-| `HORIZON_TRACE=FILE`, `trace FILE SECS`, `horizon-trace SECS` | a timeline-only capture; with FILE, the `.hzperf` is written there, otherwise into `reports/`; Perfetto JSON comes from `horizon-perf export --perfetto` | all three names |
-| `HORIZON_SHADER_PACK_TIMING` log | `profile client start --gpu` | env var: starts pass timing and logs where the capture goes |
-| `HORIZON_GPU_PASS_DETAIL` (branch) | `profile client start --gpu=detail` | env var |
-| `server_bench.py --horizon-report` / `--console-at` (branches) | `--profile[=ARGS]` | `--horizon-report` as an alias for one release |
-| `tools/bench_stats.py` (branch) | `horizon-bench`'s Rust tests for `ab`; `horizon-perf diff` for two captures | dropped |
-| spec D `memory-diff A.json B.json` (spec) | `horizon-perf query memory --diff` | not built |
-| spec D `.hzap` + `tools/alloc_profile.py` (spec) | allocation samples in `samples` (kinds `alloc` and `live`, `crates/horizon-threads/src/heap_sample.rs`) | |
-| `pacing_bench.py` regex on `slow frame` lines | `horizon-perf query ticks --side client --worst N` on its capture, frames over the threshold only | |
+| `SUNRISE_TRACE=FILE`, `trace FILE SECS`, `sunrise-trace SECS` | a timeline-only capture; with FILE, the `.hzperf` is written there, otherwise into `reports/`; Perfetto JSON comes from `sunrise-perf export --perfetto` | all three names |
+| `SUNRISE_SHADER_PACK_TIMING` log | `profile client start --gpu` | env var: starts pass timing and logs where the capture goes |
+| `SUNRISE_GPU_PASS_DETAIL` (branch) | `profile client start --gpu=detail` | env var |
+| `server_bench.py --sunrise-report` / `--console-at` (branches) | `--profile[=ARGS]` | `--sunrise-report` as an alias for one release |
+| `tools/bench_stats.py` (branch) | `sunrise-bench`'s Rust tests for `ab`; `sunrise-perf diff` for two captures | dropped |
+| spec D `memory-diff A.json B.json` (spec) | `sunrise-perf query memory --diff` | not built |
+| spec D `.hzap` + `tools/alloc_profile.py` (spec) | allocation samples in `samples` (kinds `alloc` and `live`, `crates/sunrise-threads/src/heap_sample.rs`) | |
+| `pacing_bench.py` regex on `slow frame` lines | `sunrise-perf query ticks --side client --worst N` on its capture, frames over the threshold only | |
 
 Docs: `docs/hosting.md:358-379` (report, trace, slow ticks), `docs/graphics.md:134-136`, `docs/benchmark.md:79-82`,
-`docs/memory.md`, `docs/agent-control.md:152`, and `docs/horizon-ctl-commands.md` (regenerated). New:
+`docs/memory.md`, `docs/agent-control.md:152`, and `docs/sunrise-ctl-commands.md` (regenerated). New:
 `docs/perf-platform.md` (this design), and a "Performance captures" section in `docs/hosting.md` for server owners:
-how to run `horizon-report`, where the file goes, how to open it in the web UI, and how to profile from a client with
+how to run `sunrise-report`, where the file goes, how to open it in the web UI, and how to profile from a client with
 level 4.
 
 ## 10. Overhead budgets
@@ -1047,7 +1047,7 @@ prints it, and adds a warning when a budget is exceeded.
 | Spans aggregate | during a capture; always on dedicated servers (it feeds the slow ring) | ≤ 1% of MSPT | "usually well under 1%" (`docs/hosting.md`), calibrated per machine (`report.rs:282-293`) |
 | CPU samples, 250 Hz | during a capture | < 1% of the sampled thread; writer < 0.5% of a core | ~0.05% + 0.13% of a core (measured during the sampler work) |
 | Wall samples | `--wall` | < 1% of the sampled thread | same handler |
-| Heap samples (`alloc`, `live`) | with the CPU samples, one session per process; every 512 KiB on average (`HORIZON_HEAP_SAMPLE_KIB`, 0 turns it off) | < 3% of MSPT; off: one relaxed load per alloc and per free | 200 walking bots: 1.2% of the tick thread's CPU, most of it `.eh_frame` unwinding (~40-70 µs a sample without frame pointers); captures +22-35%. Off: within the margin of error |
+| Heap samples (`alloc`, `live`) | with the CPU samples, one session per process; every 512 KiB on average (`SUNRISE_HEAP_SAMPLE_KIB`, 0 turns it off) | < 3% of MSPT; off: one relaxed load per alloc and per free | 200 walking bots: 1.2% of the tick thread's CPU, most of it `.eh_frame` unwinding (~40-70 µs a sample without frame pointers); captures +22-35%. Off: within the margin of error |
 | Context stores | always (plain stores) | < 2 ns each | within the margin of error |
 | Alloc counters | `alloc-count` builds | +1-2 ns per allocation | `docs/memory.md` on `perf/alloc-count` |
 | Counters | always | one relaxed atomic per `add` | |
@@ -1057,7 +1057,7 @@ prints it, and adds a warning when a budget is exceeded.
 | Timeline | `--timeline` | ≤ 3% while on; capped at 60 s | global mutex per span (`spans.rs:335`, `:363`) |
 | Memory snapshots | during a capture | < 2 ms every 10 s, on the thread that answers `memory` | |
 | Writer: encode, deflate, sync flush per field | during a capture | off the game threads; never blocks a tick; < 0.5% of a core | sync flush costs a few bytes per field |
-| Symbolization | at stop | off the game threads | already on the "horizon-profile-report" thread |
+| Symbolization | at stop | off the game threads | already on the "sunrise-profile-report" thread |
 | Remote transfer | after stop | ≤ 256 KiB/s, behind gameplay packets | |
 
 ## 11. Decision log (review of 2026-11-07)
@@ -1067,30 +1067,30 @@ prints it, and adds a warning when a budget is exceeded.
 | Q1 | All three audiences (agents, server owners, developers) from day one; built by volunteers, no number stated. |
 | Q2 | Protobuf, extension `.hzperf`. Chosen for schema-as-contract, decode speed and memory, and timeline scale (the 2-min profile is 547 KB as columnar JSON, 120 KB deflated). |
 | Q3 | Files only in v1; the counter registry is label-ready, so a Prometheus exporter is one small PR later. |
-| Q4 | The game ships only `horizon-perf-format` (generated types, gzip writer, health recorder; Q4's original "framed writer" is superseded by Q9). Everything that reads lives in the dev-only `horizon-perf`, including `horizon-perf mcp` and the wasm build. No reading commands or MCP tools in horizon-ctl or horizon-server; the game prints the path and the web UI's address. |
+| Q4 | The game ships only `sunrise-perf-format` (generated types, gzip writer, health recorder; Q4's original "framed writer" is superseded by Q9). Everything that reads lives in the dev-only `sunrise-perf`, including `sunrise-perf mcp` and the wasm build. No reading commands or MCP tools in sunrise-ctl or sunrise-server; the game prints the path and the web UI's address. |
 | Q5 | Local files first: nothing uploads unless the player presses Share (§7.3). |
 | Q9 | One gzip stream holding one protobuf `Capture`; no frames, index, crash recovery or partial reads; our tools only. The live-follow rules (§3.2) are part of the contract. |
 | Q10 | Whole-file gzip/deflate, pure Rust (`flate2`). |
 | Q11 | The `.proto` files are the contract. No JSON export for now, but nothing that breaks the canonical JSON mapping. |
 | Q12 | Codegen with `protox` in `build.rs`. |
 | Q13 | No size budget for now; compile flags later if needed. |
-| Q14 | `horizon-ctl profile start\|stop\|status\|mark` stays in the game as a trigger. |
+| Q14 | `sunrise-ctl profile start\|stop\|status\|mark` stays in the game as a trigger. |
 | Q16 | No always-on health file; if ever added, off by default. The in-memory rings stay. |
-| Q17 | `horizon-report` samples by default; `--no-samples` turns it off. |
+| Q17 | `sunrise-report` samples by default; `--no-samples` turns it off. |
 | Q18 | Client captures go to `<game home>/reports/`; retention keeps 30 files or 1 GiB, and renamed files are untouched. |
-| Q19, Q23 | Horizon's slow-tick and slow-frame span lists leave the log entirely. Vanilla's "Can't keep up!" stays exactly as vanilla prints it. |
+| Q19, Q23 | Sunrise's slow-tick and slow-frame span lists leave the log entirely. Vanilla's "Can't keep up!" stays exactly as vanilla prints it. |
 | Q20 | `tools/bench_stats.py` is dropped. |
-| Q21 | The web UI loads `horizon-perf` as wasm for reading, queries and statistics; the UI only draws. |
-| Q22, Q24 | `horizon-ctl profile server\|client`; no side means both, in one capture. A dedicated or remote server needs operator level 4 (as vanilla's `/perf`; this refines Q22's "admin"). The capture is sent back in rate-limited chunks over a Horizon-only channel, a copy stays in the server's `reports/`, and the server logs who profiled and when. Non-Horizon servers: "this server isn't running Horizon". |
-| B | `horizon-perf` is built from source by whoever needs it (agents included); no published dev artifact. |
-| C | The `horizon-ctl profile` trigger is exposed over MCP (`mcp: true`). |
-| D | `ab_bench.py`'s relaunch mode calls `horizon-perf diff` instead of the dropped `bench_stats.py`. |
+| Q21 | The web UI loads `sunrise-perf` as wasm for reading, queries and statistics; the UI only draws. |
+| Q22, Q24 | `sunrise-ctl profile server\|client`; no side means both, in one capture. A dedicated or remote server needs operator level 4 (as vanilla's `/perf`; this refines Q22's "admin"). The capture is sent back in rate-limited chunks over a Sunrise-only channel, a copy stays in the server's `reports/`, and the server logs who profiled and when. Non-Sunrise servers: "this server isn't running Sunrise". |
+| B | `sunrise-perf` is built from source by whoever needs it (agents included); no published dev artifact. |
+| C | The `sunrise-ctl profile` trigger is exposed over MCP (`mcp: true`). |
+| D | `ab_bench.py`'s relaunch mode calls `sunrise-perf diff` instead of the dropped `bench_stats.py`. |
 | E | New dependencies `prost`, `prost-build`, `protox` accepted. |
 | G | No CODEOWNERS: the contract changes through review like any other code. |
-| J | `horizon-perf-format::files` (capture file naming, retention, the saved line, `is_complete`) lives in the format crate although §2.1 lists three things: `horizon-server` writes and finds captures too and cannot depend on `horizon-client`. Do not move it back. |
+| J | `sunrise-perf-format::files` (capture file naming, retention, the saved line, `is_complete`) lives in the format crate although §2.1 lists three things: `sunrise-server` writes and finds captures too and cannot depend on `sunrise-client`. Do not move it back. |
 
 ## Capture-wide timing lows
 
 `SpanSummary.timing` optionally records the unit count and average duration of the slowest 1% and 0.1% of all captured frames or ticks. Each tail contains `ceil(count / 100)` or `ceil(count / 1000)` units. These are tail means, not p99 or p99.9 thresholds. The recorder retains up to one million f32 durations per active side (about 4 MiB), sorts once at capture completion, and writes only the summary. Invalid durations or exceeding that bound omit the timing summary instead of silently using a partial sample.
 
-`horizon-perf query meta` and the shared WASM reader expose `timing.count`, `slowest_1pct_ms`, `slowest_01pct_ms`, `low_1pct`, and `low_01pct`. FPS lows are `1000 / tail_mean_ms`. Tick lows are work-based TPS capacity, `min(20, 1000 / tail_mean_ms)`, and exclude scheduling delays. The website shows both lows and both tail durations, with the captured count and rounding rule. Old captures remain readable and have no timing lows; the reader never reconstructs them from health percentiles, coarse buckets, or the small worst-unit list. Benchmarks already store both FPS lows and the website exposes both.
+`sunrise-perf query meta` and the shared WASM reader expose `timing.count`, `slowest_1pct_ms`, `slowest_01pct_ms`, `low_1pct`, and `low_01pct`. FPS lows are `1000 / tail_mean_ms`. Tick lows are work-based TPS capacity, `min(20, 1000 / tail_mean_ms)`, and exclude scheduling delays. The website shows both lows and both tail durations, with the captured count and rounding rule. Old captures remain readable and have no timing lows; the reader never reconstructs them from health percentiles, coarse buckets, or the small worst-unit list. Benchmarks already store both FPS lows and the website exposes both.

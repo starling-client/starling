@@ -275,7 +275,7 @@ def main():
         'tag the stalactite branch needs) are bound from the pinned client jar the way a datapack load '
         'binds them, where a bare bootstrap leaves every tag empty.',
         sources=[lab.ROOT / 'tools/test_marker_particles_parity.py',
-                 lab.ROOT / 'crates/horizon-client/src/animate_tick.rs'], expected_lines=462960)
+                 lab.ROOT / 'crates/sunrise-client/src/animate_tick.rs'], expected_lines=462960)
 
 
 if __name__ == '__main__':

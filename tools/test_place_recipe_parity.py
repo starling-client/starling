@@ -10,7 +10,7 @@ inventory; the grid is empty, holds the same recipe already (placing again
 adds one set, or a full stack with shift) or something else. The Java oracle
 (VanillaPlaceRecipeOracle) runs RecipeBookMenu.handlePlacement as the server's
 packet handler does; examples/probe/place_recipe_fixture runs
-horizon_client::menu's place_recipe. Every menu slot, the whole inventory,
+sunrise_client::menu's place_recipe. Every menu slot, the whole inventory,
 the drops and whether the client gets a ghost recipe are compared.
 
 Vanilla counts the available items in a hash map ordered by identity hash
@@ -169,7 +169,7 @@ def main():
     cases = [gen.case(menus[n % len(menus)]) for n in range(args.cases)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in cases))
     vanilla.run('VanillaPlaceRecipeOracle', work / 'cases.jsonl', work / 'native.txt', work / 'orders.txt')
-    lib.cargo_example('horizon-client', 'place_recipe_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'orders.txt',
+    lib.cargo_example('sunrise-client', 'place_recipe_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'orders.txt',
                       work / 'rust.txt')
     bad = lib.compare(cases, work / 'native.txt', work / 'rust.txt',
                       lambda case, line: f'{case["menu"]} {line.split(" ")[1] if line.startswith("post") else "error"}',

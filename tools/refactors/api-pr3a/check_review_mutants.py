@@ -15,7 +15,7 @@ def main():
     repo = args.repo.resolve()
     output = (repo / args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    source = repo / "crates/horizon-client/src/game/modding/api_values.rs"
+    source = repo / "crates/sunrise-client/src/game/modding/api_values.rs"
     original = source.read_bytes()
     text = original.decode()
     mutants = [
@@ -27,14 +27,14 @@ def main():
         ),
         (
             "drop_component_patch",
-            "horizon_items::item_data::encode_extra_components(self)",
+            "sunrise_items::item_data::encode_extra_components(self)",
             "None::<Tag>",
             "game::api_values::stack_limit_tests::production_snapshots_preserve_component_corpus_contents",
         ),
     ]
 
     def run(name, selected, exact=False):
-        command = ["cargo", "test", "-p", "horizon-client", "--lib", selected, "--", "--nocapture"]
+        command = ["cargo", "test", "-p", "sunrise-client", "--lib", selected, "--", "--nocapture"]
         if exact:
             command.append("--exact")
         with (output / f"{name}.log").open("w") as log:

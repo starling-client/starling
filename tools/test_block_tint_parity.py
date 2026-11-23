@@ -2,7 +2,7 @@
 """Compare level-free block-model tints with actual 26.3 BlockTintSources.
 
 Every state of every registered block -- not only the hand-picked tinted
-families -- is checked at indices -1, 0, 1 and 2: a block Horizon tints and
+families -- is checked at indices -1, 0, 1 and 2: a block Sunrise tints and
 vanilla does not (or the other way round) only shows up in that sweep.
 Geometry and framebuffer are separate checks.
 """
@@ -40,8 +40,8 @@ def main():
         make_input, "BlockTintSource.color(state) at indices -1, 0, 1 and 2 for every state of every registered block, "
                      "not just the hand-picked tinted families; per-face tint indices, no level/biome. "
                      "Not model or framebuffer parity.",
-        sources=[lab.ROOT / "tools/test_block_tint_parity.py", lab.ROOT / "crates/horizon-client-render/src/mesher.rs",
-                 lab.ROOT / "crates/horizon-client/src/item_render.rs"])
+        sources=[lab.ROOT / "tools/test_block_tint_parity.py", lab.ROOT / "crates/sunrise-client-render/src/mesher.rs",
+                 lab.ROOT / "crates/sunrise-client/src/item_render.rs"])
 
 
 if __name__ == "__main__":

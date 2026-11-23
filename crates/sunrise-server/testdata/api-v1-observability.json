@@ -1,0 +1,129 @@
+{
+  "status_stopped": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "phase": "stopped",
+      "version": "0.1.0",
+      "pid": "<dynamic>",
+      "uptime_seconds": "<dynamic>",
+      "engine_pid": null,
+      "engine_uptime_seconds": null,
+      "crashes": 2,
+      "last_crash": "exit status: 1",
+      "sample": {
+        "t": 200,
+        "rss_bytes": 536870912,
+        "cpu_percent": 12.5,
+        "game": {
+          "tps": 19.9,
+          "target_tps": 20.0,
+          "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+          "players": [{ "name": "Alex" }, { "name": "Steve" }],
+          "max_players": 20,
+          "chunks": 321
+        }
+      },
+      "update": null
+    }
+  },
+  "logs_all": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["first line", "second line"] }
+  },
+  "logs_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["second line"] }
+  },
+  "logs_invalid_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": { "next": 2, "lines": ["first line", "second line"] }
+  },
+  "metrics_all": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        { "t": 100, "game": { "tps": 20.0 } },
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "metrics_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "metrics_invalid_since": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "samples": [
+        { "t": 100, "game": { "tps": 20.0 } },
+        {
+          "t": 200,
+          "rss_bytes": 536870912,
+          "cpu_percent": 12.5,
+          "game": {
+            "tps": 19.9,
+            "target_tps": 20.0,
+            "mspt": { "average": 8.25, "p50": 7.0, "p95": 12.5, "p99": 18.0 },
+            "players": [{ "name": "Alex" }, { "name": "Steve" }],
+            "max_players": 20,
+            "chunks": 321
+          }
+        }
+      ]
+    }
+  },
+  "prometheus_stopped": {
+    "status": 200,
+    "content_type": "text/plain; version=0.0.4",
+    "headers": [],
+    "body": "# HELP sunrise_up 1 while the game runs and answers\n# TYPE sunrise_up gauge\nsunrise_up 0\n# HELP sunrise_supervisor_uptime_seconds Seconds since sunrise-server started\n# TYPE sunrise_supervisor_uptime_seconds gauge\nsunrise_supervisor_uptime_seconds <dynamic>\n# HELP sunrise_crashes Game crashes since sunrise-server started\n# TYPE sunrise_crashes gauge\nsunrise_crashes 2\n# HELP sunrise_tps Ticks per second over the last 5 seconds\n# TYPE sunrise_tps gauge\nsunrise_tps 19.9\n# HELP sunrise_tps_target The tick rate the game aims for (/tick rate)\n# TYPE sunrise_tps_target gauge\nsunrise_tps_target 20\n# HELP sunrise_mspt Milliseconds per tick: the average and the percentiles /tick query reports\n# TYPE sunrise_mspt gauge\nsunrise_mspt{stat=\"average\"} 8.25\nsunrise_mspt{stat=\"p50\"} 7\nsunrise_mspt{stat=\"p95\"} 12.5\nsunrise_mspt{stat=\"p99\"} 18\n# HELP sunrise_players_online Players online\n# TYPE sunrise_players_online gauge\nsunrise_players_online 2\n# HELP sunrise_players_max max-players\n# TYPE sunrise_players_max gauge\nsunrise_players_max 20\n# HELP sunrise_chunks_loaded Chunks loaded\n# TYPE sunrise_chunks_loaded gauge\nsunrise_chunks_loaded 321\n# HELP sunrise_memory_rss_bytes The game process's resident memory\n# TYPE sunrise_memory_rss_bytes gauge\nsunrise_memory_rss_bytes 536870912\n# HELP sunrise_cpu_percent The game process's CPU use (100 = one core)\n# TYPE sunrise_cpu_percent gauge\nsunrise_cpu_percent 12.5\n"
+  },
+  "prometheus_running": {
+    "status": 200,
+    "content_type": "text/plain; version=0.0.4",
+    "headers": [],
+    "body": "# HELP sunrise_up 1 while the game runs and answers\n# TYPE sunrise_up gauge\nsunrise_up 1\n# HELP sunrise_supervisor_uptime_seconds Seconds since sunrise-server started\n# TYPE sunrise_supervisor_uptime_seconds gauge\nsunrise_supervisor_uptime_seconds <dynamic>\n# HELP sunrise_crashes Game crashes since sunrise-server started\n# TYPE sunrise_crashes gauge\nsunrise_crashes 2\n# HELP sunrise_tps Ticks per second over the last 5 seconds\n# TYPE sunrise_tps gauge\nsunrise_tps 19.9\n# HELP sunrise_tps_target The tick rate the game aims for (/tick rate)\n# TYPE sunrise_tps_target gauge\nsunrise_tps_target 20\n# HELP sunrise_mspt Milliseconds per tick: the average and the percentiles /tick query reports\n# TYPE sunrise_mspt gauge\nsunrise_mspt{stat=\"average\"} 8.25\nsunrise_mspt{stat=\"p50\"} 7\nsunrise_mspt{stat=\"p95\"} 12.5\nsunrise_mspt{stat=\"p99\"} 18\n# HELP sunrise_players_online Players online\n# TYPE sunrise_players_online gauge\nsunrise_players_online 2\n# HELP sunrise_players_max max-players\n# TYPE sunrise_players_max gauge\nsunrise_players_max 20\n# HELP sunrise_chunks_loaded Chunks loaded\n# TYPE sunrise_chunks_loaded gauge\nsunrise_chunks_loaded 321\n# HELP sunrise_memory_rss_bytes The game process's resident memory\n# TYPE sunrise_memory_rss_bytes gauge\nsunrise_memory_rss_bytes 536870912\n# HELP sunrise_cpu_percent The game process's CPU use (100 = one core)\n# TYPE sunrise_cpu_percent gauge\nsunrise_cpu_percent 12.5\n"
+  }
+}

@@ -7,7 +7,7 @@ NEW = 'E_INJECT_NO_SLOT: {id}: {reason}; slot declaration {declaration}; [[injec
 REMOVED = ['expression requires native internals source rebuilding; use internals, or request a hook', 'modify_local requires native internals source rebuilding; use internals, or request a hook', 'field requires native internals source rebuild; use attachments for API, wasm, persistence or sync', 'source injects pending (U5)']
 RENAMED = {
     "Native mods are native code that runs inside your game with your rights. Allow native mods in Settings, Storage, or pass --trust-native-code.": "Native mods run inside your game with your rights; mixins compile code into the game. Allow native mods in Settings, Storage, or pass --trust-native-code.",
-    "E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, raw listeners and the mod's own modules, not source listeners or helpers. Use cargo horizon-mod internals add for this mod.": "E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, slot listeners and supporting modules, not mixin helpers. Use cargo horizon-mod internals add for this mod.",
+    "E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, raw listeners and the mod's own modules, not source listeners or helpers. Use cargo sunrise-mod internals add for this mod.": "E_INTERNAL_SOURCE_INJECTION: internals sync checks library code, slot listeners and supporting modules, not mixin helpers. Use cargo sunrise-mod internals add for this mod.",
     "Injects outside the slots": "Mixins compile game code",
     "{mod} injects into the game's code, so the game builds from source": "{mod}: mixins compile game code",
 }

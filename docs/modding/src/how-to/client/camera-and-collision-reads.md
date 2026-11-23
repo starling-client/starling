@@ -31,11 +31,11 @@ back with `player_selected_slot` on the local player. Native and wasm mods use t
 `ClientHost::clipboard_text()` reads the system clipboard (`KeyboardHandler.getClipboard`, empty text when it
 holds none) and `ClientHost::set_clipboard_text(text)` writes it (`setClipboard`; empty text copies nothing). Both
 work only while the game handles a key, mouse or typed-text event, from the window or from the control socket
-(`horizon-ctl key`, `mouse`, `type` and its clicks): a key, mouse or screen hook that fires inside one, such as
+(`sunrise-ctl key`, `mouse`, `type` and its clicks): a key, mouse or screen hook that fires inside one, such as
 Ctrl+V into a mod's own field. At any other moment (a tick, a frame, a packet) the read is `None` and the write
 is `false` with nothing copied, so no mod reaches the clipboard without the player doing something. Both are
 `None` and `false` on a server, and take `&self`, so a screen hook can call them. Vanilla's `KeyboardHandler`
-has no such rule: Horizon adds it.
+has no such rule: Sunrise adds it.
 
 ## Camera snapshots and perspective
 
@@ -69,7 +69,7 @@ wins over requests made inside the cycle callback.
 
 ## Viewed levels
 
-A server can open other levels for a client to view besides the one the player is in (`horizon:levels`,
+A server can open other levels for a client to view besides the one the player is in (`sunrise:levels`,
 as Immersive Portals' `ClientWorldLoader` keeps a `ClientLevel` per dimension). On a client,
 `host.level("minecraft:the_nether")` also returns a handle for each such level while the server keeps it
 open. Its block reads read the viewed level's own world, never the player's: `block_state`, `block`,

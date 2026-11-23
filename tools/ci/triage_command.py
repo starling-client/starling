@@ -210,7 +210,7 @@ def run(api, cmd: Command, actor: ns.Actor, number: int, url: str, reviewers: ns
         if cmd.original == number:
             raise Refused("An item cannot be a duplicate of itself.")
         if api.issue(cmd.original) is None:
-            raise Refused(f"There is no #{cmd.original} in Horizon.")
+            raise Refused(f"There is no #{cmd.original} in Sunrise.")
     if not ns.is_owner(actor) and actions_by(api, login, now) >= MAX_PER_DAY:
         raise Refused(f"You used your {MAX_PER_DAY} triage actions of the last 24 hours. Try again later.")
     is_pr = "pull_request" in issue
@@ -230,7 +230,7 @@ def run(api, cmd: Command, actor: ns.Actor, number: int, url: str, reviewers: ns
     for name in cmd.labels:
         found = api.label(name)
         if found is None:
-            raise Refused(f"There is no label `{safe(name)}` in Horizon: triage doesn't create new ones.")
+            raise Refused(f"There is no label `{safe(name)}` in Sunrise: triage doesn't create new ones.")
         if (why := label_refusal(found)):
             raise Refused(why)
         real.append(found)

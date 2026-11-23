@@ -6,9 +6,9 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[3]
-rt = root / "crates/horizon-mod-runtime/src/registry_keys.rs"
-api = root / "crates/horizon-mod-api/src/content/registry_keys.rs"
-game = root / "crates/horizon-client/src/game.rs"
+rt = root / "crates/sunrise-mod-runtime/src/registry_keys.rs"
+api = root / "crates/sunrise-mod-api/src/content/registry_keys.rs"
+game = root / "crates/sunrise-client/src/game.rs"
 original = {p: p.read_text() for p in (rt, api, game)}
 lookup = "Some(BlockKey(*resolved_block_keys().get()?.slots.get(id)?))"
 cases = [
@@ -30,7 +30,7 @@ try:
         assert old in original[path], name
         path.write_text(original[path].replace(old, new, 1))
         commands = [
-            ["cargo", "test", "-p", "horizon-mod-api", "--lib", "completed_blocks_preserve_slots_and_bind_unrequested_states"],
+            ["cargo", "test", "-p", "sunrise-mod-api", "--lib", "completed_blocks_preserve_slots_and_bind_unrequested_states"],
             ["python3", "tools/refactors/api-pr3b/test_block_key_load_boundary.py"],
         ]
         killed = False

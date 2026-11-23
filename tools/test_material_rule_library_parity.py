@@ -63,23 +63,23 @@ def main():
         bundle[field]=getter(jars['server'])
         if not bundle[field] or bundle[field]!=getter(jars['client']):raise ValueError('reference '+field+' resources differ')
     counts={key:len(value) for key,value in bundle.items()}
-    bundle['rules'].update({'horizon:a_forward':'{"type":"condition","if_true":{"type":"hole"},"then_run":"horizon:z_leaf"}','horizon:z_leaf':'{"type":"block","result_state":{"id":"minecraft:oak_log","properties":{"axis":"x"}}}','horizon:empty':'{"type":"sequence","sequence":[]}','horizon:constant_ore':'{"type":"ore_vein","ore_block":"minecraft:copper_ore","raw_ore_block":"minecraft:raw_copper_block","filler_block":"minecraft:granite","raw_ore_chance":0.02,"density":1,"richness":0.5,"filler_gap":-1}'})
+    bundle['rules'].update({'sunrise:a_forward':'{"type":"condition","if_true":{"type":"hole"},"then_run":"sunrise:z_leaf"}','sunrise:z_leaf':'{"type":"block","result_state":{"id":"minecraft:oak_log","properties":{"axis":"x"}}}','sunrise:empty':'{"type":"sequence","sequence":[]}','sunrise:constant_ore':'{"type":"ore_vein","ore_block":"minecraft:copper_ore","raw_ore_block":"minecraft:raw_copper_block","filler_block":"minecraft:granite","raw_ore_chance":0.02,"density":1,"richness":0.5,"filler_gap":-1}'})
     for field,value in bundle.items():(build/(field+'.json')).write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
-    folder=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity'
+    folder=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity'
     oracles=[folder/(name+'.java') for name in ['VanillaMaterialConditionOracle','VanillaAnchorOracle','VanillaBiomeTemperatureOracle','VanillaBlockStateCodecOracle']]
-    sources=[*oracles,Path(__file__),*[lab.ROOT/'tools'/name for name in ['test_material_condition_parity.py','test_biome_temperature_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/material_condition_fixture.rs']
+    sources=[*oracles,Path(__file__),*[lab.ROOT/'tools'/name for name in ['test_material_condition_parity.py','test_biome_temperature_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/material_condition_fixture.rs']
     tested_sources=base.source_hashes(sources);classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependencies=os.pathsep.join(map(str,libraries))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
-    def java(side,oracle,mode,path):run(['java','-Xmx1G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.horizonlab.parity.'+oracle,mode,path],side+'-'+mode)
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
+    def java(side,oracle,mode,path):run(['java','-Xmx1G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.sunriselab.parity.'+oracle,mode,path],side+'-'+mode)
     for side in jars:java(side,'VanillaBlockStateCodecOracle','export',build/f'facts-{side}.json')
     facts=json.loads((build/'facts-server.json').read_text())
     if facts!=json.loads((build/'facts-client.json').read_text()):raise ValueError('reference block metadata differs')
     fixtures=list(corpus(bundle['rules'],bundle['biomes']));inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(f,separators=(',',':'))+'\n' for f in fixtures),encoding='utf-8')
     fixture_paths=[inputs,build/'facts-client.json',build/'facts-server.json',*[build/(field+'.json') for field in bundle]];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True));binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'material_condition_fixture',build],'rust');references=[]
     for side,jar in jars.items():

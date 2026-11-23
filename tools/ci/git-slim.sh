@@ -6,7 +6,7 @@
 # Why: our self-hosted runners keep their checkout between jobs, and actions/checkout runs `git config gc.auto 0` in it
 # and then fetches into it (every branch and tag, plus the pull request's merge commit) at every job. Nothing ever
 # repacks, so each fetch adds a pack, and a fetch cut short by a cancelled job or a runner restart leaves its
-# `tmp_pack_*` behind. On 2026-11-03 playhorizon's light runners held 6822 packs (50 GB) each; on 2026-11-09 the desktop's
+# `tmp_pack_*` behind. On 2026-11-03 playsunrise's light runners held 6822 packs (50 GB) each; on 2026-11-09 the desktop's
 # checks runners held 1051 packs (checks-3: 111 GB, checks-1: 33 GB) and filled its disk.
 #
 # Run it where nothing fetches at the same time: before a job's checkout (a runner hook: ACTIONS_RUNNER_HOOK_JOB_STARTED)

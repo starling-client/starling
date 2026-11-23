@@ -133,12 +133,12 @@ pub trait EventLoopBuilderExtAndroid {
     fn handle_volume_keys(&mut self) -> &mut Self;
 }
 
-/// Horizon's patch: an input event for the app's hook, which answers the events it took (they go
+/// Sunrise's patch: an input event for the app's hook, which answers the events it took (they go
 /// no further) and `None` for the others.
 #[cfg(android_platform)]
 pub type InputHook = fn(&activity::input::InputEvent<'_>) -> Option<activity::InputStatus>;
 
-/// Horizon's patch: give the app each input event before winit does, for what winit 0.30 drops
+/// Sunrise's patch: give the app each input event before winit does, for what winit 0.30 drops
 /// or makes touches of (a controller's buttons and sticks, a mouse's hover, wheel and buttons).
 /// The first hook set stays.
 #[cfg(android_platform)]

@@ -7,9 +7,9 @@ Ranks:
      formats, generated tables to regenerate
   2  a harness newly fails against the new version, or its oracle no longer compiles (version_port.py
      harnesses, or --results), else changed vanilla code a harness proves: rerun it
-  3  changed vanilla code Horizon ports and no harness proves
-  4  new content: registry entries, and new classes in the vanilla packages Horizon ports
-  5  changed and new vanilla code Horizon doesn't port (two summary items)
+  3  changed vanilla code Sunrise ports and no harness proves
+  4  new content: registry entries, and new classes in the vanilla packages Sunrise ports
+  5  changed and new vanilla code Sunrise doesn't port (two summary items)
 
 Used through `version_port.py report OLD NEW`; the functions here take plain data so tests can build it.
 """
@@ -31,17 +31,17 @@ PROTOCOL = "net/minecraft/network/protocol/"
 DATAFIX = "net/minecraft/util/datafix/"
 # Generated tables, what makes them stale, and how to regenerate them (docs/version-ports.md, "Regenerate").
 GENERATORS = [
-    ("crates/horizon-core/src/version.rs", "python3 tools/gen_version_consts.py", lambda d: bool(d["facts"])),
-    ("crates/horizon-protocol/src/ids.rs", "python3 tools/generate_packet_ids.py",
+    ("crates/sunrise-core/src/version.rs", "python3 tools/gen_version_consts.py", lambda d: bool(d["facts"])),
+    ("crates/sunrise-protocol/src/ids.rs", "python3 tools/generate_packet_ids.py",
      lambda d: bool(d["packets"])),
-    ("crates/horizon-client/src/lan/tracking.rs", "python3 tools/generate_entity_tracking.py",
+    ("crates/sunrise-client/src/lan/tracking.rs", "python3 tools/generate_entity_tracking.py",
      lambda d: "minecraft:entity_type" in d["registries"]["changed"]
      or "net/minecraft/world/entity/EntityType" in d["classes"]["changed"]),
-    ("crates/horizon-client/src/lan/command_suggestions.rs", "python3 tools/generate_command_suggestions.py",
+    ("crates/sunrise-client/src/lan/command_suggestions.rs", "python3 tools/generate_command_suggestions.py",
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"] or d["commands"]["changed"])),
-    ("crates/horizon-client/src/lan/command_order.rs", "python3 tools/generate_lan_command_order.py",
+    ("crates/sunrise-client/src/lan/command_order.rs", "python3 tools/generate_lan_command_order.py",
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
-    ("crates/horizon-command/src/vanilla_order.rs", "python3 tools/generate_command_order.py",
+    ("crates/sunrise-command/src/vanilla_order.rs", "python3 tools/generate_command_order.py",
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
 ]
 # Registries whose new entries are new things to port.
@@ -82,7 +82,7 @@ def snake(name):
 
 
 def primary_file(entry, members, cls):
-    """The Horizon file that ports a changed class: the one whose comments name the most of its changed
+    """The Sunrise file that ports a changed class: the one whose comments name the most of its changed
     methods, else the one named after it, else one of the few files that name it. None for a class many
     files name in passing (Entity, BlockPos) when none names a changed method."""
     files = entry["rust"]
@@ -122,7 +122,7 @@ def blocking_items(diff, mapping, pinned_facts, root, regen=None):
         counts = ", ".join(f"{flow} +{len(c['added'])} -{len(c['removed'])} ~{len(c['renumbered'])}"
                            for flow, c in diff["packets"].items())
         items.append(item(1, "protocol", f"Protocol: packets {counts}",
-                          files=sorted(set(files_naming(constants, root)) | {"crates/horizon-protocol/src/ids.rs"}),
+                          files=sorted(set(files_naming(constants, root)) | {"crates/sunrise-protocol/src/ids.rs"}),
                           details={"packets": diff["packets"], "classes": packets}))
     if "world_version" in diff["facts"]:
         classes = diff["classes"]
@@ -130,12 +130,12 @@ def blocking_items(diff, mapping, pinned_facts, root, regen=None):
         changed = [c for c in classes["changed"] if c.startswith(DATAFIX)]
         schemas = sorted(c for c in added if "/schemas/V" in c and "$" not in c)
         fixes = sorted(c for c in added if "/fixes/" in c and "$" not in c)
-        horizon = vanilla_map.lookup(mapping, "net/minecraft/util/datafix/DataFixers")
+        sunrise = vanilla_map.lookup(mapping, "net/minecraft/util/datafix/DataFixers")
         named = {f for c in schemas + fixes for f in mapping["classes"].get(c, {}).get("rust", {})}
         a, b = diff["facts"]["world_version"]
         items.append(item(1, "save-format", f"Save format: DataFixers {a} -> {b}: {len(schemas)} schemas, "
                           f"{len(fixes)} fixes added, {len(changed)} datafix classes changed",
-                          files=sorted(set(horizon["rust"]) | named), harnesses=horizon["harnesses"],
+                          files=sorted(set(sunrise["rust"]) | named), harnesses=sunrise["harnesses"],
                           details={"schemas": schemas, "fixes": fixes, "changed": changed}))
     registry = diff["registries"]["changed"].get("minecraft:data_component_type", {})
     if registry.get("added") or registry.get("removed"):
@@ -174,7 +174,7 @@ def item_harnesses(path, classes, mapping, limit=8):
 
 
 def code_items(diff, mapping, results=None):
-    """Ranks 2, 3 and 5 from the changed and removed vanilla classes, one item per Horizon file that ports
+    """Ranks 2, 3 and 5 from the changed and removed vanilla classes, one item per Sunrise file that ports
     them (classes many files name in passing go by vanilla package)."""
     classes = diff["classes"]
     groups = defaultdict(lambda: {"classes": {}, "files": set(), "precise": 0, "methods": 0})
@@ -182,7 +182,7 @@ def code_items(diff, mapping, results=None):
     for name in list(classes["changed"]) + classes["removed"]:
         if name.startswith((PROTOCOL, DATAFIX)):
             continue  # The protocol and save-format items have them.
-        entry = classes["horizon"].get(name)
+        entry = classes["sunrise"].get(name)
         if not entry:
             unported[name.rsplit("/", 1)[0]] += 1
             continue
@@ -207,19 +207,19 @@ def code_items(diff, mapping, results=None):
         oracle = sorted(h for h in failed if results[h] == "oracle")
         top = sorted(group["classes"], key=lambda c: (-group["classes"][c]["methods"], c))
         title = (f"{key}: {len(group['classes'])} vanilla classes changed "
-                 f"({group['methods']} methods, {group['precise']} named in Horizon)")
+                 f"({group['methods']} methods, {group['precise']} named in Sunrise)")
         items.append(item(rank, kind, title, module=key, files=sorted(group["files"]), harnesses=harnesses,
                           failed=failed, oracle=oracle, classes={c: group["classes"][c] for c in top},
                           score=group["methods"] + 10 * group["precise"] + (1000 if failed else 0)))
     if unported:
-        items.append(item(5, "unported", f"{sum(unported.values())} changed or removed vanilla classes Horizon "
+        items.append(item(5, "unported", f"{sum(unported.values())} changed or removed vanilla classes Sunrise "
                           f"doesn't port, in {len(unported)} packages", packages=dict(unported.most_common())))
     return items
 
 
 def content_items(diff, mapping):
-    """Rank 4: new registry entries, and new classes by vanilla package where Horizon ports other classes of
-    that package (with those Horizon already names, after a port); new classes elsewhere go in one summary."""
+    """Rank 4: new registry entries, and new classes by vanilla package where Sunrise ports other classes of
+    that package (with those Sunrise already names, after a port); new classes elsewhere go in one summary."""
     items = []
     for registry in CONTENT:
         entries = diff["registries"]["changed"].get(registry, {}).get("added", [])
@@ -239,22 +239,22 @@ def content_items(diff, mapping):
         nearby = Counter(f for c, e in mapping["classes"].items() if c.rsplit("/", 1)[0] == package for f in e["rust"])
         files = sorted({f for c in ported for f in mapping["classes"][c]["rust"]}) or [f for f, _ in nearby.most_common(5)]
         items.append(item(4, "new-classes", f"New in {package.removeprefix('net/minecraft/')}: {len(names)} classes"
-                          f" ({len(ported)} already named in Horizon)", classes=sorted(names), ported=ported,
+                          f" ({len(ported)} already named in Sunrise)", classes=sorted(names), ported=ported,
                           files=files, score=len(names)))
     if elsewhere:
         items.append(item(5, "new-unported", f"{sum(elsewhere.values())} new vanilla classes in {len(elsewhere)} "
-                          f"packages Horizon doesn't port", packages=dict(elsewhere.most_common())))
+                          f"packages Sunrise doesn't port", packages=dict(elsewhere.most_common())))
     return items
 
 
 def harness_items(ran, items, new):
-    """Rank 1 when horizon-prepare fails on NEW (its exporters no longer compile, or a format broke); rank 2 for
+    """Rank 1 when sunrise-prepare fails on NEW (its exporters no longer compile, or a format broke); rank 2 for
     each newly failing harness that no code item names, so none is lost."""
     found = []
     prepared = ran["prepare"]
     if prepared["status"] != "ok":
         what = "its exporters no longer compile" if prepared.get("compile_errors") else "it fails"
-        found.append(item(1, "prepare-failed", f"horizon-prepare on {new}: {what}", files=["crates/horizon-prepare"],
+        found.append(item(1, "prepare-failed", f"sunrise-prepare on {new}: {what}", files=["crates/sunrise-prepare"],
                           error=prepared["error"], compile_errors=prepared.get("compile_errors", [])))
     named = {h for i in items for h in i.get("failed", [])}
     for harness, entry in ran["harnesses"].items():
@@ -290,7 +290,7 @@ def build(diff, mapping, old, new, pinned_facts, results=None, root=ROOT, regen=
             "facts": diff["facts"], "ranks": dict(sorted(Counter(i["rank"] for i in items).items())),
             "classes": {"added": len(classes["added"]), "removed": len(classes["removed"]),
                         "moved": len(classes["moved"]), "changed": len(classes["changed"]),
-                        "horizon": len(classes["horizon"])},
+                        "sunrise": len(classes["sunrise"])},
             "generators": ({name: e["status"] for name, e in regen["generators"].items()} if regen
                            else {i["files"][0]: "stale" for i in items if i["kind"] == "regenerate"}),
         },
@@ -314,7 +314,7 @@ def markdown(report, limit=12):
         lines.append(f"- {key}: {a} -> {b}")
     c = summary["classes"]
     lines.append(f"- classes: +{c['added']} -{c['removed']}, {c['moved']} moved, {c['changed']} changed; "
-                 f"{c['horizon']} changed or removed classes concern Horizon code or harnesses")
+                 f"{c['sunrise']} changed or removed classes concern Sunrise code or harnesses")
     lines.append(f"- work items by rank: " + ", ".join(f"{r}: {n}" for r, n in summary["ranks"].items()))
     if report["clean"]:
         lines.append(f"- unchanged: {', '.join(report['clean'])}")
@@ -348,7 +348,7 @@ def markdown(report, limit=12):
                 lines.append(f"- harnesses: {', '.join(entry['harnesses'][:limit])}"
                              + (f" (+{len(entry['harnesses']) - limit})" if len(entry["harnesses"]) > limit else ""))
             if entry.get("files"):
-                lines.append(f"- Horizon: {', '.join(f'`{f}`' for f in entry['files'][:limit])}"
+                lines.append(f"- Sunrise: {', '.join(f'`{f}`' for f in entry['files'][:limit])}"
                              + (f" (+{len(entry['files']) - limit})" if len(entry["files"]) > limit else ""))
             if entry.get("classes") and isinstance(entry["classes"], dict):
                 shown = list(entry["classes"].items())[:limit]
@@ -363,7 +363,7 @@ def markdown(report, limit=12):
                 lines.append(f"- entries: {', '.join(n.split(':')[-1] for n in entry['entries'][:limit])}"
                              + (f" (+{len(entry['entries']) - limit})" if len(entry["entries"]) > limit else ""))
             if entry.get("ported"):
-                lines.append(f"- already in Horizon: {', '.join(short(n) for n in entry['ported'][:limit])}")
+                lines.append(f"- already in Sunrise: {', '.join(short(n) for n in entry['ported'][:limit])}")
             details = entry.get("details", {})
             for key in ("schemas", "fixes"):
                 if details.get(key):

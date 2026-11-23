@@ -7,7 +7,7 @@ and the UTF-8/ISO-8859-1 fallback) and stored back; eula.txt through Eula;
 ops.json, whitelist.json, banned-players.json and banned-ips.json through
 StoredUserList (Gson, Java HashMap order, ban dates, expiry, scripted adds and
 removals). VanillaServerFilesOracle runs on the pinned server JAR, the
-`server_files_probe` example on Horizon's port; the outputs must be identical.
+`server_files_probe` example on Sunrise's port; the outputs must be identical.
 Random defaults (the management secret, an empty level seed) and the stored
 timestamps are placeholders on both sides."""
 import os
@@ -181,7 +181,7 @@ def explain(build):
             diffs = [(x, y) for x, y in zip(a, b) if x != y][:4]
             if len(a) != len(b):
                 diffs.append((f'<{len(a)} lines>', f'<{len(b)} lines>'))
-            text += f'\n  {name}: (vanilla, horizon) {diffs}'
+            text += f'\n  {name}: (vanilla, sunrise) {diffs}'
     return text
 
 
@@ -191,23 +191,23 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaServerFilesOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaServerFilesOracle.java'
     sources = [Path(__file__).resolve(), oracle, lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/examples/probe/server_files_probe.rs',
-               *sorted((lab.ROOT / 'crates/horizon-client/src/server').glob('*.rs'))]
+               lab.ROOT / 'crates/sunrise-client/examples/probe/server_files_probe.rs',
+               *sorted((lab.ROOT / 'crates/sunrise-client/src/server').glob('*.rs'))]
     tested = base.source_hashes(sources)
     cases, count = make_cases(build)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     oh.run_logged(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath',
-                   lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                   lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                   build, 'compile-java')
     command = oh.build_probe(build, 'server_files_probe')
     oh.run_logged([*command, cases, build / 'rust.txt'], build, 'rust')
     oh.run_logged(['java', '-Xmx1g', '-Duser.timezone=UTC', '-Djava.awt.headless=true', '-cp',
-                   str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaServerFilesOracle',
+                   str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaServerFilesOracle',
                    cases, build / 'server.txt'], build, 'server')
     try:
         matched = base.compare(build / 'server.txt', build / 'rust.txt')

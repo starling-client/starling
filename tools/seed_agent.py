@@ -1,7 +1,7 @@
-"""Randoms that repeat between vanilla and Horizon (docs/parity-workflow.md, "Randoms that repeat").
+"""Randoms that repeat between vanilla and Sunrise (docs/parity-workflow.md, "Randoms that repeat").
 
-`java_option(work, release)` builds the oracle JVM's agent (mods/horizon/src/test/.../SeedAgent.java) into
-work/seed-agent.jar and returns its -javaagent option; `ENV` is Horizon's switch. A harness script's
+`java_option(work, release)` builds the oracle JVM's agent (mods/sunrise/src/test/.../SeedAgent.java) into
+work/seed-agent.jar and returns its -javaagent option; `ENV` is Sunrise's switch. A harness script's
 `sync_randoms` step then sets the uniquifier, the entity-id counter and the level's random in both engines.
 """
 import shutil
@@ -14,9 +14,9 @@ try:
 except ImportError:
     import lab
 
-SOURCE = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/SeedAgent.java'
-ENV = {'HORIZON_TEST_SEEDS': '1'}
-MANIFEST = 'Manifest-Version: 1.0\r\nPremain-Class: dev.horizonlab.parity.SeedAgent\r\n\r\n'
+SOURCE = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/SeedAgent.java'
+ENV = {'SUNRISE_TEST_SEEDS': '1'}
+MANIFEST = 'Manifest-Version: 1.0\r\nPremain-Class: dev.sunriselab.parity.SeedAgent\r\n\r\n'
 # A fixed date: the same classes make the same jar, which tools/parity_shim.py hashes as an oracle input.
 STAMP = (1980, 1, 1, 0, 0, 0)
 

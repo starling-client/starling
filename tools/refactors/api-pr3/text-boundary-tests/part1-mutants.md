@@ -24,8 +24,8 @@ Reproduction commands:
 
 ```sh
 cargo test --manifest-path tools/refactors/api-pr3/text-boundary-tests/Cargo.toml --lib
-cargo test -p horizon-client-core component::tests --lib
-HORIZON_TEST_RESOURCES=$PWD/.local/horizon-client/26.3 cargo test -p horizon-client --lib generated_text_crossings_refuse_too_deep_before_boss_bar_writes -- --ignored
+cargo test -p sunrise-client-core component::tests --lib
+SUNRISE_TEST_RESOURCES=$PWD/.local/sunrise-client/26.3 cargo test -p sunrise-client --lib generated_text_crossings_refuse_too_deep_before_boss_bar_writes -- --ignored
 ```
 
 Resource-backed tests additionally use fresh scratch home/configuration directories

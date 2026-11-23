@@ -1,11 +1,11 @@
-//! The launcher's view of Horizon's design tokens (`crates/horizon-theme`, described in
-//! `docs/design-system.md`): the night look (`horizon_theme::night`, a night sky or a dawn with
-//! Horizon's violet) in Bricolage Grotesque, with Geist Mono for paths and codes (all bundled, SIL
+//! The launcher's view of Sunrise's design tokens (`crates/sunrise-theme`, described in
+//! `docs/design-system.md`): the night look (`sunrise_theme::night`, a night sky or a dawn with
+//! Sunrise's violet) in Bricolage Grotesque, with Geist Mono for paths and codes (all bundled, SIL
 //! Open Font License). Screens not rebuilt yet draw the Blocks parts in the night's colours.
 use gpui::{rgb, Hsla, WindowAppearance};
-use horizon_launcher::backend::{Appearance, Settings};
-use horizon_launcher::themes::{self, Accent};
-use horizon_theme as tokens;
+use sunrise_launcher::backend::{Appearance, Settings};
+use sunrise_launcher::themes::{self, Accent};
+use sunrise_theme as tokens;
 use std::time::Duration;
 
 pub use tokens::night::{self, Night};
@@ -58,7 +58,7 @@ pub struct Theme {
     pub danger: Hsla,
     pub success: Hsla,
     pub warn: Hsla,
-    /// The blocky parts (`horizon_theme::Blocks`).
+    /// The blocky parts (`sunrise_theme::Blocks`).
     pub side: Hsla,
     pub panel: Hsla,
     pub raised: Hsla,
@@ -94,10 +94,10 @@ fn c(hex: u32) -> Hsla {
 }
 
 /// Whether the launcher is pinned dark (`Some(true)`) or light, or follows the system (`None`):
-/// `HORIZON_LAUNCHER_APPEARANCE=light` or `dark` (for screenshots and tests), else the player's
+/// `SUNRISE_LAUNCHER_APPEARANCE=light` or `dark` (for screenshots and tests), else the player's
 /// choice in Settings.
 pub fn pinned_dark(choice: Appearance) -> Option<bool> {
-    match std::env::var("HORIZON_LAUNCHER_APPEARANCE").as_deref() {
+    match std::env::var("SUNRISE_LAUNCHER_APPEARANCE").as_deref() {
         Ok("light") => Some(false),
         Ok("dark") => Some(true),
         _ => match choice {
@@ -164,14 +164,14 @@ impl Theme {
     /// pages not rebuilt for it yet draw with these tokens comes out as the mockup's parts do,
     /// white text and fills at a few opacities, no borders, no bevels.
     fn glass(self, accent: Accent) -> Self {
-        use horizon_theme::glass::{fill, ink, Glass, BLUR, DANGER, LIVE, TINT, WARN};
+        use sunrise_theme::glass::{fill, ink, Glass, BLUR, DANGER, LIVE, TINT, WARN};
         let dark = self.dark;
         // Light: the ink where dark has white, as `glass_ui::white` does.
         let white = |a: f32| {
             if dark {
                 gpui::white().opacity(a)
             } else {
-                c(horizon_theme::glass::ON_LIGHT).opacity(a)
+                c(sunrise_theme::glass::ON_LIGHT).opacity(a)
             }
         };
         let none = gpui::transparent_black();
@@ -253,11 +253,11 @@ pub const SELECTION: f32 = 0.22;
 mod tests {
     use super::{from_settings, tokens, SELECTION};
     use gpui::WindowAppearance;
-    use horizon_launcher::backend::{Appearance, Settings};
-    use horizon_launcher::themes::Accent;
+    use sunrise_launcher::backend::{Appearance, Settings};
+    use sunrise_launcher::themes::Accent;
 
     /// Nord asks for the solid, square Blocks look: no glass, and its own polar-night palette
-    /// with the frost accent rather than Horizon's violet glass colours.
+    /// with the frost accent rather than Sunrise's violet glass colours.
     #[test]
     fn a_palette_theme_is_solid_and_square() {
         let settings = Settings {
@@ -283,7 +283,7 @@ mod tests {
         channel(16) | channel(8) | channel(0)
     }
 
-    /// What the Servers page draws besides text (whose colours horizon-theme's own test holds to
+    /// What the Servers page draws besides text (whose colours sunrise-theme's own test holds to
     /// WCAG AA on every background): the keyboard focus ring, the borders of a focused or refused
     /// field (WCAG 1.4.11 asks 3:1 for those), and text over a selected suggestion.
     #[test]

@@ -2,7 +2,7 @@
 """Migrate readonly dependency constructor fixtures to the complete declaration shape."""
 from pathlib import Path
 
-for path in [Path('crates/horizon-mod-vocab/src/world/phase.rs'), Path('crates/horizon-mod-vocab/src/wire/wire_types.rs'), Path('crates/horizon-mod-vocab/src/wire/wire_layout_tests.rs')]:
+for path in [Path('crates/sunrise-mod-vocab/src/world/phase.rs'), Path('crates/sunrise-mod-vocab/src/wire/wire_types.rs'), Path('crates/sunrise-mod-vocab/src/wire/wire_layout_tests.rs')]:
     source = path.read_text()
     needle = 'PackageDependency::new('
     cursor = 0

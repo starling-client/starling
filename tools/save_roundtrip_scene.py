@@ -61,7 +61,7 @@ FULL = [
     ('oak_hanging_sign', f'{{front_text:{SIGN_SIDE}}}'),
     # RequiredPlayerRange 0: a spawner ticks its Delay down only while a player is within
     # that range, and each game puts its player at a random spot near the world spawn,
-    # which can be 16 blocks from this one (vanilla 20 in one run, Horizon 10 in another).
+    # which can be 16 blocks from this one (vanilla 20 in one run, Sunrise 10 in another).
     # With range 0 nobody is ever near it, so the Delay is the same in every run.
     ('spawner', '{SpawnData:{entity:{id:"minecraft:pig"}},Delay:20s,MinSpawnDelay:200s,MaxSpawnDelay:800s,'
                 'SpawnCount:4s,MaxNearbyEntities:6s,RequiredPlayerRange:0s,SpawnRange:4s}'),
@@ -98,7 +98,7 @@ FULL = [
 ]
 
 # The same blocks with no NBT: vanilla fills every field with its default, which
-# Horizon must reproduce when it loads and saves them.
+# Sunrise must reproduce when it loads and saves them.
 BLOCK_ENTITIES = FULL + [(block, '') for block, nbt in FULL if nbt]
 
 # (entity id, extra SNBT). Each also gets UUID, Pos, NoAI, Silent, a name and a tag.

@@ -1,6 +1,6 @@
-# The same seed in vanilla and in Horizon
+# The same seed in vanilla and in Sunrise
 
-`tools/world_compare.py` compares two saved worlds of one seed, the one vanilla 26.3 wrote and the one Horizon
+`tools/world_compare.py` compares two saved worlds of one seed, the one vanilla 26.3 wrote and the one Sunrise
 wrote, chunk by chunk: the seed and spawn, the biome of every cell, every structure start, and the blocks. It is
 for the question "does this seed give the same world", the whole game answering it, where the generator harnesses
 (`tools/test_chunk_generation_parity.py`, `test_biome_generation_parity.py`, `test_decoration_region_parity.py` and
@@ -11,12 +11,12 @@ the others) answer it a stage at a time against the pinned bytecode.
 ```sh
 python3 tools/perf_bench.py --game vanilla --seed 12345 --distances 8 --scenes village --repeats 1 --seconds 3 --sizes 1280x720 --label seed-vanilla
 cp -r .local/perf-bench/vanilla/saves/PerfBench /tmp/world-vanilla     # the next run deletes it
-python3 tools/perf_bench.py --game horizon --build target/release --seed 12345 --distances 8 --scenes village --repeats 1 --seconds 3 --sizes 1280x720 --label seed-horizon
-cp -r .local/perf-bench/horizon/saves/PerfBench /tmp/world-horizon
-python3 tools/world_compare.py /tmp/world-vanilla /tmp/world-horizon
+python3 tools/perf_bench.py --game sunrise --build target/release --seed 12345 --distances 8 --scenes village --repeats 1 --seconds 3 --sizes 1280x720 --label seed-sunrise
+cp -r .local/perf-bench/sunrise/saves/PerfBench /tmp/world-sunrise
+python3 tools/world_compare.py /tmp/world-vanilla /tmp/world-sunrise
 ```
 
-Each game creates the world itself (vanilla through `WorldOpenFlows.createFreshLevel`, Horizon through `open`),
+Each game creates the world itself (vanilla through `WorldOpenFlows.createFreshLevel`, Sunrise through `open`),
 generates the chunks around the flight and writes them when it quits, with no EULA to accept and no server to run.
 `tools/vanilla_world_check.py` makes vanilla's world from the dedicated server instead.
 
@@ -34,7 +34,7 @@ spills across a chunk border, and two runs of vanilla itself differ there. So th
 
 ## Results
 
-Horizon `main` of 2026-11-08 (a `fast` build with a render-only change on top, which doesn't touch generation) against
+Sunrise `main` of 2026-11-08 (a `fast` build with a render-only change on top, which doesn't touch generation) against
 vanilla 26.3, render distance 8 around the benchmark's village flight, on Windows. Share of
 the positions holding a block in either world that hold it in both, over the chunks both saved as `full`:
 
@@ -59,7 +59,7 @@ the positions holding a block in either world that hold it in both, over the chu
 Terrain, biomes, structures and spawn are the same for both seeds, a large negative one included, and ores and
 sculk, moss and grass are as close to vanilla as vanilla is to itself. **Trees are the one thing that sits below
 that floor**: oak 56% against 63%, dark oak 52% against 69% (dark oak is rare, so its sample is small). Where the
-overlap of two vanilla runs is 60 to 70%, a gap of a few points may be the order Horizon decorates in
+overlap of two vanilla runs is 60 to 70%, a gap of a few points may be the order Sunrise decorates in
 (`DecorationOrder`) and not a different tree: that is the next thing to look at with trees alone, on a flat run of
 chunks generated in one fixed order by both.
 

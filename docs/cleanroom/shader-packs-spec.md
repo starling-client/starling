@@ -50,7 +50,7 @@ may depend on. "Implementer decides" means the documentation is silent; see sect
 
 ### 0.4 Out of scope
 
-Mod integrations described by `[IR:Mod Support/*]` (Distant Horizons `dh*` programs and keys, Voxy `voxy.json`,
+Mod integrations described by `[IR:Mod Support/*]` (Distant Sunrises `dh*` programs and keys, Voxy `voxy.json`,
 Vivecraft, Photonics, Colorwheel `colorwheel.properties`), resource-pack custom skies and connected textures.
 Packs that ship such files must still load; the extra files are ignored. `[PACK]` shows `voxy.json`,
 `colorwheel.properties`, `pack.json` and `dh*` keys in real packs.
@@ -194,7 +194,7 @@ Option macros (section 8) are also defined, with the values the player chose.
 - Fragment outputs: index n of the output list (section 6.1.4) is written through `gl_FragData[n]`, through
   `out vec4 outColor<n>` (GLSL 130+), or through `layout(location = n) out` (330+). `[OF-SH Color Attachments]`, `[IR:Constants/rendertargets]`
 - `[IR:Misc/patcher]` warns that its implementation reserves identifiers starting `iris_`, `irisMain`, `moj_import`;
-  packs avoid them. Horizon may reserve its own prefix in the same way.
+  packs avoid them. Sunrise may reserve its own prefix in the same way.
 - Packs rely on driver leniency that the GLSL spec does not allow (implicit int→float casts, non-constant `const`,
   constant arguments used in constant expressions, functions called at global scope). `[SL:Compiler_Behavior_Notes]` lists them per vendor. OQ-29.
 
@@ -285,7 +285,7 @@ column, recursively. `[OF-SH Shader Programs]`, `[IR:Programs/gbuffers]`
 | `gbuffers_line` | block outline, fishing line | `gbuffers_basic` | `[OF-SH]`, `[IR]` |
 | `gbuffers_textured` | particles (unlit) | `gbuffers_basic` | `[IR]` also lists the world border here |
 | `gbuffers_textured_lit` | lit particles (most particles) | `gbuffers_textured` | `[OF-SH]` lists the world border here. OQ-4 |
-| `gbuffers_skybasic` | sky colour / horizon, stars, void | `gbuffers_basic` | |
+| `gbuffers_skybasic` | sky colour / sunrise, stars, void | `gbuffers_basic` | |
 | `gbuffers_skytextured` | sun, moon | `gbuffers_textured` | |
 | `gbuffers_clouds` | vanilla clouds | none `[OF-SH]` / `gbuffers_textured` `[IR]`, `[SL]` | OQ-3 |
 | `gbuffers_terrain` | terrain blocks: solid and cutout | `gbuffers_textured_lit` | |
@@ -406,7 +406,7 @@ Defaults marked "true" for the shadow-content keys are not stated by `[OF-SP]`; 
 |---|---|---|---|---|
 | `clouds` | `fast`, `fancy`, `off` | overrides the player's cloud setting (`[OF-SP]`: the video setting wins) | player's choice | A `[OF-SP]`, `[IR:features]`; precedence OQ-20 |
 | `moon`, `sun` | bool | draw the moon / sun texture | on (implied, not stated) | A |
-| `sky`, `stars` | bool | draw the vanilla sky (disc, horizon, void) / the stars | on (implied) | E |
+| `sky`, `stars` | bool | draw the vanilla sky (disc, sunrise, void) / the stars | on (implied) | E |
 | `underwaterOverlay` | bool | the water overlay when the camera is under water | on (implied) | A |
 | `vignette` | bool | vanilla vignette | on (implied) | A |
 | `oldHandLight` | bool | `heldBlockLightValue` (and `heldItemId`) take the hand with the higher light value; the player can override | true `[IR]`, false `[SD]` | A; OQ-21 |
@@ -581,7 +581,7 @@ component-wise on vectors. `[IR:custom_uniforms]`
   `minecraft:entity_flame`, `minecraft:zombie_villager_converting`, `minecraft:current_player`,
   `minecraft:end_crystal_beam`; in `item.properties` `trim_<material>`, `minecraft:player_cape`, `minecraft:elytra_with_cape`. `[IR]`
 - Value ranges and the value for "not in the file": section 5.3 and OQ-9.
-- Mods may ship `assets/<modid>/shaders/block.properties` (and item, entity) in their own files `[OF-SH]`; Horizon's
+- Mods may ship `assets/<modid>/shaders/block.properties` (and item, entity) in their own files `[OF-SH]`; Sunrise's
   sandboxed mods are out of scope for revision 1.
 - Without `block.properties`, ids follow the pre-1.13 numeric block ids (Legacy). `[IR:Attributes/mc_Entity]`
 
@@ -690,7 +690,7 @@ Types and meanings are from `[OF-SH Uniforms]` unless another tag is given. E ro
 | `wetness` | float | `rainStrength` smoothed with `wetnessHalflife` (600 ticks) when rising and `drynessHalflife` (200 ticks) when falling | S | A |
 | `thunderStrength` | float | thunder level 0..1 | F | E |
 | `lightningBoltPosition` | vec4 | player-space position of one rendered lightning bolt, w = 1; zero if none | F | E |
-| `fogColor` | vec3 | vanilla horizon/fog colour (sRGB values) | D | A |
+| `fogColor` | vec3 | vanilla sunrise/fog colour (sRGB values) | D | A |
 | `skyColor` | vec3 | vanilla upper sky colour | F | A |
 | `fogMode` | int | `GL_LINEAR` 9729, `GL_EXP` 2048, `GL_EXP2` 2049 `[GL]` | D | A |
 | `fogStart`, `fogEnd` | float | vanilla fog distances, blocks | F (OQ-36) | A |
@@ -977,7 +977,7 @@ error). Bound as `layout(std430, binding = <index>) buffer`. Content persists ac
 ### 6.6 Optional and per-feature limits
 
 `[IR:Misc/macos]`: compute shaders, images and SSBOs need GL 4.2/4.3-class hardware; another loader limits macOS to 8
-colour buffers. Horizon runs on wgpu and decides its own limits (OQ-31).
+colour buffers. Sunrise runs on wgpu and decides its own limits (OQ-31).
 
 ### 6.7 Formats
 

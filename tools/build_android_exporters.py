@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build Horizon's original exporter bundle for the APK, never package Minecraft files.
+"""Build Sunrise's original exporter bundle for the APK, never package Minecraft files.
 
-Requires a host JDK of the pinned major. HORIZON_MINECRAFT_DIR can supply the
+Requires a host JDK of the pinned major. SUNRISE_MINECRAFT_DIR can supply the
 already downloaded input files; otherwise fetch the pinned jars and libraries
 into an ignored build cache. No accounts, assets or player data are read.
 """
@@ -48,7 +48,7 @@ def inputs(root):
     pins = json.loads((root / 'research-lock.json').read_text(encoding='utf-8'))['minecraft']
     version = pins['version']
     home = root / '.local/android-exporter-inputs'
-    supplied = os.environ.get('HORIZON_MINECRAFT_DIR')
+    supplied = os.environ.get('SUNRISE_MINECRAFT_DIR')
     supplied = Path(supplied) if supplied else None
     manifest = home / 'versions' / version / (version + '.json')
     accepted = [pins['manifest_sha1'], *pins.get('accepted_manifest_sha1', [])]
@@ -91,9 +91,9 @@ def copy_bundle(source, destination):
     for name, checksum in classes.items():
         path = PurePosixPath(name)
         if (path.is_absolute() or '..' in path.parts or '\\' in name
-                or not name.startswith(('server/dev/horizonlab/parity/', 'client/dev/horizonlab/parity/'))
+                or not name.startswith(('server/dev/sunriselab/parity/', 'client/dev/sunriselab/parity/'))
                 or not name.endswith('.class')):
-            raise ValueError('Non-Horizon class in exporter bundle')
+            raise ValueError('Non-Sunrise class in exporter bundle')
         if hashlib.sha256((source / path).read_bytes()).hexdigest() != checksum:
             raise ValueError('Damaged exporter class')
     if source.resolve() == destination.resolve():
@@ -118,7 +118,7 @@ def main():
         env.pop(name, None)
     result = subprocess.run([
         'cargo', 'run', '--manifest-path', str(ROOT / 'Cargo.toml'), '--profile', 'quick',
-        '-p', 'horizon-prepare', '--', 'compile-exporters', '--root', str(ROOT),
+        '-p', 'sunrise-prepare', '--', 'compile-exporters', '--root', str(ROOT),
         '--prepare', '--minecraft-dir', str(home), '--server-jar', str(server),
     ], cwd=ROOT, env=env, text=True, encoding='utf-8', stdout=subprocess.PIPE, check=True)
     print(result.stdout, end='')

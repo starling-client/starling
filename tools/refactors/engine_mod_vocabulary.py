@@ -6,7 +6,7 @@ import json
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
-CRATES = ('horizon-client', 'horizon-client-lib', 'horizon-client-render')
+CRATES = ('sunrise-client', 'sunrise-client-lib', 'sunrise-client-render')
 # Explicit platform operations, including deliberately shadowed vocabulary install.
 ITEMS = ('testing::with_mods', 'testing::FakeHost', 'testing::FakeServerHost',
          'testing::FakeClientHost', 'testing::ItemKeyError', '__private::part_tests',
@@ -22,10 +22,10 @@ def main():
         folder = ROOT / 'crates' / crate
         manifest = folder / 'Cargo.toml'
         text = manifest.read_text().replace(
-            'horizon-mod-api = { path = "../horizon-mod-api" }',
-            'mod_api = { package = "horizon-mod-vocab", path = "../horizon-mod-vocab" }').replace(
-            'horizon-mod-api = { path = "../horizon-mod-api", features = ["testing"] }',
-            'mod_platform = { package = "horizon-mod-api", path = "../horizon-mod-api", features = ["testing"] }')
+            'sunrise-mod-api = { path = "../sunrise-mod-api" }',
+            'mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }').replace(
+            'sunrise-mod-api = { path = "../sunrise-mod-api", features = ["testing"] }',
+            'mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"] }')
         manifest.write_text(text)
         for path in folder.rglob('*.rs'):
             text = original = path.read_text()
@@ -47,7 +47,7 @@ def main():
                 path.write_text(text)
     path = ROOT / 'tools/layers.json'
     config = json.loads(path.read_text())
-    removed = {edge for edge in config['allowed'] if edge.split(' -> ')[0] in CRATES and edge.split(' -> ')[1] in ('horizon-mod-api', 'horizon-mod-api-gen', 'horizon-mod-api-macros')}
+    removed = {edge for edge in config['allowed'] if edge.split(' -> ')[0] in CRATES and edge.split(' -> ')[1] in ('sunrise-mod-api', 'sunrise-mod-api-gen', 'sunrise-mod-api-macros')}
     # Preserve the original formatting of this hand-maintained config.
     text = path.read_text()
     for edge in removed:

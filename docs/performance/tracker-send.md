@@ -6,25 +6,25 @@ The isolated measurements below support a conservative 400 / 400 cutoff instead.
 The ignored `lan::entity::send_bench::tracker_send_benchmark` compares the serial
 and parallel send strategies in the same optimized binary. The production
 thresholds are 400 viewers and 400 active entities. Normal tests skip it, and `--ignored` alone returns
-without measuring: `HORIZON_SEND_BENCH=1` is also required.
+without measuring: `SUNRISE_SEND_BENCH=1` is also required.
 
 ## Prepare without running
 
 ```sh
-cargo test --locked --profile fast -p horizon-client-lib --lib \
+cargo test --locked --profile fast -p sunrise-client-lib --lib \
   --features tracker-send-bench --no-run
 ```
 
 Finish compilation, correctness tests and other workloads before measuring.
 Record the commit, Rust version, CPU, allowed CPU set, worker count and system
 load with the results. Use an otherwise idle machine and the same CPU affinity
-for both paths; `HORIZON_SERIAL_TICK=all` must be unset.
+for both paths; `SUNRISE_SERIAL_TICK=all` must be unset.
 
 ## Run only when the machine is available
 
 ```sh
-HORIZON_WORKER_THREADS=4 HORIZON_SEND_BENCH=1 \
-  cargo test --locked --profile fast -p horizon-client-lib --lib \
+SUNRISE_WORKER_THREADS=4 SUNRISE_SEND_BENCH=1 \
+  cargo test --locked --profile fast -p sunrise-client-lib --lib \
   --features tracker-send-bench \
   lan::entity::send_bench::tracker_send_benchmark \
   -- --ignored --exact --nocapture --test-threads=1
@@ -36,7 +36,7 @@ Every measured tick checks packet bytes, packet order and tracking events for
 equality outside the timed region. `SEND_BENCH` lines contain raw JSON samples
 in nanoseconds; keep all rounds, including slow ones.
 
-The opt-in feature selects the executable's `horizon_threads::GameAllocator`
+The opt-in feature selects the executable's `sunrise_threads::GameAllocator`
 for this test binary. It has no effect on normal library builds, and ordinary
 tests keep their existing allocator unless the feature is explicitly enabled.
 

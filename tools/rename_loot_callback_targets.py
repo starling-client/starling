@@ -4,10 +4,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PATHS = [
-    "crates/horizon-world/src/loot.rs",
-    "crates/horizon-world/tests/native_load_hooks.rs",
-    "crates/horizon-items/src/items.rs",
-    "crates/horizon-client/src/game/native_hooks/shared.rs",
+    "crates/sunrise-world/src/loot.rs",
+    "crates/sunrise-world/tests/native_load_hooks.rs",
+    "crates/sunrise-items/src/items.rs",
+    "crates/sunrise-client/src/game/native_hooks/shared.rs",
 ]
 
 for name in PATHS:

@@ -12,7 +12,7 @@ widgets for that state as RecipeBookComponent.initVisuals and
 RecipeBookPage.init do and records every GuiGraphicsExtractor call of their
 extractRenderState, the tooltips and GhostSlots.extractRenderState, with its
 pose; examples/probe/recipe_book_render_fixture lays out the same state with
-horizon_client::recipe_book_screen, which the game paints. The call lists
+sunrise_client::recipe_book_screen, which the game paints. The call lists
 must agree.
 """
 import argparse
@@ -126,12 +126,12 @@ def main():
     chosen = cases(args.cases, args.seed)
     inputs = work / 'cases.jsonl'
     inputs.write_text(''.join(json.dumps(c) + '\n' for c in chosen))
-    run = subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + deps, 'dev.horizonlab.parity.VanillaRecipeBookScreenOracle',
+    run = subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + deps, 'dev.sunriselab.parity.VanillaRecipeBookScreenOracle',
                           str(inputs), str(work / 'vanilla.jsonl')], capture_output=True, text=True)
     if run.returncode:
         print(run.stderr[-4000:])
         sys.exit('oracle failed')
-    lib.cargo_example('horizon-client', 'recipe_book_render_fixture', lib.RESOURCES, inputs, work / 'rust.jsonl')
+    lib.cargo_example('sunrise-client', 'recipe_book_render_fixture', lib.RESOURCES, inputs, work / 'rust.jsonl')
     vanilla = [json.loads(l) for l in (work / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (work / 'rust.jsonl').read_text().splitlines()]
     assert len(vanilla) == len(rust) == len(chosen), (len(vanilla), len(rust), len(chosen))
@@ -154,7 +154,7 @@ def main():
             brief = {k: v for k, v in case.items() if k not in ('collections',)}
             print(f'    {json.dumps(brief)[:700]}')
             print(f'      call {i}: vanilla {json.dumps(x)}')
-            print(f'      call {i}: horizon {json.dumps(y)}')
+            print(f'      call {i}: sunrise {json.dumps(y)}')
     print(f'{passed}/{len(chosen)} cases match')
     if errors or failures:
         sys.exit(1)

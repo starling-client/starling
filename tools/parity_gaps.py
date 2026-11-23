@@ -6,7 +6,7 @@
     parity_gaps.py readme --write   rewrites it (the block under "Project status" and the badge), then commit it
 
 The harness count says that what is tested passes; it can't say what isn't tested. The port ledger
-(tools/port_ledger.py) read every vanilla 26.3 method against Horizon's code, and the rows a player would notice went
+(tools/port_ledger.py) read every vanilla 26.3 method against Sunrise's code, and the rows a player would notice went
 into ten issues, one per area, as a checklist: a row is ticked when it is fixed (or turns out wrong). The headline
 is the number of rows not ticked yet, and it goes down as gaps close. Run it after ticking rows, and in each weekly
 roadmap pass (roadmap/README.md).
@@ -62,8 +62,8 @@ def block(lists: list[dict]) -> str:
     parts = "; ".join(f"{l['area']} [{l['open']}](https://github.com/{REPO}/issues/{l['number']})"
                       for l in sorted(lists, key=lambda l: -l["open"]))
     return (f"**Player-visible gaps: {still} open** of the {total} the [port ledger](tools/port_ledger.py) found, "
-            "reading every vanilla 26.3 method against Horizon's code: vanilla behaviour a player would notice that "
-            f"Horizon doesn't have yet. By area: {parts}. This number goes down as gaps close "
+            "reading every vanilla 26.3 method against Sunrise's code: vanilla behaviour a player would notice that "
+            f"Sunrise doesn't have yet. By area: {parts}. This number goes down as gaps close "
             "(`tools/parity_gaps.py`); the table below says what the harnesses compare.")
 
 
@@ -84,7 +84,7 @@ def rewrite(text: str, new_block: str, still: int) -> str:
     if BADGE.search(text):
         return BADGE.sub(lambda m: f"{m.group(1)}{still}{m.group(3)}", text)
     # No badge yet: it goes last in the badge row, the paragraph that closes just above the title.
-    row_end = text.find("</p>\n\n# Horizon")
+    row_end = text.find("</p>\n\n# Sunrise")
     badge = (f'  <a href="#project-status"><img src="https://img.shields.io/badge/player--visible%20gaps-{still}'
              f'%20open-F0795A" alt="Player-visible gaps open"></a>\n')
     return text[:row_end] + badge + text[row_end:] if row_end >= 0 else text

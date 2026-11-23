@@ -1,6 +1,6 @@
 # Native mods
 
-Native mod docs live in the modding book: [native mods](modding/src/how-to/native-mods.md), [trait mods, Parts and attachments](modding/src/concepts/parts.md), [injections](modding/src/concepts/injections.md) and the [hook notes](https://arismoko.github.io/horizon/reference/hook-notes.html).
+Native mod docs live in the modding book: [native mods](modding/src/how-to/native-mods.md), [trait mods, Parts and attachments](modding/src/concepts/parts.md), [injections](modding/src/concepts/injections.md) and the [hook notes](https://arismoko.github.io/sunrise/reference/hook-notes.html).
 
 ## Living death version 2
 
@@ -28,13 +28,13 @@ The cancelled continuation belongs to the living body: full-body teleports prese
 its original removal deadline, rather than restarting it or retrying death.
 A later positive `set_health` revives a cancelled dying body, clears that deadline
 and permits a subsequent genuine death; transaction abort restores the prior
-health and continuation together. Saved mobs retain the optional Horizon-owned
-`horizon:death_canceled` bit alongside their real `DeathTime`; ordinary loading
+health and continuation together. Saved mobs retain the optional Sunrise-owned
+`sunrise:death_canceled` bit alongside their real `DeathTime`; ordinary loading
 resumes a saved dying body without running its death callback or loot again.
 
 ### Portable contract regression
 
-`crates/horizon-mod-wasm/tests/fixture/src/lending.rs` supplies the same
+`crates/sunrise-mod-wasm/tests/fixture/src/lending.rs` supplies the same
 `Lender::living_death` listener and `check_death` assertions to the native
 `collect_positions_copy_in_and_out_natively_as_in_the_real_guest` test and
 the compiled-guest `real_member` test. They dispatch a player/arrow source
@@ -46,13 +46,13 @@ the portable record boundary, not Game death timing or loot behavior.
 Build the matching real guest and standard module, then run both selectors:
 
 ```sh
-cargo build -p cargo-horizon-mod
-# From crates/horizon-mod-wasm/tests/fixture, with ROOT set to the repository:
-"$ROOT/target/debug/cargo-horizon-mod" horizon-mod build --wasm --catalog points.json
-"$ROOT/target/debug/cargo-horizon-mod" horizon-mod wasm-std "$ROOT/target/horizon-wasm-std.wasm" --catalog points.json
+cargo build -p cargo-sunrise-mod
+# From crates/sunrise-mod-wasm/tests/fixture, with ROOT set to the repository:
+"$ROOT/target/debug/cargo-sunrise-mod" sunrise-mod build --wasm --catalog points.json
+"$ROOT/target/debug/cargo-sunrise-mod" sunrise-mod wasm-std "$ROOT/target/sunrise-wasm-std.wasm" --catalog points.json
 # From the repository root:
-cargo test -p horizon-mod-wasm --features listener-fixture --test native_listener collect_positions_copy_in_and_out_natively_as_in_the_real_guest -- --exact
-HORIZON_WASM_FIXTURE="$PWD/crates/horizon-mod-wasm/tests/fixture/target/horizon-mod/wasm_fixture.hmod" HORIZON_WASM_STD="$PWD/target/horizon-wasm-std.wasm" cargo test -p horizon-mod-wasm --features listener-fixture --test real_member real_member -- --ignored --exact
+cargo test -p sunrise-mod-wasm --features listener-fixture --test native_listener collect_positions_copy_in_and_out_natively_as_in_the_real_guest -- --exact
+SUNRISE_WASM_FIXTURE="$PWD/crates/sunrise-mod-wasm/tests/fixture/target/sunrise-mod/wasm_fixture.smod" SUNRISE_WASM_STD="$PWD/target/sunrise-wasm-std.wasm" cargo test -p sunrise-mod-wasm --features listener-fixture --test real_member real_member -- --ignored --exact
 ```
 
 ### Victim ownership and hot path

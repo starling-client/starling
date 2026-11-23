@@ -2,7 +2,7 @@
 //! up, copying and deleting them. Backups are made as vanilla's Make Backup makes them
 //! (`LevelStorageAccess.makeWorldBackup`): `backups/<yyyy-MM-dd_HH-mm-ss>_<folder>.zip` in the
 //! game folder, every file under `<folder>/` but the world's `session.lock`.
-use horizon_platform::world::nbt::{self, Limits, Tag};
+use sunrise_platform::world::nbt::{self, Limits, Tag};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub struct World {
     /// `icon.png`, the picture the game took of it.
     pub icon: Option<PathBuf>,
     /// The ids of the mods it was last saved with: the code mods of `fml.LoadingModList`, then the
-    /// content mods of Horizon's `horizon.ContentModList`, as the game writes them.
+    /// content mods of Sunrise's `sunrise.ContentModList`, as the game writes them.
     pub mods: Vec<String>,
 }
 
@@ -146,8 +146,8 @@ fn read(path: &Path) -> Option<World> {
     );
     mods.extend(listed(
         root.as_ref()
-            .and_then(|r| r.get("horizon"))
-            .and_then(|horizon| horizon.get("ContentModList")),
+            .and_then(|r| r.get("sunrise"))
+            .and_then(|sunrise| sunrise.get("ContentModList")),
     ));
     Some(World {
         name: text(field("LevelName"))

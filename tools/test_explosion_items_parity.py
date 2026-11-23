@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dropped items retain blast damage and spill destroyed contents, against vanilla.
 
-Runs ItemEntity.hurtServer on an isolated vanilla level and Horizon's production
+Runs ItemEntity.hurtServer on an isolated vanilla level and Sunrise's production
 explosion entity walk on an empty headless world. No server or renderer starts.
 Blast damage uses radius one and full exposure; positions, motion, world block
 callbacks and mob-griefing attribution are outside this fixture's scope.
@@ -48,13 +48,13 @@ def main():
     parser.add_argument('--test-binary', type=Path, help='already built gameplay test executable')
     args = parser.parse_args()
     source_paths = [lab.ROOT / path for path in (
-        'crates/horizon-client/src/entities.rs',
-        'crates/horizon-client/src/game/explosion.rs',
-        'crates/horizon-client/src/game.rs',
-        'crates/horizon-client/src/game/native_machines.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVehicleContainerOracle.java',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaExplosionItemsOracle.java',
+        'crates/sunrise-client/src/entities.rs',
+        'crates/sunrise-client/src/game/explosion.rs',
+        'crates/sunrise-client/src/game.rs',
+        'crates/sunrise-client/src/game/native_machines.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaVehicleContainerOracle.java',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaExplosionItemsOracle.java',
         'tools/test_explosion_items_parity.py')]
     source_hashes = base.source_hashes(source_paths)
     try:
@@ -67,8 +67,8 @@ def main():
         lab.write_json(work / 'inputs.json', inputs)
         classes = work / 'classes'
         classes.mkdir(exist_ok=True)
-        sources = lab.ROOT / 'mods/horizon/src/test/java'
-        package = sources / 'dev/horizonlab/parity'
+        sources = lab.ROOT / 'mods/sunrise/src/test/java'
+        package = sources / 'dev/sunriselab/parity'
         dependencies = os.pathsep.join(map(str, [jars['client'], *baking.client_libraries()]))
 
         def run(command, name):
@@ -80,13 +80,13 @@ def main():
         run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn',
              '-sourcepath', sources, '-cp', dependencies, '-d', classes,
              *(package / f'{name}.java' for name in ('ParityData', 'VanillaVehicleContainerOracle', 'VanillaExplosionItemsOracle'))], 'compile-java')
-        run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaExplosionItemsOracle',
+        run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaExplosionItemsOracle',
              work / 'inputs.json', work / 'vanilla.json'], 'vanilla')
         binary = args.test_binary
         if binary is None:
             # Build from the workspace, then execute from scratch so Game cannot
             # read or write the checkout's options, caches or worlds.
-            run(['cargo', 'test', '-p', 'horizon-client', '--lib', '--no-run',
+            run(['cargo', 'test', '-p', 'sunrise-client', '--lib', '--no-run',
                  '--message-format=json'], 'compile-rust')
             for line in (work / 'compile-rust.log').read_text(encoding='utf-8').splitlines():
                 try:
@@ -95,14 +95,14 @@ def main():
                     continue
                 if (message.get('reason') == 'compiler-artifact' and message.get('executable')
                         and message.get('profile', {}).get('test')
-                        and message.get('target', {}).get('name') == 'horizon_client'
+                        and message.get('target', {}).get('name') == 'sunrise_client'
                         and message.get('target', {}).get('kind') == ['lib']):
                     binary = Path(message['executable'])
             if binary is None:
                 raise RuntimeError('Cargo did not report a gameplay test executable')
         with (work / 'rust.log').open('w') as log, tempfile.TemporaryDirectory(prefix='explosion-items-') as game_dir:
-            env = lab.game_env(HORIZON_EXPLOSION_ITEMS_FIXTURE=work,
-                               HORIZON_TEST_RESOURCES=args.resources.resolve())
+            env = lab.game_env(SUNRISE_EXPLOSION_ITEMS_FIXTURE=work,
+                               SUNRISE_TEST_RESOURCES=args.resources.resolve())
             command = [str(binary.resolve()), FIXTURE, '--exact', '--ignored', '--nocapture']
             subprocess.run(command, cwd=game_dir, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
         assert 'test result: ok. 1 passed; 0 failed;' in (work / 'rust.log').read_text(encoding='utf-8'), 'gameplay fixture did not run exactly once'

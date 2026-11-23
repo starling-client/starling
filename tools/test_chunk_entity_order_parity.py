@@ -46,17 +46,17 @@ def vanilla():
         lock['minecraft']['java_major'])
     return subprocess.check_output([
         'java', '-cp', str(classes) + os.pathsep + dependencies,
-        'dev.horizonlab.parity.VanillaChunkEntityOrderOracle'], text=True)
+        'dev.sunriselab.parity.VanillaChunkEntityOrderOracle'], text=True)
 
 
 def engine():
-    resources = os.environ.get('HORIZON_TEST_RESOURCES') or str(
-        lab.LOCAL / 'horizon-client' / '26.3')
+    resources = os.environ.get('SUNRISE_TEST_RESOURCES') or str(
+        lab.LOCAL / 'sunrise-client' / '26.3')
     return subprocess.check_output([
-        'cargo', 'test', '-p', 'horizon-client', '--lib', TEST,
+        'cargo', 'test', '-p', 'sunrise-client', '--lib', TEST,
         '--', '--ignored', '--exact', f'game::persist::lookup_order_tests::{TEST}',
         '--nocapture'],
-        cwd=lab.ROOT, text=True, env={**os.environ, 'HORIZON_TEST_RESOURCES': resources})
+        cwd=lab.ROOT, text=True, env={**os.environ, 'SUNRISE_TEST_RESOURCES': resources})
 
 
 def main():

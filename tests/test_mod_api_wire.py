@@ -18,11 +18,11 @@ class WireGuardFixtures(unittest.TestCase):
             script = root / 'tools/check_mod_api_wire.py'
             script.parent.mkdir()
             script.write_text((Path(__file__).resolve().parents[1] / 'tools/check_mod_api_wire.py').read_text())
-            api = root / 'crates/horizon-mod-api/src/lib.rs'
+            api = root / 'crates/sunrise-mod-api/src/lib.rs'
             api.parent.mkdir(parents=True)
             api.write_text('pub struct MissingType;')
             for relative in API_TEMPLATE_FILES:
-                template = root / 'crates/horizon-mod-api-gen/src' / relative
+                template = root / 'crates/sunrise-mod-api-gen/src' / relative
                 template.parent.mkdir(parents=True, exist_ok=True)
                 template.write_text('')
             refused = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
@@ -33,7 +33,7 @@ class WireGuardFixtures(unittest.TestCase):
             api.write_text('#[derive(mod_api::Wire)] pub struct MissingType;')
             accepted = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            vocab = root / 'crates/horizon-mod-vocab/src/lib.rs'
+            vocab = root / 'crates/sunrise-mod-vocab/src/lib.rs'
             vocab.parent.mkdir(parents=True)
             vocab.write_text('pub struct MissingVocabularyForm;')
             refused_vocab = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
@@ -51,24 +51,24 @@ class WireGuardFixtures(unittest.TestCase):
             self.assertNotIn('checked.rs:', collision.stdout)
 
     def test_runtime_reexports_check_the_definition_not_the_alias_or_manual_impl(self):
-        source = '''pub use {other::Ignored, horizon_mod_runtime::attachments::{
+        source = '''pub use {other::Ignored, sunrise_mod_runtime::attachments::{
             AttachmentError as PublicError, nested::{AttachmentRowError},
         }};
-        #[cfg(test)] mod tests { pub use horizon_mod_runtime::OnlyTest; }
+        #[cfg(test)] mod tests { pub use sunrise_mod_runtime::OnlyTest; }
         '''
         self.assertEqual(runtime_reexport_names(source),
                          {'AttachmentError', 'AttachmentRowError'})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            api = root / 'crates/horizon-mod-api/src/lib.rs'
+            api = root / 'crates/sunrise-mod-api/src/lib.rs'
             api.parent.mkdir(parents=True)
             api.write_text(source)
-            runtime = root / 'crates/horizon-mod-runtime/src/attachments.rs'
+            runtime = root / 'crates/sunrise-mod-runtime/src/attachments.rs'
             runtime.parent.mkdir(parents=True)
             runtime.write_text('pub enum AttachmentError {}\npub struct AttachmentRowError;\n'
                                'pub struct Unexported;\nimpl Wire for AttachmentError {}')
             for relative in API_TEMPLATE_FILES:
-                template = root / 'crates/horizon-mod-api-gen/src' / relative
+                template = root / 'crates/sunrise-mod-api-gen/src' / relative
                 template.parent.mkdir(parents=True, exist_ok=True)
                 template.write_text('')
             failures = repository_violations(root)
@@ -80,7 +80,7 @@ class WireGuardFixtures(unittest.TestCase):
                                '#[derive(Wire)] pub struct AttachmentRowError;\n'
                                'pub struct Unexported;')
             self.assertEqual(repository_violations(root), [])
-            api.write_text('pub use horizon_mod_runtime::attachments::*;')
+            api.write_text('pub use sunrise_mod_runtime::attachments::*;')
             self.assertTrue(any('wildcard' in f for f in repository_violations(root)))
 
     def test_missing_declarations_include_aliases_and_generics(self):
@@ -156,7 +156,7 @@ mod more_tests { pub enum OnlyTest {} }
     def test_literal_policy_fragments_require_every_branch(self):
         source = '''fn emit() {
 let wire_form = if generics.is_empty() {
-    "#[derive(horizon_mod_api_macros::Wire)]"
+    "#[derive(sunrise_mod_api_macros::Wire)]"
 } else {
     "// no wire: borrowed event crosses as call arguments."
 };

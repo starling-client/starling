@@ -12,7 +12,7 @@ impl Default for Mod {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn server_started(&self, _: &mut dyn ServerHost, _: &mut mod_api::ServerStartedEvent) {
         // A libm call (`sinf`): the mods library's link must bring the C maths library.

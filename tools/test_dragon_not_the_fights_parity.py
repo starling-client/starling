@@ -5,7 +5,7 @@ EnderDragonFight.setDragonKilled builds the exit portal, a gateway and the egg o
 (dragon.getUUID().equals(dragonUUID)); EnderDragon.aiStep joins a dragon to the fight only when its UUID is the
 fight's, and tickDeath gives the first kill's 12000 experience only with a fight. The fight takes a dragon
 (findOrCreateDragon) only while a player stands in it, only a living one (ServerLevel.getDragons), and never
-once it is won. A vanilla dedicated server and Horizon's each serve a fresh world; a vanilla-codec client
+once it is won. A vanilla dedicated server and Sunrise's each serve a fresh world; a vanilla-codec client
 (VanillaProtocolClient, level-events mode, only to be a player) joins in the overworld. With the ticks frozen the
 console summons a dying dragon (Health 0, NoAI: LivingEntity.baseTick runs tickDeath while isDeadOrDying) in the
 End and steps past its 200 death ticks, three times:
@@ -161,32 +161,32 @@ def run_side(label, command, client_command, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'dragon-not-the-fights-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     for label, result in results.items():
@@ -201,7 +201,7 @@ def main():
     assert vanilla['arriving'] == {'blocks': nothing, 'experience': 500, 'living dragons': 1}, vanilla['arriving']
     assert vanilla['won']['blocks']['end_gateway'] == 1 and vanilla['won']['blocks']['dragon_egg'] == 1, vanilla
     assert vanilla['won']['experience'] == 500 and vanilla['won']['living dragons'] == 0, vanilla['won']
-    assert results['horizon'] == vanilla, f"the deaths of dragons not the fight's differ; see {out}"
+    assert results['sunrise'] == vanilla, f"the deaths of dragons not the fight's differ; see {out}"
     print("dragons not the fight's: matches vanilla", flush=True)
 
 

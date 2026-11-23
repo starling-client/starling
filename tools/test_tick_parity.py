@@ -143,37 +143,37 @@ def main():
     commands = list(corpus())
     inputs = base / "inputs.txt"
     inputs.write_text("\n".join(commands) + "\n", encoding="utf-8")
-    oracle = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTickOracle.java"
+    oracle = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTickOracle.java"
     data_oracle = oracle.with_name("VanillaTickDataOracle.java")
-    sources = [oracle, data_oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/horizon-core/Cargo.toml", lab.ROOT / "crates/horizon-world/Cargo.toml", *sorted((lab.ROOT / "crates/horizon-core/src").rglob("*.rs")), *sorted((lab.ROOT / "crates/horizon-world/src").rglob("*.rs")), lab.ROOT / "crates/horizon-world/examples/probe/tick_fixture.rs"]
+    sources = [oracle, data_oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/sunrise-core/Cargo.toml", lab.ROOT / "crates/sunrise-world/Cargo.toml", *sorted((lab.ROOT / "crates/sunrise-core/src").rglob("*.rs")), *sorted((lab.ROOT / "crates/sunrise-world/src").rglob("*.rs")), lab.ROOT / "crates/sunrise-world/examples/probe/tick_fixture.rs"]
     tested_sources = test_rust_parity.source_hashes(sources)
     classes = base / "classes"
     classes.mkdir()
     dependency_path = os.pathsep.join(map(str, libraries))
     test_rust_parity.run(["javac", "--release", "25", "-proc:none", "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(oracle), str(data_oracle)])
-    test_rust_parity.run(["cargo", "build", "--release", "--bin", "horizon-tick-parity"])
+    test_rust_parity.run(["cargo", "build", "--release", "--bin", "sunrise-tick-parity"])
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
-    binary = Path(metadata["target_directory"]) / "release" / ("horizon-tick-parity.exe" if os.name == "nt" else "horizon-tick-parity")
+    binary = Path(metadata["target_directory"]) / "release" / ("sunrise-tick-parity.exe" if os.name == "nt" else "sunrise-tick-parity")
     candidate = base / "rust.txt"
     with inputs.open("rb") as stdin, candidate.open("wb") as stdout:
         test_rust_parity.run([str(binary)], stdin=stdin, stdout=stdout)
     def data_java(side, mode):
-        completed = subprocess.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]), "dev.horizonlab.parity.VanillaTickDataOracle", mode, str(base)], cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
+        completed = subprocess.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]), "dev.sunriselab.parity.VanillaTickDataOracle", mode, str(base)], cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
         (base / f"data-{side}-{mode}.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
         completed.check_returncode()
         return completed.stdout
     data_java("server", "generate")
-    test_rust_parity.run(["cargo", "build", "--release", "-p", "horizon-world", "--example", "world_probe"])
+    test_rust_parity.run(["cargo", "build", "--release", "-p", "sunrise-world", "--example", "world_probe"])
     fixture = Path(metadata["target_directory"]) / "release/examples" / ("world_probe.exe" if os.name=="nt" else "world_probe")
     test_rust_parity.run([str(fixture), "tick_fixture", str(base)])
     references = []
     for side, jar in jars.items():
         reference = base / f"vanilla-{side}.txt"
         with (base / f"vanilla-{side}.log").open("wb") as log:
-            test_rust_parity.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]), "dev.horizonlab.parity.VanillaTickOracle", str(inputs), str(reference)], stdout=log, stderr=subprocess.STDOUT)
+            test_rust_parity.run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]), "dev.sunriselab.parity.VanillaTickOracle", str(inputs), str(reference)], stdout=log, stderr=subprocess.STDOUT)
         matched = test_rust_parity.compare(reference, candidate)
         output = data_java(side, "verify")
-        marker = "HORIZON_TICK_DATA_RESULT "
+        marker = "SUNRISE_TICK_DATA_RESULT "
         counts = [json.loads(line.split(marker, 1)[1]) for line in output.splitlines() if marker in line]
         if len(counts) != 1 or counts[0] != {"block_ticks": 251, "fluid_ticks": 251, "region_chunks": 1}:
             raise AssertionError(f"Incomplete tick save fixture: {counts}")

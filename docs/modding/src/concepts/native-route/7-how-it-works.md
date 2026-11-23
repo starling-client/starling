@@ -6,7 +6,7 @@ without rebuilding the game.
 ## Function replacement
 
 The game is never rebuilt for a mod. When you build, the launcher downloads the prebuilt game for your
-`horizon` commit and that commit's source. It copies each function your rows target out of the source. It
+`sunrise` commit and that commit's source. It copies each function your rows target out of the source. It
 applies your mixins to the copies with horizon-mixins, and adds your loop slots, bridges and modules. Then it
 compiles the copies against the prebuilt game, together with your mod's crate.
 
@@ -14,7 +14,7 @@ Each copy is installed through a **replacement cell**: a pointer the prebuilt ga
 every replaceable function. When the pointer is set, the function runs the installed copy instead.
 Eligible free functions and inherent methods in the game crate receive cells when the prebuilt game is built. Exclusions include `const`, `async`,
 `unsafe`, extern-ABI and variadic functions, type or const generics, `impl Trait` signatures and
-conditionally compiled functions. A function in a lower crate gets one only through `#[horizon_mod_api_macros::replaceable]`.
+conditionally compiled functions. A function in a lower crate gets one only through `#[sunrise_mod_api_macros::replaceable]`.
 
 That is why some functions are refused: one copy must stand for the original, and a generic function would
 need one copy per instance. Unsupported targets are refused by name before the patch crate compiles.

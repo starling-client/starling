@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare vanilla updateShape and neighborChanged with horizon-world, state by state.
+"""Compare vanilla updateShape and neighborChanged with sunrise-world, state by state.
 
 Every block state is put at the origin of a random neighbourhood; `shape` cases
 call `BlockState.updateShape` for one direction with a (consistent) neighbour

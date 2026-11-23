@@ -53,7 +53,7 @@ def corpus(facts, placement):
         entries=[[0,63,0,get('stone')],[0,64,0,get('air')],[0,65,0,rng.choice(moss_ids)]]
         entries.extend([x,y,z,rng.choice(palette)] for y in [64,65] for x,z in sides)
         yield case(get('pale_moss_carpet'),states=entries,seed=rng.randrange(2**63),world_seed=rng.randrange(2**63),fail=rng.randrange(-1,25),fallback=get('air'))
-    providers=[{'type':'random_block','blocks':[]},{'type':'random_block','blocks':['stone','small_dripleaf','pale_moss_carpet']},{'type':'weighted','entries':[{'data':'stone','weight':1},{'data':'pale_moss_carpet','weight':3}]},{'type':'rotated','state':{'id':'oak_log'}},{'type':'rule_based','rules':[]},{'type':'rule_based','rules':[{'if_true':{'type':'true'},'then':{'id':'pale_moss_carpet'}}]},'horizon:stone']
+    providers=[{'type':'random_block','blocks':[]},{'type':'random_block','blocks':['stone','small_dripleaf','pale_moss_carpet']},{'type':'weighted','entries':[{'data':'stone','weight':1},{'data':'pale_moss_carpet','weight':3}]},{'type':'rotated','state':{'id':'oak_log'}},{'type':'rule_based','rules':[]},{'type':'rule_based','rules':[{'if_true':{'type':'true'},'then':{'id':'pale_moss_carpet'}}]},'sunrise:stone']
     for provider in providers:
         for legacy in [False,True]:
             for seed in [0,1,-1,0x123456789abcdef]:
@@ -64,8 +64,8 @@ def corpus(facts, placement):
 
     simple=lambda provider:{'type':'simple_block','to_place':provider,'schedule_tick':True}
     placed=lambda feature,modifiers=[]:{'feature':feature,'placement':modifiers}
-    moss=placed('horizon:moss',[{'type':'count','count':2}]);empty=placed('horizon:empty');stone=placed('horizon:stone')
-    graphs=['horizon:moss',simple('horizon:stone'),
+    moss=placed('sunrise:moss',[{'type':'count','count':2}]);empty=placed('sunrise:empty');stone=placed('sunrise:stone')
+    graphs=['sunrise:moss',simple('sunrise:stone'),
         {'type':'sequence','features':[moss,stone]},
         {'type':'sequence','features':[moss,empty,stone]},
         {'type':'simple_random_selector','features':[moss,empty,stone]},
@@ -82,7 +82,7 @@ def corpus(facts, placement):
                 for seed in [0,1,-1,0x123456789abcdef]:
                     for fail in [-1,0,3,7,19]:
                         for reject in [0,1,3]:yield case(definition=encode(definition),mode=mode,legacy=legacy,seed=seed,world_seed=seed,fail=fail,reject=reject,repeats=3)
-    for name in ['horizon:moss','horizon:stone','horizon:empty','horizon:missing']:
+    for name in ['sunrise:moss','sunrise:stone','sunrise:empty','sunrise:missing']:
         yield case(definition=encode(name),mode='placed')
 
 
@@ -91,20 +91,20 @@ def run(corpus, build_name, source_file, scope):
     label=build_name.removeprefix('rust-').removesuffix('-parity')
     build=lab.LOCAL/build_name;build.mkdir(parents=True,exist_ok=True);report_path=build/'report.json';report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
-    lock,jars,libraries=base.verify_artifacts();oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSimpleBlockOracle.java'
+    lock,jars,libraries=base.verify_artifacts();oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSimpleBlockOracle.java'
     helpers=[oracle.with_name(name+'.java') for name in ['VanillaPlacementOracle','VanillaBlockSurvivalOracle','VanillaBlockPropertiesOracle','VanillaBlockSupportOracle','VanillaBlockStateCodecOracle','VanillaCollisionOracle','VanillaHeightmapOracle']]
-    sources=[oracle,*helpers,Path(__file__),Path(source_file),*[lab.ROOT/'tools'/name for name in ['test_block_survival_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/simple_block_fixture.rs']
+    sources=[oracle,*helpers,Path(__file__),Path(source_file),*[lab.ROOT/'tools'/name for name in ['test_block_survival_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/simple_block_fixture.rs']
     tested_sources=base.source_hashes(sources);classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=3600,stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    def java(side,mode,path):run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaSimpleBlockOracle',mode,path],side+'-'+mode)
+    def java(side,mode,path):run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaSimpleBlockOracle',mode,path],side+'-'+mode)
     tags=worldgen.tag_resources(jars['server']);fluid_tags=survival.fluid_tag_resources(jars['server'])
     if tags!=worldgen.tag_resources(jars['client']) or fluid_tags!=survival.fluid_tag_resources(jars['client']):raise ValueError('reference tags differ')
-    for name,value in [('tags.json',tags),('fluid-tags.json',fluid_tags),('catalog.json',{'horizon:stone':json.dumps({'id':'stone'})})]:(build/name).write_text(json.dumps(value,separators=(',',':')))
-    feature_bundle={'features':{name:json.dumps({'type':'simple_block','to_place':provider,'schedule_tick':True}) for name,provider in [('horizon:moss',{'id':'pale_moss_carpet'}),('horizon:stone','horizon:stone'),('horizon:empty',{'type':'random_block','blocks':[]})]},'placed':{name:json.dumps({'feature':name,'placement':[{'type':'count','count':2}]}) for name in ['horizon:moss','horizon:stone','horizon:empty']}}
+    for name,value in [('tags.json',tags),('fluid-tags.json',fluid_tags),('catalog.json',{'sunrise:stone':json.dumps({'id':'stone'})})]:(build/name).write_text(json.dumps(value,separators=(',',':')))
+    feature_bundle={'features':{name:json.dumps({'type':'simple_block','to_place':provider,'schedule_tick':True}) for name,provider in [('sunrise:moss',{'id':'pale_moss_carpet'}),('sunrise:stone','sunrise:stone'),('sunrise:empty',{'type':'random_block','blocks':[]})]},'placed':{name:json.dumps({'feature':name,'placement':[{'type':'count','count':2}]}) for name in ['sunrise:moss','sunrise:stone','sunrise:empty']}}
     (build/'feature-catalog.json').write_text(json.dumps(feature_bundle,separators=(',',':')))
-    run(['javac','--release' ,lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
+    run(['javac','--release' ,lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
     for side in jars:
         export=build/(side+'-definitions');export.mkdir(exist_ok=True);java(side,'export',export)
     for path in (build/'server-definitions').iterdir():
@@ -116,7 +116,7 @@ def run(corpus, build_name, source_file, scope):
     with inputs.open('w',encoding='utf-8') as output:
         for fixture in corpus(facts,placement):output.write(json.dumps(fixture,separators=(',',':'))+'\n');fixture_count+=1
     fixtures=[inputs,*sorted(build.glob('*.nbt')),*[p for p in sorted(build.glob('*.json')) if p.name!='report.json']];tested_fixtures=base.source_hashes(fixtures);print(f'Prepared {fixture_count:,} placement fixtures',flush=True)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True));binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'simple_block_fixture',build],'rust');references=[]
     for side,jar in jars.items():

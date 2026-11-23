@@ -6,7 +6,7 @@ use super::*;
 use crate::glass_ui::{self as ui, white};
 use build_mode::ModKind;
 use glass_home_lists::Listener;
-use horizon_theme::glass::radius;
+use sunrise_theme::glass::radius;
 use instance_mods::ModRow;
 use servers_page::Field;
 

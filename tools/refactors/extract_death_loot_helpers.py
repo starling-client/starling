@@ -2,8 +2,8 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-creatures = root / 'crates/horizon-client/src/game/mobs/creatures/mod.rs'
-shared = root / 'crates/horizon-client/src/game/native_hooks/shared.rs'
+creatures = root / 'crates/sunrise-client/src/game/mobs/creatures/mod.rs'
+shared = root / 'crates/sunrise-client/src/game/native_hooks/shared.rs'
 
 
 def extract(path, begin, end, destination, declaration, visibility=None):

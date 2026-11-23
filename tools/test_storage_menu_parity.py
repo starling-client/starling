@@ -7,7 +7,7 @@ sends in ClientboundOpenScreenPacket, and prints its MenuType and whether its
 first slot takes a shulker box. A shulker box opens a ShulkerBoxMenu
 (minecraft:shulker_box), whose ShulkerBoxSlots refuse shulker boxes; chests
 and barrels open a 9x3 ChestMenu. The Rust example (storage_menu_fixture)
-answers with horizon_client::containers::block_menu_type, the menu type the
+answers with sunrise_client::containers::block_menu_type, the menu type the
 server's lan_open_container sends; the server refuses shulker boxes in the
 menus of that type (lan::containers, ShulkerBoxSlot). Compared for chests,
 trapped and copper chests, barrels, shulker boxes of every colour,
@@ -37,7 +37,7 @@ def main():
     cases = ['minecraft:' + b for b in BLOCKS]
     (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases), encoding='utf-8')
     vanilla.run('VanillaStorageMenuOracle', work / 'cases.txt', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'storage_menu_fixture', work / 'cases.txt', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'storage_menu_fixture', work / 'cases.txt', work / 'rust.txt')
     errors = sum(line == 'error' for line in (work / 'native.txt').read_text(encoding='utf-8').split('\n'))
     if errors:
         print(f'{errors} cases fail in vanilla')

@@ -1,11 +1,11 @@
 # The HUD kit
 
-Horizon draws a few overlays of its own over the game, such as the controller notice and
+Sunrise draws a few overlays of its own over the game, such as the controller notice and
 splitscreen's join strip. Vanilla has no screen for them, so nothing in vanilla tells them where
 they may go. The HUD kit is the small set of pieces they share, so they fit around vanilla's HUD
 and look alike.
 
-It lives in `crates/horizon-client-render/src/hud_kit/`, below gameplay. The game builds the
+It lives in `crates/sunrise-client-render/src/hud_kit/`, below gameplay. The game builds the
 inputs once a frame and the overlays draw with them. It is immediate mode, with no state of its
 own. Vanilla's display lists (`hud_layout`, `screen_draw`) never use it: they are vanilla's, and
 parity-tested against it.
@@ -39,7 +39,7 @@ and an area. There are two kinds:
 | `BossBars` | `hud_overlays::boss_bars_bottom(h, n)`: vanilla's `BossHealthOverlay` layout, y from 12 in steps of 19 until a third of the view's height; as wide as the 182 px bar or its widest name |
 | `StatusRows` | the survival rows above the hotbar (health with its absorption rows, armour, food or the mount's hearts, air), from the highest row's top to the view's bottom, as `hud_layout::draws_top` reports them; `room.bottom()` is the lowest y an overlay may reach |
 
-`Game::hud_room` (`crates/horizon-client/src/game/hud_room.rs`) gathers what is showing.
+`Game::hud_room` (`crates/sunrise-client/src/game/hud_room.rs`) gathers what is showing.
 Nothing shows while F1 or Replay Studio hides the HUD, or off a world. `hud` empties `ui.room` at
 the start of every frame, and `hud_layers` fills it in before the world's HUD draws, so every
 overlay in the frame reads the same room and never a stale one.
@@ -55,7 +55,7 @@ that keep-out. The controller notice and splitscreen's join strip want y 18:
 `room.usable()` is the view below the top keep-outs, with the same gap.
 
 ```rust
-use horizon_client::hud_kit::room::{Keep, Room};
+use sunrise_client::hud_kit::room::{Keep, Room};
 
 let room = Room::new(320.0, 240.0).with(Keep::BossBars, [69.0, 0.0, 182.0, 36.0]);
 assert_eq!(room.below_top(18.0), 38.0); // below two bars
@@ -69,7 +69,7 @@ these push-aside points for mods.
 
 Some overlays take the middle of the view for themselves, as the radial menu does once it shows.
 What vanilla draws there gives way to them through one query, `Game::overlay_holds_view()`
-(`crates/horizon-client/src/game/hud_room.rs`), not a check per overlay in each piece:
+(`crates/sunrise-client/src/game/hud_room.rs`), not a check per overlay in each piece:
 
 | Gives way | Where |
 |---|---|
@@ -125,7 +125,7 @@ screen.
   (`arc_segments`, `ARC_STEP`), at most 256.
 
 ```rust
-use horizon_client_render::hud_kit::shapes::Stop;
+use sunrise_client_render::hud_kit::shapes::Stop;
 use std::f32::consts::FRAC_PI_8;
 
 // The radial dial: a dark disc fading out, its track, and the top sector lit.
@@ -144,10 +144,10 @@ segment counts, a clip that keeps half a disc and its blend run, gradient stops,
 things happened and asks where a tween is now.
 
 - `Clock { now, still }` is built once a frame by the game (`Game::hud_clock`). `still` is set
-  while the game is paused, frame-stepped (`HORIZON_STILL`, a screenshot sequence) or a repro
+  while the game is paused, frame-stepped (`SUNRISE_STILL`, a screenshot sequence) or a repro
   recording or replay runs. A still clock shows every tween at its end, so recordings and
   screenshots are the same every run.
-- `Tween::new(duration, motion)` takes a curve from the design system (`horizon_theme::QUICK` for
+- `Tween::new(duration, motion)` takes a curve from the design system (`sunrise_theme::QUICK` for
   fades, `MOVE` for things that travel), and `Tween::of(motion)` its duration too. `progress`
   is 0 to 1, eased; `linear`, `done` and `lerp` are there too.
 - The helpers are `fade` and `fade_out` (an alpha), `scale_in(from)`, `slide(distance)` (an offset
@@ -155,7 +155,7 @@ things happened and asks where a tween is now.
 
 ```rust
 let clock = motion::Clock::new(now, still);
-let open = Tween::new(Duration::from_millis(90), horizon_theme::QUICK);
+let open = Tween::new(Duration::from_millis(90), sunrise_theme::QUICK);
 let alpha = motion::fade(open, clock, opened_at);
 let scale = motion::scale_in(open, clock, opened_at, 0.94);
 ```
@@ -228,7 +228,7 @@ twelve-screen pack in a real game).
 ## Pad capture
 
 Several overlays over play take the controller for themselves. `Game::pad_capture`
-(`crates/horizon-client/src/game/pad/capture.rs`) is the one place that says which owns it now,
+(`crates/sunrise-client/src/game/pad/capture.rs`) is the one place that says which owns it now,
 in one priority order:
 
 | `PadCapture` | Owns the pad while |
@@ -270,7 +270,7 @@ Code asks for a glyph by what the button does, never by a button. The chain runs
 going by its letters as parts (`PadState::by_letter`): the A on a Switch pad's right is South, which
 confirms and jumps. Inside `pad_glyph`, a `Glyph` turns its part back into the button that plays it for the
 art and the label, so South shows that A. `GlyphStyle` is only the setting: the Glyphs choice and
-`horizon-controller.txt` keep `nintendo` and `nintendoLetters` as before.
+`sunrise-controller.txt` keep `nintendo` and `nintendoLetters` as before.
 
 What the types guarantee: no code outside `pad_glyph` can turn a bare `Button` into art or a label, and none
 can make `Glyphs` without the `PadSettings` its letters come from. What they don't: a caller holding the
@@ -297,19 +297,19 @@ family.
 
 ### Glyph tests
 
-- A glyph test builds the test atlas (`HudAtlas::build` on a missing folder gives Horizon's own art),
+- A glyph test builds the test atlas (`HudAtlas::build` on a missing folder gives Sunrise's own art),
   draws into a `HudBatch`, and compares the quads or texture coordinates with the sprite expected.
 - Letter mode is checked against input: `pad_glyph`'s test builds the glyphs from real `PadSettings`,
   presses each physical button, reads it the way the game does (`PadState::by_letter`), and expects that
   part's glyph to be the pressed button's print.
-- In the e2e harness, `horizon-ctl pad family nintendo` makes the pad playing a Nintendo one, and
+- In the e2e harness, `sunrise-ctl pad family nintendo` makes the pad playing a Nintendo one, and
   `pad connection connected nintendo` raises a Nintendo pad's notice. With `nintendoLetters:true` in
-  the seeded `horizon-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
+  the seeded `sunrise-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
   `nintendo_letters`). `pad status` lists each declared glyph's part (`button`), `label` and `sprite`.
 
 ## Fitting text
 
-`hud_kit::fit` cuts, wraps and fits text for Horizon's own overlays and settings. Widths are GUI px
+`hud_kit::fit` cuts, wraps and fits text for Sunrise's own overlays and settings. Widths are GUI px
 in the HUD atlas's font (`Font::width`), so what fits is what draws. Vanilla's screens keep their
 own cutting (`screen_draw::clip`) and sliding labels (`scrolling_text`).
 
@@ -322,7 +322,7 @@ own cutting (`screen_draw::clip`) and sliding labels (`scrolling_text`).
 | `fit_in_circle(atlas, text, r, top, height, inset)` | `text` ellipsized to that room, less `inset` at each end |
 
 ```rust
-use horizon_client::hud_kit::fit;
+use sunrise_client::hud_kit::fit;
 
 // A name in a control's room; a short one comes back borrowed, not copied.
 let name = fit::ellipsize(atlas, &row.name, room);
@@ -333,7 +333,7 @@ let x = cx - atlas.font.width(&label) / 2.0;
 
 `graphics_style::fit`, which the settings shell, Controller and Shaders use for names and values, is
 `ellipsize` under its old name. It used to rebuild and measure the whole string once per character;
-a test cuts every Horizon string in seven languages, at widths from 0 to 240 px, both ways and
+a test cuts every Sunrise string in seven languages, at widths from 0 to 240 px, both ways and
 expects the same text.
 
 ## Hint rows
@@ -358,8 +358,8 @@ A `Look` says how it reads, and the kit has one for each overlay that shows them
   no art: the on-screen keyboard's hint line, in the launcher's font.
 
 ```rust
-use horizon_client::hud_kit::hint::{self, HintRow, Look, Side};
-use horizon_client::hud_kit::plate::Plate;
+use sunrise_client::hud_kit::hint::{self, HintRow, Look, Side};
+use sunrise_client::hud_kit::plate::Plate;
 
 let row = HintRow::new(self.glyph(GlyphOf::Bound("key.jump")), lang::get("key.jump"));
 // Against the view's right edge, cut to the room it has.
@@ -417,7 +417,7 @@ Polytone config entries, a page per section, with Undo from a snapshot taken whe
    (Controller Settings: "Editing: <player>" and the controller the game sees); they are read-only.
    `link` makes a row open a page (Shaders' links to a pack's screens): the shell opens it alone, and
    Escape goes back. A slider's `slider_released` says what its change does once the drag ends, or a key stepped
-   it (a Horizon shader pack saves its options once a drag).
+   it (a Sunrise shader pack saves its options once a drag).
 4. **Fingerprint what the rows read** in `stamp` (`stamp_of`), besides the presses: the rows are built
    again only when it changes. A screen that keeps its own values can count its changes instead
    (Pack Options' values are floats, which don't hash).

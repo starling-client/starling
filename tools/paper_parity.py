@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Paper event / Horizon hook traces. Build the native trace engine before `run`.
+"""Paper event / Sunrise hook traces. Build the native trace engine before `run`.
 
 All generated data lives in .local/paper-parity. No CI or ledger updates.
 
 Radius finding (view/simulation distance 2, chunk-load-igxvxjrc): Paper loads
-radius 5; Horizon 4. Keep this mismatch, including FULL/border chunks.
+radius 5; Sunrise 4. Keep this mismatch, including FULL/border chunks.
 Vanilla 26.3 server-game.jar (javap -c -p): ChunkMap.setServerViewDistance
 passes 2 unchanged to DistanceManager.updatePlayerTickets; PlayerTicketTracker
 places level-31 PLAYER_LOADING tickets at distance <= 2. ChunkLevel.fullStatus
-includes level 33 as FULL, hence radius 4. Horizon lan_update_streaming uses
+includes level 33 as FULL, hence radius 4. Sunrise lan_update_streaming uses
 view + 1, and streaming::Ranges finishes one more ring: also radius 4.
 Paper documents FULL as loaded border chunks: https://docs.papermc.io/paper/reference/commands/#chunkinfo
 Its global chunk-loading settings control sending/rates/concurrency, not a
@@ -36,14 +36,14 @@ import server_bench as bench
 
 FIXTURES = lab.ROOT / 'tools/fixtures'
 SCENARIOS = lab.ROOT / 'tools/paper_parity_scenarios.json'
-HOME_KEYS = ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
-             'HORIZON_LAUNCHER_TRASH', 'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP')
+HOME_KEYS = ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+             'SUNRISE_LAUNCHER_TRASH', 'SUNRISE_LAUNCHER_CLIPBOARD', 'SUNRISE_LAUNCHER_DESKTOP')
 
 
 def hook_map():
     """Read catalog attributes, including multiline attributes and Paper event lists."""
     mapping = {}
-    for path in (lab.ROOT / 'crates/horizon-mod-vocab/src/hooks').glob('*.rs'):
+    for path in (lab.ROOT / 'crates/sunrise-mod-vocab/src/hooks').glob('*.rs'):
         for attrs, hook in re.findall(r'#\[hook\((.*?)\)\]\s*fn\s+(\w+)\s*\(', path.read_text(), re.S):
             if match := re.search(r'\bpaper\s*=\s*("[^"]+"|\[[^\]]*\])', attrs):
                 mapping[hook] = [s.strip() for v in re.findall(r'"([^"]+)"', match[1])
@@ -125,9 +125,9 @@ def final_blocks(out, side, positions):
 
 def compare_contract(out, manifest, hook, events):
     scenario, cancel = manifest['scenario'], manifest.get('cancel', {})
-    sides = [observations(out / f'{side}.jsonl') for side in ('paper', 'horizon')]
+    sides = [observations(out / f'{side}.jsonl') for side in ('paper', 'sunrise')]
     values = []
-    for side, rows, names in zip(('paper', 'horizon'), sides, (events, [hook])):
+    for side, rows, names in zip(('paper', 'sunrise'), sides, (events, [hook])):
         selected = [r for r in rows if r['name'] in names]
         if hook == 'moisture_change':
             selected = [r for r in selected if r['fields']['pos'] in scenario['positions']]
@@ -145,7 +145,7 @@ def compare_contract(out, manifest, hook, events):
                 expected.append(((slot, new), denied, tick))
                 slot = slot if denied else new
                 slots.append(slot)
-        for side, rows, values_side in zip(('paper', 'horizon'), sides, values):
+        for side, rows, values_side in zip(('paper', 'sunrise'), sides, values):
             sequence(side, 'hotbar (old,new,cancelled)', [(v, c) for v, c, _ in values_side],
                      [(v, c) for v, c, _ in expected])
             sequence(side, 'selected slot', [r['fields']['slot'] for r in rows if r['name'] == '_slot'], slots)
@@ -153,17 +153,17 @@ def compare_contract(out, manifest, hook, events):
         for i, ts in enumerate(zip(*relative)):
             if max(ts) - min(ts) > 1:
                 raise ValueError(f'hotbar tick tolerance row {i + 1}: expected script +{ts[2]} +/-1; '
-                                 f'got paper +{ts[0]}, horizon +{ts[1]} (spread <=1 required)')
-        posts = [(hotbar_fields('horizon', r['fields']), r['tick']) for r in sides[1]
+                                 f'got paper +{ts[0]}, sunrise +{ts[1]} (spread <=1 required)')
+        posts = [(hotbar_fields('sunrise', r['fields']), r['tick']) for r in sides[1]
                  if r['name'] == 'player_switch_hotbar_slot_post']
-        sequence('horizon', 'post', posts, [(v, t) for v, c, t in values[1] if not c])
+        sequence('sunrise', 'post', posts, [(v, t) for v, c, t in values[1] if not c])
     else:
         expected = set()
         for pos in scenario['positions']:
             denied = pos == cancel.get(hook, {}).get('pos')
             transitions = [(7, 6)] if denied else ([(0, 7)] if pos[2] == 10 else [(n, n-1) for n in range(7, 0, -1)])
             expected.update(((tuple(pos), a, b), denied) for a, b in transitions)
-        for side, rows, vs in zip(('paper', 'horizon'), sides, values):
+        for side, rows, vs in zip(('paper', 'sunrise'), sides, values):
             sequence(side, 'moisture transitions (sorted set)', sorted({(v, c) for v, c, _ in vs}), sorted(expected))
             windows = [[r['tick'] for r in rows if r['name'] == name]
                        for name in ('_window_start', '_window_end')]
@@ -210,12 +210,12 @@ def report(out, covered_only=False):
                 print(f"{out.name}/{hook}: match ({detail})")
                 continue
             left = trace(out / 'paper.jsonl', events, 'paper', NORMALIZE[hook])
-            right = trace(out / 'horizon.jsonl', [hook], 'horizon', NORMALIZE[hook])
+            right = trace(out / 'sunrise.jsonl', [hook], 'sunrise', NORMALIZE[hook])
             if not left or not right:
-                raise ValueError(f'chunk_load: expected nonempty sets; got paper={len(left)}, horizon={len(right)}')
+                raise ValueError(f'chunk_load: expected nonempty sets; got paper={len(left)}, sunrise={len(right)}')
             if left != right:
                 raise ValueError(f'Paper-only {len(left - right)} {sorted(left - right)[:3]}; '
-                                 f'Horizon-only {len(right - left)} {sorted(right - left)[:3]}')
+                                 f'Sunrise-only {len(right - left)} {sorted(right - left)[:3]}')
             print(f'{hook}: match ({len(left)} chunks; set, tick/order ignored)')
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration, zlib.error) as error:
             failed = True
@@ -266,7 +266,7 @@ def run_case(args, scenario, cancel, out):
                 'bot_uuid': str(lab.offline_uuid('Bot0')), 'cancel': cancel}
     lab.write_json(out / 'run.json', manifest)
     try:
-        installed = args.engine.parent / 'horizon-native-mods/paper_trace/src/lib.rs'
+        installed = args.engine.parent / 'sunrise-native-mods/paper_trace/src/lib.rs'
         if installed.read_bytes() != (FIXTURES / 'paper-trace-mod/src/lib.rs').read_bytes():
             raise ValueError('export does not contain the current paper_trace fixture; rebuild it')
         # Reuse PaperMC's checksum-verified downloader and the pinned Mojang cache setup.
@@ -283,7 +283,7 @@ def run_case(args, scenario, cancel, out):
             server.stop()
         plugin = compile_plugin(out, jar)
         spawns = []
-        for side in ('paper', 'horizon'):
+        for side in ('paper', 'sunrise'):
             directory, port = out / side, lab.free_port()
             properties(directory, scenario, port)
             env = environment(directory)
@@ -302,15 +302,15 @@ def run_case(args, scenario, cancel, out):
                 shutil.copyfile(plugin, directory / 'plugins/paper-trace.jar')
                 command = [paper[0], f'-Dpaper.trace={trace_path}', f'-Dpaper.trace.config={config_path}', *paper[1:]]
             else:
-                env['HORIZON_PAPER_TRACE'] = str(trace_path)
-                env['HORIZON_PAPER_TRACE_CONFIG'] = str(config_path)
+                env['SUNRISE_PAPER_TRACE'] = str(trace_path)
+                env['SUNRISE_PAPER_TRACE_CONFIG'] = str(config_path)
                 command = [args.engine, '--resources', args.resources, '--dedicated', '--nogui']
             server = bench.Server(command, directory, out / f'{side}.log', env)
             try:
                 server.wait_for(bench.DONE, args.startup_timeout)
                 for key, value in scenario['gamerules'].items():
                     server.console(f'gamerule {key} {str(value).lower()}')
-                # Ground-level spawn avoids Horizon's unloaded-column Y fallback (initial_spawn.rs:346).
+                # Ground-level spawn avoids Sunrise's unloaded-column Y fallback (initial_spawn.rs:346).
                 # player_movement_check=false allows moves batched by slow ticks; still reject corrections.
                 for command in scenario['setup']:
                     server.console(command)
@@ -372,7 +372,7 @@ def main():
     start = commands.add_parser('run')
     start.add_argument('--engine', type=Path, required=True, help='export containing paper_trace')
     start.add_argument('--resources', type=Path, default=lab.RESOURCES)
-    start.add_argument('--bots', type=Path, default=lab.cargo_target() / f'fast/horizon-bots{bench.EXE}')
+    start.add_argument('--bots', type=Path, default=lab.cargo_target() / f'fast/sunrise-bots{bench.EXE}')
     start.add_argument('--heap', default='2g')
     start.add_argument('--startup-timeout', type=int, default=1500,
                        help="seconds to wait for a server's Done line (resource loading is slow on network drives)")

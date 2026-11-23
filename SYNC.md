@@ -1,4 +1,4 @@
-# Sync with Horizon 5 (temporary, delete after the merge lands)
+# Sync with Sunrise 5 (temporary, delete after the merge lands)
 
 Upstream commit merged: `c98a51a664` (2026-11-08). Base `31f83499b6`. Starling before the merge: `121742ad89`.
 Only this branch goes to `starling-client`: nothing merges into `starling` or `android`, nothing is released.

@@ -9,7 +9,7 @@ STRANDS = ["loading", "host", "slots", "attachments", "content_render", "hooks"]
 # How each strand is resolved (#2534): phases 2 and 4 are dropped (owner, 2026-11-10); phase 6 is not built.
 LABEL = {"loading": "phase 1", "host": "stays in the engine", "slots": "phase 3",
          "attachments": "stays in the engine", "content_render": "phase 5", "hooks": "phase 6, not built"}
-HOST_AREAS = ("crates/horizon-client/src/game/modding/", "crates/horizon-client/src/game/native_hooks/")
+HOST_AREAS = ("crates/sunrise-client/src/game/modding/", "crates/sunrise-client/src/game/native_hooks/")
 # What a hook-firing engine file needs of mod_api, from least to most.
 DISPATCH = re.compile(r"^mod_api::(HookId|Flow|Hooks|__subscriptions|InteractionResult|\w+(Event|Call|Result)"
                       r"|__private::(listened|has_\w+_hook|built|enter|\w+Call))(::|$)")
@@ -20,12 +20,12 @@ MORE = re.compile(r"^mod_api::(\w*Host|HostSide|Backend\w*|RegistrationContext|R
 
 
 def area(path):
-    m = re.match(r"crates/horizon-client/src/game/(\w+)/", path)
+    m = re.match(r"crates/sunrise-client/src/game/(\w+)/", path)
     if m:
         return f"game/{m.group(1)}"
-    if path == "crates/horizon-client/src/game.rs":
+    if path == "crates/sunrise-client/src/game.rs":
         return "game.rs"
-    if path.startswith("crates/horizon-client/"):
+    if path.startswith("crates/sunrise-client/"):
         return "client (non-game)"
     return path.split("/")[1]
 
@@ -61,7 +61,7 @@ def render(result):
         row[2 if e["test"] else 1] += 1
     out.append(table(["engine crate", "mod crate", "files", "prod refs", "test refs"],
                      [(c, m, len(v[0]), v[1], v[2]) for (c, m), v in sorted(by.items())]))
-    out.append("\n### By area (horizon-client game areas, other crates whole)\n")
+    out.append("\n### By area (sunrise-client game areas, other crates whole)\n")
     by = defaultdict(lambda: [set(), 0, 0])
     for e in edges:
         row = by[area(e["file"])]
@@ -82,7 +82,7 @@ def render(result):
     per_file = defaultdict(set)
     test_only = Counter()
     for e in edges:
-        if e["file"].startswith(HOST_AREAS) or e["mod_crate"] != "horizon-mod-api":
+        if e["file"].startswith(HOST_AREAS) or e["mod_crate"] != "sunrise-mod-api":
             continue
         if e["test"]:
             test_only["test code"] += 1
@@ -106,8 +106,8 @@ def render(result):
     out.append(f"\nOutside the host areas, {test_only['test code']} `mod_api` references are in test code; "
                f"{test_only['testing items']} of them name `testing`, `part_tests` or `with_test_packages`.")
     out.append("\n### The host areas by strand (files under game/modding/ and game/native_hooks/)\n")
-    out.append("`inherent impls`: `impl Game`/`impl GameLevel` blocks, which can't leave horizon-client as they "
-               "are. `foreign trait impls`: impls of a mod crate's trait, which horizon-mod-host may not write for "
+    out.append("`inherent impls`: `impl Game`/`impl GameLevel` blocks, which can't leave sunrise-client as they "
+               "are. `foreign trait impls`: impls of a mod crate's trait, which sunrise-mod-host may not write for "
                "an engine type (orphan rule). `to make public`: distinct engine-private functions, `Game` fields "
                "and `game` items the files use (textual estimate). `inbound`: engine references into them.\n")
     rows = []
@@ -122,7 +122,7 @@ def render(result):
                       "inbound refs (prod)", "inbound files"], rows))
     voc = result["vocabulary"]
     fs = [f for f in voc["files"] if not f["test"]]
-    out.append("\n### horizon-mod-api: vocabulary or not (non-test files)\n")
+    out.append("\n### sunrise-mod-api: vocabulary or not (non-test files)\n")
     out.append(table(["", "files", "lines"], [
         ("all", len(fs), sum(f["lines"] for f in fs)),
         ("pure (no generated include, unsafe, process state or non-core crate path)",
@@ -139,5 +139,5 @@ def render(result):
         parts = [f"{k} {','.join(map(str, f[k][:12]))}{'…' if len(f[k]) > 12 else ''}"
                  for k in ("generated_include", "unsafe", "state") if f[k]]
         if parts:
-            out.append(f"- `{Path(f['file']).relative_to('crates/horizon-mod-api')}`: " + "; ".join(parts))
+            out.append(f"- `{Path(f['file']).relative_to('crates/sunrise-mod-api')}`: " + "; ".join(parts))
     return "\n".join(out)

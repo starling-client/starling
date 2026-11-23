@@ -17,7 +17,7 @@ DIFF = {"classes": {"changed": {"net/minecraft/world/food/FoodData": {
 def items():
     return [
         {"rank": 1, "kind": "protocol", "title": "Protocol: packets play/clientbound +1 -0 ~3",
-         "files": ["crates/horizon-protocol/src/ids.rs"], "details": {"packets": {"play/clientbound": {
+         "files": ["crates/sunrise-protocol/src/ids.rs"], "details": {"packets": {"play/clientbound": {
              "added": {"minecraft:punch": 3}, "removed": {}, "renumbered": {"minecraft:x": [1, 2]}}}}},
         {"rank": 2, "kind": "rerun", "title": "crates/w/src/food.rs: 1 vanilla classes changed", "harnesses": ["food"],
          "failed": [], "classes": {}},
@@ -40,11 +40,11 @@ class PublishTests(unittest.TestCase):
         self.assertEqual([publish.published(i) for i in items()], [True, False, True, True, False, False])
 
     def test_body_has_names_and_signatures_only(self):
-        text = publish.body(items()[3], REPORT, DIFF, Path.home() / "code/horizon-parity/versions/diff-26.3-26.4")
-        self.assertIn("`net.minecraft.world.food.FoodData`: 1 methods changed; Horizon's comments name tick", text)
+        text = publish.body(items()[3], REPORT, DIFF, Path.home() / "code/sunrise-parity/versions/diff-26.3-26.4")
+        self.assertIn("`net.minecraft.world.food.FoodData`: 1 methods changed; Sunrise's comments name tick", text)
         self.assertIn("methods changed: `tick(Lnet/minecraft/server/level/ServerPlayer;)V`", text)
         self.assertIn("fields added: `exhaustionLevel F`", text)
-        self.assertIn("`~/code/horizon-parity/versions/diff-26.3-26.4`", text)
+        self.assertIn("`~/code/sunrise-parity/versions/diff-26.3-26.4`", text)
         self.assertTrue(text.startswith(publish.START) and text.rstrip().endswith(publish.END))
 
     def test_refuses_code(self):

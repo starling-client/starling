@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 for relative, helper in (
-    ("crates/horizon-command/src/item.rs", "\n/// `LodestoneTracker.CODEC`: optional GlobalPos and a strict optional boolean."),
-    ("crates/horizon-items/src/item_data/ingredient_components.rs", "\n/// Read the record without cloning its payload."),
+    ("crates/sunrise-command/src/item.rs", "\n/// `LodestoneTracker.CODEC`: optional GlobalPos and a strict optional boolean."),
+    ("crates/sunrise-items/src/item_data/ingredient_components.rs", "\n/// Read the record without cloning its payload."),
 ):
     path = ROOT / relative
     source = path.read_text()

@@ -28,7 +28,7 @@ def corpus():
     for secondary in [-2**31,-100,-1,0,1,2,12,2**31-1]:
         for add in [False,True]:
             for ceiling in [False,True]:conditions.append(["stone",edges[(secondary+7)%len(edges)],add,secondary,ceiling])
-    for name in ["bedrock_floor","minecraft:bedrock_floor",":bedrock_roof","horizon:test",""]:
+    for name in ["bedrock_floor","minecraft:bedrock_floor",":bedrock_roof","sunrise:test",""]:
         for low,high in [([0,-64],[0,64]),([1,0],[1,5]),([2,5],[2,0]),([3,-5],[3,5]),([0,0],[0,0]),([0,64],[0,-64]),([0,-2**31],[0,2**31-1])]:
             conditions.append(["gradient",name,low,high])
     conditions += [["not",["hole"]],["not",["not",["stone",0,True,12,False]]]]
@@ -45,7 +45,7 @@ def corpus():
             # Changing source values alone does not invalidate cached results.
             ops += [["input",depth^1,f"{secondary_bits[(i+7)%len(secondary_bits)]:x}"],["secondary"],["y",below,above,water,y],["eval"],["secondary"]]
             if i%12==0:
-                ops += [["add",["not",["gradient","horizon:late",[0,-64],[0,64]]]],["eval"]]
+                ops += [["add",["not",["gradient","sunrise:late",[0,-64],[0,64]]]],["eval"]]
         for legacy in [False,True]:
             yield {"seed":seed,"legacy":legacy,"context":[[-64,384,63],[0,256,32],[-2032,4064,0],[2**31-1,-2**31,-2**31]][fixture%4],"conditions":conditions,"ops":ops}
 
@@ -274,18 +274,18 @@ def main():
     biome_tags=biome_tag_resources(jars["server"])
     if not biome_tags or biome_tags!=biome_tag_resources(jars["client"]):raise ValueError("client/server biome tags differ")
     biome_tag_count=len(biome_tags)
-    biome_tags.update({"horizon:empty":'{"values":[]}',"horizon:chain":'{"values":["#minecraft:is_badlands","minecraft:plains",{"id":"minecraft:unknown","required":false}]}',"horizon:duplicates":'{"values":["minecraft:plains","minecraft:plains"]}'})
+    biome_tags.update({"sunrise:empty":'{"values":[]}',"sunrise:chain":'{"values":["#minecraft:is_badlands","minecraft:plains",{"id":"minecraft:unknown","required":false}]}',"sunrise:duplicates":'{"values":["minecraft:plains","minecraft:plains"]}'})
     (build/"biome_tags.json").write_text(json.dumps(biome_tags,separators=(",",":")),encoding="utf-8")
     conditions=condition_resources(jars["server"])
     if not conditions or conditions!=condition_resources(jars["client"]):raise ValueError("client/server material-condition resources differ")
     resource_count=len(conditions)
-    conditions.update({"horizon:aa_forward":'{"type":"not","invert":"horizon:zz_leaf"}',"horizon:zz_leaf":'{"type":"hole"}',"horizon:chain":'{"type":"not","invert":"horizon:aa_forward"}',"horizon:":'{"type":"steep"}'})
+    conditions.update({"sunrise:aa_forward":'{"type":"not","invert":"sunrise:zz_leaf"}',"sunrise:zz_leaf":'{"type":"hole"}',"sunrise:chain":'{"type":"not","invert":"sunrise:aa_forward"}',"sunrise:":'{"type":"steep"}'})
     (build/"conditions.json").write_text(json.dumps(conditions,separators=(",",":")),encoding="utf-8")
-    oracle=lab.ROOT/"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMaterialConditionOracle.java"
+    oracle=lab.ROOT/"mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMaterialConditionOracle.java"
     anchor_oracle=oracle.with_name("VanillaAnchorOracle.java")
     biome_oracle=oracle.with_name("VanillaBiomeTemperatureOracle.java")
-    sources=[oracle,anchor_oracle,biome_oracle,lab.ROOT/"tools/test_biome_temperature_parity.py",Path(__file__),lab.ROOT/"tools/test_worldgen_parity.py",lab.ROOT/"tools/test_rust_parity.py",lab.ROOT/"tools/lab.py",lab.ROOT/"Cargo.toml",lab.ROOT/"Cargo.lock",lab.ROOT/"crates/horizon-core/Cargo.toml",lab.ROOT/"crates/horizon-world/Cargo.toml",
-             *sorted((lab.ROOT/"crates/horizon-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/horizon-world/src").rglob("*.rs")),lab.ROOT/"crates/horizon-world/examples/probe/material_condition_fixture.rs"]
+    sources=[oracle,anchor_oracle,biome_oracle,lab.ROOT/"tools/test_biome_temperature_parity.py",Path(__file__),lab.ROOT/"tools/test_worldgen_parity.py",lab.ROOT/"tools/test_rust_parity.py",lab.ROOT/"tools/lab.py",lab.ROOT/"Cargo.toml",lab.ROOT/"Cargo.lock",lab.ROOT/"crates/sunrise-core/Cargo.toml",lab.ROOT/"crates/sunrise-world/Cargo.toml",
+             *sorted((lab.ROOT/"crates/sunrise-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/sunrise-world/src").rglob("*.rs")),lab.ROOT/"crates/sunrise-world/examples/probe/material_condition_fixture.rs"]
     tested_sources=base.source_hashes(sources)
     fixtures=[*corpus(),*codec_corpus(conditions),*rule_corpus(conditions),*noise_corpus(noises),*biome_corpus(biomes),*biome_tag_corpus(biomes,biome_tags),*preliminary_corpus(),*ore_corpus()];inputs=build/"inputs.txt";inputs.write_text("".join(json.dumps(f,separators=(",",":"))+"\n" for f in fixtures),encoding="utf-8")
     fixture_paths=[inputs,build/"noises.json",build/"conditions.json",build/"biomes.json",build/"biome_tags.json"];tested_fixtures=base.source_hashes(fixture_paths);classes=build/"classes";classes.mkdir(exist_ok=True)
@@ -293,14 +293,14 @@ def main():
         with (build/(name+".log")).open("w",encoding="utf-8") as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
     run(["javac","--release",lock["minecraft"]["java_major"],"-proc:none","-cp",str(jars["server"])+os.pathsep+dependency_path,"-d",classes,oracle,anchor_oracle,biome_oracle],"compile-java")
-    run(["cargo","build","--release","-p","horizon-world","--example","world_probe"],"compile-rust")
+    run(["cargo","build","--release","-p","sunrise-world","--example","world_probe"],"compile-rust")
     metadata=json.loads(subprocess.check_output(["cargo","metadata","--no-deps","--format-version","1"],cwd=lab.ROOT,text=True))
     binary=Path(metadata["target_directory"])/"release/examples"/("world_probe.exe" if os.name=="nt" else "world_probe")
     run([binary,"material_condition_fixture",build],"rust")
     references=[]
     for side,jar in jars.items():
         reference=build/f"{side}.txt"
-        run(["java","-Xmx512M","-cp",os.pathsep.join([str(classes),str(jar),dependency_path]),"dev.horizonlab.parity.VanillaMaterialConditionOracle",side,build],side)
+        run(["java","-Xmx512M","-cp",os.pathsep.join([str(classes),str(jar),dependency_path]),"dev.sunriselab.parity.VanillaMaterialConditionOracle",side,build],side)
         matched=base.compare(reference,build/"rust.txt")
         references.append({"side":side,"jar_sha256":lab.digest(jar,"sha256"),"output_sha256":lab.digest(reference,"sha256"),"matched_output_lines":matched})
         print(f"{side}: {matched:,} material-condition output lines match Rust",flush=True)

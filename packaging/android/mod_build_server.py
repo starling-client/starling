@@ -52,7 +52,7 @@ class Refused(Exception):
 
 
 def allowed(rest):
-    """As horizon_mods::index::native::allowed: sources, manifests, data, a crate's text files."""
+    """As sunrise_mods::index::native::allowed: sources, manifests, data, a crate's text files."""
     parts = rest.split("/")
     name = parts[-1]
     in_data = len(parts) >= 2 and (parts[0] == "data" or (len(parts) >= 3 and parts[1] == "data"))
@@ -83,17 +83,17 @@ def read_bundle(path):
             ):
                 raise Refused(f"Bad path in the native mod: {info.filename[:80]}")
         try:
-            manifest = json.loads(archive.read("horizon-native.json"))
+            manifest = json.loads(archive.read("sunrise-native.json"))
             mod_id = manifest["id"]
         except (KeyError, ValueError, TypeError):
-            raise Refused("The native mod has no readable horizon-native.json.")
+            raise Refused("The native mod has no readable sunrise-native.json.")
         if not isinstance(mod_id, str) or not ID.match(mod_id):
             raise Refused("The native mod's id is not valid.")
         prefix = f"mixins/{mod_id}/"
         entries = {}
         for info in infos:
             name = info.filename
-            if name == "horizon-native.json" or name == "horizon-mod.toml":
+            if name == "sunrise-native.json" or name == "sunrise-mod.toml":
                 continue
             if name.startswith(("assets/", "data/")):
                 continue
@@ -225,7 +225,7 @@ def build(key):
     result = result_of(key)
     shutil.rmtree(result, ignore_errors=True)
     result.mkdir(parents=True)
-    shutil.move(out / "libhorizon_android.so", result / "libhorizon_android.so")
+    shutil.move(out / "libsunrise_android.so", result / "libsunrise_android.so")
     shutil.move(out / "build.json", result / "build.json")
     return None
 
@@ -319,7 +319,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if len(parts) == 3:
             status = self.status(key)
             return self.answer(200 if status else 404, status or {"error": "No such job."})
-        path = result_of(key) / "libhorizon_android.so"
+        path = result_of(key) / "libsunrise_android.so"
         if parts[3:] != ["lib"] or not path.exists():
             return self.answer(404, {"error": "No such thing here."})
         size = path.stat().st_size

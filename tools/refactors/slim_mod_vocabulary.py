@@ -28,8 +28,8 @@ def main():
     for source, target in MOVES:
         if args.only and source != args.only:
             continue
-        old = f"crates/horizon-mod-vocab/src/{source}"
-        new = f"crates/horizon-mod-api/src/{target}"
+        old = f"crates/sunrise-mod-vocab/src/{source}"
+        new = f"crates/sunrise-mod-api/src/{target}"
         if args.verify:
             expected = subprocess.check_output(["git", "show", f"{BASE}:{old}"], cwd=ROOT)
             if (ROOT / new).read_bytes() != expected:

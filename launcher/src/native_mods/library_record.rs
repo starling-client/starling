@@ -112,7 +112,7 @@ mod tests {
             stamp(
                 p,
                 "build",
-                ["dependency", "horizon_patch", "dependent"][i],
+                ["dependency", "sunrise_patch", "dependent"][i],
                 "1",
                 i == 1,
             )
@@ -121,7 +121,7 @@ mod tests {
         let rows = collect(&paths).unwrap();
         assert_eq!(
             rows.iter().map(|r| r.mod_id.as_str()).collect::<Vec<_>>(),
-            ["dependency", "dependent", "horizon_patch"]
+            ["dependency", "dependent", "sunrise_patch"]
         );
         assert_eq!(
             rows[0].sha256,

@@ -2,9 +2,9 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-p = root / 'crates/horizon-mod-wasm/wire-loopback/tests/wire_loopback.rs'
+p = root / 'crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback.rs'
 s = p.read_text()
-start = s.index('    struct Mod;\n', s.index('fn __horizon_mod_hooks()'))
+start = s.index('    struct Mod;\n', s.index('fn __sunrise_mod_hooks()'))
 end = s.index('    Box::new(Mod)', start)
 block = s[start:end]
 fixture = p.parent / 'wire_loopback/interaction_fixture.rs'

@@ -1,5 +1,5 @@
 use cap_std::fs::Dir;
-use horizon_mod_package::output::Capture;
+use sunrise_mod_package::output::Capture;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -20,8 +20,8 @@ fn raw_capture_privacy_flush_and_descendant_drain() {
         let root = tempfile::tempdir().unwrap();
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "process::output_tests::actor", "--nocapture"])
-            .env("HORIZON_CAPTURE_TEST_ROOT", root.path())
-            .env("HORIZON_CAPTURE_TEST_MODE", mode)
+            .env("SUNRISE_CAPTURE_TEST_ROOT", root.path())
+            .env("SUNRISE_CAPTURE_TEST_MODE", mode)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -37,13 +37,13 @@ fn raw_capture_privacy_flush_and_descendant_drain() {
                 retained.extend(current);
                 let mut text = String::from_utf8(retained).unwrap();
                 if !text.starts_with(byte as char)
-                    && !text.starts_with("\n[horizon.output.dropped_bytes=")
+                    && !text.starts_with("\n[sunrise.output.dropped_bytes=")
                 {
                     let end = text.find("]\n").unwrap();
                     assert!(end < 128, "invalid retained notice fragment");
                     text.drain(..end + 2);
                 }
-                let mut parts = text.split("\n[horizon.output.dropped_bytes=");
+                let mut parts = text.split("\n[sunrise.output.dropped_bytes=");
                 let mut payload = parts.next().unwrap().to_owned();
                 for part in parts {
                     let (count, rest) = part.split_once("]\n").unwrap();
@@ -72,14 +72,14 @@ fn raw_capture_privacy_flush_and_descendant_drain() {
 
 #[test]
 fn actor() {
-    let Some(mode) = std::env::var_os("HORIZON_CAPTURE_TEST_MODE") else {
+    let Some(mode) = std::env::var_os("SUNRISE_CAPTURE_TEST_MODE") else {
         return;
     };
     if mode == "hold" {
         std::thread::sleep(Duration::from_secs(30));
         return;
     }
-    let root = PathBuf::from(std::env::var_os("HORIZON_CAPTURE_TEST_ROOT").unwrap());
+    let root = PathBuf::from(std::env::var_os("SUNRISE_CAPTURE_TEST_ROOT").unwrap());
     #[cfg(unix)]
     if mode == "privacy" {
         use std::os::unix::fs::PermissionsExt;
@@ -132,7 +132,7 @@ fn actor() {
     if mode == "descendant" {
         let mut descendant = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "process::output_tests::actor", "--nocapture"])
-            .env("HORIZON_CAPTURE_TEST_MODE", "hold")
+            .env("SUNRISE_CAPTURE_TEST_MODE", "hold")
             .spawn()
             .unwrap();
         let started = Instant::now();

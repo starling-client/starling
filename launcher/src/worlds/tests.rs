@@ -3,7 +3,7 @@ use chrono::TimeZone;
 
 fn scratch(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "horizon-launcher-worlds-{name}-{}",
+        "sunrise-launcher-worlds-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -199,7 +199,7 @@ fn the_mods_a_world_was_saved_with_are_read_and_matched() {
             Tag::compound([("LoadingModList", Tag::List(vec![record("greeter")]))]),
         ),
         (
-            "horizon",
+            "sunrise",
             Tag::compound([("ContentModList", Tag::List(vec![record("bricks")]))]),
         ),
     ]);

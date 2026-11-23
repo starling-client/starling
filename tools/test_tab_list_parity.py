@@ -11,11 +11,11 @@ case's teams (colour, prefix, suffix), `list` objective (integer or hearts,
 number formats) and scores, with the header, footer, row background option
 and Hud ticks. It records every fill, text (as styled runs), sprite and
 face blit. `examples/probe/tab_list_fixture` lays out the same frames with
-`horizon_client::tab_list`; the ordered call lists must agree.
+`sunrise_client::tab_list`; the ordered call lists must agree.
 
 Downloaded skin images are compared too: VanillaSkinImageOracle decodes
 PNGs as NativeImage does and runs SkinTextureDownloader.processLegacySkin;
-`examples/probe/skin_image_fixture` runs `horizon_client::skins`. Pixels must agree.
+`examples/probe/skin_image_fixture` runs `sunrise_client::skins`. Pixels must agree.
 
   test_tab_list_parity.py [--count N] [--detail N]
 """
@@ -35,10 +35,10 @@ try:
 except ImportError:
     import lab, test_rust_parity as base, test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 COLORS = ['black', 'dark_blue', 'dark_green', 'dark_aqua', 'dark_red', 'dark_purple', 'gold', 'gray', 'dark_gray',
           'blue', 'green', 'aqua', 'red', 'light_purple', 'yellow', 'white']
-WORDS = ['Welcome', 'to', 'the', 'server', 'Horizon', 'players', 'online', 'mc.example.net', 'Have', 'fun!',
+WORDS = ['Welcome', 'to', 'the', 'server', 'Sunrise', 'players', 'online', 'mc.example.net', 'Have', 'fun!',
          'Supercalifragilisticexpialidocious', 'a', 'é', 'Ünïcödé', '§aGreen', '§lBold', '[VIP]', '1234567890']
 NAMES = ['Steve', 'Alex', 'Notch', 'jeb_', 'Dinnerbone', 'Grumm', 'xX_Pro_Xx', 'a', 'Zed', 'zebra', 'Émile', 'ÆON',
          'bob', 'Carl', '_under', '123', 'MMMMMMMMMMMMMMMM', 'iiiiiiii', 'Wide_W', 'ßtraße', 'Ⅻ', 'Mix3d_Case']
@@ -239,14 +239,14 @@ def main():
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaTabListOracle', 'VanillaSkinImageOracle'))], 'compile-java')
-    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaTabListOracle',
+    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaTabListOracle',
          inputs, build / 'vanilla.jsonl', resources / 'assets'], 'vanilla')
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'tab_list_fixture', resources, inputs, build / 'rust.jsonl'], 'rust')
     images = build / 'skins.txt'; images.write_text(''.join(i + '\n' for i in skin_images(args.images)))
-    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaSkinImageOracle',
+    run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaSkinImageOracle',
          images, build / 'vanilla-skins.txt'], 'vanilla-skins')
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'skin_image_fixture', images, build / 'rust-skins.txt'], 'rust-skins')
     vanilla_skins = (build / 'vanilla-skins.txt').read_text().splitlines()
     rust_skins = (build / 'rust-skins.txt').read_text().splitlines()
@@ -255,11 +255,11 @@ def main():
     for i in skin_bad[:args.detail]:
         a, b = vanilla_skins[i], rust_skins[i]
         if 'refused' in (a, b):
-            print(f'SKIN MISMATCH image {i}: vanilla {a[:20]}, horizon {b[:20]}')
+            print(f'SKIN MISMATCH image {i}: vanilla {a[:20]}, sunrise {b[:20]}')
         else:
             a, b = base64.b64decode(a), base64.b64decode(b)
             k = next(k for k in range(min(len(a), len(b))) if a[k] != b[k]) // 4
-            print(f'SKIN MISMATCH image {i}: pixel ({k % 64}, {k // 64}) vanilla {a[k*4:k*4+4].hex()} horizon {b[k*4:k*4+4].hex()}')
+            print(f'SKIN MISMATCH image {i}: pixel ({k % 64}, {k // 64}) vanilla {a[k*4:k*4+4].hex()} sunrise {b[k*4:k*4+4].hex()}')
     print(f'{args.images - len(skin_bad)}/{args.images} processed skin images match '
           f'({sum(v == "refused" for v in vanilla_skins)} refused)')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
@@ -280,7 +280,7 @@ def main():
         print('ORACLE ERROR', e)
     for case, i, k, a, b, la, lb in bad[:args.detail]:
         print('MISMATCH', json.dumps(case)[:3000])
-        print(f'   frame {i}, call {k} ({la} vanilla, {lb} Horizon calls)\n   vanilla {a}\n   horizon {b}')
+        print(f'   frame {i}, call {k} ({la} vanilla, {lb} Sunrise calls)\n   vanilla {a}\n   sunrise {b}')
     print(f'{len(vanilla) - len(bad) - len(errors)}/{len(vanilla)} player lists match ({frames} frames, {calls} calls); '
           f'{len(errors)} oracle errors')
     if bad or errors or skin_bad:

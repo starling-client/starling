@@ -16,7 +16,7 @@
     "duration": 120,
     "hooks": ["player_switch_hotbar_slot_pre"],
     "cancel": {"player_switch_hotbar_slot_pre": {"new": 7}},
-    "tolerance": "exact (old,new,cancelled) sequence; relative to first event, +/-1 server tick versus script and between servers; cancel 7 leaves 3 selected, last request is a no-op; Horizon post only for accepted changes"
+    "tolerance": "exact (old,new,cancelled) sequence; relative to first event, +/-1 server tick versus script and between servers; cancel 7 leaves 3 selected, last request is a no-op; Sunrise post only for accepted changes"
   },
   "moisture": {
     "seed": 12345,

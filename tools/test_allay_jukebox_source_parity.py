@@ -6,7 +6,7 @@ of the jukebox that started a dance (`jukeboxPos`) while the allay dances, and a
 from that position (or with none kept); `aiStep` also ends it every 20 ticks when that jukebox is out of
 reach or gone. A playing jukebox posts `jukebox_play` again every 20 ticks of its song.
 
-A vanilla dedicated server and Horizon's each serve a fresh flat world; a vanilla-codec client
+A vanilla dedicated server and Sunrise's each serve a fresh flat world; a vanilla-codec client
 (VanillaProtocolClient, allay-dance mode: AllayDanceTranscript) joins and records, in arrival order and per
 console phase, every entity data value sent for the scene's allays and every level event. With the ticks
 frozen the console walls two allays (AI on, fixed UUIDs) into glass cells:
@@ -233,7 +233,7 @@ def timelines(result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'allay-jukebox-source-parity')
     parser.add_argument('--vanilla-only', action='store_true', help='run only the vanilla server')
     args = parser.parse_args()
@@ -242,31 +242,31 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui']}
     if not args.vanilla_only:
         if args.binary:
             binary = args.binary.resolve(strict=True)
         else:
-            subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client',
-                            '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+            subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client',
+                            '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
             metadata = json.loads(subprocess.check_output(
                 ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
             binary = Path(metadata['target_directory']) / 'fast' / (
-                'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
-        commands['horizon'] = [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']
+                'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
+        commands['sunrise'] = [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     derived = {label: timelines(result) for label, result in results.items()}
     for label, result in results.items():
         lab.write_json(out / f'{label}-records.json', result)
     lab.write_json(out / 'timelines.json', derived)
-    if 'horizon' not in derived:
+    if 'sunrise' not in derived:
         print(json.dumps(derived['vanilla'], indent=1))
         return
     # Admission: each server sent every start (1010) and stop (1011) vanilla sent after the setup, in its
@@ -275,9 +275,9 @@ def main():
     for label in derived:
         missing = [e for e in wanted if e not in derived[label]['diag-level']]
         assert not missing, (label, 'jukebox events not sent', missing)
-    keys = sorted(set(derived['vanilla']) | set(derived['horizon']))
-    differences = {key: {'vanilla': derived['vanilla'].get(key), 'horizon': derived['horizon'].get(key)}
-                   for key in keys if derived['vanilla'].get(key) != derived['horizon'].get(key)}
+    keys = sorted(set(derived['vanilla']) | set(derived['sunrise']))
+    differences = {key: {'vanilla': derived['vanilla'].get(key), 'sunrise': derived['sunrise'].get(key)}
+                   for key in keys if derived['vanilla'].get(key) != derived['sunrise'].get(key)}
     # Diagnostics are reported, never failed on.
     for key in [k for k in differences if k.startswith('diag-')]:
         print(f'diagnostic difference: {key}', flush=True)

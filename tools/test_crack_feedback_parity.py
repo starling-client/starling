@@ -34,9 +34,9 @@ def main():
     report.unlink(missing_ok=True)
     (build / 'rust.json').unlink(missing_ok=True)
     sources = [lab.ROOT / path for path in (
-        'crates/horizon-client/src/game/lan_actions.rs',
-        'crates/horizon-client/src/game/lan_actions/crack_feedback_tests.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCrackFeedbackOracle.java',
+        'crates/sunrise-client/src/game/lan_actions.rs',
+        'crates/sunrise-client/src/game/lan_actions/crack_feedback_tests.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCrackFeedbackOracle.java',
         'tools/test_crack_feedback_parity.py')]
     hashes = base.source_hashes(sources)
     classes, dependencies, _ = harness.compile_oracle(
@@ -44,11 +44,11 @@ def main():
         lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaCrackFeedbackOracle',
                      [build / 'java.json'], 'java')
-    env = lab.game_env(HORIZON_TEST_RESOURCES=args.resources.resolve(),
-                       HORIZON_CRACK_TRACE=build / 'rust.json')
+    env = lab.game_env(SUNRISE_TEST_RESOURCES=args.resources.resolve(),
+                       SUNRISE_CRACK_TRACE=build / 'rust.json')
     with (build / 'rust.log').open('w') as log:
         subprocess.run(
-            ['cargo', 'test', '-p', 'horizon-client', '--lib',
+            ['cargo', 'test', '-p', 'sunrise-client', '--lib',
              'crack_packets_follow_start_clock_and_strict_observer_radius',
              '--', '--ignored', '--nocapture'],
             cwd=lab.ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,

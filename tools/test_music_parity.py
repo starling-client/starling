@@ -7,7 +7,7 @@ Soft "No Output" device, see VanillaSoundRig). The situation
 end of a track, `stopPlaying`, `setMinutesBetweenSongs`, the music category
 volume and `showNowPlayingToastIfNeeded` are script inputs; every step prints
 the current track, `nextSongDelay`, `currentGain`, `toastShown`, the toast
-calls, the MUSIC category gain and the music channel's AL source. Horizon's
+calls, the MUSIC category gain and the music channel's AL source. Sunrise's
 `MusicManager` and `SoundEngine` replay the scripts. Tracks use events whose
 variants share one volume, since `forMusic` resolves with an unseeded random.
 """
@@ -165,9 +165,9 @@ def main():
     lines = fixtures()
     matched, report = h.run_harness(
         'music', 'VanillaMusicOracle', 'music_fixture', ''.join(l + '\n' for l in lines),
-        extra_sources=[h.lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSoundRig.java',
-                       h.lab.ROOT / 'crates/horizon-client/src/music.rs',
-                       h.lab.ROOT / 'crates/horizon-client/examples/probe/audio_common/mod.rs'],
+        extra_sources=[h.lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSoundRig.java',
+                       h.lab.ROOT / 'crates/sunrise-client/src/music.rs',
+                       h.lab.ROOT / 'crates/sunrise-client/examples/probe/audio_common/mod.rs'],
         java_args=[h.RESOURCES], rust_args=[h.RESOURCES],
         scope='Real MusicManager.tick/startPlaying/stopPlaying/fadePlaying/setMinutesBetweenSongs/showNowPlayingToastIfNeeded with a seeded '
               'random over the real SoundEngine: track starts and replacements, nextSongDelay draws, the three music frequencies, the loading '

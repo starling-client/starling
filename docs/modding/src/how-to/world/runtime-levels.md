@@ -76,7 +76,7 @@ it stays open: `is_open` still says true, and the level opens again from its fol
 
 `delete(id)` removes a level for good: its folder `dimensions/<namespace>/<path>/` and the
 structure references the game keeps beside the world for it
-(`data/horizon_structure_references_<namespace>_<path>.json`, kept if another id would share that
+(`data/sunrise_structure_references_<namespace>_<path>.json`, kept if another id would share that
 file and its level exists: `a_b:c` and `a:b_c` do), then the folders those leave empty. It works for the levels of the calling mod's namespace only, with the same refusals as
 `unload` (`InvalidId`, `OutsideNamespace`, `ReservedId`), and the folder it removes comes from
 the validated id and nothing else.
@@ -122,9 +122,9 @@ A handle from before the delete reads as stale, as after an `unload`.
 ## Players and clients
 
 A player goes into a runtime level and out of it as into any level, with
-`entity.teleport_to_level`. Its client, vanilla or Horizon, learns the level on the way in: the
+`entity.teleport_to_level`. Its client, vanilla or Sunrise, learns the level on the way in: the
 Respawn names it and its dimension type, which the client has had since it joined. On the way out
-a Horizon client forgets a level the server opened after it logged in, so a long session through
+a Sunrise client forgets a level the server opened after it logged in, so a long session through
 many instances keeps none of them. A level opened again under the same id after a `delete`
 reaches the client afresh, with nothing of the old one.
 
@@ -139,8 +139,8 @@ again, to the clients that can name it.
 ## The cap
 
 A server keeps at most 64 runtime levels open or waiting, whichever mods opened them: the
-65th `open` is `CapReached`. A server sets another number with `horizon-max-runtime-levels` in
-`server.properties`; a server run by `horizon-server` sets it under `[properties]` in `server.toml`
+65th `open` is `CapReached`. A server sets another number with `sunrise-max-runtime-levels` in
+`server.properties`; a server run by `sunrise-server` sets it under `[properties]` in `server.toml`
 ([hosting](https://github.com/arismoko/horizon/blob/main/docs/hosting.md)). An unloaded or deleted level frees its place when the request is applied; the idle close does not free it.
 
 Every refusal is also logged with the name of the mod that asked.

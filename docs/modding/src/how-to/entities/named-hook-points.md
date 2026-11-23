@@ -8,13 +8,13 @@ The optional `hash` pins the function fingerprint; when you omit it, the build
 uses the pinned game's catalog. The schema rejects `hook` and `hook_version`.
 See [Injections](../../concepts/injections.md).
 
-Native rendering callbacks such as `horizon_mod_render::render::world_drawn`,
+Native rendering callbacks such as `sunrise_mod_render::render::world_drawn`,
 `hand_drawn` and `world_views` use a HEAD mixin. The launcher compiles the patched
 function against the prebuilt game. Callbacks borrow the frame's GPU resources;
 `world_views` supplies additional camera views. The renderer refuses invalid,
 duplicate and oversized view requests by name, as `push` returns them.
 
-Use the geometry types re-exported as `horizon_mod_render::render::{Vertex, EntitySpan}`.
+Use the geometry types re-exported as `sunrise_mod_render::render::{Vertex, EntitySpan}`.
 Implement the `render_needs` callback to set `RenderNeeds` requests for world depth
 and entity geometry; these requests feed the engine's frame requirements so it
 retains the resources your drawing callbacks borrow.

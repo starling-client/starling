@@ -41,8 +41,8 @@ resolve a different source, or modify the instance's stored settings.
 ## Sounds of viewed levels
 
 A client mod that shows another level, as Immersive Portals shows a portal's far side, hears it
-through `viewed_level_sound`, a client-only Horizon hook with no NeoForge counterpart. The server
-sends a level's sounds to a client that views it, from `horizon:levels` revision 3: only to one
+through `viewed_level_sound`, a client-only Sunrise hook with no NeoForge counterpart. The server
+sends a level's sounds to a client that views it, from `sunrise:levels` revision 3: only to one
 whose chunks of that level hold the sound's chunk, and whose area there has its centre chunk within
 the sound's broadcast distance plus 16 blocks. The engine plays none of them by itself. The hook
 gets the viewed level's handle, the sound, its source, its position in that level, its volume,

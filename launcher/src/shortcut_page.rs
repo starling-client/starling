@@ -1,7 +1,7 @@
-//! The Instance row's desktop shortcut (`horizon_launcher::shortcut`): make one that plays the
+//! The Instance row's desktop shortcut (`sunrise_launcher::shortcut`): make one that plays the
 //! selected instance, or take it away.
 use super::*;
-use horizon_launcher::shortcut;
+use sunrise_launcher::shortcut;
 
 #[derive(Default)]
 pub(super) struct Shortcuts {

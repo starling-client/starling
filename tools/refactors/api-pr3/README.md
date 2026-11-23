@@ -1,7 +1,7 @@
 # API 3 closeout: replay order
 
 This directory holds the scripts and gate tooling for the one PR that closes API 3
-(`horizon-mod-api` depends on no engine crate). Commits in the PR are grouped by item, so review
+(`sunrise-mod-api` depends on no engine crate). Commits in the PR are grouped by item, so review
 can split by commit group:
 
 1. Hand-written items (one commit series each): flat `Text` follow-ups, JSON to `Tag` converter,

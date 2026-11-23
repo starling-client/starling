@@ -1,11 +1,11 @@
 {
- "kind": "horizon-server-benchmark",
+ "kind": "sunrise-server-benchmark",
  "date": "2026-10-31T18:07:34+00:00",
  "machine": {
   "system": "Linux",
   "machine": "x86_64",
   "cpus": 8,
-  "host": "playhorizon: AMD EPYC 7662, 8 vCPUs; server and bots pinned to CPUs 0-3 (no other benchmark there; the CI runner works on CPUs 4-7 of the same machine)"
+  "host": "playsunrise: AMD EPYC 7662, 8 vCPUs; server and bots pinned to CPUs 0-3 (no other benchmark there; the CI runner works on CPUs 4-7 of the same machine)"
  },
  "commit": "fef508cc32ce0f3ebe17c3e5f6fa4003ae2e940d",
  "java": [
@@ -13,10 +13,10 @@
  ],
  "versions": {
   "pumpkin": "0.2.1+26.3-26.60 (protocol 777), commit 55cb804cc249d6a39a440ad00e5ee28f9a060d67, cargo build --release",
-  "horizon": "main d91cab68d + this tool, cargo build --release"
+  "sunrise": "main d91cab68d + this tool, cargo build --release"
  },
  "settings": {
-  "servers": "horizon,pumpkin",
+  "servers": "sunrise,pumpkin",
   "bots": "0,20,60,100",
   "behaviour": "mixed",
   "join_every": 0.5,
@@ -52,7 +52,7 @@
  },
  "runs": [
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 0,
    "behaviour": "mixed",
    "start_seconds": 2.31,
@@ -118,7 +118,7 @@
    "round": 0
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 20,
    "behaviour": "mixed",
    "start_seconds": 2.31,
@@ -216,7 +216,7 @@
    "round": 0
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 60,
    "behaviour": "mixed",
    "start_seconds": 2.1,
@@ -314,7 +314,7 @@
    "round": 0
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 100,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -412,7 +412,7 @@
    "round": 0
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 0,
    "behaviour": "mixed",
    "start_seconds": 2.2,
@@ -478,7 +478,7 @@
    "round": 1
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 20,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -576,7 +576,7 @@
    "round": 1
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 60,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -674,7 +674,7 @@
    "round": 1
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 100,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -772,7 +772,7 @@
    "round": 1
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 0,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -838,7 +838,7 @@
    "round": 2
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 20,
    "behaviour": "mixed",
    "start_seconds": 2.2,
@@ -936,7 +936,7 @@
    "round": 2
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 60,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -1034,7 +1034,7 @@
    "round": 2
   },
   {
-   "server": "horizon",
+   "server": "sunrise",
    "bots": 100,
    "behaviour": "mixed",
    "start_seconds": 2.21,
@@ -1138,7 +1138,7 @@
    "bots": 0,
    "round": 0,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 0,
       "share": 1.0
@@ -1168,7 +1168,7 @@
    "bots": 20,
    "round": 0,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 236.35,
       "share": 1.0
@@ -1198,7 +1198,7 @@
    "bots": 60,
    "round": 0,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 436.22,
       "share": 1.0
@@ -1228,7 +1228,7 @@
    "bots": 100,
    "round": 0,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 649.98,
       "share": 0.969
@@ -1258,7 +1258,7 @@
    "bots": 0,
    "round": 1,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 0,
       "share": 1.0
@@ -1288,7 +1288,7 @@
    "bots": 20,
    "round": 1,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 236.63,
       "share": 1.0
@@ -1318,7 +1318,7 @@
    "bots": 60,
    "round": 1,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 413.67,
       "share": 0.922
@@ -1348,7 +1348,7 @@
    "bots": 100,
    "round": 1,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 643.8,
       "share": 0.972
@@ -1378,7 +1378,7 @@
    "bots": 0,
    "round": 2,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 0,
       "share": 1.0
@@ -1408,7 +1408,7 @@
    "bots": 20,
    "round": 2,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 236.1,
       "share": 1.0
@@ -1438,7 +1438,7 @@
    "bots": 60,
    "round": 2,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 437.79,
       "share": 1.0
@@ -1468,7 +1468,7 @@
    "bots": 100,
    "round": 2,
    "servers": {
-    "horizon": {
+    "sunrise": {
      "chunks_per_second": {
       "value": 661.76,
       "share": 0.933

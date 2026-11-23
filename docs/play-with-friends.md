@@ -3,10 +3,10 @@
 A player opens their single-player world to friends with one click and gets an **invite code**.
 Friends paste the code (in game: the title screen's Friends button opens Join a Friend, and Direct
 Connection takes a full code too; or on the launcher's Play page) and join.
-There is no Horizon server in the middle and no account: the code itself says where the host is and
+There is no Sunrise server in the middle and no account: the code itself says where the host is and
 holds the key that encrypts the game between them.
 
-It is built on Open to LAN: the integrated server (`crates/horizon-client/src/lan`) listens on a local
+It is built on Open to LAN: the integrated server (`crates/sunrise-client/src/lan`) listens on a local
 TCP port and speaks the vanilla protocol. Play with friends puts an encrypted tunnel in front of that
 port. Neither the integrated server nor the guest's client changes: the tunnel carries exactly the
 bytes vanilla's protocol would send, between a loopback port on each side. On the guest's side the
@@ -20,7 +20,7 @@ that finds the port takes the session.
  │ (unchanged)  │             │ tunnel     │  to an address from the code  │ tunnel     │               │ server (LAN) │
  └──────────────┘             └────────────┘                               └────────────┘               └──────────────┘
                                      ╲            optional: a relay anyone can run         ╱
-                                      ╲──────────▶ horizon-relay (short codes, fallback) ◀╱
+                                      ╲──────────▶ sunrise-relay (short codes, fallback) ◀╱
 ```
 
 ## How it works
@@ -30,7 +30,7 @@ with Friends** (`game/friends/screen.rs`); its **Start Sharing** opens the world
 LAN's defaults), then the host's game, on its own:
 
 1. listens on its **direct port**, TCP 25580 by default (the same port every time, so a port forwarded
-   by hand keeps working; another one if it is taken; `HORIZON_FRIENDS_PORT` picks it);
+   by hand keeps working; another one if it is taken; `SUNRISE_FRIENDS_PORT` picks it);
 2. collects this computer's addresses: the LAN address, VPN addresses (Tailscale's `100.x`, ZeroTier
    and others), IPv6. Container and VM bridges are left out;
 3. asks the home router to open the direct port for an hour, renewed every half hour and deleted when
@@ -40,24 +40,24 @@ LAN's defaults), then the host's game, on its own:
    hour; a permanent one stays until it is removed in the router's settings);
 4. asks public **STUN** servers for its public IPv4 address (only the address: STUN sees UDP, the game
    is TCP). Defaults: `stun.cloudflare.com:3478` and `stun.l.google.com:19302`, two independent
-   operators of free STUN at a global scale, so one outage doesn't break discovery. `HORIZON_STUN_SERVERS`
+   operators of free STUN at a global scale, so one outage doesn't break discovery. `SUNRISE_STUN_SERVERS`
    (a comma list, or `none`) changes them;
 5. builds the **invite code**: the endpoints (the router mapping, the public address on the direct
    port, the interface addresses) and a fresh 80-bit secret, in base32 with a checksum.
 
 **Joining.** The guest's game dials every endpoint in the code at once. The first that answers as a
-Horizon host gets the handshake, the others are dropped. On the same LAN, over a VPN, with IPv6, with a
+Sunrise host gets the handshake, the others are dropped. On the same LAN, over a VPN, with IPv6, with a
 router that opened the port, or with a forwarded port, that's it: no server took part.
 
 **In the code.** The engine knows only the address form `friend:<code>` and a hook, `Hooks::tunnel`
-(`horizon_hooks::tunnel`, `horizon_platform::hooks::tunnel` for the Horizon layer): the resolver a hook offers
+(`sunrise_hooks::tunnel`, `sunrise_platform::hooks::tunnel` for the Sunrise layer): the resolver a hook offers
 reads codes and opens the tunnel, which the join (`net.rs`) then reaches on a loopback port like any server.
-horizon-friends' `game` side offers it, and the official executable (`horizon-official`) registers it;
-horizon-client's own executable has none, so there a `friend:` address is refused and the title screen's
+sunrise-friends' `game` side offers it, and the official executable (`sunrise-official`) registers it;
+sunrise-client's own executable has none, so there a `friend:` address is refused and the title screen's
 Friends icon, which opens Join a Friend, is inactive (`net::joins_friends`). Hosting needs no hook: the
 host end connects to the world's LAN port over loopback, so tunnelled guests are LAN guests. It still lives in
-horizon-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
-`horizon-extras`) until the pause menu and `horizon-ctl` offer entries to crates above the engine.
+sunrise-client (`game/friends.rs`, `game/friends/screen.rs`, the `friends` feature, which comes with
+`sunrise-extras`) until the pause menu and `sunrise-ctl` offer entries to crates above the engine.
 
 **Codes.** Crockford base32 (`0-9 A-Z` without `I L O U`; input ignores case, spaces and dashes and reads
 `O` as `0`, `I`/`L` as `1`) in groups of five, with a 16-bit checksum so a typo is caught before
@@ -103,13 +103,13 @@ run at once there, and each must finish within 10 seconds however slowly its byt
 - **Friends with the code** see the host's addresses in it (LAN, VPN, public), as with any server
   address. A guest's address is seen by the host, as on any server.
 - **STUN servers** see the host's public IP address and a 20-byte request, like any website it visits.
-  Turn them off with `HORIZON_STUN_SERVERS=none` (the code then lacks the public address unless the
+  Turn them off with `SUNRISE_STUN_SERVERS=none` (the code then lacks the public address unless the
   router reported it).
-- **The router** gets a port mapping named "Horizon (play with friends)".
+- **The router** gets a port mapping named "Sunrise (play with friends)".
 - **A relay** (only if one is configured) sees the IP addresses of the host and the guests, the short
   code's first half, when sessions start and end and the size of encrypted frames. It can't see the
   secret, the key or the game (names, chat, the world). It logs counts every five minutes, nothing else.
-- **Horizon** runs no service for it, and the game sends nothing about it ([telemetry.md](telemetry.md)).
+- **Sunrise** runs no service for it, and the game sends nothing about it ([telemetry.md](telemetry.md)).
 
 ## Identity
 
@@ -122,7 +122,7 @@ reaches the integrated server from `127.0.0.1`.
 ## Relays (optional)
 
 For networks nothing can reach (CGNAT on both sides, no VPN), a **relay** carries the session: one small
-binary, `horizon-relay`, that anyone can run on their own PC, a VPS, a Raspberry Pi or a free tier.
+binary, `sunrise-relay`, that anyone can run on their own PC, a VPS, a Raspberry Pi or a free tier.
 There is no default relay. With one configured:
 
 - the host also registers there and gets a **short code** (`K7QM-3XPD`: a 4-symbol nameplate the relay
@@ -132,8 +132,8 @@ There is no default relay. With one configured:
 - a relayed session first races direct connections both ways (candidates exchanged encrypted, TCP
   simultaneous open from the direct port), and stays on the relay only if none connects.
 
-Configuring it: the **Relay** field on the Join a friend page (saved to `horizon.txt` as
-`friendsRelay:host:port`, used for hosting too), or `HORIZON_RELAY_URL`.
+Configuring it: the **Relay** field on the Join a friend page (saved to `sunrise.txt` as
+`friendsRelay:host:port`, used for hosting too), or `SUNRISE_RELAY_URL`.
 
 ### Running your own relay
 
@@ -144,20 +144,20 @@ over new terrain up to a few hundred KB/s (capped per session).
 **From a release or source** (any OS with Rust):
 
 ```
-cargo build --release -p horizon-relay
-PORT=7000 ./target/release/horizon-relay
+cargo build --release -p sunrise-relay
+PORT=7000 ./target/release/sunrise-relay
 ```
 
 **With Docker** (build context: the repository root):
 
 ```
-docker build -f crates/horizon-relay/Dockerfile -t horizon-relay .
-docker run -d --restart unless-stopped -p 7000:7000 horizon-relay
+docker build -f crates/sunrise-relay/Dockerfile -t sunrise-relay .
+docker run -d --restart unless-stopped -p 7000:7000 sunrise-relay
 ```
 
-**As a service** (Linux, including a Raspberry Pi): copy the binary to `/usr/local/bin/horizon-relay`,
-`crates/horizon-relay/horizon-relay.service` to `/etc/systemd/system/`, then
-`systemctl enable --now horizon-relay`.
+**As a service** (Linux, including a Raspberry Pi): copy the binary to `/usr/local/bin/sunrise-relay`,
+`crates/sunrise-relay/sunrise-relay.service` to `/etc/systemd/system/`, then
+`systemctl enable --now sunrise-relay`.
 
 Then forward TCP port 7000 on your router to that machine (or run it on a VPS with a public address),
 check `curl http://<address>:7000/health` from outside, and give friends `<address>:7000`. `GET /whoami`
@@ -220,8 +220,8 @@ host's version), `host_unreachable`, `full`, `rate_limited`, `bad_request`.
 - **CGNAT / a second router**: port forwarding on your own router can't help. Use a VPN or a relay (on a
   machine with a public address, e.g. a VPS).
 - **"Couldn't reach your friend's game"** (guest): the host's note under the code says why. A firewall
-  on the host computer can also block the direct port: allow `horizon-client` on private and public
-  networks (Windows asks the first time; on macOS answer "Allow" when asked whether Horizon may accept
+  on the host computer can also block the direct port: allow `sunrise-client` on private and public
+  networks (Windows asks the first time; on macOS answer "Allow" when asked whether Sunrise may accept
   incoming network connections).
 - **"The code has a typo"**: copy it again; codes are only letters and digits in groups of five.
 - **"This short code works through your friend's relay"**: enter the relay's address under Join a
@@ -230,17 +230,17 @@ host's version), `host_unreachable`, `full`, `rate_limited`, `bad_request`.
 
 ## Testing
 
-- Unit tests (`horizon-friends`): code format (round trips, every single-symbol typo caught, versions),
+- Unit tests (`sunrise-friends`): code format (round trips, every single-symbol typo caught, versions),
   STUN against a mock server, PCP / NAT-PMP against a mock router (map, renew, delete; NAT-PMP when PCP
   is unsupported), UPnP against a mock IGD (description, chunked replies, `AddPortMapping`, permanent-only
   leases (725), taken ports (718), `DeletePortMapping`), the verdicts and endpoint order, gateway
   parsing for Linux, macOS and Windows, the key exchange and frames (wrong secret, tampering), the direct
   race.
-- `crates/horizon-relay/tests/tunnel.rs`: the code alone with no server (1 MiB, two guests at once); a
+- `crates/sunrise-relay/tests/tunnel.rs`: the code alone with no server (1 MiB, two guests at once); a
   self-hosted relay with the short code (relayed, then its direct race); dead endpoints falling back to
   the relay named in the code; wrong secrets (full and short codes, the short code retired after five);
   unknown and ended codes, version mismatch, rate limits, bandwidth caps, `/health`.
-- `tools/test_friends.py`: real games: a host Horizon sharing a world and a guest Horizon joining over
+- `tools/test_friends.py`: real games: a host Sunrise sharing a world and a guest Sunrise joining over
   plain LAN (`--baseline`), with the **code alone** (no relay running), and through a **locally run
   relay** with the short code; chat, movement and blocks both ways, then the ended invite.
 - Two machines over a tailnet with the code alone (`--role host` on one, `--role guest --code …` on the

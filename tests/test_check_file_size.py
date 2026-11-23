@@ -264,7 +264,7 @@ class SyncProvenanceTests(unittest.TestCase):
         self.remote = self.root / "upstream.git"
         self.run_git("init", "-q", "--bare", str(self.remote))
         self.run_git("push", "-q", str(self.remote), "HEAD:refs/heads/main")
-        environment = mock.patch.dict(os.environ, {"HORIZON_UPSTREAM_URL": str(self.remote)})
+        environment = mock.patch.dict(os.environ, {"SUNRISE_UPSTREAM_URL": str(self.remote)})
         environment.start()
         self.addCleanup(environment.stop)
         self.run_git("checkout", "-q", "-b", "work", self.base)
@@ -312,7 +312,7 @@ class SyncProvenanceTests(unittest.TestCase):
     def test_unreachable_upstream_fails_even_with_a_cached_ref(self):
         self.run_git("merge", "-q", "--no-edit", "upstream")
         self.assertEqual(check_file_size.sync_provenance(self.upstream, self.base), [])
-        with mock.patch.dict(os.environ, {"HORIZON_UPSTREAM_URL": str(self.root / "missing.git")}):
+        with mock.patch.dict(os.environ, {"SUNRISE_UPSTREAM_URL": str(self.root / "missing.git")}):
             result = check_file_size.sync_provenance(self.upstream, self.base)
         self.assertIn("upstream main fetch failed", result[0])
 

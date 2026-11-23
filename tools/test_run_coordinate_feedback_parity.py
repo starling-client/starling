@@ -22,7 +22,7 @@ SCENES = [('nether-player', 'the_nether', 8.5), ('overworld-player', 'overworld'
           ('console', 'overworld', 16.5)]
 HELPERS = ['tools/net_capture.py', 'tools/test_locator_bar_parity.py',
            'tools/test_hostile_sound_categories_parity.py', 'tools/test_dedicated_server_parity.py',
-           'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java']
+           'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java']
 
 
 def keys(value):
@@ -159,9 +159,9 @@ def run(label, command, client_command, build, world, java):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    # tools/parity.py runs every harness with no arguments: build the Horizon binary, capture into a new folder
+    # tools/parity.py runs every harness with no arguments: build the Sunrise binary, capture into a new folder
     # and run both sides.
-    parser.add_argument('--binary', type=Path, help='A Horizon client binary; built when omitted')
+    parser.add_argument('--binary', type=Path, help='A Sunrise client binary; built when omitted')
     parser.add_argument('--work-dir', type=Path, help='A new capture folder; one under .local/ when omitted')
     parser.add_argument('--reference-only', action='store_true')
     parser.add_argument('--reference-dir', type=Path)

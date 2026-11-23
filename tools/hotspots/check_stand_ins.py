@@ -9,13 +9,13 @@ This script reads source text only (no build) and fails on:
    that does not define the one item it is named after (its own impls and `use` lines may sit beside it); a name with
    a file in both folders; and a `shared.rs` that defines stand-ins in `mod stubs` (only `use` lines stay there) or
    has a `mod api` again.
-2. A type named in a hook's signature (`crates/horizon-mod-vocab/src/hooks/*.rs`) that no dispatch-test fixture
+2. A type named in a hook's signature (`crates/sunrise-mod-vocab/src/hooks/*.rs`) that no dispatch-test fixture
    defines or re-exports.
 3. The wire loopback test (its root and `tests/wire_loopback/*.rs`): an `impl Trait for X` of a vocabulary trait
    that lacks a required (bodiless) method, associated type or const of that trait; and an `impl` of a generated
    union trait (`CapabilityProviders`, `Registrar`) for X without an `impl` of every member trait for X. The union's
-   members are the `pub trait *CapabilityProviders` / `*Registrar` in `crates/horizon-mod-vocab/src/parts/*.rs`,
-   as `horizon-mod-api-gen/src/parts.rs` bounds them. `#[host_area]` traits are skipped: their methods get generated
+   members are the `pub trait *CapabilityProviders` / `*Registrar` in `crates/sunrise-mod-vocab/src/parts/*.rs`,
+   as `sunrise-mod-api-gen/src/parts.rs` bounds them. `#[host_area]` traits are skipped: their methods get generated
    defaults (`impl_host_areas!`).
 
 Known false negatives (these still surface only in the rollup's build):
@@ -36,7 +36,7 @@ Every input path above must exist and yield at least one hook and one union memb
 path: a rename never turns a check off silently. To run it on a tree from before the loopback moved into its own
 crate, point --loopback at the old root:
 
-    python3 tools/hotspots/check_stand_ins.py [--root DIR] [--loopback crates/horizon-mod-wasm/tests/wire_loopback.rs]
+    python3 tools/hotspots/check_stand_ins.py [--root DIR] [--loopback crates/sunrise-mod-wasm/tests/wire_loopback.rs]
 """
 
 import argparse
@@ -45,13 +45,13 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURES = "crates/horizon-mod-api-gen/dispatch-tests/src/fixtures"
+FIXTURES = "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures"
 FOLDERS = ("stubs", "api")
-HOOKS = "crates/horizon-mod-vocab/src/hooks"
-VOCAB = "crates/horizon-mod-vocab/src"
-PARTS = "crates/horizon-mod-vocab/src/parts"
+HOOKS = "crates/sunrise-mod-vocab/src/hooks"
+VOCAB = "crates/sunrise-mod-vocab/src"
+PARTS = "crates/sunrise-mod-vocab/src/parts"
 UNIONS = ("CapabilityProviders", "Registrar")
-LOOPBACK = "crates/horizon-mod-wasm/wire-loopback/tests/wire_loopback.rs"
+LOOPBACK = "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback.rs"
 # Names a hook signature may use without a fixture: the prelude, std and generic placeholders the generator keeps.
 STD = {"Option", "Some", "None", "Vec", "String", "Box", "Result", "Ok", "Err", "Arc", "Rc", "Self", "HashMap",
        "BTreeMap", "HashSet", "BTreeSet", "Cow", "Duration", "PhantomData", "Fn", "FnMut", "FnOnce", "Send", "Sync"}

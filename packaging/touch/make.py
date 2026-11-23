@@ -1,7 +1,7 @@
 """Starling's touch buttons in a Bedrock-like look, drawn from scratch: a 24x24 stone-grey tile
 (a speckled face, a black outline with cut corners, a 2-pixel bevel lit at the top left) and a
 thick white icon outlined in dark grey; pressed, the face darkens, the bevel turns over and the
-icon sinks a pixel. The sprites go to crates/horizon-client/assets/touch, which the game carries
+icon sinks a pixel. The sprites go to crates/sunrise-client/assets/touch, which the game carries
 as `starling:touch/<name>` (hud.rs `TOUCH_SPRITES`; a resource pack's own win).
 
     python packaging/touch/make.py                     # the sprites
@@ -14,7 +14,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "crates" / "horizon-client" / "assets" / "touch"
+OUT = ROOT / "crates" / "sunrise-client" / "assets" / "touch"
 T = 24  # a button's tile
 STICK = 48  # the stick's base
 

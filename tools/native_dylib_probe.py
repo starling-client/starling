@@ -127,7 +127,7 @@ def main():
         return sdk_tools.extern_args(deps, crate)
 
     def run(command, **kwargs):
-        if command[0] == "rustc" and any(str(arg).startswith("horizon_client=") for arg in command):
+        if command[0] == "rustc" and any(str(arg).startswith("sunrise_client=") for arg in command):
             # Engine metadata describes code carried by the top-level host dylib.
             # Explicitly link that carrier in probes which otherwise only name internals.
             command = list(command)
@@ -135,11 +135,11 @@ def main():
             source = Path(command[index])
             lines = source.read_text().splitlines(keepends=True)
             insertion = next((i for i, line in enumerate(lines) if line.strip() and not line.startswith(("//", "#!["))), len(lines))
-            lines.insert(insertion, "extern crate horizon_mod_host;\n")
+            lines.insert(insertion, "extern crate sunrise_mod_host;\n")
             copied = output / (source.parent.name + "-" + source.name)
             copied.write_text("".join(lines))
             command[index] = str(copied)
-            command.extend(extern("horizon_mod_host"))
+            command.extend(extern("sunrise_mod_host"))
         with (output / "commands.log").open("a") as log:
             log.write(json.dumps(list(map(str, command))) + "\n")
             log.flush()
@@ -156,7 +156,7 @@ def main():
     host = next(line.split(": ", 1)[1] for line in compiler.splitlines() if line.startswith("host: "))
     runtime = sysroot / "lib/rustlib" / host / "lib"
     std_runtime = sorted(runtime.glob(f"{prefix}std-*{extension}"))
-    game = sdk_tools.dylib(deps, "horizon_mod_host")
+    game = sdk_tools.dylib(deps, "sunrise_mod_host")
     failures = []
 
     def runtime_env(*folders):
@@ -186,7 +186,7 @@ def main():
     shipped.mkdir(exist_ok=True)
     route = ["rustc", "--edition", "2024", "-C", "prefer-dynamic", "-C", "opt-level=3", "-L", f"dependency={deps}",
              "-L", f"dependency={sdk / 'host'}", "-L", f"native={sdk / 'native'}", "-L", f"dependency={shipped}"]
-    starter = (sdk_tools.ROOT / "crates/cargo-horizon-mod/template/native/lib.rs").read_text()
+    starter = (sdk_tools.ROOT / "crates/cargo-sunrise-mod/template/native/lib.rs").read_text()
     (shipped / "mod_0.rs").write_text(starter.replace("{id}", "probe"))
     subprocess.run([*route, "--crate-type", "rlib", "--crate-name", "mod_0", *extern("mod_api"),
                     "--out-dir", str(shipped), str(shipped / "mod_0.rs")], check=True)
@@ -194,10 +194,10 @@ def main():
     (shipped / "main.rs").write_text(template.replace("/* MOD_ENTRIES */", '        "probe" => mod_0::hooks,\n').replace(
         "/* BUILT_MODS */",
         '    mod_api::__private::native::BuiltMod { id: "probe", version: "0.1.0", side: mod_api::Side::Both },\n'))
-    shipped_exe = shipped / ("horizon-client.exe" if windows else "horizon-client")
-    subprocess.run([*route, "--crate-type", "bin", "--crate-name", "horizon_native_game",
+    shipped_exe = shipped / ("sunrise-client.exe" if windows else "sunrise-client")
+    subprocess.run([*route, "--crate-type", "bin", "--crate-name", "sunrise_native_game",
                     *(flag for arg in identity["link_args"] for flag in ("-C", f"link-arg={arg}")),
-                    *extern("horizon_client"), *extern("horizon_mod_host"), *extern("mod_api"), *extern("mod_points"), *extern("horizon_mod_package"),
+                    *extern("sunrise_client"), *extern("sunrise_mod_host"), *extern("mod_api"), *extern("mod_points"), *extern("sunrise_mod_package"),
                     "--extern", f"mod_0={shipped / 'libmod_0.rlib'}", "-o", str(shipped_exe), str(shipped / "main.rs")], check=True)
     if windows:
         # std's DLL always exports the allocator shim; the game exports one only if it has its own allocator.
@@ -211,7 +211,7 @@ def main():
         print("shipped route allocator imports and exports:\n" + (shipped / "allocator-imports.json").read_text())
         # 3. At run time, which heap each allocator draws from (classified, never freed across).
         heap_exe = shipped / "route_heap.exe"
-        run([*route, "--crate-name=route_heap", *extern("horizon_client"), *extern("mod_api"),
+        run([*route, "--crate-name=route_heap", *extern("sunrise_client"), *extern("mod_api"),
              *(flag for arg in identity["link_args"] for flag in ("-C", f"link-arg={arg}")),
              str(FIXTURES / "route_heap.rs"), "-o", str(heap_exe)])
         heap = subprocess.run([str(heap_exe), game.name, std_runtime[0].name, *names.values()],
@@ -225,10 +225,10 @@ def main():
               "-L", f"dependency={sdk / 'host'}", "-L", f"native={sdk / 'native'}", "-L", f"dependency={output}"]
     for crate, source in [("probe_shared", "shared.rs"), ("probe_a", "mod.rs"), ("probe_b", "mod.rs")]:
         extra = [] if crate == "probe_shared" else ["--extern", f"probe_shared={output / (prefix + 'probe_shared' + extension)}"]
-        run([*common, "--crate-type=dylib", "--crate-name", crate, *extern("horizon_client"), *extern("mod_api"), *extern("mod_points"),
+        run([*common, "--crate-type=dylib", "--crate-name", crate, *extern("sunrise_client"), *extern("mod_api"), *extern("mod_points"),
              *extra, str(FIXTURES / source), "-o", str(output / (prefix + crate + extension))])
     executable = output / ("probe.exe" if windows else "probe")
-    run([*common, "--crate-name=probe", *extern("horizon_client"), *extern("mod_api"), *extern("mod_points"),
+    run([*common, "--crate-name=probe", *extern("sunrise_client"), *extern("mod_api"), *extern("mod_points"),
          *extern("libloading"), "--extern", f"probe_shared={output / (prefix + 'probe_shared' + extension)}",
          str(FIXTURES / "main.rs"), "-o", str(executable)])
     env = runtime_env(output)

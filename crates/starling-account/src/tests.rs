@@ -1,6 +1,6 @@
 //! The sign-in chain against a local mock of the Microsoft, Xbox Live and Minecraft endpoints
 //! (recorded response shapes, mock tokens only), and the secret store abstraction in memory.
-//! Ported from Horizon's launcher (`launcher/src/account/tests.rs`).
+//! Ported from Sunrise's launcher (`launcher/src/account/tests.rs`).
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

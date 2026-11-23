@@ -1,4 +1,4 @@
-//! A mod built to `mod.wasm` (`cargo horizon-mod build --wasm`): the same source builds as a
+//! A mod built to `mod.wasm` (`cargo sunrise-mod build --wasm`): the same source builds as a
 //! native mod too.
 // ANCHOR: mod
 use mod_api::{
@@ -20,7 +20,7 @@ pub struct Mod {
 /// Sticks announce each use.
 struct Stick;
 
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl ItemPart for Stick {
     fn use_item(
         &self,
@@ -36,7 +36,7 @@ impl ItemPart for Stick {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn register(&self, registrar: &mut dyn Registrar, _cx: &RegistrationContext) {
         let item = registrar.item_key("minecraft:stick");

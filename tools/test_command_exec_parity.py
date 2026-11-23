@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare Horizon's command execution with vanilla's real command implementations.
+"""Compare Sunrise's command execution with vanilla's real command implementations.
 
 Java (VanillaCommandExecOracle) starts a stand-in integrated server: a real
 MinecraftServer with a generated world, Commands.CommandSelection.INTEGRATED
 and one single-player owner named Player. Rust runs the same script through
-Horizon's integrated server with a connected headless client (HORIZON_COMMAND_SCRIPT). Both run each command as
+Sunrise's integrated server with a connected headless client (SUNRISE_COMMAND_SCRIPT). Both run each command as
 the player through Commands.performPrefixedCommand and record every system or
 chat message the player receives (text and resolved style: colour, bold,
 italic, underlined, strikethrough, obfuscated) together with the results the
@@ -108,7 +108,7 @@ def main():
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--merchant-gate-fixture', action='store_true')
-    parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--binary', type=Path, help='use an already built Sunrise game instead of building it')
     parser.add_argument('--trader-llama-discard-fixture', action='store_true',
                         help='an AI trader llama is gone after the tick its delay runs out (H182)')
     parser.add_argument('--hurt-cooldown-incoming-fixture', action='store_true',
@@ -205,7 +205,7 @@ def main():
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandExecOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandExecOracle.java'
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependency_path = os.pathsep.join(map(str, libraries))
@@ -522,7 +522,7 @@ def main():
     advancements = corpus_module.advancement_reward_fixtures([name for name, _ in groups])
     loot_advancements, loot_tables = corpus_module.advancement_loot_fixtures([name for name, _ in groups])
     advancements.update(loot_advancements)
-    if os.environ.get('HORIZON_FISHING_FALLBACK_FIXTURE') == '1':
+    if os.environ.get('SUNRISE_FISHING_FALLBACK_FIXTURE') == '1':
         # No random_sequence: FishingHook.retrieve must use the level stream.
         loot_tables['minecraft:gameplay/fishing'] = {
             'type': 'minecraft:fishing', 'pools': [{'rolls': 1, 'entries': [
@@ -541,20 +541,20 @@ def main():
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     java_options = ['-DMC_DEBUG_ENABLED=true', '-DMC_DEBUG_DEV_COMMANDS=true'] if args.raid_village_fixture else []
     if args.merchant_gate_fixture:
-        java_options.append('-Dhorizon.merchantFixture=true')
+        java_options.append('-Dsunrise.merchantFixture=true')
     if args.merchant_crafted_fixture:
-        java_options.append('-Dhorizon.merchantCraftedFixture=true')
+        java_options.append('-Dsunrise.merchantCraftedFixture=true')
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
         direct_input = build / 'orb-water-inputs.json'
         direct_input.write_text(json.dumps(arithmetic_inputs()), encoding='utf-8')
-        java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
+        java_options = ['-Dsunrise.orbWaterArithmetic=' + str(direct_input)]
     if args.function_admission_fixture:
-        java_options.append('-Dhorizon.functionAdmissionFixture=true')
+        java_options.append('-Dsunrise.functionAdmissionFixture=true')
     if synced:
         java_options.append(seed_agent.java_option(build, lock['minecraft']['java_major']))
-    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
-         'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
+    run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dsunrise.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
+         'dev.sunriselab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
     if any(op['op'] == 'raid_state' for op in script):
         from raid_village_corpus import validate_java_inputs
@@ -591,9 +591,9 @@ def main():
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], 'compile-rust', cwd=lab.ROOT)
+        run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], 'compile-rust', cwd=lab.ROOT)
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
-        binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+        binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
@@ -605,17 +605,17 @@ def main():
         shutil.copyfile(source, target)
     # The oracle's Services resolve no profile (/fetchprofile fails on the next tick): the game gets no services
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
-    env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
-                       HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    env = lab.game_env(SUNRISE_PLAYER_NAME="Player", SUNRISE_COMMAND_SCRIPT=script_path,
+                       SUNRISE_COMMAND_OUTPUT=build / 'rust.jsonl', SUNRISE_API_DISCOVERY='http://127.0.0.1:9/')
     if synced:
         env.update(seed_agent.ENV)
     if args.raid_village_fixture and not args.raid_release_command_diagnostic:
-        env['HORIZON_DEV_COMMANDS'] = '1'
+        env['SUNRISE_DEV_COMMANDS'] = '1'
     elif args.raid_release_command_diagnostic:
-        env.pop('HORIZON_DEV_COMMANDS', None)
+        env.pop('SUNRISE_DEV_COMMANDS', None)
     if args.loaded_fixture:
-        env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
-        env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
+        env['SUNRISE_HARNESS_LOADED_FIXTURE'] = '1'
+        env['SUNRISE_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
     run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
 
     if any(op['op'] == 'raid_state' for op in script):
@@ -708,7 +708,7 @@ def main():
               'scope': 'Feedback and failure messages (text and resolved style), chat lines, and CommandResultCallback results of commands run by the single-player owner of an integrated server; world, entity and item effects through probe commands. Explicit positive_result operations compare presence only; their unmodified raw counts remain in the records and comparison_overrides.'}
     for override in report['comparison_overrides']:
         print(f'{override["comparison"]}: {override["cmd"]}: '
-              f'Java {override["vanilla_results"]}, Horizon {override["rust_results"]}', flush=True)
+              f'Java {override["vanilla_results"]}, Sunrise {override["rust_results"]}', flush=True)
     lab.write_json(report_path, report)
     if mismatches and not args.allow_gaps:
         sys.exit(f'{len(mismatches)} command execution mismatches; see {build}')

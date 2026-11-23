@@ -9,7 +9,7 @@ and clicks (on the suggestion list, on the input). The Java oracle
 (VanillaChatScreenOracle) drives a real ChatScreen, whose CommandSuggestions
 parse with vanilla's client command tree and ask the server's dispatcher
 for the suggestions a node leaves to it; examples/probe/chat_screen_fixture runs
-horizon_client::chat::ChatScreen on Horizon's dispatcher. After the actions
+sunrise_client::chat::ChatScreen on Sunrise's dispatcher. After the actions
 the input's value, cursor, selection and scroll and the screen's GUI calls
 (the input background, the EditBox with its argument colouring, cursor,
 selection and suggestion text, then the suggestion list or the usage lines)
@@ -32,7 +32,7 @@ except ImportError:
     import test_rust_parity as base
     import test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 TEXTS = ['/give @p minecraft:dia', '/tp ', '/gamemode cr', 'hello world', '/effect give @s ', '/execute as @a run ',
          '/time set da', '/xyz', '/give Steve stone 64 extra', '/tell Al', '/scoreboard objectives add k dummy',
          '/summon minecraft:zom', '/setblock ~ ~1 ~ minecraft:oak_stairs[facing=', '/team join r', '/kill @e[type=',
@@ -146,9 +146,9 @@ def main():
          *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaPackScreenOracle', 'VanillaCommandParseOracle',
                                           'VanillaChatScreenOracle'))], 'compile-java')
     java = ['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies]
-    run([*java, 'dev.horizonlab.parity.VanillaCommandParseOracle', 'registries', build], 'registries')
-    run([*java, 'dev.horizonlab.parity.VanillaChatScreenOracle', inputs, build / 'vanilla.jsonl'], 'vanilla')
-    lib.cargo_example('horizon-client', 'chat_screen_fixture', lib.RESOURCES, build / 'registries.json', inputs, build / 'rust.jsonl')
+    run([*java, 'dev.sunriselab.parity.VanillaCommandParseOracle', 'registries', build], 'registries')
+    run([*java, 'dev.sunriselab.parity.VanillaChatScreenOracle', inputs, build / 'vanilla.jsonl'], 'vanilla')
+    lib.cargo_example('sunrise-client', 'chat_screen_fixture', lib.RESOURCES, build / 'registries.json', inputs, build / 'rust.jsonl')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]
     assert len(vanilla) == len(rust) == len(chosen), (len(vanilla), len(rust), len(chosen))
@@ -160,12 +160,12 @@ def main():
         print('MISMATCH', json.dumps({k: c[k] for k in c if k != 'history'})[:1500])
         for k in ('closed', 'value', 'cursor', 'highlight', 'display'):
             if v.get(k) != r.get(k):
-                print(f'   {k}: vanilla {v.get(k)!r} | horizon {r.get(k)!r}')
+                print(f'   {k}: vanilla {v.get(k)!r} | sunrise {r.get(k)!r}')
         a, b = v.get('draws', []), r.get('draws', [])
         i = next((i for i in range(max(len(a), len(b))) if i >= len(a) or i >= len(b) or a[i] != b[i]), None)
         if i is not None:
             print(f'   call {i}: vanilla {json.dumps(a[i]) if i < len(a) else None}')
-            print(f'   call {i}: horizon {json.dumps(b[i]) if i < len(b) else None}')
+            print(f'   call {i}: sunrise {json.dumps(b[i]) if i < len(b) else None}')
     print(f'{len(chosen) - len(bad) - len(errors)}/{len(chosen)} chat screens match; {len(errors)} oracle errors')
     if bad or errors:
         sys.exit(1)

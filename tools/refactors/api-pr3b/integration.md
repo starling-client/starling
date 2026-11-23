@@ -27,6 +27,6 @@ Focused runtime execution passed on this integration tree:
 - Actual game Text capture/encoding: 11 tests.
 - Actual ignored game rule getter unknown/stale/unavailable/value regression: 1 test, explicitly enabled and executed using prepared resources.
 
-The game test executable ran from a fresh scratch working directory with isolated Horizon, launcher and XDG homes and audio disabled. No tests above were merely discovered, ignored or compiled without execution. Logs are local development outputs, not public artifacts.
+The game test executable ran from a fresh scratch working directory with isolated Sunrise, launcher and XDG homes and audio disabled. No tests above were merely discovered, ignored or compiled without execution. Logs are local development outputs, not public artifacts.
 
 No in-game launch or rendering proof is claimed. These are API merge seams, not new firing points, rendering behavior or network behavior.

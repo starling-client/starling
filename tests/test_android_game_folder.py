@@ -42,7 +42,7 @@ class GameFolderManifest(unittest.TestCase):
 
 class PlayerFiles(unittest.TestCase):
     def test_same_list_as_the_game_moves(self):
-        rust = (ROOT / "crates/horizon-client/src/android.rs").read_text(encoding="utf-8")
+        rust = (ROOT / "crates/sunrise-client/src/android.rs").read_text(encoding="utf-8")
         java = (JAVA / "GameFolder.java").read_text(encoding="utf-8")
         moved = re.search(r"const PLAYER_FILES: &\[&str\] = &\[(.*?)\];", rust, re.S).group(1)
         shown = re.search(r"List<String> PLAYER_FILES = Arrays\.asList\((.*?)\);", java, re.S).group(1)

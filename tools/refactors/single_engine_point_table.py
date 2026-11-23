@@ -1,6 +1,6 @@
 """Replace mod-owned table collections with the single engine point registry."""
 from pathlib import Path
-p = Path(__file__).resolve().parents[2] / 'crates/horizon-mod-vocab/src/__private/points.rs'
+p = Path(__file__).resolve().parents[2] / 'crates/sunrise-mod-vocab/src/__private/points.rs'
 s = p.read_text()
 a = s.index('//! Slot tables'); b = s.index('\nuse ', a)
 s = '//! The engine API point registry, shared by native and wasm listeners.\n' + s[b:]

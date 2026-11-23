@@ -206,7 +206,7 @@ def sync_provenance(marker, base, head="HEAD"):
                               capture_output=True)
     if ancestor.returncode == 0:
         return ["sync baseline SHA is already an ancestor of the base"]
-    upstream_url = os.environ.get("HORIZON_UPSTREAM_URL", "https://github.com/horizon-rust/horizon.git")
+    upstream_url = os.environ.get("SUNRISE_UPSTREAM_URL", "https://github.com/horizon-rust/horizon.git")
     try:
         fetched = subprocess.run(
             ["git", "fetch", "--no-tags", "--filter=blob:none", upstream_url,

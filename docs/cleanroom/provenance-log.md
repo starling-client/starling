@@ -39,9 +39,9 @@ and file-extension layout. Read with `grep`/`sed` for key names, directive forms
 ## 3. Deliberately not opened
 
 - Any source or binary of Iris, OptiFine, Oculus, Canvas, Sodium or any other loader or renderer.
-- Horizon's shader code and docs (`crates/horizon-shaderpack`, `java_pack.rs`, `gfx/java_stages.rs`,
+- Sunrise's shader code and docs (`crates/sunrise-shaderpack`, `java_pack.rs`, `gfx/java_stages.rs`,
   `gfx/java_terrain.rs`, `gfx/pack_stages.rs`, `shader_pack.rs`, `docs/shader-packs.md`, `docs/java-packs.md`), their git
-  history and their PRs. No file of the Horizon repository was read.
+  history and their PRs. No file of the Sunrise repository was read.
 - A private folder holding an earlier experiment with another loader's code (seen in a directory listing; not opened).
 - Links inside the documents that lead to code: the documentation site's links to its own GLSL transformer and to the
   loader's repository (`Reference/Miscellaneous/patcher`), the tutorial's links to example pack code, ShaderDoc's link to
@@ -60,7 +60,7 @@ and file-extension layout. Read with `grep`/`sed` for key names, directive forms
    average of the quad's UVs) and cites the standard tangent technique to LearnOpenGL. Its description of internal code
    paths is not reproduced. Likewise `const-directives.md` mentions where an old loader hooked vanilla for
    `ambientOcclusionLevel`; the spec keeps only the documented brightness curve.
-3. **Session context.** The session started with Horizon's `CLAUDE.md` loaded automatically. It names the shader crate
+3. **Session context.** The session started with Sunrise's `CLAUDE.md` loaded automatically. It names the shader crate
    and doc paths in a table (which is how the forbidden list is known) but contains no shader code. Nothing else from
    the repository was read.
 4. **Model training.** The spec writer is a language model whose training data may include public source code of the
@@ -81,7 +81,7 @@ removal, #1561). Its implementation plan stayed with the private notes (not publ
 | Source | What for | Sections it fed |
 |---|---|---|
 | `shader-packs-spec.md` revision 1, `README.md` (orchestrator decisions 2026-10-24), the maintainer's private agent rules | the only description of the feature and the process | all |
-| Horizon main `29c5e65d1`: `AGENTS.md`/`CLAUDE.md`, `docs/design-system.md`, `docs/benchmark.md`, `Cargo.toml`, `crates/horizon-core/src/version.rs`, `crates/horizon-client/src/{graphics.rs (tests), options_ui.rs (Page/Event/OptionsUi), zip.rs, gfx.rs (pass labels, depth compare, surface formats), gfx/world_post.rs (header)}`, `crates/horizon-client/src/benchmark.rs` (header), `crates/horizon-threads/Cargo.toml`, `crates/horizon-server-files/Cargo.toml` | where the runtime plugs in (plan 2.1, 2.4), settings (2.5), targets (1), the `MC_VERSION` source (macros.rs) | plan; 1.5.1 |
+| Sunrise main `29c5e65d1`: `AGENTS.md`/`CLAUDE.md`, `docs/design-system.md`, `docs/benchmark.md`, `Cargo.toml`, `crates/sunrise-core/src/version.rs`, `crates/sunrise-client/src/{graphics.rs (tests), options_ui.rs (Page/Event/OptionsUi), zip.rs, gfx.rs (pass labels, depth compare, surface formats), gfx/world_post.rs (header)}`, `crates/sunrise-client/src/benchmark.rs` (header), `crates/sunrise-threads/Cargo.toml`, `crates/sunrise-server-files/Cargo.toml` | where the runtime plugs in (plan 2.1, 2.4), settings (2.5), targets (1), the `MC_VERSION` source (macros.rs) | plan; 1.5.1 |
 | naga 30.0.1 (crates.io), through its public API only: a scratch crate outside the repository parsing 18 GLSL snippets I wrote with `naga::front::glsl` and validating them | what naga's GLSL frontend accepts (plan 2.2) | 1.6, OQ-29 |
 | GLSL 4.60 §3.3 (preprocessor operators and precedence), from knowledge of the published standard | `condition.rs` | 1.5 |
 | Public test packs (local copies) as black boxes: zip listings (folder layout), and the program in `tests/real_packs.rs` reading their `shaders.properties`, `block/item/entity/dimension.properties` and `lang/`. By hand: lines 66–80 of one pack's `shaders.properties` (to see the `#define` the test reported) | parse rates and timings; the decision on `#define` in `shaders.properties` | 1.1, 3.1, 4.1, 8.4; OQ-16 |
@@ -90,9 +90,9 @@ No `.vsh`, `.fsh`, `.gsh`, `.csh` or `.glsl` file of any pack was opened.
 
 ## Seen, not opened
 
-- Directory listings showed other worktrees of the horizon repo named `shaders-1` and similar, and `glsl-lang-*` crates in
+- Directory listings showed other worktrees of the sunrise repo named `shaders-1` and similar, and `glsl-lang-*` crates in
   the local cargo registry. None was opened; nothing from them is used.
-- The session context listed Horizon's old shader file names (from the crate table of a cached `CLAUDE.md`) and the memory
+- The session context listed Sunrise's old shader file names (from the crate table of a cached `CLAUDE.md`) and the memory
   note that the feature was removed after a licence complaint. No content of those files.
 
 ## Incidents
@@ -104,11 +104,11 @@ None.
 | Source | What for | Sections it fed |
 |---|---|---|
 | naga 30.0.1 and wgpu 30.0.1 (crates.io): public API, docs and source of `naga::front::glsl`, `naga::valid`, `wgpu::ShaderSource::Naga`, `Device::push_error_scope`, `TextureFormat::sample_type`; scratch probes outside the repository with GLSL I wrote | which GLSL naga reads and which gaps the rewriter covers (`modf`, global initializers, unsized arrays); how the runtime builds pipelines | 1.6, 2.2, OQ-29 |
-| Horizon main: `crates/horizon-client/src/{camera.rs (perspective, view_matrix, depth_far), gfx.rs (Frame, render's world target and passes, device request), gfx/world_post.rs, environment.rs (Sky), fog.rs (FogData), world.rs (light, weather levels), game.rs (Frame construction, celestial_geometry, day_time, hide_gui), game/fov.rs (camera_fluid), game/packs.rs (packs_dir)}`, `docs/benchmark.md`, `docs/horizon-ctl-commands.md` | where the runtime plugs in, reverse-Z to GL depth, sun and moon positions, frame inputs | 5.2, 5.5, 6.2 |
-| Public test packs as black boxes through `tests/real_packs.rs` (preprocess every stage file, translate every composite-style program, load each dimension's post programs) and by running BSL in the game with `HORIZON_SHADER_PACK` (log lines and a screenshot, kept on this machine only) | pass rates, timings, failures to fix | 1.4–1.7, 2.1, 6.1 |
+| Sunrise main: `crates/sunrise-client/src/{camera.rs (perspective, view_matrix, depth_far), gfx.rs (Frame, render's world target and passes, device request), gfx/world_post.rs, environment.rs (Sky), fog.rs (FogData), world.rs (light, weather levels), game.rs (Frame construction, celestial_geometry, day_time, hide_gui), game/fov.rs (camera_fluid), game/packs.rs (packs_dir)}`, `docs/benchmark.md`, `docs/sunrise-ctl-commands.md` | where the runtime plugs in, reverse-Z to GL depth, sun and moon positions, frame inputs | 5.2, 5.5, 6.2 |
+| Public test packs as black boxes through `tests/real_packs.rs` (preprocess every stage file, translate every composite-style program, load each dimension's post programs) and by running BSL in the game with `SUNRISE_SHADER_PACK` (log lines and a screenshot, kept on this machine only) | pass rates, timings, failures to fix | 1.4–1.7, 2.1, 6.1 |
 
-No `.vsh`, `.fsh`, `.gsh`, `.csh` or `.glsl` file of any pack was opened to read its code. Horizon's own test pack
-(`crates/horizon-shaders/tests/packs/post-test`) was written from the spec alone.
+No `.vsh`, `.fsh`, `.gsh`, `.csh` or `.glsl` file of any pack was opened to read its code. Sunrise's own test pack
+(`crates/sunrise-shaders/tests/packs/post-test`) was written from the spec alone.
 
 **Caveat (slice 4):** naga failed on one public-pack stage file with an internal handle error that its message did not
 locate. To find the construct, the test printed **one line** of that file with every identifier and number masked
@@ -127,45 +127,45 @@ The causes found were all ours, fixed from the spec and GL/naga behaviour: naga 
 initializers, comma declarations losing their later declarators, program-enable expressions not seeing the pack's
 default-on switches (8.1), and float stand-ins for normalized buffer formats keeping NaN. Complementary was only run as
 a black box (its log and screenshots), plus one property line and one GLSL declaration block read to locate a translator
-error. No other loader's code was read; nothing from the packs went into Horizon beyond the fixes described.
+error. No other loader's code was read; nothing from the packs went into Sunrise beyond the fixes described.
 
 
 ## 2026-10-25 cleanroom-impl-1, slices 21–23 (#1721–#1723)
-- Sources: the spec (rev 1) §2.1, §2.3, §5.3, §5.4; Horizon's current main (`terrain.wgsl` sky, `gfx/stars.rs`, `Game::celestial_geometry`) for the sky geometry.
+- Sources: the spec (rev 1) §2.1, §2.3, §5.3, §5.4; Sunrise's current main (`terrain.wgsl` sky, `gfx/stars.rs`, `Game::celestial_geometry`) for the sky geometry.
 - Test packs used as data only: grepped single `renderStage` lines in BSL's and Complementary's sky programs to confirm that they read it per draw; no GLSL used as a model.
-- No other loader, renderer or pre-removal Horizon history read.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, #1742–#1744
-- Sources: the spec (rev 1) §4.1, §5.1, §5.3; Horizon's current main (arena, flat draws, block models, mesher's vertex format).
-- Test packs as data: their `block.properties` id lists (names only) to measure coverage; a local, uncommitted copy of Horizon's own terrain-test pack with a normal visualiser.
-- No other loader, renderer or pre-removal Horizon history read.
+- Sources: the spec (rev 1) §4.1, §5.1, §5.3; Sunrise's current main (arena, flat draws, block models, mesher's vertex format).
+- Test packs as data: their `block.properties` id lists (names only) to measure coverage; a local, uncommitted copy of Sunrise's own terrain-test pack with a normal visualiser.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slices 26–28 (#1754–#1756)
-- Sources: the spec (rev 1) §1.6, §3.3, §3.4, §5.2, §6.1.7, §8.1; Horizon's current main (`biome.rs` biome registry, `fog.rs` fog data); Minecraft 26.3's biome list (`data/minecraft/worldgen/biome`) and its 1.18 biome renames for legacy `BIOME_` names.
-- Test packs used as data, for debugging only: Complementary's fog, volumetric light, FXAA and final lines, and BSL's/Sildurs' `shaders.properties` biome and enable keys, read to locate why their output was wrong. Local, uncommitted copies with single calls switched off or values shown as colours (in a scratch folder). No GLSL used as a model; nothing from the packs went into Horizon.
-- No other loader, renderer or pre-removal Horizon history read.
+- Sources: the spec (rev 1) §1.6, §3.3, §3.4, §5.2, §6.1.7, §8.1; Sunrise's current main (`biome.rs` biome registry, `fog.rs` fog data); Minecraft 26.3's biome list (`data/minecraft/worldgen/biome`) and its 1.18 biome renames for legacy `BIOME_` names.
+- Test packs used as data, for debugging only: Complementary's fog, volumetric light, FXAA and final lines, and BSL's/Sildurs' `shaders.properties` biome and enable keys, read to locate why their output was wrong. Local, uncommitted copies with single calls switched off or values shown as colours (in a scratch folder). No GLSL used as a model; nothing from the packs went into Sunrise.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slices 29–31 (#1769–#1771: entity spans, alpha test, entities and block entities)
-- Sources: the spec (rev 1) §2.3, §3.2 (`alphaTest.<program>`), §4.2, §5.1, §5.3, §5.4, OQ-23; Horizon's current main (`Game::entity_geometry`, `entity.wgsl` overlay codes, `overlay.rs`, `EntityBatch`); the terrain face normal and tangent code of #1744 (ours).
+- Sources: the spec (rev 1) §2.3, §3.2 (`alphaTest.<program>`), §4.2, §5.1, §5.3, §5.4, OQ-23; Sunrise's current main (`Game::entity_geometry`, `entity.wgsl` overlay codes, `overlay.rs`, `EntityBatch`); the terrain face normal and tangent code of #1744 (ours).
 - Test packs used as data, for debugging only: BSL's and Complementary's `entity.properties`/`block.properties` id lists and `alphaTest.*` keys; in BSL's entity program the uniform/attribute declaration lines, the `discard`/alpha lines, and a handful of lighting lines (`NoL`, the lightmap, the `GetLighting` call) read to place a local, uncommitted debug edit that output its albedo. Complementary only as a black box. Two local test packs of ours (`entityId` colours, normal and lightmap visualisers), never committed.
-- No other loader, renderer or pre-removal Horizon history read.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slices 32–34 (#1784–#1786: translucent entity parts and particles, clouds, rain and snow)
-- Sources: the spec (rev 1) §2.1, §2.3, §3.2 (`separateEntityDraws`, `particles.ordering`, `particles.before.deferred`), OQ-3, OQ-23; Horizon's current main (`game/names.rs`, the entity shadow, `clouds.rs`, `weather.rs` and the weather math of `entity.wgsl`); naga's behaviour on code after `discard`/`return`.
+- Sources: the spec (rev 1) §2.1, §2.3, §3.2 (`separateEntityDraws`, `particles.ordering`, `particles.before.deferred`), OQ-3, OQ-23; Sunrise's current main (`game/names.rs`, the entity shadow, `clouds.rs`, `weather.rs` and the weather math of `entity.wgsl`); naga's behaviour on code after `discard`/`return`.
 - Test packs used as data, for debugging only: BSL's `gbuffers_clouds` program (read whole once, about 200 lines, to see why naga refused the code after its `discard` and why vanilla clouds vanish; nothing taken from it), Complementary only as a black box; screenshots of both with name tags, a campfire, clouds, rain and snow (local, never committed).
-- No other loader, renderer or pre-removal Horizon history read.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slice 8 group 1 (#1885–#1888: shadow settings and camera, shadow programs, shadow buffers, shadow terrain)
-- Sources: the spec (rev 1) §2.1, §2.4, §2.5, §3.2 (`shadowTerrain`, `shadowTranslucent`), §5.2, §6.1.6, §6.3, §7.1, OQ-6, OQ-19; Horizon's current main (`gfx.rs` section lists, `flat.rs`, `page_runs.rs`, `resident.rs` visibility, the translucent sorter); wgpu's docs for comparison samplers, depth copies and load/store operations; first-principles geometry for the shadow camera (look-at from the light, snapping in its own axes).
-- Test packs used as data, for debugging only: BSL's `settings.glsl` shadow constants (`shadowMapResolution`, `shadowDistance`, the lines that set them, to read which values the loader should report) and its `shaders.properties` profiles; BSL, Complementary and Sildurs otherwise as black boxes (screenshots, `HORIZON_SHADER_PACK_TIMING`, the loader's notes). Two local debug packs of our own (`shadow.vsh/fsh` writing the occluder height, a `final` that tests it) checked the camera and the map.
-- No other loader, renderer or pre-removal Horizon history read.
+- Sources: the spec (rev 1) §2.1, §2.4, §2.5, §3.2 (`shadowTerrain`, `shadowTranslucent`), §5.2, §6.1.6, §6.3, §7.1, OQ-6, OQ-19; Sunrise's current main (`gfx.rs` section lists, `flat.rs`, `page_runs.rs`, `resident.rs` visibility, the translucent sorter); wgpu's docs for comparison samplers, depth copies and load/store operations; first-principles geometry for the shadow camera (look-at from the light, snapping in its own axes).
+- Test packs used as data, for debugging only: BSL's `settings.glsl` shadow constants (`shadowMapResolution`, `shadowDistance`, the lines that set them, to read which values the loader should report) and its `shaders.properties` profiles; BSL, Complementary and Sildurs otherwise as black boxes (screenshots, `SUNRISE_SHADER_PACK_TIMING`, the loader's notes). Two local debug packs of our own (`shadow.vsh/fsh` writing the occluder height, a `final` that tests it) checked the camera and the map.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slice 8 PR 41 #1900 (entities and block entities in the shadow pass) and the shadowtex1 copy measurement
-- Sources: the spec (rev 1) §2.4, §3.2, OQ-19; Horizon's current main (`pack_entities.rs`, `game/entity_culling.rs`); wgpu's docs for depth attachments, `frag_depth` and depth texture bindings (the dropped fill variant).
+- Sources: the spec (rev 1) §2.4, §3.2, OQ-19; Sunrise's current main (`pack_entities.rs`, `game/entity_culling.rs`); wgpu's docs for depth attachments, `frag_depth` and depth texture bindings (the dropped fill variant).
 - Test packs used as data: `shaders.properties` lines with `shadowEntities`/`shadowBlockEntities` in BSL (under `#ifndef SHADOW_ENTITY`) and Complementary (under `ENTITY_SHADOW`), read to explain which entity shadows each pack asks for; otherwise black boxes (screenshots, timing).
-- No other loader, renderer or pre-removal Horizon history read.
+- No other loader, renderer or pre-removal Sunrise history read.
 
 ## 2026-10-25 cleanroom-impl-1, slice 8 PR 42 (shadow casters: culled entities, first-person player, shadowPlayer, shadowLightBlockEntities)
-- Sources: the spec (rev 1) §2.4, §3.2 (`shadowPlayer`, `shadowLightBlockEntities`); Horizon's current main (`entity_culling.rs`, `game/entity_culling.rs`, `game/perspective.rs`, `Game::entity_geometry`, block state light emission in `StateFacts`).
+- Sources: the spec (rev 1) §2.4, §3.2 (`shadowPlayer`, `shadowLightBlockEntities`); Sunrise's current main (`entity_culling.rs`, `game/entity_culling.rs`, `game/perspective.rs`, `Game::entity_geometry`, block state light emission in `StateFacts`).
 - Test packs: not opened; only our own debug packs (shadow map and height visualisers, local, uncommitted) used for the checks.
-- No other loader, renderer or pre-removal Horizon history read.
+- No other loader, renderer or pre-removal Sunrise history read.

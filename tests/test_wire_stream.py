@@ -1,4 +1,4 @@
-"""tools/wire_stream.py cuts a capture's serverbound play stream into client ticks: the comparison of a Horizon
+"""tools/wire_stream.py cuts a capture's serverbound play stream into client ticks: the comparison of a Sunrise
 client's packets with vanilla's (tools/test_wire_stream_parity.py) is only as good as this cut."""
 from pathlib import Path
 import importlib.util
@@ -89,10 +89,10 @@ class WireStreamTest(unittest.TestCase):
 
     def test_a_late_answer_compares_with_vanilla_s_answer_and_the_script_keeps_its_clock(self):
         tick = lambda *names: {'packets': [(n, {}) for n in names], 'frame': [], 'misplaced': []}  # noqa
-        # The server's answer (an abort) reaches vanilla in tick 1 and Horizon in tick 2; the script acts in tick 3.
+        # The server's answer (an abort) reaches vanilla in tick 1 and Sunrise in tick 2; the script acts in tick 3.
         vanilla = [tick('punch'), tick('abort', 'punch'), tick('punch'), tick('pos'), tick()]
-        horizon = [tick('punch'), tick('punch'), tick('abort', 'punch'), tick('pos'), tick()]
-        self.assertEqual(wire_stream.compare_answered(vanilla, horizon, 4, 1, 2), [])
+        sunrise = [tick('punch'), tick('punch'), tick('abort', 'punch'), tick('pos'), tick()]
+        self.assertEqual(wire_stream.compare_answered(vanilla, sunrise, 4, 1, 2), [])
         # What the answer brings is compared: a new dig instead of the abort.
         restart = [tick('punch'), tick('punch'), tick('start', 'punch'), tick('pos'), tick()]
         self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, restart, 4, 1, 2)], [1])
@@ -103,10 +103,10 @@ class WireStreamTest(unittest.TestCase):
     def test_a_late_answer_on_the_position_reminder_s_tick_keeps_the_reminder_on_the_script_s_clock(self):
         tick = lambda *names: {'packets': [(n, {}) for n in names], 'frame': [], 'misplaced': []}  # noqa
         # #14807: the reminder (sendPosition every 20 ticks) falls in tick 2 for both clients; the answer reaches
-        # vanilla in tick 1 and Horizon in tick 2, the reminder's tick.
+        # vanilla in tick 1 and Sunrise in tick 2, the reminder's tick.
         vanilla = [tick('punch'), tick('abort', 'punch'), tick('move_player_pos'), tick()]
-        horizon = [tick('punch'), tick('punch'), tick('abort', 'punch', 'move_player_pos'), tick()]
-        self.assertEqual(wire_stream.compare_answered(vanilla, horizon, 3, 1, 2), [])
+        sunrise = [tick('punch'), tick('punch'), tick('abort', 'punch', 'move_player_pos'), tick()]
+        self.assertEqual(wire_stream.compare_answered(vanilla, sunrise, 3, 1, 2), [])
         # A reminder a tick early is still a difference, in either answer tick.
         early = [tick('punch'), tick('punch', 'move_player_pos'), tick('abort', 'punch'), tick()]
         self.assertEqual([d[0] for d in wire_stream.compare_answered(vanilla, early, 3, 1, 2)], [1, 2])
@@ -119,7 +119,7 @@ class WireStreamTest(unittest.TestCase):
         diffs = wire_stream.compare([tick(-60.0)], [tick(-60.0000001)], 0)
         self.assertEqual([d[0] for d in diffs], [0])
         self.assertEqual(wire_stream.field_diff(diffs[0][1], diffs[0][2]),
-                         ['    #0 move_player_pos.y: vanilla -60.0, Horizon -60.0000001'])
+                         ['    #0 move_player_pos.y: vanilla -60.0, Sunrise -60.0000001'])
         self.assertEqual(wire_stream.compare([tick(-60.0)], [tick(-60.0)], 0), [])
 
 

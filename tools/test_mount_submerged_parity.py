@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A rider whose eyes are in water gets off a mount of the `dismounts_underwater` tag, on real vanilla and
-Horizon servers.
+Sunrise servers.
 
 LivingEntity.baseTick: a rider whose eyes are in water (not in a bubble column) stops riding a vehicle whose
 type is in data/minecraft/tags/entity_type/dismounts_underwater.json (camel, chicken, donkey, horse, llama,

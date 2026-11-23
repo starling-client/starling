@@ -1,7 +1,7 @@
 # `surface.json`
 
 `surface.json` is the stable surface of one build: everything a mod on the mod API alone can name. It is generated
-from the declarations the build parses (`horizon-stage surface ROOT OUT`), never kept by hand or committed, and is
+from the declarations the build parses (`sunrise-stage surface ROOT OUT`), never kept by hand or committed, and is
 byte-identical for one commit: sorted, with no paths or timestamps.
 
 ## Records
@@ -16,7 +16,7 @@ public, so a re-export added later never changes its id; otherwise its shortest 
 lists every public path a mod can name it by. Types inside signatures are normalised Rust, with paths relative to
 `mod_api` and lifetimes kept.
 
-`cargo horizon-mod hooks <text>` searches these records offline ([Commands](05-commands.md)).
+`cargo sunrise-mod hooks <text>` searches these records offline ([Commands](05-commands.md)).
 
 ## What a hash covers
 
@@ -40,7 +40,7 @@ changes nothing, one lost is named by the fit test. The document's own `hash` is
 
 ## What a change is
 
-`horizon-stage surface-diff OLD NEW` compares two documents by id. A record only in the new one is added, only in the
+`sunrise-stage surface-diff OLD NEW` compares two documents by id. A record only in the new one is added, only in the
 old one removed; in both with another hash, changed. A rename shows as a removal and an addition. Each change is in
 one of three classes:
 
@@ -56,7 +56,7 @@ one of three classes:
   item no longer required, an enum no longer `#[non_exhaustive]`.
 
 Each change says what changed in words a mod author can act on, for example
-``argument `player`: `PlayerRef` → `ServerPlayerRef` ``. `cargo horizon-mod sdk diff <build> <build>` prints the
+``argument `player`: `PlayerRef` → `ServerPlayerRef` ``. `cargo sunrise-mod sdk diff <build> <build>` prints the
 same report for two published builds.
 
 When the `verify` check runs on a pull request that changes Rust, its summary carries this report, comparing the
@@ -70,7 +70,7 @@ merge base with the head. It reports, and fails the check only when:
 
 ## Change notes
 
-A change can carry a note: one file per change in `crates/horizon-mod-vocab/changes/<name>.toml`.
+A change can carry a note: one file per change in `crates/sunrise-mod-vocab/changes/<name>.toml`.
 
 ```toml
 ids = ["hook:player_logged_in", "type:PlayerLoggedIn.player"]
@@ -79,7 +79,7 @@ migrate = "Take `ServerPlayerRef` instead of `PlayerRef`."   # optional
 ```
 
 A note with an unknown key, a missing `ids` or `why`, an empty `ids`, or an id that did not change is refused. The SDK's `sdk.json`
-carries the notes of the changes since the SDK before it (`surface.notes`), and `cargo horizon-mod update` prints a
+carries the notes of the changes since the SDK before it (`surface.notes`), and `cargo sunrise-mod update` prints a
 changed item's `migrate` line beside it.
 
 ## Hook versions
@@ -87,5 +87,5 @@ changed item's `migrate` line beside it.
 A hook's `version` changes when a listener can see a different meaning under the same signature: its answer now
 decides the action, or the order or timing it observes changed. It stays when the engine is only corrected to the
 contract the hook already documents. Every bump comes with a change note in the same change, so `sdk diff` and
-`cargo horizon-mod update` say what a listener must now do; the version is outside the hook's hash, so the diff
+`cargo sunrise-mod update` say what a listener must now do; the version is outside the hook's hash, so the diff
 counts a bump as a conditional change for the mods that name that version.

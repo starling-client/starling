@@ -1,5 +1,5 @@
 from pathlib import Path
-p=Path('crates/horizon-mod-package/src/manifest/inject.rs')
+p=Path('crates/sunrise-mod-package/src/manifest/inject.rs')
 s=p.read_text(); s=s[:s.index('#[cfg(test)]')]
 s=s.replace('    pub call: Option<String>,\n    pub nth: Option<usize>,\n    pub ctx: Option<String>,\n','')
 a=s.index('    BeforeCall,'); b=s.index('\n}',a); s=s[:a]+s[b:]
@@ -34,4 +34,4 @@ a=s.index('    let available ='); s=s[:a]+'''    if place.slots.contains(&inject
 }
 '''
 p.write_text(s)
-p=Path('crates/horizon-mod-package/src/manifest/inject/mod_points.rs'); s=p.read_text(); s=s.replace('        calls: Vec::new(),\n','').replace('        native_only: false,\n','').replace('            resolved_call: None,\n',''); s=s.replace('        (super::Access::Internals, _) => Some(Refusal::CrossTargetInternals { id, library }),\n',''); p.write_text(s)
+p=Path('crates/sunrise-mod-package/src/manifest/inject/mod_points.rs'); s=p.read_text(); s=s.replace('        calls: Vec::new(),\n','').replace('        native_only: false,\n','').replace('            resolved_call: None,\n',''); s=s.replace('        (super::Access::Internals, _) => Some(Refusal::CrossTargetInternals { id, library }),\n',''); p.write_text(s)

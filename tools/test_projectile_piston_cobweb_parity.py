@@ -7,13 +7,13 @@ the effects of the blocks it went through (`applyEffectsFromBlocks`): a cobweb i
 (`setDeltaMovement(Vec3.ZERO)`). A wind charge parked in a cobweb's reach and lifted by a piston, two pushes over the
 piston's two ticks, keeps its position but loses its speed; without the cobweb it keeps its speed.
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen. In two lanes an upward piston under a stone lifts a wind charge (no owner, no acceleration, drifting 0.02 a
 tick along z) that rests on the stone, half over the next column; in one lane a cobweb fills that next column. The
 pistons are powered and the servers stepped; after every step each charge's exact horizontal position and Motion are read with
 `data get`. The transcripts must match vanilla's (the oracle) line for line, and vanilla's must show the charge by the
 cobweb stopped and the other one not. The height is not compared: how far a piston lifts an entity is another
-harness's (vanilla's second push here is 0.01 higher than Horizon's, by the cobweb or not).
+harness's (vanilla's second push here is 0.01 higher than Sunrise's, by the cobweb or not).
 """
 import re
 import sys
@@ -107,7 +107,7 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     for label, lines in (('vanilla', vanilla),):
@@ -115,10 +115,10 @@ def main():
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'projectile piston cobweb: {len(vanilla)} lines identical')
 

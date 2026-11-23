@@ -230,7 +230,7 @@ def result_zip(status, library=None):
     with zipfile.ZipFile(buffer, "w") as z:
         z.writestr("status.json", json.dumps(status))
         if library is not None:
-            z.writestr("libhorizon_android.so", library)
+            z.writestr("libsunrise_android.so", library)
     return buffer.getvalue()
 
 

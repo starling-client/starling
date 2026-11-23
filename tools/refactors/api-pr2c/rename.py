@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-GAME = ROOT / "crates/horizon-client/src"
+GAME = ROOT / "crates/sunrise-client/src"
 
 
 def mask(source):
@@ -41,7 +41,7 @@ def audit():
     base = sys.argv[sys.argv.index('--base') + 1] if '--base' in sys.argv else None
     if base:
         names = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', base,
-                                         'crates/horizon-client/src/game/host'], cwd=ROOT, text=True).splitlines()
+                                         'crates/sunrise-client/src/game/host'], cwd=ROOT, text=True).splitlines()
         sources = [subprocess.check_output(['git', 'show', base + ':' + name], cwd=ROOT, text=True) for name in names]
     else:
         sources = [path.read_text() for path in sorted((GAME / 'game/host').glob('*.rs'))]
@@ -61,7 +61,7 @@ def audit():
                 classes["static" if call[1] == "Self::" else "mechanical" if target == "native_" + name else "odd_named"] += 1
     definitions = collections.defaultdict(list)
     parsed = subprocess.check_output(
-        ["cargo", "run", "--quiet", "-p", "horizon-mod-api-gen", "--example", "audit_game_methods"],
+        ["cargo", "run", "--quiet", "-p", "sunrise-mod-api-gen", "--example", "audit_game_methods"],
         cwd=ROOT, text=True,
     )
     for row in parsed.splitlines():
@@ -101,7 +101,7 @@ def audit():
             if any(part in {'target', '.git', '.local'} for part in path.relative_to(ROOT).parts):
                 continue
             relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith(('crates/horizon-mod-api/src/host/', 'crates/horizon-mod-api/src/hooks/')):
+            if relative.startswith(('crates/sunrise-mod-api/src/host/', 'crates/sunrise-mod-api/src/hooks/')):
                 continue  # API declarations and their frozen rustdoc contain no Game implementation calls.
             source = path.read_text()
             new = pattern.sub(lambda m: pending[m[0]], source) if pattern else source

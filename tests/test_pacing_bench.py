@@ -6,7 +6,7 @@ from tools import lab
 from tools.pacing_bench import capture_frames, frame_line, slowest_frames, stats
 
 FIXTURE = lab.ROOT / "tests/fixtures/pacing_slow_frames.hzperf"
-# The five slow frames of the fixture, written by hand in crates/horizon-perf/tests/pacing_fixture.rs.
+# The five slow frames of the fixture, written by hand in crates/sunrise-perf/tests/pacing_fixture.rs.
 SLOWEST = [
     "slow frame 130.0 ms, cpu 18.0 ms: submit 110.0/1.0, tick 12.0",
     "slow frame 62.5 ms, cpu 60.0 ms: tick 50.0, update_world 8.0",
@@ -15,12 +15,12 @@ SLOWEST = [
 
 
 def perf_binary():
-    """horizon-perf as built by `cargo build -p horizon-perf`, or None."""
-    named = os.environ.get("HORIZON_PERF_BIN")
+    """sunrise-perf as built by `cargo build -p sunrise-perf`, or None."""
+    named = os.environ.get("SUNRISE_PERF_BIN")
     if named:
         return Path(named)
     for profile in ("fast", "debug", "release"):
-        path = lab.cargo_target() / profile / "horizon-perf"
+        path = lab.cargo_target() / profile / "sunrise-perf"
         if path.exists():
             return path
     return None
@@ -67,7 +67,7 @@ class SlowFrameTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(lines, ["slow frame 40.0 ms, cpu 1.0 ms: load 40.0"])
 
-    @unittest.skipUnless(perf_binary(), "build horizon-perf (cargo build -p horizon-perf) or set HORIZON_PERF_BIN")
+    @unittest.skipUnless(perf_binary(), "build sunrise-perf (cargo build -p sunrise-perf) or set SUNRISE_PERF_BIN")
     def test_a_fixture_capture_gives_its_slowest_frames_with_their_spans(self):
         reply = capture_frames(perf_binary(), FIXTURE)
         lines, count = slowest_frames(reply, 3, 20.0)

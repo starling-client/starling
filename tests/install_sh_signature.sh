@@ -1,7 +1,7 @@
 #!/bin/bash
 # PURPOSE: proves packaging/server/install.sh checks the release signature (docs/release-flow.md, "Signed checksums").
 # WHY: the first install used to trust only the SHA-256 GitHub publishes (docs/security.md).
-# REFS: tools/ci/sign_release.sh (signs the fake releases with a throwaway key), crates/horizon-release-sign.
+# REFS: tools/ci/sign_release.sh (signs the fake releases with a throwaway key), crates/sunrise-release-sign.
 # LOGS: prints one ok/FAIL line per case; exit 1 when any case fails.
 # READS-BY: tests/test_install_sh_signature.py (unittest wrapper), by hand: bash tests/install_sh_signature.sh
 # ENDS-WHEN: it ends by itself; leaves nothing outside its own mktemp folder.
@@ -21,15 +21,15 @@ check() {  # name, expected exit (0 or 1), output grep (may be empty), then the 
   else echo "FAIL $name (exit $rc, wanted $want, pattern '$pat')"; sed 's/^/     /' "$out"; fails=$((fails+1)); fi
 }
 
-# A fake release: an archive holding horizon-server, signed for TAG with a throwaway key. A Nightly (TAG nightly)
+# A fake release: an archive holding sunrise-server, signed for TAG with a throwaway key. A Nightly (TAG nightly)
 # is also signed for its own version ALSO (nightly-<date>-<commit>) in SHA256SUMS.v2.sig, titled as
 # nightly-build.yml titles it.
 make_release() {  # dir tag [also]
   local d=$1 tag=$2 also=${3:-}
-  mkdir -p "$d/src/horizon-server-x" "$d/files"
-  printf '#!/bin/sh\necho fake\n' > "$d/src/horizon-server-x/horizon-server"; chmod +x "$d/src/horizon-server-x/horizon-server"
-  tar -czf "$d/files/horizon-server-linux-x86_64.tar.gz" -C "$d/src" horizon-server-x
-  ALSO_FOR=$also EPHEMERAL=yes bash "$root/tools/ci/sign_release.sh" "$tag" "$d/files/horizon-server-linux-x86_64.tar.gz" > /dev/null
+  mkdir -p "$d/src/sunrise-server-x" "$d/files"
+  printf '#!/bin/sh\necho fake\n' > "$d/src/sunrise-server-x/sunrise-server"; chmod +x "$d/src/sunrise-server-x/sunrise-server"
+  tar -czf "$d/files/sunrise-server-linux-x86_64.tar.gz" -C "$d/src" sunrise-server-x
+  ALSO_FOR=$also EPHEMERAL=yes bash "$root/tools/ci/sign_release.sh" "$tag" "$d/files/sunrise-server-linux-x86_64.tar.gz" > /dev/null
   json "$d" "$tag" yes "$(title "$tag" "$also")"
 }
 title() {  # tag also: the release's GitHub title
@@ -38,10 +38,10 @@ title() {  # tag also: the release's GitHub title
 }
 json() {  # dir tag with-sums [title]: GitHub's release JSON, as install.sh reads it
   local d=$1 tag=$2 sums=$3 name=${4:-$2} sha
-  sha=$(sha256sum "$d/files/horizon-server-linux-x86_64.tar.gz" | cut -d' ' -f1)
+  sha=$(sha256sum "$d/files/sunrise-server-linux-x86_64.tar.gz" | cut -d' ' -f1)
   {
     printf '{\n  "tag_name": "%s",\n  "name": "%s",\n  "assets": [\n' "$tag" "$name"
-    printf '    {\n      "name": "horizon-server-linux-x86_64.tar.gz",\n      "digest": "sha256:%s",\n      "browser_download_url": "https://dl.test/horizon-server-linux-x86_64.tar.gz"\n    }' "$sha"
+    printf '    {\n      "name": "sunrise-server-linux-x86_64.tar.gz",\n      "digest": "sha256:%s",\n      "browser_download_url": "https://dl.test/sunrise-server-linux-x86_64.tar.gz"\n    }' "$sha"
     if [ "$sums" = yes ]; then for f in SHA256SUMS SHA256SUMS.sig SHA256SUMS.v2.sig; do
       [ -f "$d/files/$f" ] || continue
       printf ',\n    {\n      "name": "%s",\n      "browser_download_url": "https://dl.test/%s"\n    }' "$f" "$f"; done; fi
@@ -100,8 +100,8 @@ P=$W/ssl:/usr/bin:/bin
 NIGHTLY=nightly-2026-11-03-0c02067
 d=$W/good; make_release "$d" nightly "$NIGHTLY"; with_key "$d"
 run "$d" "$P"; verdict "good signature installs (Nightly, signed for its own version)" 0 "Release signature OK" "$d"
-[ -x "$d/inst/current/horizon-server" ] || { echo "FAIL nothing installed"; fails=$((fails+1)); }
-grep -q "Downloading Horizon $NIGHTLY " "$d/out" || { echo "FAIL not installed as $NIGHTLY"; fails=$((fails+1)); }
+[ -x "$d/inst/current/sunrise-server" ] || { echo "FAIL nothing installed"; fails=$((fails+1)); }
+grep -q "Downloading Sunrise $NIGHTLY " "$d/out" || { echo "FAIL not installed as $NIGHTLY"; fails=$((fails+1)); }
 
 # 1b. A Nightly with only the channel's signature (published before v2): refused, never the channel's signature.
 d=$W/channel; make_release "$d" nightly; with_key "$d"; json "$d" nightly yes "$(title nightly "$NIGHTLY")"
@@ -123,15 +123,15 @@ run "$d" "$P" --version v1.2.3; verdict "good signature installs (release tag)" 
 
 # 3. Tampered archive: GitHub's digest is made to agree with the swapped archive, only SHA256SUMS catches it.
 d=$W/arc; make_release "$d" v1.2.3; with_key "$d"
-printf 'x' >> "$d/files/horizon-server-linux-x86_64.tar.gz"; json "$d" v1.2.3 yes
+printf 'x' >> "$d/files/sunrise-server-linux-x86_64.tar.gz"; json "$d" v1.2.3 yes
 run "$d" "$P" --version v1.2.3; verdict "tampered archive refused" 1 "doesn't match its SHA-256" "$d"
 [ ! -e "$d/inst/current" ] || { echo "FAIL tampered archive was installed"; fails=$((fails+1)); }
 
 # 4. Tampered SHA256SUMS (the archive's line swapped for the hash of the tampered archive).
 d=$W/sums; make_release "$d" v1.2.3; with_key "$d"
-printf 'x' >> "$d/files/horizon-server-linux-x86_64.tar.gz"
-new=$(sha256sum "$d/files/horizon-server-linux-x86_64.tar.gz" | cut -d' ' -f1)
-printf '%s  horizon-server-linux-x86_64.tar.gz\n' "$new" > "$d/files/SHA256SUMS"; json "$d" v1.2.3 yes
+printf 'x' >> "$d/files/sunrise-server-linux-x86_64.tar.gz"
+new=$(sha256sum "$d/files/sunrise-server-linux-x86_64.tar.gz" | cut -d' ' -f1)
+printf '%s  sunrise-server-linux-x86_64.tar.gz\n' "$new" > "$d/files/SHA256SUMS"; json "$d" v1.2.3 yes
 run "$d" "$P" --version v1.2.3; verdict "tampered SHA256SUMS refused" 1 "signature doesn't match" "$d"
 
 # 5. A signature made for another tag does not pass (a release's list replayed under another tag).
@@ -147,7 +147,7 @@ run "$d" "$P" --version v1.2.3; verdict "wrong key refused" 1 "signature doesn't
 # 7. No OpenSSL: says so, keeps the SHA-256 check.
 d=$W/none; make_release "$d" v1.2.3; with_key "$d"
 run "$d" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: installs, says it was not checked" 0 "OpenSSL isn't installed" "$d"
-printf 'x' >> "$d/files/horizon-server-linux-x86_64.tar.gz"
+printf 'x' >> "$d/files/sunrise-server-linux-x86_64.tar.gz"
 d2=$W/none2; cp -r "$d" "$d2"; rm -rf "$d2/inst" "$d2/bin"; edit 's/"digest": "sha256:[0-9a-f]*"/"digest": "sha256:0000"/' "$d2/release.json"
 run "$d2" "$W/nossl" --version v1.2.3; verdict "no OpenSSL: a wrong GitHub SHA-256 still refused" 1 "doesn't match its SHA-256" "$d2"
 

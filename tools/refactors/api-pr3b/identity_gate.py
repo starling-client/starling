@@ -2,8 +2,8 @@
 """Compare built public contracts for an additive 3b layer (no substitutions).
 
 Usage: identity_gate.py BASE_TREE BASE_OUT HEAD_TREE HEAD_OUT HOST_MANIFEST_TOOL
-Build each checkout's horizon-mod-api first. The manifest tool comes from
-horizon-mod-api-gen. Render hooks now live outside this crate; this gate compares
+Build each checkout's sunrise-mod-api first. The manifest tool comes from
+sunrise-mod-api-gen. Render hooks now live outside this crate; this gate compares
 its complete hook output and WIT, not the removed native_render_generated.rs.
 """
 import hashlib
@@ -14,7 +14,7 @@ import sys
 
 def manifest(tree, output, tool):
     files = [output / "mod_api_generated_host.rs",
-             *sorted((tree / "crates/horizon-mod-api/src/host").glob("*.rs"))]
+             *sorted((tree / "crates/sunrise-mod-api/src/host").glob("*.rs"))]
     return subprocess.check_output([str(tool.resolve()), *map(str, files)])
 
 

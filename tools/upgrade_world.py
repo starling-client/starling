@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Upgrade a world saved by an older Minecraft version to the 26.3 DataVersion.
 
-Horizon reads chunks only at the current DataVersion and has not ported the
+Sunrise reads chunks only at the current DataVersion and has not ported the
 DataFixerUpper chain. This runs vanilla's own upgrader (`server.jar --forceUpgrade
 --eraseCache`) on a copy of the world, so every fix vanilla applies (chunk, entity, POI,
 level.dat, player and data/*.dat files) is applied exactly. The original is kept.

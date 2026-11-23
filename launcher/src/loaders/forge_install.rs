@@ -367,7 +367,7 @@ pub(super) fn install(
     let profile = installer.json("install_profile.json")?;
     if profile.get("versionInfo").is_some() {
         return Err(format!(
-            "{name} {version} has an installer from before Minecraft 1.12.2, which Horizon can't \
+            "{name} {version} has an installer from before Minecraft 1.12.2, which Sunrise can't \
              run yet."
         ));
     }
@@ -386,7 +386,7 @@ pub(super) fn install(
     ));
     let made = fetch_libraries(&libraries, dir, &mut installer, fetch)?;
     let scratch = dir
-        .join(".horizon-install")
+        .join(".sunrise-install")
         .join(format!("{}-{version}", kind.id()));
     let _ = fs::remove_dir_all(&scratch);
     let ran = data(&profile, &mut installer, minecraft, dir, &scratch)

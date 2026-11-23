@@ -6,7 +6,7 @@ biome positional layer, dimension timelines, weather layers) for every
 dimension type and biome and prints `BACKGROUND_MUSIC` (all three tracks and
 `BackgroundMusic.select` for each creative/underwater combination),
 `MUSIC_VOLUME` and `AMBIENT_SOUNDS` (loop, mood, additions), plus the
-`Musics` constants. Horizon's `MusicTables` and `AmbientTables` answer the same.
+`Musics` constants. Sunrise's `MusicTables` and `AmbientTables` answer the same.
 """
 try:
     from . import audio_harness as h
@@ -25,7 +25,7 @@ def main():
     lines = fixtures()
     matched, report = h.run_harness(
         'audio-attributes', 'VanillaAudioAttributesOracle', 'audio_attributes_fixture', ''.join(l + '\n' for l in lines),
-        extra_sources=[h.lab.ROOT / 'crates/horizon-client/src/music.rs', h.lab.ROOT / 'crates/horizon-client/src/ambience.rs'],
+        extra_sources=[h.lab.ROOT / 'crates/sunrise-client/src/music.rs', h.lab.ROOT / 'crates/sunrise-client/src/ambience.rs'],
         rust_args=[h.RESOURCES],
         scope='Vanilla EnvironmentAttributeSystem values of audio/background_music (with BackgroundMusic.select), audio/music_volume and '
               'audio/ambient_sounds for every dimension type x biome at two times of day, and the Musics constants.')

@@ -62,7 +62,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 /**
- * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
+ * The game runs in libsunrise_android (NativeActivity); this only does what the NDK cannot:
  * tells the game where its folder is (Starling in shared storage once the player allows it), hides the
  * system bars, keeps the screen on while the game is in front, tells the game how tall the
  * on-screen keyboard is (it no longer shrinks the window since edge-to-edge) and where the
@@ -75,11 +75,11 @@ import javax.crypto.spec.GCMParameterSpec;
 public class StarlingActivity extends NativeActivity {
     private DisplayPreferences displayPreferences;
     private static final int PICK_FILE = 1;
-    /** Horizon Android's folder picked: its worlds and packs come over (HorizonImport). */
-    private static final int PICK_HORIZON = 2;
+    /** Sunrise Android's folder picked: its worlds and packs come over (SunriseImport). */
+    private static final int PICK_SUNRISE = 2;
     /** Android's answer to the permissions the running build's mods need. */
     private static final int MOD_PERMISSIONS = 3;
-    /** The launcher's file picker (Horizon Android's): its answer goes to nativeDocumentResult. */
+    /** The launcher's file picker (Sunrise Android's): its answer goes to nativeDocumentResult. */
     private static final int PICK_DOCUMENT = 4101;
 
     /** The build with native mods this game runs (loadGame), or null for the APK's own. */
@@ -99,7 +99,7 @@ public class StarlingActivity extends NativeActivity {
     private void loadGame() {
         // The game's thread (android_main, which android-activity starts with std's default 2 MiB
         // stack) builds the game and the world renderer in frames of about a megabyte each since
-        // Horizon of 2026-11, past that stack's end. Rust's threads take this size unless they ask
+        // Sunrise of 2026-11, past that stack's end. Rust's threads take this size unless they ask
         // for one, and std reads it once, at the first thread: before the library is loaded. As
         // Linux gives a desktop game's main thread; the player's own setting is kept.
         try {
@@ -133,7 +133,7 @@ public class StarlingActivity extends NativeActivity {
                 NativeMods.failed(this, e.getMessage());
             }
         }
-        System.loadLibrary("horizon_android");
+        System.loadLibrary("sunrise_android");
     }
 
     /** The keyboard's height in window pixels, 0 when it is hidden (android_lib.rs). */
@@ -481,9 +481,9 @@ public class StarlingActivity extends NativeActivity {
                 && data.getData() != null) {
             // The game shows the copy arriving in its inbox, then the import.
             LauncherActivity.receive(this, data.getData(), null);
-        } else if (requestCode == PICK_HORIZON && resultCode == RESULT_OK && data != null
+        } else if (requestCode == PICK_SUNRISE && resultCode == RESULT_OK && data != null
                 && data.getData() != null) {
-            HorizonImport.start(this, data.getData());
+            SunriseImport.start(this, data.getData());
         } else if (requestCode == PICK_DOCUMENT) {
             nativeDocumentResult(requestCode, resultCode,
                     data == null || data.getData() == null ? null : data.getData().toString());
@@ -791,7 +791,7 @@ public class StarlingActivity extends NativeActivity {
     }
 
     /**
-     * The launcher's file picker (Horizon Android's): the document chosen goes to the launcher,
+     * The launcher's file picker (Sunrise Android's): the document chosen goes to the launcher,
      * which reads it through the content resolver and puts it where it belongs.
      */
     public void pickDocument() {
@@ -828,24 +828,24 @@ public class StarlingActivity extends NativeActivity {
         return true;
     }
 
-    /** Whether Horizon Android is on the phone, so its worlds can come over (the setup asks). */
-    public boolean horizonAndroidInstalled() {
-        return HorizonImport.installed(this);
+    /** Whether Sunrise Android is on the phone, so its worlds can come over (the setup asks). */
+    public boolean sunriseAndroidInstalled() {
+        return SunriseImport.installed(this);
     }
 
     /**
-     * The system's folder picker on Horizon Android's folder; its worlds and packs go to the
-     * game's import inbox (HorizonImport). False when it is not installed or nothing can pick.
+     * The system's folder picker on Sunrise Android's folder; its worlds and packs go to the
+     * game's import inbox (SunriseImport). False when it is not installed or nothing can pick.
      */
-    public boolean importFromHorizonAndroid() {
-        if (!HorizonImport.installed(this)) {
+    public boolean importFromSunriseAndroid() {
+        if (!SunriseImport.installed(this)) {
             return false;
         }
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    startActivityForResult(HorizonImport.picker(), PICK_HORIZON);
+                    startActivityForResult(SunriseImport.picker(), PICK_SUNRISE);
                 } catch (ActivityNotFoundException e) {
                     // No folder picker: nothing to show.
                 }
@@ -857,7 +857,7 @@ public class StarlingActivity extends NativeActivity {
     /**
      * The system's file manager on a folder; false where none can show it. A folder of the game's
      * opens through this app's own provider (GameFolderProvider), which shows it in shared storage
-     * and in the app's own files alike, as Horizon Android did. Another one of shared storage opens
+     * and in the app's own files alike, as Sunrise Android did. Another one of shared storage opens
      * through the storage's provider. When nothing opens, the player is told where to look.
      */
     public boolean openFolder(String path) {

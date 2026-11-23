@@ -44,12 +44,12 @@ def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / 'protocol-identifiers-parity'
     build.mkdir(parents=True, exist_ok=True)
-    paths = ['crates/horizon-protocol/src/buf.rs',
-             'crates/horizon-protocol/src/packets/configuration.rs',
-             'crates/horizon-protocol/src/packets/play.rs',
-             'crates/horizon-protocol/examples/protocol_identifiers_probe.rs',
-             'crates/horizon-protocol/tests/identifier_codec.rs',
-             'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaProtocolIdentifierOracle.java',
+    paths = ['crates/sunrise-protocol/src/buf.rs',
+             'crates/sunrise-protocol/src/packets/configuration.rs',
+             'crates/sunrise-protocol/src/packets/play.rs',
+             'crates/sunrise-protocol/examples/protocol_identifiers_probe.rs',
+             'crates/sunrise-protocol/tests/identifier_codec.rs',
+             'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaProtocolIdentifierOracle.java',
              'tools/test_protocol_identifiers_parity.py']
     sources = [lab.ROOT / path for path in paths]
     hashes = base.source_hashes(sources)
@@ -61,7 +61,7 @@ def main():
         {'client': jars['server']}, libraries, lock['minecraft']['java_major'])
     h.java_run(build, classes, dependencies, 'VanillaProtocolIdentifierOracle',
                [inputs, build / 'java.txt'], 'java')
-    h.run_logged(['cargo', 'build', '--locked', '-p', 'horizon-protocol',
+    h.run_logged(['cargo', 'build', '--locked', '-p', 'sunrise-protocol',
                   '--example', 'protocol_identifiers_probe'], build, 'compile-rust',
                  env=dict(os.environ, CARGO_BUILD_JOBS='2'))
     binary = lab.cargo_target() / 'debug/examples' / (

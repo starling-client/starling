@@ -11,11 +11,11 @@ white, and a pass written for SDR alone breaks it, mostly without any test faili
 
 | | Frame | Holds |
 | --- | --- | --- |
-| `HORIZON_HDR_FRAME=float` under a 0.2 pack, or with HDR on and no pack where the device can keep the HUD on a layer of its own (the only HDR frame once HDR is on by default) | `Rgba16Float` | light: 1.0 is paper white, more is brighter |
+| `SUNRISE_HDR_FRAME=float` under a 0.2 pack, or with HDR on and no pack where the device can keep the HUD on a layer of its own (the only HDR frame once HDR is on by default) | `Rgba16Float` | light: 1.0 is paper white, more is brighter |
 | HDR off, otherwise | the swapchain's 8-bit format | vanilla's picture, clipped at 1 |
 | HDR on, otherwise | `Rgba16Unorm`, or 8-bit | the picture clipped at 1, with HDR's marks in alpha |
 
-On the float frame Horizon's own light reaches several times paper white, the sun the most, and a shader pack of
+On the float frame Sunrise's own light reaches several times paper white, the sun the most, and a shader pack of
 API 0.2 may write any value half float holds. It's stored in vanilla's gamma (the 2.2 power), as the other frames are.
 A 0.2 pack's `[frame] blend = "linear"` is to store linear light instead (it passes the check, but isn't served yet),
 so a pass doesn't hard-code the gamma.
@@ -57,7 +57,7 @@ the world without the hand and the HUD, and is off with HDR output until #12989 
    temporal upscaler and anything else that keeps a history blends `c / (1 + m)`, where `m` is the largest of `c`'s
    channels, clamps the history in that space too, and turns the result back with `c / (1 - m)`. Raw linear light
    lets a few very bright pixels win the history: torches and the sun's edge sparkle, and smear when the camera
-   moves. Horizon's own TAA on the default frame accumulates vanilla's gamma, and blends it as stored: weighted on
+   moves. Sunrise's own TAA on the default frame accumulates vanilla's gamma, and blends it as stored: weighted on
    top of the gamma, the sun scene's largest per-pixel standard deviation rose from 11 to 27 PQ code values (40
    still captures at native resolution).
 4. **Follow a library's colour contract.** Temporal upscalers such as FSR 2 and 3 and DLSS take HDR input as
@@ -79,10 +79,10 @@ the world without the hand and the HUD, and is off with HDR output until #12989 
   `python3 tools/test_frame_identity_parity.py --base origin/main`, and the `frame-identity` label
   ([release-flow.md](release-flow.md)). It also draws the float frame with HDR on, and holds it to SDR.
 - **Its sessions run with anti-aliasing and frame generation off,** as by default: TAA and frame generation build
-  on earlier frames, which `HORIZON_STILL` doesn't repeat. Check a temporal pass by hand: offscreen with HDR on
-  (`hdr:true` in `horizon-graphics.txt`), `HORIZON_HDR_FRAME=float` and `HORIZON_HDR_OUTPUT=pq`, with the camera
+  on earlier frames, which `SUNRISE_STILL` doesn't repeat. Check a temporal pass by hand: offscreen with HDR on
+  (`hdr:true` in `sunrise-graphics.txt`), `SUNRISE_HDR_FRAME=float` and `SUNRISE_HDR_OUTPUT=pq`, with the camera
   moving over torches, lava and the sun.
-- **The `-hdr.png` beside an HDR screenshot** (F2, or `horizon-ctl screenshot`) keeps the whole picture, and its
+- **The `-hdr.png` beside an HDR screenshot** (F2, or `sunrise-ctl screenshot`) keeps the whole picture, and its
   `cLLI` chunk gives its brightest pixel in nits. With the sun in view offscreen it is near the peak, 1000 nits; a
   pass that clips brings it down to paper white, 203.
 - **Mention #12989 in the pull request**, so HDR's side gets reviewed.

@@ -7,7 +7,7 @@ preset: `flat`, `minecraft:normal`, or a name it can't find, which it warns abou
 lakes and features; a layer that doesn't parse is left out and logged, and settings without layers fall back
 to the preset's classic ones) and `generate-structures`.
 
-Each case starts vanilla's server and Horizon's (`horizon-client --dedicated --nogui`) in a new folder, waits
+Each case starts vanilla's server and Sunrise's (`sunrise-client --dedicated --nogui`) in a new folder, waits
 for `Done` and stops them. Compared exactly: the world's `data/minecraft/world_gen_settings.dat`, tag types
 included, and the warnings and errors logged while the world's settings are read (the `Worker-Main` lines;
 the worker's number is left out). In a world without structures (`generate-structures=false`), also what
@@ -15,7 +15,7 @@ the worker's number is left out). In a world without structures (`generate-struc
 finds none) and how many of the saved chunks hold structure starts or references (none:
 ChunkStatusTasks.generateStructureStarts does nothing).
 
-Horizon generates the normal, flat, amplified, large-biome and single-biome presets:
+Sunrise generates the normal, flat, amplified, large-biome and single-biome presets:
 `debug_all_block_states` isn't tested.
 """
 import json
@@ -133,31 +133,31 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                    check=True, capture_output=True)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main',
                       'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    vanilla, horizon = [], []
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    vanilla, sunrise = [], []
     for case in CASES:
         vanilla += run_case('vanilla', vanilla_server, build, case)
-        horizon += run_case('horizon', horizon_server, build, case)
+        sunrise += run_case('sunrise', sunrise_server, build, case)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
         import difflib
-        diff = '\n'.join(difflib.unified_diff(vanilla, horizon, 'vanilla', 'horizon', n=2, lineterm=''))
-        raise AssertionError(f'world settings differ (see {build}/vanilla.txt and horizon.txt):\n' + diff[:6000])
+        diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=2, lineterm=''))
+        raise AssertionError(f'world settings differ (see {build}/vanilla.txt and sunrise.txt):\n' + diff[:6000])
     if not any('minecraft:flat' in l for l in vanilla) or not any(l.startswith('ERROR: ') for l in vanilla):
         raise AssertionError(f'vanilla made no flat world or logged no error (see {build})')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        cases=list(CASES), lines=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        cases=list(CASES), lines=len(vanilla), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='a new dedicated-server world: level-type (flat, normal, amplified, large_biomes, '
               'single_biome_surface, unknown), a flat world\'s generator-settings, generate-structures, as '
               'world_gen_settings.dat and the lines logged; without structures, locate structure\'s replies and '

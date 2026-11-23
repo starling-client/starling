@@ -28,7 +28,7 @@ for path in sorted((root / "crates").rglob("*.rs")):
         inner = source[opening + 1:closing]
         count = len(commas) + (0 if inner.rstrip().endswith(",") else 1)
         if count == 4:
-            argument = "api_values::mod_tint_values(assets.registry)?" if path == root / "crates/horizon-client/src/game.rs" else "None"
+            argument = "api_values::mod_tint_values(assets.registry)?" if path == root / "crates/sunrise-client/src/game.rs" else "None"
             if "\n" in inner:
                 indent = source[source.rfind("\n", 0, closing) + 1:closing]
                 replacement = inner.rstrip() + ("" if inner.rstrip().endswith(",") else ",") + "\n" + indent + "    " + argument + ",\n" + indent

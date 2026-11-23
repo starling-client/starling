@@ -45,12 +45,12 @@ memory dumps remain private. No replacement signal handler is installed.
 
 The game library carries a BuildId, and every CI build keeps the same library
 unstripped as the `starling-symbols-<abi>` artifact (90 days). To read the
-`libhorizon_android.so` frames of a tombstone summary, take the artifact of the
+`libsunrise_android.so` frames of a tombstone summary, take the artifact of the
 build whose BuildId matches and run, with the NDK's tools:
 
 ```sh
-llvm-readelf -n libhorizon_android-symbols.so        # its Build ID, to match the summary's
-llvm-addr2line -f -C -e libhorizon_android-symbols.so 0x312e71c 0x30b30c4
+llvm-readelf -n libsunrise_android-symbols.so        # its Build ID, to match the summary's
+llvm-addr2line -f -C -e libsunrise_android-symbols.so 0x312e71c 0x30b30c4
 ```
 
 The addresses are the summary's `pc` values. Release libraries have no line
@@ -68,7 +68,7 @@ arbitrary third-party log text cannot be guaranteed free of private data. Nothin
 is uploaded automatically. CPU spans nest, worker totals overlap and GPU timings
 arrive late: these numbers identify correlations, not proof of lock contention.
 
-This port reuses Horizon Android's existing diagnostics, exit-history, tombstone
+This port reuses Sunrise Android's existing diagnostics, exit-history, tombstone
 and performance recorder code. It adapts them to Starling's logging, streaming
 workers, GPU timers, translation keys and in-game settings. It does not add an
 automatic backend benchmark, change the selected graphics API or add a 32-bit APK.

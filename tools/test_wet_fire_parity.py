@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare 82 full mob-tick wet-fire observations against the pinned vanilla server.
 
-Reads prepared resources from HORIZON_TEST_RESOURCES, or .local's when unset. Does not start a server,
+Reads prepared resources from SUNRISE_TEST_RESOURCES, or .local's when unset. Does not start a server,
 open a window, or modify the resource root. The Java fixture fixes movement and
 world boundaries while retaining real Mob.tick, damage, fluids and block effects.
 """
@@ -45,27 +45,27 @@ def native_rows(text):
 
 
 def main():
-    # parity.py sets no HORIZON_TEST_RESOURCES: default to the prepared resources, as the other harnesses do.
-    resources = Path(os.environ.get("HORIZON_TEST_RESOURCES", lab.RESOURCES))
+    # parity.py sets no SUNRISE_TEST_RESOURCES: default to the prepared resources, as the other harnesses do.
+    resources = Path(os.environ.get("SUNRISE_TEST_RESOURCES", lab.RESOURCES))
     if not (resources / "movement-properties.nbt").is_file():
-        raise RuntimeError("HORIZON_TEST_RESOURCES must contain prepared 26.3 resources")
+        raise RuntimeError("SUNRISE_TEST_RESOURCES must contain prepared 26.3 resources")
     build = lab.LOCAL / "wet-fire-parity"
     build.mkdir(parents=True, exist_ok=True)
     lock, jars, libraries = base.verify_artifacts()
     classes = build / "classes"
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars["server"], *libraries]))
-    source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWetFireOracle.java"
-    sources = [Path(__file__), source, lab.ROOT / "crates/horizon-client/src/mobs/ai.rs",
-               lab.ROOT / "crates/horizon-client/src/mobs/wet_fire_tests.rs"]
+    source = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaWetFireOracle.java"
+    sources = [Path(__file__), source, lab.ROOT / "crates/sunrise-client/src/mobs/ai.rs",
+               lab.ROOT / "crates/sunrise-client/src/mobs/wet_fire_tests.rs"]
     hashes = base.source_hashes(sources)
     oracle_harness.run_logged(["javac", "--release", lock["minecraft"]["java_major"],
-        "-proc:none", "-sourcepath", lab.ROOT / "mods/horizon/src/test/java", "-cp",
+        "-proc:none", "-sourcepath", lab.ROOT / "mods/sunrise/src/test/java", "-cp",
         dependencies, "-d", classes, source], build, "compile-java")
     oracle_harness.java_run(build, classes, dependencies, "VanillaWetFireOracle", [], "vanilla")
-    oracle_harness.run_logged(["cargo", "test", "--locked", "-p", "horizon-client-lib", "--lib",
+    oracle_harness.run_logged(["cargo", "test", "--locked", "-p", "sunrise-client-lib", "--lib",
         "wet_fire_damage_and_extinguishing_follow_the_full_mob_tick", "--", "--ignored", "--nocapture"],
-        build, "rust", env=dict(lab.game_env(), HORIZON_TEST_RESOURCES=str(resources)))
+        build, "rust", env=dict(lab.game_env(), SUNRISE_TEST_RESOURCES=str(resources)))
     expected = vanilla_rows((build / "vanilla.log").read_text())
     actual = native_rows((build / "rust.log").read_text())
     # Sort by labels, retaining repeated transition labels and their tick order.

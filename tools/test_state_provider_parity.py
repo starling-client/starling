@@ -32,7 +32,7 @@ def corpus(facts,tags,provider_resources=None,catalog_resources=None,fluid_tags=
             yield from cases(value,[0],wide=False)
     for name in sorted(tags):
         yield from cases({'type':'random_block','blocks':'#'+name},wide=True)
-    for blocks in [[],['water','stone','water'],['air'],['oak_log','redstone_wire','water'],['#minecraft:logs'],'#horizon:missing',['missing'],False,{},None]:
+    for blocks in [[],['water','stone','water'],['air'],['oak_log','redstone_wire','water'],['#minecraft:logs'],'#sunrise:missing',['missing'],False,{},None]:
         for f in cases({'type':'random_block','blocks':blocks},repeats=3,wide=True):
             yield f
             yield dict(f,fail=0)
@@ -49,7 +49,7 @@ def corpus(facts,tags,provider_resources=None,catalog_resources=None,fluid_tags=
     for direction in ['down','up','north','south','west','east']:
         yield from cases({'type':'rotated','state':{'type':'random_block','blocks':[]},'direction':direction},all_states)
     yield from cases({'type':'rotated','state':{'type':'random_block','blocks':[]}},all_states,wide=True)
-    sources=[{'id':'oak_log'},{'type':'weighted','entries':[{'data':'oak_log','weight':2},{'data':'piston','weight':3},{'data':'hopper','weight':1}]},{'type':'random_block','blocks':['furnace','stone','oak_stairs']},{'type':'random_block','blocks':[]},{'type':'random_block','blocks':'#horizon:empty'},'oak_log',None]
+    sources=[{'id':'oak_log'},{'type':'weighted','entries':[{'data':'oak_log','weight':2},{'data':'piston','weight':3},{'data':'hopper','weight':1}]},{'type':'random_block','blocks':['furnace','stone','oak_stairs']},{'type':'random_block','blocks':[]},{'type':'random_block','blocks':'#sunrise:empty'},'oak_log',None]
     for source in sources:
         for direction in [None,'up','west','UP','missing',False,1]:
             for f in cases({'type':'rotated','state':source,'direction':direction},repeats=4,wide=True):
@@ -185,7 +185,7 @@ def corpus(facts,tags,provider_resources=None,catalog_resources=None,fluid_tags=
         predicate={'type':'matching_biomes','biomes':selected}
         for condition in [predicate,{'type':'not','predicate':predicate}, {'type':'volume_match','min':[0,0,0],'max':[1,0,1],'match':predicate}]:
             for f in predicate_cases(condition,[0]*len(biome_indices),wide=False):yield dict(f,biomes=biome_indices)
-    for selected in ['plains','#horizon:ordered',[]]:
+    for selected in ['plains','#sunrise:ordered',[]]:
         for f in predicate_cases({'type':'any_of','predicates':[{'type':'matching_biomes','biomes':selected},inside]},[0]*len(biome_indices)):
             yield dict(f,biomes=biome_indices)
     for offset in [None,[0,0,0],[1,-1,16],[17,18,-19],[2147483647,-2147483648,2147483647],[4294967297,0,0],[1.9,-1.9,0],[],[1],[1,2,3,4],False,{}]:
@@ -277,7 +277,7 @@ def corpus(facts,tags,provider_resources=None,catalog_resources=None,fluid_tags=
             for f in cases(definition,support_states[::17],wide=True):
                 yield f
                 yield dict(f,fail=1)
-    for name in [*(catalog_resources or {}),'horizon:unknown','minecraft:stone','STONE',':']:
+    for name in [*(catalog_resources or {}),'sunrise:unknown','minecraft:stone','STONE',':']:
         for f in cases(name,repeats=2,wide=True):
             yield f
             yield dict(f,holder=True)
@@ -307,9 +307,9 @@ def main():
     checkpoint_path=build/'run-state.json'
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaStateProviderOracle.java'
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaStateProviderOracle.java'
     helpers=[oracle.with_name(name+'.java') for name in ['VanillaBlockStateCodecOracle','VanillaHeightmapOracle','VanillaMaterialConditionOracle','VanillaBiomeTemperatureOracle','VanillaAnchorOracle','VanillaBlockPropertiesOracle','VanillaBlockSupportOracle','VanillaBlockSurvivalOracle','VanillaCollisionOracle']]
-    sources=[oracle,*helpers,lab.ROOT/'tools/test_block_survival_parity.py',lab.ROOT/'tools/test_biome_temperature_parity.py',lab.ROOT/'tools/test_material_condition_parity.py',lab.ROOT/'tools/test_worldgen_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/state_provider_fixture.rs']
+    sources=[oracle,*helpers,lab.ROOT/'tools/test_block_survival_parity.py',lab.ROOT/'tools/test_biome_temperature_parity.py',lab.ROOT/'tools/test_material_condition_parity.py',lab.ROOT/'tools/test_worldgen_parity.py',Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/state_provider_fixture.rs']
     tested_sources=base.source_hashes(sources)
     environment={'minecraft':lock['minecraft']['version'],'manifest_sha1':lock['minecraft']['manifest_sha1'],'platform':platform.platform(),'java':subprocess.check_output(['java','--version'],text=True).splitlines()[0],'rustc':subprocess.check_output(['rustc','--version'],text=True).strip(),'dependencies':{str(path):lab.digest(path,'sha256') for path in [*jars.values(),*libraries]}}
     checkpoint=survival.load_checkpoint(checkpoint_path,tested_sources,environment) if args.resume else None
@@ -318,12 +318,12 @@ def main():
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,stdout=log,stderr=subprocess.STDOUT,timeout=3600)
     dependency_path=os.pathsep.join(map(str,libraries))
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaStateProviderOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaStateProviderOracle',mode,path],side+'-'+mode)
     if checkpoint is None:
         checkpoint_path.unlink(missing_ok=True)
         tags=worldgen.tag_resources(jars['server'])
         if not tags or tags!=worldgen.tag_resources(jars['client']):raise ValueError('client/server tags differ')
-        tags.update({'horizon:empty':json.dumps({'values':[]}), 'horizon:ordered':json.dumps({'values':['minecraft:water','minecraft:stone','minecraft:water']})})
+        tags.update({'sunrise:empty':json.dumps({'values':[]}), 'sunrise:ordered':json.dumps({'values':['minecraft:water','minecraft:stone','minecraft:water']})})
         (build/'tags.json').write_text(json.dumps(tags,separators=(',',':')),encoding='utf-8')
         def fluid_tag_resources(jar):
             with zipfile.ZipFile(jar) as archive:
@@ -331,18 +331,18 @@ def main():
                 return {'minecraft:'+name[len(prefix):-5]:archive.read(name).decode('utf-8') for name in sorted(archive.namelist()) if name.startswith(prefix) and name.endswith('.json')}
         fluid_tags=fluid_tag_resources(jars['server'])
         if fluid_tags!=fluid_tag_resources(jars['client']):raise ValueError('client/server fluid tags differ')
-        fluid_tags['horizon:empty']='{"values":[]}'
+        fluid_tags['sunrise:empty']='{"values":[]}'
         (build/'fluid-tags.json').write_text(json.dumps(fluid_tags,separators=(',',':')),encoding='utf-8')
         biomes=temperature.biome_resources(jars['server']);biome_tags=material.biome_tag_resources(jars['server'])
         if biomes!=temperature.biome_resources(jars['client']) or biome_tags!=material.biome_tag_resources(jars['client']):raise ValueError('client/server biome resources differ')
-        biome_tags['horizon:empty']='{"values":[]}'
-        biome_tags['horizon:ordered']='{"values":["minecraft:plains","minecraft:desert","minecraft:plains"]}'
+        biome_tags['sunrise:empty']='{"values":[]}'
+        biome_tags['sunrise:ordered']='{"values":["minecraft:plains","minecraft:desert","minecraft:plains"]}'
         for name,data in [('biomes',biomes),('biome_tags',biome_tags)]:
             (build/(name+'.json')).write_text(json.dumps(data,separators=(',',':')),encoding='utf-8')
-        run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.horizonlab.parity.VanillaBlockPropertiesOracle','export',build],'properties-export')
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.horizonlab.parity.VanillaBlockSupportOracle','export',build],'support-export')
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.horizonlab.parity.VanillaBlockSurvivalOracle','definitions',build],'survival-export')
+        run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.sunriselab.parity.VanillaBlockPropertiesOracle','export',build],'properties-export')
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.sunriselab.parity.VanillaBlockSupportOracle','export',build],'support-export')
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.sunriselab.parity.VanillaBlockSurvivalOracle','definitions',build],'survival-export')
         survival_classes=json.loads((build/'survival-classes.json').read_text())
         survival_rules=survival.bind_definitions(survival_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()))
         (build/'survival-rules.json').write_text(json.dumps(survival_rules,separators=(',',':')))
@@ -360,10 +360,10 @@ def main():
         (build/'providers.json').write_text(json.dumps(provider_resources,separators=(',',':')),encoding='utf-8')
         catalog_resources={name.removeprefix('data/minecraft/worldgen/block_state_provider/').removesuffix('.json'):json.dumps(value,separators=(',',':')) for name,value in provider_resources.items()}
         catalog_resources={'minecraft:'+name:value for name,value in catalog_resources.items()}
-        catalog_resources['horizon:empty']=json.dumps({'type':'random_block','blocks':[]})
-        catalog_resources['horizon:tagged']=json.dumps({'type':'rule_based','rules':[{'if_true':{'type':'matching_block_tag','tag':'minecraft:logs'},'then':'minecraft:cave_vines_head'}],'fallback':'horizon:empty'})
+        catalog_resources['sunrise:empty']=json.dumps({'type':'random_block','blocks':[]})
+        catalog_resources['sunrise:tagged']=json.dumps({'type':'rule_based','rules':[{'if_true':{'type':'matching_block_tag','tag':'minecraft:logs'},'then':'minecraft:cave_vines_head'}],'fallback':'sunrise:empty'})
         for depth in range(12):
-            catalog_resources['horizon:chain_'+str(depth)]=json.dumps({'type':'copy_properties','source':'horizon:chain_'+str(depth-1) if depth else 'horizon:tagged'})
+            catalog_resources['sunrise:chain_'+str(depth)]=json.dumps({'type':'copy_properties','source':'sunrise:chain_'+str(depth-1) if depth else 'sunrise:tagged'})
         (build/'catalog.json').write_text(json.dumps(catalog_resources,separators=(',',':')),encoding='utf-8')
         inputs=build/'inputs.txt';fixture_count=0;requested_samples=0
         with inputs.open('w',encoding='utf-8') as output:
@@ -371,7 +371,7 @@ def main():
                 output.write(json.dumps(fixture,separators=(',',':'))+'\n')
                 fixture_count+=1;requested_samples+=len(fixture['states'])*fixture['repeats']*2
         fixture_paths=[inputs,build/'survival-extra-definitions.json',build/'survival-placement-classes.json',build/'survival-support-tags.json',build/'survival-classes.json',build/'survival-rules.json',build/'cached-support.nbt',build/'support-cached-states.json',build/'block-properties.nbt',build/'cached-collision.nbt',build/'biomes.json',build/'biome_tags.json',build/'fluid-tags.json',build/'catalog.json',build/'providers.json',build/'tags.json',build/'facts-client.json',build/'facts-server.json'];tested_fixtures=base.source_hashes(fixture_paths)
-        run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+        run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
         metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
         binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
         counts={'block_states':len(facts['states']),'blocks':len(facts['defaults']),'integer_properties':len(facts['integers']),'codec_inputs':fixture_count,'provider_types':10,'named_providers':len(catalog_resources),'rule_predicate_types':16,'survival_supported_blocks':len(survival_rules),'survival_supported_states':sum(s['id'] in survival_rules for s in facts['states']),'support_cached_states':len(support_states),'support_dynamic_states':len(facts['states'])-len(support_states),'biomes':len(biomes),'biome_tag_files':len(biome_tags),'fluid_tag_files':len(fluid_tags),'bundled_provider_definitions':len(provider_resources),'block_tag_files':len(tags),'requested_samples':requested_samples}

@@ -22,9 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--game', type=Path, default=ROOT / 'target/fast/horizon-client')
-    parser.add_argument('--ctl', type=Path, default=ROOT / 'target/fast/horizon-ctl')
-    parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
+    parser.add_argument('--game', type=Path, default=ROOT / 'target/fast/sunrise-client')
+    parser.add_argument('--ctl', type=Path, default=ROOT / 'target/fast/sunrise-ctl')
+    parser.add_argument('--resources', type=Path, default=ROOT / '.local/sunrise-client/26.3')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     output = (args.output or Path(tempfile.mkdtemp(prefix='creative-hover-'))).resolve()
@@ -33,8 +33,8 @@ def main():
     classes, dependencies, _ = oracle.compile_oracle(
         output, 'VanillaSlotHoverOracle', jars, libraries, lock['minecraft']['java_major'])
     homes = {}
-    for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
-                'HORIZON_LAUNCHER_TRASH', 'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP'):
+    for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+                'SUNRISE_LAUNCHER_TRASH', 'SUNRISE_LAUNCHER_CLIPBOARD', 'SUNRISE_LAUNCHER_DESKTOP'):
         homes[key] = output / key
         homes[key].mkdir(exist_ok=True)
     env = lab.game_env(**homes)

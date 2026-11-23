@@ -12,7 +12,7 @@ position, eye height, eyes in water, spectator and removed flags and the
 level's brightness are script inputs. Every step prints the level random's
 next long (so every draw is compared), moodiness, the underwater state and
 delay, the handler's loop instances (fade, direction, stopped, active), each
-playing instance and the subtitle notifications. Horizon's `Ambience` and
+playing instance and the subtitle notifications. Sunrise's `Ambience` and
 `SoundEngine` replay the scripts.
 """
 import json
@@ -175,9 +175,9 @@ def main():
     lines = fixtures()
     matched, report = h.run_harness(
         'ambient', 'VanillaAmbientOracle', 'ambient_fixture', ''.join(l + '\n' for l in lines),
-        extra_sources=[h.lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSoundRig.java',
-                       h.lab.ROOT / 'crates/horizon-client/src/ambience.rs',
-                       h.lab.ROOT / 'crates/horizon-client/examples/probe/audio_common/mod.rs'],
+        extra_sources=[h.lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSoundRig.java',
+                       h.lab.ROOT / 'crates/sunrise-client/src/ambience.rs',
+                       h.lab.ROOT / 'crates/sunrise-client/examples/probe/audio_common/mod.rs'],
         java_args=[h.RESOURCES], rust_args=[h.RESOURCES],
         scope='Real LocalPlayer.updateIsUnderwater, UnderwaterAmbientSoundHandler and BiomeAmbientSoundsHandler (loop cross-fades, additions, '
               'cave mood sampling, moodiness and the mood sound position) with UnderLiquidAmbientSoundInstance/UnderLiquidSubSound/LoopSoundInstance '

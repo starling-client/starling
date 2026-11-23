@@ -96,7 +96,7 @@ fn digest_tree(root: &Path, hash: &mut Sha256) -> Result<(), String> {
 
 /// The wasm standard library the packager copies from beside the game program, on every platform
 /// (it is not an executable, so it has no `EXE_SUFFIX`).
-const WASM_STD: &str = "horizon-wasm-std.wasm";
+const WASM_STD: &str = "sunrise-wasm-std.wasm";
 
 pub fn install(checkout: &Path, program: &Path, trusted: bool) -> Result<String, String> {
     if !trusted {
@@ -107,10 +107,10 @@ pub fn install(checkout: &Path, program: &Path, trusted: bool) -> Result<String,
     if program.file_name().and_then(|n| n.to_str()) != Some(backend::CLIENT)
         || !crate::build_import::holds_game(&program)
     {
-        return Err(tr("Choose a real horizon-client executable built for this computer.").into());
+        return Err(tr("Choose a real sunrise-client executable built for this computer.").into());
     }
     let mut missing = Vec::new();
-    for name in ["horizon-ctl", "horizon-prepare", "horizon-server"] {
+    for name in ["sunrise-ctl", "sunrise-prepare", "sunrise-server"] {
         let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
         if !program.with_file_name(&name).is_file() {
             missing.push(name);
@@ -127,12 +127,12 @@ pub fn install(checkout: &Path, program: &Path, trusted: bool) -> Result<String,
     }
     if !missing.is_empty() {
         let mut message = trf(
-            "Missing developer packaging inputs: {files}. Build companions with cargo build -p horizon-client-lib --bin horizon-ctl -p horizon-prepare -p horizon-server. Run horizon-prepare compile-exporters --root CHECKOUT, then copy its server, client and manifest.json into CHECKOUT/exporters/.",
+            "Missing developer packaging inputs: {files}. Build companions with cargo build -p sunrise-client-lib --bin sunrise-ctl -p sunrise-prepare -p sunrise-server. Run sunrise-prepare compile-exporters --root CHECKOUT, then copy its server, client and manifest.json into CHECKOUT/exporters/.",
             &[("files", &missing.join(", "))],
         );
         if wasm_std_missing {
             message.push(' ');
-            message.push_str(&trf("Generate the wasm standard library from the same checkout with cargo run --locked -p cargo-horizon-mod -- wasm-std {path}", &[("path", &wasm_std.display().to_string())]));
+            message.push_str(&trf("Generate the wasm standard library from the same checkout with cargo run --locked -p cargo-sunrise-mod -- wasm-std {path}", &[("path", &wasm_std.display().to_string())]));
         }
         return Err(message);
     }
@@ -159,7 +159,7 @@ pub fn install(checkout: &Path, program: &Path, trusted: bool) -> Result<String,
         )
         .into());
     }
-    if !horizon_prepare::exporters::available(&package) {
+    if !sunrise_prepare::exporters::available(&package) {
         return Err(tr("The packaged exporters are missing, changed or do not match the checkout sources. Recompile the exporters before installing.").into());
     }
     fs::write(
@@ -286,7 +286,7 @@ mod tests {
         let program = bin.join(backend::CLIENT);
         fs::write(
             &program,
-            [magic, &horizon_mod_package::game_identity::MARK[..]].concat(),
+            [magic, &sunrise_mod_package::game_identity::MARK[..]].concat(),
         )
         .unwrap();
         for name in companions {
@@ -298,8 +298,8 @@ mod tests {
         }
         (folder, checkout, program)
     }
-    const COMPANIONS: [&str; 3] = ["horizon-ctl", "horizon-prepare", "horizon-server"];
-    const REMEDY: &str = "Build companions with cargo build -p horizon-client-lib --bin horizon-ctl -p horizon-prepare -p horizon-server. Run horizon-prepare compile-exporters --root CHECKOUT, then copy its server, client and manifest.json into CHECKOUT/exporters/.";
+    const COMPANIONS: [&str; 3] = ["sunrise-ctl", "sunrise-prepare", "sunrise-server"];
+    const REMEDY: &str = "Build companions with cargo build -p sunrise-client-lib --bin sunrise-ctl -p sunrise-prepare -p sunrise-server. Run sunrise-prepare compile-exporters --root CHECKOUT, then copy its server, client and manifest.json into CHECKOUT/exporters/.";
     #[test]
     fn a_missing_wasm_standard_library_is_named_with_its_generation_command_before_packaging() {
         let (_folder, checkout, program) = packaging_inputs(&COMPANIONS);
@@ -307,23 +307,23 @@ mod tests {
         let expected_path = program
             .canonicalize()
             .unwrap()
-            .with_file_name("horizon-wasm-std.wasm");
+            .with_file_name("sunrise-wasm-std.wasm");
         assert_eq!(
             error,
             format!(
-                "Missing developer packaging inputs: horizon-wasm-std.wasm. {REMEDY} Generate the wasm standard library from the same checkout with cargo run --locked -p cargo-horizon-mod -- wasm-std {}",
+                "Missing developer packaging inputs: sunrise-wasm-std.wasm. {REMEDY} Generate the wasm standard library from the same checkout with cargo run --locked -p cargo-sunrise-mod -- wasm-std {}",
                 expected_path.display()
             )
         );
     }
     #[test]
     fn the_wasm_standard_library_is_reported_beside_the_other_missing_inputs() {
-        let (_folder, checkout, program) = packaging_inputs(&["horizon-ctl"]);
+        let (_folder, checkout, program) = packaging_inputs(&["sunrise-ctl"]);
         let error = install(&checkout, &program, true).unwrap_err();
         let missing = [
-            format!("horizon-prepare{}", std::env::consts::EXE_SUFFIX),
-            format!("horizon-server{}", std::env::consts::EXE_SUFFIX),
-            "horizon-wasm-std.wasm".to_owned(),
+            format!("sunrise-prepare{}", std::env::consts::EXE_SUFFIX),
+            format!("sunrise-server{}", std::env::consts::EXE_SUFFIX),
+            "sunrise-wasm-std.wasm".to_owned(),
         ]
         .join(", ");
         assert!(
@@ -334,17 +334,17 @@ mod tests {
     #[test]
     fn a_present_wasm_standard_library_passes_the_preflight_without_a_hint() {
         let (_folder, checkout, program) = packaging_inputs(&COMPANIONS);
-        fs::write(program.with_file_name("horizon-wasm-std.wasm"), "").unwrap();
+        fs::write(program.with_file_name("sunrise-wasm-std.wasm"), "").unwrap();
         // The checkout is no git repository, so the install stops at its snapshot, before the packager.
         assert_eq!(
             install(&checkout, &program, true).unwrap_err(),
             "The developer checkout has no HEAD commit."
         );
-        let (_other, checkout, program) = packaging_inputs(&["horizon-ctl", "horizon-prepare"]);
-        fs::write(program.with_file_name("horizon-wasm-std.wasm"), "").unwrap();
+        let (_other, checkout, program) = packaging_inputs(&["sunrise-ctl", "sunrise-prepare"]);
+        fs::write(program.with_file_name("sunrise-wasm-std.wasm"), "").unwrap();
         let error = install(&checkout, &program, true).unwrap_err();
         assert!(
-            error.starts_with("Missing developer packaging inputs: horizon-server"),
+            error.starts_with("Missing developer packaging inputs: sunrise-server"),
             "{error}"
         );
         assert!(
@@ -362,13 +362,13 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let root = folder.path();
         fs::create_dir(root.join("exporters")).unwrap();
-        fs::write(root.join("horizon-client"), b"game A").unwrap();
+        fs::write(root.join("sunrise-client"), b"game A").unwrap();
         fs::write(root.join("exporters/manifest.json"), b"manifest A").unwrap();
         let original = digest(root);
         assert_eq!(original, digest(root));
-        fs::write(root.join("horizon-client"), b"game B").unwrap();
+        fs::write(root.join("sunrise-client"), b"game B").unwrap();
         assert_ne!(original, digest(root));
-        fs::write(root.join("horizon-client"), b"game A").unwrap();
+        fs::write(root.join("sunrise-client"), b"game A").unwrap();
         fs::write(root.join("exporters/manifest.json"), b"manifest B").unwrap();
         assert_ne!(original, digest(root));
         fs::write(root.join("exporters/manifest.json"), b"manifest A").unwrap();

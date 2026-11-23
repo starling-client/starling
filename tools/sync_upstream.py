@@ -23,7 +23,7 @@ converter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(converter)
 
 ROOT = Path(__file__).resolve().parent.parent
-HOOKS = Path('crates/horizon-mod-vocab/src/hooks')
+HOOKS = Path('crates/sunrise-mod-vocab/src/hooks')
 FRAGMENTS = Path('tools/native-hook-fragments')
 DECL = re.compile(r'^\s*pub\s+fn\s+(native_\w+)\s*\(', re.MULTILINE)
 

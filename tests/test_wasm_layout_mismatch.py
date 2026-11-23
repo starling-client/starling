@@ -20,7 +20,7 @@ def section(kind, payload):
 
 
 def fixture(first):
-    name = b"horizon_layout_ext"
+    name = b"sunrise_layout_ext"
     # One imported function precedes two defined functions. The exported layout
     # function is the first defined function; the other body must stay untouched.
     return (
@@ -37,11 +37,11 @@ class LayoutMismatch(unittest.TestCase):
     def test_package_integrity_survives_export_body_change(self):
         original = fixture(b"\x00\x42\x7f\x0b")  # i64.const -1
         with tempfile.TemporaryDirectory() as directory:
-            source = pathlib.Path(directory) / "source.hmod"
-            output = pathlib.Path(directory) / "changed.hmod"
+            source = pathlib.Path(directory) / "source.smod"
+            output = pathlib.Path(directory) / "changed.smod"
             manifest = 'id = "layout_test"\n[wasm]\nsha512 = "' + hashlib.sha512(original).hexdigest() + '"\n'
             with zipfile.ZipFile(source, "w") as archive:
-                archive.writestr("horizon-mod.toml", manifest)
+                archive.writestr("sunrise-mod.toml", manifest)
                 archive.writestr("mod.wasm", original)
                 archive.writestr("data/unchanged.txt", "kept")
             result = subprocess.check_output(["python3", str(SCRIPT), str(source), str(output)], text=True)
@@ -49,7 +49,7 @@ class LayoutMismatch(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 changed = archive.read("mod.wasm")
                 self.assertEqual(changed, fixture(b"\x00\x42\x00\x0b"))
-                parsed = tomllib.loads(archive.read("horizon-mod.toml").decode())
+                parsed = tomllib.loads(archive.read("sunrise-mod.toml").decode())
                 self.assertEqual(parsed["wasm"]["sha512"], hashlib.sha512(changed).hexdigest())
                 self.assertEqual(archive.read("data/unchanged.txt"), b"kept")
 

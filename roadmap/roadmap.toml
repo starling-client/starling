@@ -1,4 +1,4 @@
-# Horizon's roadmap: the one source of truth for ROADMAP.md, playhorizon.dev/roadmap and Kira's answers.
+# Sunrise's roadmap: the one source of truth for ROADMAP.md, playsunrise.net/roadmap and Kira's answers.
 # Edit this file, then run `python3 tools/roadmap.py build`. How to keep it current: roadmap/README.md.
 #
 # No dates, ever: an item is Now, Next or Later. Each item says the same thing twice: `plain` for players
@@ -9,8 +9,8 @@
 # after its linked pull requests merge: `sync` never ships it, so link its new pull requests as they open.
 
 [overview]
-today_plain = """Horizon is Minecraft: Java Edition 26.3 rewritten from scratch in Rust, so it runs faster on the \
-same computer. Single player, LAN, servers, resource packs and Horizon's own mods work today, on your own copy of \
+today_plain = """Sunrise is Minecraft: Java Edition 26.3 rewritten from scratch in Rust, so it runs faster on the \
+same computer. Single player, LAN, servers, resource packs and Sunrise's own mods work today, on your own copy of \
 the game."""
 today_dev = """A native Rust and wgpu reimplementation of Java 26.3: the same saves, rules and terrain, checked \
 against the real game by more than 300 differential harnesses (a Java oracle and a Rust probe on the same inputs). \
@@ -55,7 +55,7 @@ name = "Platforms"
 
 [[area]]
 id = "extras"
-name = "Horizon extras"
+name = "Sunrise extras"
 
 [[area]]
 id = "ai"
@@ -79,7 +79,7 @@ area = "performance"
 focus = true
 owner = "ludovic111"
 issue = "#3909"
-plain = """Making Horizon faster than vanilla on every computer, with smooth camera movement even at 32 chunks, \
+plain = """Making Sunrise faster than vanilla on every computer, with smooth camera movement even at 32 chunks, \
 by spreading the work better over the processor's cores."""
 dev = """Frame pacing at render distance 32 (#678): long frames come from work competing with the render thread. \
 In review: no main-thread tick stutter at high render distances (#3827), each proto chunk's light view built once \
@@ -99,8 +99,8 @@ issue = "#3913"
 announce = true
 focus = true
 plain = """Making the world-generation mods of popular modpacks (new structures, YUNG's dungeons and mineshafts, \
-packs built on Lithostitched) generate their worlds in Horizon, natively and fast."""
-dev = """`horizon-port-pack` carries a pack's data-driven content over, and 26.2 data packs are upgraded to 26.3's \
+packs built on Lithostitched) generate their worlds in Sunrise, natively and fast."""
+dev = """`sunrise-port-pack` carries a pack's data-driven content over, and 26.2 data packs are upgraded to 26.3's \
 format (#3369). In review: worlds taller than 32 sections and each level's shape from its dimension type (#3480, \
 #3488), data-pack biomes in local and remote worlds (#3491), block state providers (#3802), surface rules by biome \
 id (#3366), Lithostitched's pool and processor modifiers (#1777). Mods whose Java code does more than world \
@@ -132,7 +132,7 @@ area = "launcher"
 ongoing = true
 owner = "ludovic111"
 issue = "#3915"
-plain = """Play the real Java game from the Horizon launcher too: vanilla and modded instances, any version, mods from Modrinth filtered to what fits, and your instances imported from other launchers."""
+plain = """Play the real Java game from the Sunrise launcher too: vanilla and modded instances, any version, mods from Modrinth filtered to what fits, and your instances imported from other launchers."""
 dev = """For an account that owns the game: any version downloaded with the Java it needs (#3406), Java instances, the version list and the CLI (#3395), the start command read from the version JSON (#3419). Next: Play for a Java instance, Fabric and Quilt, then NeoForge and Forge; Modrinth with compatibility filtering and dependencies; imports from Prism, MultiMC, the CurseForge app, the Modrinth App, ATLauncher and the official launcher, each from its documented on-disk format."""
 links = ["#3395", "#3406", "#3419", "#3506"]
 
@@ -144,7 +144,7 @@ ongoing = true
 area = "project"
 owner = "ludovic111"
 issue = "#3916"
-plain = """Cleaning up Horizon's code: removing what nothing uses and making it quicker to build, so fixes and new \
+plain = """Cleaning up Sunrise's code: removing what nothing uses and making it quicker to build, so fixes and new \
 features land faster."""
 dev = """A review of the whole tree: dead code and stubs removed (#1432, #1658), one probe binary per crate (#1453, \
 #1454), shared harness helpers (#1448), clippy clean on the whole tree (#1707). docs/architecture.md maps each \
@@ -160,7 +160,7 @@ focus = true
 ongoing = true
 owner = "kacpherek"
 issue = "#3912"
-plain = """Every method of the Java game is tracked with where Horizon does it, and the differences players can see \
+plain = """Every method of the Java game is tracked with where Sunrise does it, and the differences players can see \
 are being closed, list by list: mobs, blocks, items, screens, rendering, servers."""
 dev = """The port ledger (tools/port_ledger.py, tools/port_map/, #3139) gives every 26.3 method a verdict and links \
 the harnesses that cover it (#3526). The player-visible gaps are ten lists, one per area (#3512 to #3521); a fix \
@@ -177,7 +177,7 @@ focus = true
 ongoing = true
 owner = "levzzz5154"
 issue = "#3911"
-plain = """Mods for Horizon, as one line of work led by the modding team: native mods the launcher builds into your \
+plain = """Mods for Sunrise, as one line of work led by the modding team: native mods the launcher builds into your \
 game, mods on servers, mod screens and settings, tools for mod makers, the registry and machines."""
 dev = """One item for all modding work (#3911), led by levzzz5154; the order between the \
 parts is theirs. Native mods on stable hook points (game/native_hooks.rs, #3345, #3346, #3434, #3435) built by the \
@@ -195,13 +195,13 @@ area = "performance"
 ongoing = true
 owner = "ludovic111"
 issue = "#3910"
-plain = """Servers that keep 20 ticks per second with 50 to 100 players. Today Horizon holds it up to 50 bots and drops \
+plain = """Servers that keep 20 ticks per second with 50 to 100 players. Today Sunrise holds it up to 50 bots and drops \
 to about 10 at 100."""
-dev = """Measured against vanilla on equal work (docs/server.md, Scale): Horizon is ahead with few players and when \
+dev = """Measured against vanilla on equal work (docs/server.md, Scale): Sunrise is ahead with few players and when \
 exploring, but vanilla's tick is shorter with 25 to 50 players near spawn. Ideas on the list: send entity \
 changes instead of rebuilding every entity each tick (about 15 percent), fewer memory reads in random ticks \
 and collision scans, cheaper item collision checks, mob AI and natural spawning. The bot benchmark \
-(`horizon-bots`) is the proof."""
+(`sunrise-bots`) is the proof."""
 links = ["#3847", "#2608", "docs/server.md"]
 
 # ---------------------------------------------------------------------------------------------------- Next
@@ -225,7 +225,7 @@ shipped_in = "v0.2.67"
 area = "gameplay"
 plain = """Banners in End cities show as plain magenta instead of with their pattern."""
 dev = """Compare the banner block entities the End city templates place with vanilla's (`EndCityPieces`, the \
-templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/horizon-world/src/worldgen/structure/`. \
+templates' block entity NBT, `BannerBlockEntity`'s patterns), in `crates/sunrise-world/src/worldgen/structure/`. \
 Issue #1438; possibly related: #526. The templates' block entities now keep their patterns (#1928)."""
 links = ["#1438", "#526", "#1928"]
 
@@ -314,14 +314,14 @@ links = ["#1805"]
 
 [[item]]
 id = "native-shaders"
-title = "Horizon's own shader format and kit"
+title = "Sunrise's own shader format and kit"
 status = "shipped"
 shipped_in = "v0.2.70"
 area = "rendering"
-plain = """Horizon's own way to make shader packs, with tools to write and test them. Every pack is checked before it \
+plain = """Sunrise's own way to make shader packs, with tools to write and test them. Every pack is checked before it \
 runs, and the registry will list them."""
-dev = """`horizon-shader-api` (API 0.1, experimental): WGSL stages with typed inputs inside the renderer's passes, \
-options as WGSL override constants, and the `horizon-shader new|check|pack` tool with templates and the \
+dev = """`sunrise-shader-api` (API 0.1, experimental): WGSL stages with typed inputs inside the renderer's passes, \
+options as WGSL override constants, and the `sunrise-shader new|check|pack` tool with templates and the \
 example pack Golden Hour. Merged: the check every pack passes (#1820) and the tool, templates and guide \
 (#1822). In review: the post stage running in the game with hot reload (#1861), the sky stage (#1863) and \
 registry checks that use the game's own check (#1855). Left: the material, lighting and shadow stages, a \
@@ -336,7 +336,7 @@ title = "Server dialogs and login screens"
 status = "shipped"
 shipped_in = "v0.2.67"
 area = "servers"
-plain = """Servers that show dialogs, such as the register and login screens of AuthMe, will work in Horizon."""
+plain = """Servers that show dialogs, such as the register and login screens of AuthMe, will work in Sunrise."""
 dev = """26.3's dialog packets and model (#1720), the dialog screen with its buttons and actions (#1734), then text \
 and boolean inputs (#1735)."""
 links = ["#1720", "#1734", "#1735"]
@@ -357,7 +357,7 @@ id = "benchmarks"
 title = "Fresh benchmarks against vanilla"
 status = "next"
 area = "performance"
-plain = """New public numbers comparing Horizon with vanilla on many kinds of computers, measured the same way every \
+plain = """New public numbers comparing Sunrise with vanilla on many kinds of computers, measured the same way every \
 time, with a history that shows what each release changed."""
 dev = """Redo the comparison after the current performance work (#1073); reliability, coverage and presentation \
 (#1346); a scene must count as loaded only once its first chunk arrives (#1749). Next: a performance history \
@@ -386,13 +386,13 @@ id = "low-end-mode"
 title = "Low-end computers: Steam Deck, old Macs, 8 GB"
 status = "next"
 area = "performance"
-plain = """Horizon should run well on small machines: integrated graphics, the Steam Deck, older Macs and 8 GB of \
+plain = """Sunrise should run well on small machines: integrated graphics, the Steam Deck, older Macs and 8 GB of \
 memory, with a battery mode that saves power on laptops."""
 dev = """Partly done: an opt-in 60 FPS cap with fewer workers on battery, Far Detail Reduced for integrated GPUs and \
 animated textures on the GPU (both shipped). Left: measured targets and fixes per class of machine (memory \
 use, worker counts, startup) on a Steam Deck, old Intel and Apple Silicon Macs and 8 GB computers, reported \
 on the Benchmarks page."""
-links = ["docs/benchmark.md", "https://playhorizon.dev/docs/performance"]
+links = ["docs/benchmark.md", "https://playsunrise.net/docs/performance"]
 
 [[item]]
 id = "upscaling"
@@ -413,7 +413,7 @@ status = "next"
 area = "servers"
 plain = """Manage a server from a console, ban and pardon players, and drive it from other tools through a full admin \
 API and an MCP server for AI agents."""
-dev = """`horizon-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API \
+dev = """`sunrise-server console` (a text interface), `ban`, `pardon`, `ban-ip` and `mcp` over stdio. Admin API \
 additions: the player list, kick, ban, op and whitelist, an SSE stream of logs and events, a text metrics \
 endpoint, config GET and PATCH, backup delete and download. The last pieces merged: bans edited while the server \
 is stopped (#9767) and the MCP tools' contracts pinned by a test (#9748). The panel's later features and \
@@ -426,10 +426,10 @@ title = "Server panel extras and vanilla's management protocol"
 status = "later"
 area = "servers"
 plain = """More of a server managed from its web panel (bans, worlds, logs and crash reports, modpacks), and vanilla's \
-own server-management tools working with a Horizon server."""
+own server-management tools working with a Sunrise server."""
 dev = """The panel's later features (bans, worlds, server.properties import, logs and crash reports, modpacks) and \
 vanilla's management protocol (the JSON-RPC over WebSocket that the `management-server-*` keys configure), so \
-vanilla's tools can manage a Horizon server. Split from server-admin. docs/server.md, docs/api/server.md."""
+vanilla's tools can manage a Sunrise server. Split from server-admin. docs/server.md, docs/api/server.md."""
 links = ["docs/server.md", "docs/api/server.md"]
 
 [[item]]
@@ -451,7 +451,7 @@ status = "next"
 area = "gameplay"
 plain = """Single player has one way to run, the server thread, so every fix works everywhere and there are fewer \
 bugs. The older in-frame mode is removed."""
-dev = """`--in-frame` (also `--no-server-thread` and `HORIZON_SERVER_THREAD=0`) ticked the world inside the \
+dev = """`--in-frame` (also `--no-server-thread` and `SUNRISE_SERVER_THREAD=0`) ticked the world inside the \
 window's `Game`. #6473 removes it with the code only it reached (the window's world loader and player tick, its \
 portal travel and loading screen, the in-frame LAN host); the harnesses run on the server thread. See also \
 'Single player as a server' and docs/server-levels.md."""
@@ -486,7 +486,7 @@ ongoing = true
 area = "servers"
 plain = """When you play on a server, other players, mobs, items and menus look and behave as in vanilla: skins, \
 poses, item names, inventories and server networks."""
-dev = """Client-of-a-server fixes in `game/remote*.rs` and `horizon-protocol`: mobs' aggressive and item-use flags \
+dev = """Client-of-a-server fixes in `game/remote*.rs` and `sunrise-protocol`: mobs' aggressive and item-use flags \
 (#1802, #1798), ghost items after a remote menu (#1795), skins (#1652), cookies and transfer packets for proxy \
 networks (#1650), firework boosts (#1671), living-entity attributes and simulation distance (#1731), styled item \
 names (#1702), primed TNT between updates (#1710)."""
@@ -500,7 +500,7 @@ ongoing = true
 area = "rendering"
 plain = """Shader packs were removed and are being rebuilt from scratch. They come back, off by default, once the \
 best-known packs draw properly."""
-dev = """A clean-room rewrite in `horizon-shaderpack`, from the packs' public format documentation only: reading \
+dev = """A clean-room rewrite in `sunrise-shaderpack`, from the packs' public format documentation only: reading \
 packs, the preprocessor and `.properties` files are merged (#1584, #1585, #1586); translating programs to WGSL \
 through naga, buffers, uniforms and the terrain, entity, sky, weather and hand stages are in review (#1698 to \
 #1801)."""
@@ -513,8 +513,8 @@ status = "next"
 area = "launcher"
 owner = "ludovic111"
 plain = """A redesigned launcher: every button where you expect it, the fewest clicks to play, add an instance or add mods, smooth animations, and instant startup."""
-dev = """Based on the site concept by the Team (Bricolage Grotesque, a night sky and an animated pixel sunset). Screens and flows are designed first, then small PRs; tokens in crates/horizon-theme and rules in docs/design-system.md, the game's vanilla look unchanged. Measured before and after: startup, frame time and idle CPU/GPU, reduced motion honoured. Mods screens separate Horizon native mods from Java mods; a running instance can be stopped from the launcher."""
-links = ["#3635", "#3636", "#3637", "docs/design-system.md", "crates/horizon-theme"]
+dev = """Based on the site concept by the Team (Bricolage Grotesque, a night sky and an animated pixel sunset). Screens and flows are designed first, then small PRs; tokens in crates/sunrise-theme and rules in docs/design-system.md, the game's vanilla look unchanged. Measured before and after: startup, frame time and idle CPU/GPU, reduced motion honoured. Mods screens separate Sunrise native mods from Java mods; a running instance can be stopped from the launcher."""
+links = ["#3635", "#3636", "#3637", "docs/design-system.md", "crates/sunrise-theme"]
 
 [[item]]
 id = "splitscreen"
@@ -551,8 +551,8 @@ id = "new-versions"
 title = "Every Minecraft version, prepared automatically"
 status = "later"
 area = "gameplay"
-plain = """Every past and future Minecraft version prepared for Horizon automatically. When Mojang releases one, \
-Horizon follows it, and every system is checked against it again."""
+plain = """Every past and future Minecraft version prepared for Sunrise automatically. When Mojang releases one, \
+Sunrise follows it, and every system is checked against it again."""
 dev = """The port pipeline (docs/version-ports.md, `tools/version_port.py`) detects a release, prepares it, diffs its \
 classes against the pinned 26.3, regenerates the data-driven tables, runs every parity harness on it and \
 writes a port report that becomes issues. The goal is as little human work as possible for any version, past \
@@ -597,7 +597,7 @@ id = "whole-modpacks"
 title = "Whole modpacks, such as ATM10, rewritten"
 status = "later"
 area = "modpacks"
-plain = """Rewriting a complete big modpack for Horizon so it runs far better than the original. Not a priority now: \
+plain = """Rewriting a complete big modpack for Sunrise so it runs far better than the original. Not a priority now: \
 the work above comes first."""
 dev = """The project's first goal for modpacks: support them ten times better than vanilla and port any of them. It \
 was set aside in favour of compatibility through the browser. What exists: ATM10's world generates and 42 of \
@@ -610,7 +610,7 @@ id = "java-mod-bridge"
 title = "Running Java mods that aren't rewritten"
 status = "later"
 area = "modpacks"
-plain = """Run Java mods that nobody has rewritten for Horizon yet, through a bridge or a converter. Hard and not \
+plain = """Run Java mods that nobody has rewritten for Sunrise yet, through a bridge or a converter. Hard and not \
 started: the Convert button and native rewrites come first."""
 dev = """Earlier research (#527, closed) found that Java mods can't simply run, because they call Minecraft's own \
 classes. Option to look at again: a bridge for simple Fabric mods."""
@@ -621,8 +621,8 @@ id = "older-servers"
 title = "Join servers on older versions"
 status = "later"
 area = "servers"
-plain = """Join servers that run older Minecraft versions, such as 1.21 or 1.8 PvP servers, from Horizon."""
-dev = """Asked often in the suggestion queue. Horizon speaks 26.3's protocol; the path is a native protocol adapter in Rust that translates older versions' packets, not a downloaded Java proxy. Java instances in the launcher already play any version with the real game."""
+plain = """Join servers that run older Minecraft versions, such as 1.21 or 1.8 PvP servers, from Sunrise."""
+dev = """Asked often in the suggestion queue. Sunrise speaks 26.3's protocol; the path is a native protocol adapter in Rust that translates older versions' packets, not a downloaded Java proxy. Java instances in the launcher already play any version with the real game."""
 links = ["#3023"]
 
 [[item]]
@@ -655,7 +655,7 @@ title = "Native versions of popular client mods"
 status = "later"
 area = "mods"
 plain = """Built-in versions of the client mods players ask for: block info on hover, a world map, inventory tweaks and schematic overlays."""
-dev = """Done: a mod list and menu, minimap, zoom, keystrokes, an FPS counter and a recipe viewer, as native mods (horizon-mods/native/). Asked for: an angled world map that shows hills, overhangs and caves, inventory tweaks (drag and scroll to move items), block info tooltips and schematic overlays."""
+dev = """Done: a mod list and menu, minimap, zoom, keystrokes, an FPS counter and a recipe viewer, as native mods (sunrise-mods/native/). Asked for: an angled world map that shows hills, overhangs and caves, inventory tweaks (drag and scroll to move items), block info tooltips and schematic overlays."""
 links = ["docs/extras.md", "docs/modding/src/how-to/native-mods.md"]
 
 [[item]]
@@ -663,9 +663,9 @@ id = "create-physics"
 title = "Create-style physics as a native mod"
 status = "later"
 area = "mods"
-plain = """Contraptions and physics like the Create and Aeronautics mods, as a mod for Horizon rather than part of the \
+plain = """Contraptions and physics like the Create and Aeronautics mods, as a mod for Sunrise rather than part of the \
 base game."""
-dev = """Issue #805 (porting QOL mods) closed with this answer: it would come as a native Horizon mod."""
+dev = """Issue #805 (porting QOL mods) closed with this answer: it would come as a native Sunrise mod."""
 links = ["#805", "#6302", "#5313", "#5556"]
 
 [[item]]
@@ -673,7 +673,7 @@ id = "proximity-voice"
 title = "Proximity voice chat as a native mod"
 status = "later"
 area = "mods"
-plain = """Hear nearby players talk, as with the voice chat mods of other Minecraft versions, as a Horizon mod."""
+plain = """Hear nearby players talk, as with the voice chat mods of other Minecraft versions, as a Sunrise mod."""
 dev = """A native mod (docs/modding/src/how-to/native-mods.md). It needs a way to carry voice between players and an audio path in the \
 game before anything can be built."""
 links = ["docs/modding/src/how-to/native-mods.md"]
@@ -718,7 +718,7 @@ title = "MSAA, anisotropic filtering, exclusive fullscreen"
 status = "later"
 area = "rendering"
 plain = """More graphics options: multisample anti-aliasing, anisotropic filtering and an exclusive fullscreen mode. \
-Today Horizon has FXAA and borderless fullscreen."""
+Today Sunrise has FXAA and borderless fullscreen."""
 dev = """Not implemented (docs/graphics.md). Anisotropic filtering needs linear magnification in wgpu, which blurs \
 close blocks, so close-up sharpness has to be kept first; MSAA would sit beside FXAA, and SMAA or TAA are \
 asked for too; exclusive fullscreen where the backend supports it."""
@@ -730,7 +730,7 @@ title = "A complete video studio inside the game"
 status = "later"
 area = "extras"
 plain = """Record, replay and edit videos without leaving the game: record in a keypress, replay a session, cut and \
-finish the video. One of Horizon's original goals."""
+finish the video. One of Sunrise's original goals."""
 dev = """Three stages. Recording: capture gameplay in a keypress with an encoder thread and little frame-time cost. \
 Replay: a replay mode for recorded sessions. Editing: cuts, camera paths, titles and export. None of it \
 exists yet; the agent-control socket (docs/agent-control.md) already lets tools drive the game for scripted \
@@ -766,7 +766,7 @@ id = "lean-installs"
 title = "Lean installs that use less disk"
 status = "later"
 area = "launcher"
-plain = """Smaller installs: Horizon keeps one shared copy of the prepared game files and removes what only the \
+plain = """Smaller installs: Sunrise keeps one shared copy of the prepared game files and removes what only the \
 preparation needed."""
 dev = """A shared resource store keyed by the preparer's digest, no prepare intermediates left behind, the current \
 and the previous version kept, and an automatic clean-up. Not started."""
@@ -784,7 +784,7 @@ links = ["#4537"]
 
 [[item]]
 id = "linux-arm64"
-title = "Horizon on Linux ARM64"
+title = "Sunrise on Linux ARM64"
 status = "later"
 area = "platforms"
 plain = "Game and launcher builds for 64-bit ARM Linux computers."
@@ -795,10 +795,10 @@ links = ["#1709"]
 
 [[item]]
 id = "build-it-yourself"
-title = "The launcher builds Horizon on other systems"
+title = "The launcher builds Sunrise on other systems"
 status = "later"
 area = "platforms"
-plain = """On a system Horizon has no download for, such as FreeBSD, the launcher offers to build the game on your \
+plain = """On a system Sunrise has no download for, such as FreeBSD, the launcher offers to build the game on your \
 computer, as it already does for native mods."""
 dev = """Issue #4354: when no release asset matches the platform, the launcher fetches the tagged source and runs \
 the same pinned-toolchain `cargo build --locked` its native-mod builds use, with a warning about the time it \
@@ -807,10 +807,10 @@ links = ["#4354", "docs/native-mods.md"]
 
 [[item]]
 id = "windows-arm64"
-title = "Horizon on Windows ARM64"
+title = "Sunrise on Windows ARM64"
 status = "later"
 area = "platforms"
-plain = """A native Horizon for Windows on ARM computers, such as Snapdragon laptops."""
+plain = """A native Sunrise for Windows on ARM computers, such as Snapdragon laptops."""
 dev = """Releases are x64 for Windows and Linux and arm64 for macOS. Needs an aarch64-pc-windows-msvc build in the release workflow and a machine to test on."""
 links = ["docs/release-flow.md"]
 
@@ -820,7 +820,7 @@ title = "OpenGL for old computers"
 status = "shipped"
 shipped_in = "v0.2.63"
 area = "platforms"
-plain = """Horizon now starts on old PCs whose graphics card has no Vulkan or DirectX 12 driver: it switches to OpenGL \
+plain = """Sunrise now starts on old PCs whose graphics card has no Vulkan or DirectX 12 driver: it switches to OpenGL \
 by itself, and Options > Graphics can pick OpenGL by hand."""
 dev = """wgpu's GL backend (WGL on Windows, EGL on Linux) as the last fallback after Vulkan and DirectX 12 (#1917), \
 sprite arrays and CPU sprite animation for drivers without compute (#1920), no indirect draws below GL 4.3 \
@@ -833,21 +833,21 @@ title = "Android, iOS and the browser"
 status = "later"
 area = "platforms"
 ongoing = true
-plain = """Versions of Horizon for Android, iOS and web browsers. Nothing official yet; contributors have started the \
+plain = """Versions of Sunrise for Android, iOS and web browsers. Nothing official yet; contributors have started the \
 first pieces."""
 dev = """No official build. Android was first closed as not planned, with touch controls, a mobile interface, \
 packaging and loading the player's own assets all missing; the roadmap now includes it, iOS and a \
-build for the browser as long-term goals. First pieces from contributors: `horizon-dualsense` \
+build for the browser as long-term goals. First pieces from contributors: `sunrise-dualsense` \
 compiling on iOS (#1813) and helper-thread limits on Android (#1751). Preparing without Java (#1750) matters \
-here too. Horizon ships none of Mojang's files on any platform."""
+here too. Sunrise ships none of Mojang's files on any platform."""
 links = ["#1813", "#1751", "#9134", "#8069", "#4153"]
 
 [[item]]
 id = "video-series"
-title = "A video series about Horizon"
+title = "A video series about Sunrise"
 status = "later"
 area = "community"
-plain = """A series of videos about how Horizon is made and what is new, with each upload announced on Discord."""
+plain = """A series of videos about how Sunrise is made and what is new, with each upload announced on Discord."""
 dev = """Kira already shows new uploads in a read-only Discord channel (done). The series follows each stage of the \
 project: a script, edits, titles and a thumbnail per video."""
 
@@ -878,7 +878,7 @@ links = ["#1496", "#1609", "#1608", "#1704", "#1758"]
 
 [[item]]
 id = "intel-mac"
-title = "Horizon on Intel Macs"
+title = "Sunrise on Intel Macs"
 status = "later"
 area = "platforms"
 plain = "Builds of the game and the launcher for Macs with an Intel processor."
@@ -906,11 +906,11 @@ id = "convert-to-rust"
 title = "A Convert to Rust button for what isn't rewritten yet"
 status = "later"
 area = "modpacks"
-plain = """When a mod, shader pack or modpack hasn't been rewritten for Horizon, one button converts what can be \
+plain = """When a mod, shader pack or modpack hasn't been rewritten for Sunrise, one button converts what can be \
 converted, so you don't have to wait for the rewrite."""
-dev = """Generalise the mod browser's Port step (`horizon-port-pack`: the data, assets, worldgen and block and item \
+dev = """Generalise the mod browser's Port step (`sunrise-port-pack`: the data, assets, worldgen and block and item \
 definitions of Java mods, .mrpack and CurseForge zips) to every kind of content: code mods as native \
-mods (see 'Mods with code') and shader packs, converting an Iris/OptiFine pack into Horizon's format. \
+mods (see 'Mods with code') and shader packs, converting an Iris/OptiFine pack into Sunrise's format. \
 The browser says what works before the install. Java code itself does not run (docs/modpacks.md, \
 docs/mod-browser.md)."""
 links = ["docs/modpacks.md", "docs/mod-browser.md"]
@@ -920,7 +920,7 @@ id = "code-mods"
 title = "Mods with code: machines, magic, mobs"
 status = "later"
 area = "modpacks"
-plain = """Making mods that add machines, magic and mobs work in Horizon, in steps, starting with machines. They are \
+plain = """Making mods that add machines, magic and mobs work in Sunrise, in steps, starting with machines. They are \
 most of what a big modpack is made of."""
 dev = """333 of the 496 mods in a big pack (ATM10) contain code. Issue #1854 ranks the gaps (ticking block \
 entities, networking, rendering, menus, inventories) that unlock them in tiers, with machines first as the \
@@ -936,7 +936,7 @@ area = "modpacks"
 plain = """Search and install data packs from the launcher's mod browser, for the world you choose, as you do mods and \
 resource packs."""
 dev = """A Datapacks tab beside Mods and Resource packs: install into a chosen world's datapacks folder, with the \
-same checks and 'works in Horizon' notes as the other kinds (docs/mod-browser.md)."""
+same checks and 'works in Sunrise' notes as the other kinds (docs/mod-browser.md)."""
 links = ["docs/mod-browser.md"]
 
 [[item]]
@@ -944,9 +944,9 @@ id = "prepare-without-java"
 title = "Prepare a version without Java"
 status = "later"
 area = "servers"
-plain = """Set up Horizon, a server first, without Java on your computer: published tables are combined with your own \
+plain = """Set up Sunrise, a server first, without Java on your computer: published tables are combined with your own \
 copy of the game."""
-dev = """Today `horizon-prepare` runs Mojang's exporters with Java. Issue #1750 proposes publishing the computed \
+dev = """Today `sunrise-prepare` runs Mojang's exporters with Java. Issue #1750 proposes publishing the computed \
 version tables once from CI and assembling the rest locally from the player's own jar and assets, provided \
 the tables hold no Mojang content; a contributor offered a pull request, and it would help phones too. A \
 server-only prepare from `server.jar` alone is the first step (docs/server.md)."""
@@ -970,10 +970,10 @@ id = "docker-image"
 title = "An official Docker image for servers"
 status = "later"
 area = "servers"
-plain = """An official image to run a Horizon dedicated server in Docker with one command, your own copy of the game \
+plain = """An official image to run a Sunrise dedicated server in Docker with one command, your own copy of the game \
 files mounted in."""
 dev = """The repository has the Dockerfile (`packaging/server/Dockerfile`: a multi-stage build on Debian \
-bookworm-slim, user `horizon`, volume `/data`, port 25565, game files mounted read-only, `HORIZON_EULA` and \
+bookworm-slim, user `sunrise`, volume `/data`, port 25565, game files mounted read-only, `SUNRISE_EULA` and \
 friends answering the first-start questions), and anyone can build it (docs/hosting.md, section 9). Left: \
 publish the image to a public registry from the release workflow, tagged per release, so it follows the same \
 checks, and update the docs and the launcher. The image never holds Mojang's files."""
@@ -997,30 +997,30 @@ id = "audio-device"
 title = "Choose the audio output device"
 status = "later"
 area = "gameplay"
-plain = "Pick the speakers or headphones Horizon plays through, in Music & Sounds."
+plain = "Pick the speakers or headphones Sunrise plays through, in Music & Sounds."
 dev = """An output device list in Music & Sounds, falling back to the system default. #1035 started it: a player on \
 an older Windows computer had no sound at all, and a device choice is how such cases are found and fixed."""
 links = ["#1035"]
 
 [[item]]
 id = "shader-pack-examples"
-title = "Well-known shader looks, rewritten for Horizon"
+title = "Well-known shader looks, rewritten for Sunrise"
 status = "later"
 area = "rendering"
-plain = """Popular shader packs rewritten in Horizon's format, so good packs exist from the start. Only packs whose \
+plain = """Popular shader packs rewritten in Sunrise's format, so good packs exist from the start. Only packs whose \
 licence is open source and compatible with ours are rewritten, never anything else."""
 dev = """The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and \
-recorded: a pack is rewritten only if it is open source and compatible with Horizon's licence, and the \
+recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the \
 rewrite is written from the shader format's documentation and the look on screen, not from anyone's code. \
-Today only the Golden Hour example exists (`crates/horizon-shader-api/packs/golden_hour`)."""
-links = ["docs/shaders.md", "crates/horizon-shader-api/packs/golden_hour"]
+Today only the Golden Hour example exists (`crates/sunrise-shader-api/packs/golden_hour`)."""
+links = ["docs/shaders.md", "crates/sunrise-shader-api/packs/golden_hour"]
 
 [[item]]
 id = "beta-label"
 title = "A visible beta label"
 status = "later"
 area = "launcher"
-plain = """A clear 'beta' label in the launcher and the game, so nobody is surprised that Horizon is still being built."""
+plain = """A clear 'beta' label in the launcher and the game, so nobody is surprised that Sunrise is still being built."""
 dev = """Show Beta in the launcher's header and about page, on the game's title screen and on the website, beside the \
 version number (docs/versioning.md)."""
 links = ["docs/versioning.md"]
@@ -1043,11 +1043,11 @@ title = "A versioned agent-control protocol"
 status = "later"
 area = "ai"
 plain = """A stable, documented way for AI agents and scripts to drive the game and the launcher, with versions and an \
-event stream so tools keep working as Horizon changes."""
-dev = """`hello` answers with the API version, the release and the features; `horizon-ctl --api`; MCP serverInfo; \
+event stream so tools keep working as Sunrise changes."""
+dev = """`hello` answers with the API version, the release and the features; `sunrise-ctl --api`; MCP serverInfo; \
 reply schemas generated into the reference; a `test.` namespace for hooks; transcript compatibility tests; \
-`subscribe` as a stream of events on one connection; Horizon option files by key and saved-server commands. \
-Agent control itself (`horizon-ctl`, both MCP servers, the No AI switch) is done: docs/agent-control.md, \
+`subscribe` as a stream of events on one connection; Sunrise option files by key and saved-server commands. \
+Agent control itself (`sunrise-ctl`, both MCP servers, the No AI switch) is done: docs/agent-control.md, \
 docs/api/agent-control.md."""
 links = ["docs/agent-control.md", "docs/api/agent-control.md", "docs/api/stability.md"]
 
@@ -1056,20 +1056,20 @@ id = "own-agents-porting"
 title = "Port mods with your own AI agent"
 status = "later"
 area = "ai"
-plain = """You can port a mod to Horizon with your own AI agent on your own computer. Horizon documents how and gives \
+plain = """You can port a mod to Sunrise with your own AI agent on your own computer. Sunrise documents how and gives \
 you the tools, but provides no hosted agents."""
-dev = """A player runs their own agent locally with `horizon-ctl` and the MCP servers (docs/agent-control.md), `cargo \
-horizon-mod`, `horizon-port-pack` and the parity harnesses as the check. Horizon writes the guide \
-(playhorizon.dev/docs/agents, docs/modpacks.md) and runs no agents, accounts or keys for players. The No AI \
+dev = """A player runs their own agent locally with `sunrise-ctl` and the MCP servers (docs/agent-control.md), `cargo \
+sunrise-mod`, `sunrise-port-pack` and the parity harnesses as the check. Sunrise writes the guide \
+(playsunrise.net/docs/agents, docs/modpacks.md) and runs no agents, accounts or keys for players. The No AI \
 switch turns all of it off."""
-links = ["https://playhorizon.dev/docs/agents", "docs/modpacks.md", "docs/agent-control.md"]
+links = ["https://playsunrise.net/docs/agents", "docs/modpacks.md", "docs/agent-control.md"]
 
 [[item]]
 id = "x-account"
-title = "Horizon on X (coming soon)"
+title = "Sunrise on X (coming soon)"
 status = "later"
 area = "community"
-plain = "Coming soon: an official Horizon account on X, used to announce releases and the weekly summary."
+plain = "Coming soon: an official Sunrise account on X, used to announce releases and the weekly summary."
 dev = """Kira already posts the roadmap items marked `announce = true` when they ship, and the weekly summary, as \
 soon as the account's credentials exist (roadmap/README.md, 'The journal'). Waiting for the account itself."""
 links = ["roadmap/README.md"]
@@ -1082,7 +1082,7 @@ area = "project"
 plain = """Safer releases: changes to the release machinery need the owner's review, and AI agents use a smaller \
 identity of their own instead of a personal account."""
 dev = """`.github/CODEOWNERS` lists the workflows, the release and signing tools, the update-checking code and the \
-installers (#1015); the branch protection that makes it count waits for the `horizon-agent` GitHub App, \
+installers (#1015); the branch protection that makes it count waits for the `sunrise-agent` GitHub App, \
 which reads and writes code, pull requests and issues but can't change settings, workflows, secrets or \
 members, and whose tokens last an hour. It needs the owner to create the App and switch the protection on \
 (docs/security.md)."""
@@ -1093,9 +1093,9 @@ id = "signed-installers"
 title = "Signed updates everywhere, installers included"
 status = "later"
 area = "project"
-plain = """Every download Horizon makes is checked against the project's signature, including the first install with \
+plain = """Every download Sunrise makes is checked against the project's signature, including the first install with \
 install.sh and install.ps1."""
-dev = """Releases carry signed checksums, and the launcher and `horizon-server update` refuse anything unsigned \
+dev = """Releases carry signed checksums, and the launcher and `sunrise-server update` refuse anything unsigned \
 (#1011, #1014). Left: the first install through `install.sh` and `install.ps1` still trusts only the \
 checksum GitHub publishes, because verifying Ed25519 signatures needs OpenSSL 3, which macOS doesn't ship \
 (docs/security.md)."""
@@ -1106,9 +1106,9 @@ id = "cli-server-install"
 title = "A server you install with one command"
 status = "later"
 area = "servers"
-plain = """Install and run a Horizon dedicated server from a terminal with a single command, no launcher needed, for \
+plain = """Install and run a Sunrise dedicated server from a terminal with a single command, no launcher needed, for \
 VPSes and headless machines."""
-dev = """A player's idea (#horizon-ideas). `horizon-server` already runs headless; left: an install script \
+dev = """A player's idea (#sunrise-ideas). `sunrise-server` already runs headless; left: an install script \
 (Linux/macOS shell, Windows PowerShell) that fetches the signed release, checks it, asks for or points at the \
 player's own game files and starts the server, documented in docs/hosting.md."""
 links = ["docs/hosting.md"]
@@ -1118,8 +1118,8 @@ id = "server-panels"
 title = "Ready-made setups for hosting panels"
 status = "later"
 area = "servers"
-plain = """Install a Horizon server from the panels hosts use, such as Pterodactyl and AMP, the usual way for each panel."""
-dev = """Asked in the suggestion queue for Pterodactyl eggs and AMP templates. Builds on the one-command install ('A server you install with one command') and horizon-server's server.toml (docs/hosting.md)."""
+plain = """Install a Sunrise server from the panels hosts use, such as Pterodactyl and AMP, the usual way for each panel."""
+dev = """Asked in the suggestion queue for Pterodactyl eggs and AMP templates. Builds on the one-command install ('A server you install with one command') and sunrise-server's server.toml (docs/hosting.md)."""
 links = ["docs/hosting.md"]
 
 # ---------------------------------------------------------------------------------------------------- Help wanted
@@ -1129,12 +1129,12 @@ id = "benchmark-your-pc"
 title = "Benchmark your computer"
 status = "help-wanted"
 area = "performance"
-plain = """Run Horizon's built-in benchmark and share the report: every new computer makes the performance work \
+plain = """Run Sunrise's built-in benchmark and share the report: every new computer makes the performance work \
 more accurate. No coding needed."""
-dev = """`horizon-launcher play --arg=--benchmark --arg=standard` writes a JSON report in the game's \
+dev = """`sunrise-launcher play --arg=--benchmark --arg=standard` writes a JSON report in the game's \
 benchmarks/ folder. Read it and share it by hand if you choose; the launcher never uploads it \
 (docs/telemetry.md)."""
-links = ["https://playhorizon.dev/docs/performance"]
+links = ["https://playsunrise.net/docs/performance"]
 
 # ---------------------------------------------------------------------------------------------------- Shipped
 # Newest first: `tools/roadmap.py sync` adds each newly shipped item on top.
@@ -1145,7 +1145,7 @@ title = "Server resource packs"
 status = "shipped"
 shipped_in = "v0.2.48"
 area = "servers"
-plain = """Servers can send you their resource pack: Horizon asks, downloads it and applies it, like vanilla."""
+plain = """Servers can send you their resource pack: Sunrise asks, downloads it and applies it, like vanilla."""
 dev = """The dedicated server offers server.properties' pack (#1562); the client's pack manager, downloads, prompt \
 and Server Resource Packs setting (#1569, #1570)."""
 links = ["#1562", "#1569", "#1570"]
@@ -1202,7 +1202,7 @@ status = "shipped"
 shipped_in = "launcher@0.2.0"
 area = "modpacks"
 plain = """Search Modrinth for mods, modpacks and resource packs from the launcher; it says before installing what \
-works in Horizon."""
+works in Sunrise."""
 dev = """The Mods page (#1154), Java mods checked before install (#1242), project pages, filters and galleries \
 (#1243), modpacks ported in the same step (#1246). docs/mod-browser.md."""
 links = ["#1154", "#1242", "#1243", "#1246", "docs/mod-browser.md"]
@@ -1213,8 +1213,8 @@ title = "A blocky, Minecraft-like launcher"
 status = "shipped"
 shipped_in = "launcher@0.2.0"
 area = "launcher"
-plain = """The launcher got a new blocky look in Horizon's purple, in dark and light."""
-dev = """The Blocks look (#1269), from `horizon-theme` (docs/design-system.md)."""
+plain = """The launcher got a new blocky look in Sunrise's purple, in dark and light."""
+dev = """The Blocks look (#1269), from `sunrise-theme` (docs/design-system.md)."""
 links = ["#1269", "docs/design-system.md"]
 
 [[item]]
@@ -1224,7 +1224,7 @@ status = "shipped"
 shipped_in = "v2026.10.22"
 area = "extras"
 plain = """An optional extra: torches you hold, drop or set on fire light up what is around them."""
-dev = """Held, dropped and burning light sources (#1162), in Horizon Extras, off by default."""
+dev = """Held, dropped and burning light sources (#1162), in Sunrise Extras, off by default."""
 links = ["#1162"]
 
 [[item]]
@@ -1233,9 +1233,9 @@ title = "Host a server from the launcher"
 status = "shipped"
 shipped_in = "launcher-v0.15.0"
 area = "servers"
-plain = """The launcher's Servers page creates, starts, backs up and updates a Horizon server with buttons, and \
+plain = """The launcher's Servers page creates, starts, backs up and updates a Sunrise server with buttons, and \
 invites friends."""
-dev = """The launcher's Servers page (#1026) over `horizon-server` (docs/hosting.md)."""
+dev = """The launcher's Servers page (#1026) over `sunrise-server` (docs/hosting.md)."""
 links = ["#1026", "docs/hosting.md"]
 
 [[item]]
@@ -1243,10 +1243,10 @@ id = "launcher-look-menus"
 title = "Game menus in the launcher's style"
 status = "later"
 area = "extras"
-plain = """An optional look for the game's own menus and options that matches the Horizon launcher. Off by default: \
+plain = """An optional look for the game's own menus and options that matches the Sunrise launcher. Off by default: \
 the vanilla menus stay as they are."""
-dev = """A player's idea (#horizon-ideas). A built-in resource pack or a Horizon setting that restyles the title, \
-pause and options screens with the launcher's design tokens (crates/horizon-theme), following \
+dev = """A player's idea (#sunrise-ideas). A built-in resource pack or a Sunrise setting that restyles the title, \
+pause and options screens with the launcher's design tokens (crates/sunrise-theme), following \
 docs/design-system.md; off by default because it changes the vanilla look."""
 links = ["docs/design-system.md"]
 
@@ -1255,9 +1255,9 @@ id = "linux-packages"
 title = "A Nix flake"
 status = "later"
 area = "platforms"
-plain = """Install Horizon on NixOS through a Nix flake."""
-dev = """A player's idea (#horizon-ideas). The launcher's AppImage ships with each launcher release \
+plain = """Install Sunrise on NixOS through a Nix flake."""
+dev = """A player's idea (#sunrise-ideas). The launcher's AppImage ships with each launcher release \
 (packaging/linux/appimage.sh): one file with the libraries GPUI needs, which replaces itself when it \
 updates. A flake.nix packaging the release binaries with their runtime libraries (Vulkan loader, \
-X11/Wayland, ALSA) is still missing, the way horizon-parity's NixOS setup runs them today."""
+X11/Wayland, ALSA) is still missing, the way sunrise-parity's NixOS setup runs them today."""
 links = ["packaging/linux/appimage.sh"]

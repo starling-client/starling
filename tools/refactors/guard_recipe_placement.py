@@ -7,8 +7,8 @@ from pathlib import Path
 import re
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/menu/place/custom.rs"
-tests = root / "crates/horizon-client/src/menu/place/custom_tests.rs"
+source = root / "crates/sunrise-client/src/menu/place/custom.rs"
+tests = root / "crates/sunrise-client/src/menu/place/custom_tests.rs"
 text = source.read_text()
 old = "        allow_drop: bool,\n    ) -> Result<PostPlace, Refused> {"
 assert text.count(old) == 1

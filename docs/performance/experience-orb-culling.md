@@ -30,7 +30,7 @@ VSync, OIT and TAA off. Clean baseline main `cc5f7ff23901c104fcdd3f11c9c1ee4e47d
 candidate adds the original orb culling. These ordinary measurements precede the TAA
 follow-up below; the per-orb preparation/culling logic is unchanged by that follow-up.
 The unchanged test module was also moved to the end of its file. Binary and measured-patch hashes are in the data.
-All launches use isolated game/HORIZON/XDG directories. No build or tests run during timing.
+All launches use isolated game/SUNRISE/XDG directories. No build or tests run during timing.
 
 The same saved world holds 400 frozen Value=7 orbs on a 20×20 grid. Positions:
 x = `(column - 9.5) * 1.1 + 0.5`, z = `row * 1.1 + 4.5`, y ≈ 81.4106 after fixture

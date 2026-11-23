@@ -3,7 +3,7 @@
 
 The Java oracle (VanillaMenuOracle) runs each case's clicks on the real menu
 class with a stand-in player and level; the Rust example (menu_fixture) runs
-horizon_client::menu. Cases are randomized slot contents with random click
+sunrise_client::menu. Cases are randomized slot contents with random click
 sequences covering every ContainerInput (pickup, quick move, swap, clone,
 throw, the three quick craft drags, pickup all, and the screens' Shift double
 click: QUICK_MOVE on every slot of the clicked slot's container holding the
@@ -499,7 +499,7 @@ def main():
                       'ops': g.ops(size, menu, slots)})
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in cases))
     vanilla.run('VanillaMenuOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'menu_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'menu_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
     native = (work / 'native.txt').read_text().split('\n')
     rust = (work / 'rust.txt').read_text().split('\n')
 

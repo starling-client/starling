@@ -17,12 +17,12 @@ parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--group", choices=["state", "range", "write"], default="state")
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
-facade = root / "crates/horizon-mod-api/src/block/block_state.rs"
-values = root / "crates/horizon-client/src/game/modding/api_values.rs"
-renderer = root / "crates/horizon-client-render/src/mesher/mod_tint.rs"
-service = ["cargo", "test", "-p", "horizon-mod-api", "--lib", "metadata_service_reads_edits_and_refuses_invalid_transport"]
-worker = ["cargo", "test", "-p", "horizon-mod-api", "--test", "block_metadata", "metadata_resource_worker_reads_allocate_nothing"]
-tint = ["cargo", "test", "-p", "horizon-client-render", "--lib", "mesher::mod_tint_tests::"]
+facade = root / "crates/sunrise-mod-api/src/block/block_state.rs"
+values = root / "crates/sunrise-client/src/game/modding/api_values.rs"
+renderer = root / "crates/sunrise-client-render/src/mesher/mod_tint.rs"
+service = ["cargo", "test", "-p", "sunrise-mod-api", "--lib", "metadata_service_reads_edits_and_refuses_invalid_transport"]
+worker = ["cargo", "test", "-p", "sunrise-mod-api", "--test", "block_metadata", "metadata_resource_worker_reads_allocate_nothing"]
+tint = ["cargo", "test", "-p", "sunrise-client-render", "--lib", "mesher::mod_tint_tests::"]
 cases = [
     ("property_loses_name", facade, "metadata.property((&self).into(), name)", 'metadata.property((&self).into(), "absent")', service),
     ("with_returns_original", facade, "metadata.with((&self).into(), name, value).map(Into::into)", "{ let _ = (metadata, name, value); Ok(self) }", service),
@@ -33,9 +33,9 @@ cases = [
     ("region_returns_air_for_every_state", renderer, "*states\n            .get(self.state_id(pos) as usize)\n            .unwrap_or(&states[0])", "{ let _ = pos; states[0] }", tint),
 ]
 if args.group == "range":
-    span = root / "crates/horizon-mod-api/src/block/block_state_range.rs"
-    definitions = root / "crates/horizon-mod-runtime/src/block_definitions.rs"
-    focused = ["cargo", "test", "-p", "horizon-mod-api", "--lib", "local_range_validates_transport_and_never_wraps_ordinals"]
+    span = root / "crates/sunrise-mod-api/src/block/block_state_range.rs"
+    definitions = root / "crates/sunrise-mod-runtime/src/block_definitions.rs"
+    focused = ["cargo", "test", "-p", "sunrise-mod-api", "--lib", "local_range_validates_transport_and_never_wraps_ordinals"]
     cases = [
         ("span_accepts_overflow", span, "if count > u16::MAX as u32 + 1 - first.ordinal() as u32 {", "if false {", focused),
         ("membership_ignores_key", span, "state.block().0 == self.first.block().0", "true", focused),
@@ -44,10 +44,10 @@ if args.group == "range":
         ("metadata_drops_last_state", definitions, "self.states.len() as u32", "self.states.len().saturating_sub(1) as u32", service),
     ]
 if args.group == "write":
-    native = root / "crates/horizon-client/src/game/modding/native_entity_refs.rs"
-    errors = root / "crates/horizon-mod-api/src/world/level_write_error.rs"
-    generator = root / "crates/horizon-mod-api-gen/src/host.rs"
-    focused = ["cargo", "test", "-p", "horizon-client", "--lib", "level_block_writes_validate_and_change_world"]
+    native = root / "crates/sunrise-client/src/game/modding/native_entity_refs.rs"
+    errors = root / "crates/sunrise-mod-api/src/world/level_write_error.rs"
+    generator = root / "crates/sunrise-mod-api-gen/src/host.rs"
+    focused = ["cargo", "test", "-p", "sunrise-client", "--lib", "level_block_writes_validate_and_change_world"]
     cases = [
         ("write_ignores_residency", native, "let world = self.native_level_world_result(level)?;", "let world = self.native_level_world_result(level).unwrap_or(&self.world);", focused),
         ("write_disables_phase_refusal", generator, "if !mod_api::__private::access_allowed({name:?}", "if false && !mod_api::__private::access_allowed({name:?}", focused),
@@ -61,7 +61,7 @@ for name, path, old, new, command in cases:
         raise RuntimeError(f"{name}: mutation target is not unique")
     try:
         path.write_text(original.replace(old, new))
-        env = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_JOBS="4", HORIZON_TEST_RESOURCES=str(root / ".local/horizon-client/26.3"))
+        env = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_JOBS="4", SUNRISE_TEST_RESOURCES=str(root / ".local/sunrise-client/26.3"))
         if args.group == "write":
             # Build from the mutated production source, then run the exact game test outside
             # the checkout, never in a player's home or the prepared resource directory.
@@ -70,11 +70,11 @@ for name, path, old, new, command in cases:
                 run = subprocess.CompletedProcess(command, build.returncode, build.stdout + build.stderr)
             else:
                 artifacts = [json.loads(line) for line in build.stdout.splitlines()]
-                binaries = [row["executable"] for row in artifacts if row.get("reason") == "compiler-artifact" and row.get("target", {}).get("name") == "horizon_client" and row.get("executable")]
+                binaries = [row["executable"] for row in artifacts if row.get("reason") == "compiler-artifact" and row.get("target", {}).get("name") == "sunrise_client" and row.get("executable")]
                 if len(binaries) != 1:
                     raise RuntimeError(f"unexpected test executables: {binaries}")
                 scratch = Path(tempfile.mkdtemp(prefix="write-mutant-", dir=root / "target"))
-                for key in ["HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "HORIZON_LAUNCHER_TRASH", "HORIZON_LAUNCHER_CLIPBOARD", "HORIZON_LAUNCHER_DESKTOP"]:
+                for key in ["SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "SUNRISE_LAUNCHER_TRASH", "SUNRISE_LAUNCHER_CLIPBOARD", "SUNRISE_LAUNCHER_DESKTOP"]:
                     home = scratch / key
                     home.mkdir()
                     env[key] = str(home)

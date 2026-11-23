@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pauses the Horizon CI runner (tools/ci/linux-runner.sh) while the maintainer uses this machine or plays on it.
+"""Pauses the Sunrise CI runner (tools/ci/linux-runner.sh) while the maintainer uses this machine or plays on it.
 
 The runner works while nobody uses the machine: its screen locked, or untouched for IDLE_AFTER seconds (900).
 It pauses when any of these holds:
@@ -7,18 +7,18 @@ It pauses when any of these holds:
     input in the last IDLE_AFTER seconds;
   - the CPU package at TEMP_LIMIT °C (90) or more (the median of 5 readings);
   - fleet-load says a game runs (~/fleet/load: Steam, gamescope, Wine or Proton processes);
-  - a process of his matches GAME below (the same, plus Minecraft and a Horizon game he started himself);
-  - a process outside horizon-ci.slice keeps the GPU busy (nvidia-smi: SM use >= GPU_BUSY %, default 50, in two
+  - a process of his matches GAME below (the same, plus Minecraft and a Sunrise game he started himself);
+  - a process outside sunrise-ci.slice keeps the GPU busy (nvidia-smi: SM use >= GPU_BUSY %, default 50, in two
     samples in a row; the browser, Discord and the compositor stay under 20 %);
-  - ~/.actions-runners/horizon/pause exists (pause by hand: `touch` it; `rm` it to let the watcher decide).
+  - ~/.actions-runners/sunrise/pause exists (pause by hand: `touch` it; `rm` it to let the watcher decide).
 
 Paused, the runner takes no new job: while it is idle its service is stopped, so GitHub sends the jobs to the
 Mac mini, and the parity workers other machines started here stop (their harnesses go back to those machines). A
-job already running is throttled, not stopped: horizon-ci.slice drops to CPU weight 1, I/O weight 1 and a quota of
+job already running is throttled, not stopped: sunrise-ci.slice drops to CPU weight 1, I/O weight 1 and a quota of
 THROTTLE_CPUS threads, and the service stops once the job ends. Freezing it (SIGSTOP or the cgroup freezer)
 would stop the runner's heartbeat, so GitHub would drop the job as lost, and the harnesses' wall-clock timeouts
 would fail runs that were only waiting. The runner comes back RESUME_AFTER seconds after the last of these signs.
-Every change is written to ~/.actions-runners/horizon/pause.log.
+Every change is written to ~/.actions-runners/sunrise/pause.log.
 """
 import json
 import os
@@ -27,8 +27,8 @@ import subprocess
 import time
 from pathlib import Path
 
-DIR = Path.home() / ".actions-runners" / "horizon"
-SERVICE, SLICE = "horizon-runner.service", "horizon-ci.slice"
+DIR = Path.home() / ".actions-runners" / "sunrise"
+SERVICE, SLICE = "sunrise-runner.service", "sunrise-ci.slice"
 MANUAL, STATE, LOG = DIR / "pause", DIR / "paused", DIR / "pause.log"
 GAME = re.compile(r"(SteamLaunch|gamescope|wine64-preloader|wineserver|wine-preloader|\.exe(\s|$)|proton\b"
                   r"|net\.minecraft\.client\.main\.Main|minecraft-launcher|prismlauncher)", re.I)
@@ -155,9 +155,9 @@ def game_process():
             command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
         except OSError:
             continue
-        # A Horizon game counts when he started it (its parent is his launcher), not when a harness or agent did.
-        if GAME.search(command) or (" --offscreen" not in command and "/horizon-launcher/" in command
-                                    and "horizon-client" in command.split(" ")[0]):
+        # A Sunrise game counts when he started it (its parent is his launcher), not when a harness or agent did.
+        if GAME.search(command) or (" --offscreen" not in command and "/sunrise-launcher/" in command
+                                    and "sunrise-client" in command.split(" ")[0]):
             if not ci_process(int(entry.name)):
                 return f"process {entry.name}: {command[:120]}"
     return None
@@ -244,7 +244,7 @@ def main():
                 throttle(True)
                 # Parity workers other machines started here (tools/parity_hosts.json): they stop, and those
                 # machines run the harnesses themselves.
-                systemctl("stop", "horizon-parity-worker-*.scope")
+                systemctl("stop", "sunrise-parity-worker-*.scope")
                 log(f"pause: {reason or 'waiting ' + str(RESUME_AFTER) + ' s after starting'}"
                     + (f"; a job is running: throttled to {THROTTLE_CPUS} threads, stops after it" if active else ""))
             if active and not runner_busy():

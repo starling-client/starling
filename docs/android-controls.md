@@ -1,6 +1,6 @@
 # Android control system
 
-Starling integrates Horizon Android's control engine and visual editor. Open the
+Starling integrates Sunrise Android's control engine and visual editor. Open the
 control hub to select **MCPE** or **GoyControl**, change the movement mode or edit
 a layout. The layout entry in Controls > Touch Controls opens the same visual editor.
 
@@ -8,7 +8,7 @@ The editor supports moving and resizing controls, independent dimensions,
 component properties, colors, borders, shapes, labels and event bindings. It has
 undo/redo, visibility controls and a save/back confirmation. Presets keep their
 names, descriptions and separate MCPE/GoyControl layouts under `controls/`;
-`horizon-touch.json` keeps the active selection.
+`sunrise-touch.json` keeps the active selection.
 
 The control hub includes movement and joystick configuration, aiming and axis
 sensitivity, virtual pointer settings, gyroscope settings, button behavior and
@@ -43,7 +43,7 @@ See `THIRD_PARTY_NOTICES.md` for the MIT source attribution.
 
 Physical D-pad/keypad devices can select **Input profile: D-pad / keypad** in
 **Controls > Key Binds**. The profile uses the original Android directional and
-numeric aliases, supports rebinding and persists in `horizon-keypad.json`.
+numeric aliases, supports rebinding and persists in `sunrise-keypad.json`.
 Keyboard is the default profile. Text fields retain ordinary text input.
 
 **Input device** in Controls selects Auto, Touch, Keyboard & Mouse or Controller.

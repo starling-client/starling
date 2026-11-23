@@ -52,9 +52,9 @@ def main():
     report_path = build / "report.json"
     report_path.unlink(missing_ok=True)
     lock, jars, libraries = test_rust_parity.verify_artifacts()
-    source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaFloatLogOracle.java"
+    source = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaFloatLogOracle.java"
     sources = [source, Path(__file__), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "tools/lab.py",
-        *sorted((lab.ROOT / "crates/horizon-core").rglob("*.rs")), lab.ROOT / "crates/horizon-core/Cargo.toml",
+        *sorted((lab.ROOT / "crates/sunrise-core").rglob("*.rs")), lab.ROOT / "crates/sunrise-core/Cargo.toml",
         lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"]
     tested_sources = test_rust_parity.source_hashes(sources)
     classes = build / "classes"
@@ -63,9 +63,9 @@ def main():
     run = test_rust_parity.run
     run(["javac", "--release", str(lock["minecraft"]["java_major"]), "-proc:none", "-cp",
         os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(source)])
-    run(["cargo", "build", "--release", "--bin", "horizon-float-log-parity"])
+    run(["cargo", "build", "--release", "--bin", "sunrise-float-log-parity"])
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
-    binary = Path(metadata["target_directory"]) / "release" / ("horizon-float-log-parity.exe" if os.name == "nt" else "horizon-float-log-parity")
+    binary = Path(metadata["target_directory"]) / "release" / ("sunrise-float-log-parity.exe" if os.name == "nt" else "sunrise-float-log-parity")
     comparisons = []
     for start, count in ranges(args.exhaustive):
         candidate = build / "rust.bin"
@@ -77,7 +77,7 @@ def main():
             reference = build / f"vanilla-{side}.bin"
             with reference.open("wb") as output:
                 run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]),
-                    "dev.horizonlab.parity.VanillaFloatLogOracle", str(start), str(count)], stdout=output)
+                    "dev.sunriselab.parity.VanillaFloatLogOracle", str(start), str(count)], stdout=output)
             matched = compare(reference, candidate, start, count)
             references.append({"side": side, "jar_sha256": lab.digest(jar, "sha256"),
                 # Complete byte equality above proves the same content digest;

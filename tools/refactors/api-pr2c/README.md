@@ -7,7 +7,7 @@ main `658fb76daddef2101540d4c716baa09a2c6595ca`.
 
 ## Generated boundary
 
-An area trait carries `#[horizon_mod_api_macros::host_area]`. Its methods declare
+An area trait carries `#[sunrise_mod_api_macros::host_area]`. Its methods declare
 `#[access(WorldOnly)]`, `#[access(Metadata)]`, `#[access(ClientSetup)]` or
 `#[access(PublishedResources)]` and have no body. The proc macro emits their
 panicking test-double defaults. `#[static_call]` marks the two inherent statics;

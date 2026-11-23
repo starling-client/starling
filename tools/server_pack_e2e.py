@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Server resource packs end to end: a real Horizon client joins a real dedicated server (vanilla 26.3's, or
-Horizon's with --horizon-server BIN) that offers a test pack from a local HTTP server, through tools/net_capture.py,
+"""Server resource packs end to end: a real Sunrise client joins a real dedicated server (vanilla 26.3's, or
+Sunrise's with --sunrise-server BIN) that offers a test pack from a local HTTP server, through tools/net_capture.py,
 which records the statuses the client sends back.
 
 The pack is built here: dirt recoloured blue, and three lang strings (dirt's name, the pause menu's "Back to Game",
 the server list's "Join Server"). Each scenario sets the server list entry's Server Resource Packs setting in
-servers.dat, joins, answers the prompt the way a player would (horizon-ctl clicks its buttons), and checks the
+servers.dat, joins, answers the prompt the way a player would (sunrise-ctl clicks its buttons), and checks the
 statuses against what vanilla's client sends (ServerPackManager):
 
 - required, Prompt, Disconnect: no status, the disconnected screen says "This server requires a custom resource
@@ -21,11 +21,11 @@ statuses against what vanilla's client sends (ServerPackManager):
 - optional on a dead URL: ACCEPTED, FAILED_DOWNLOAD, joins.
 
   python3 tools/server_pack_e2e.py                                   # vanilla's server
-  python3 tools/server_pack_e2e.py --horizon-server target/release/horizon-client
+  python3 tools/server_pack_e2e.py --sunrise-server target/release/sunrise-client
 
-Every game and server here runs in fresh temporary folders (HORIZON_HOME, HORIZON_LAUNCHER_HOME, XDG_*), with no
-audio and no self-update. Needs .local (the vanilla jars and prepared resources) and a built horizon-client and
-horizon-ctl (--bin DIR, default target/fast).
+Every game and server here runs in fresh temporary folders (SUNRISE_HOME, SUNRISE_LAUNCHER_HOME, XDG_*), with no
+audio and no self-update. Needs .local (the vanilla jars and prepared resources) and a built sunrise-client and
+sunrise-ctl (--bin DIR, default target/fast).
 """
 import argparse
 import hashlib
@@ -90,7 +90,7 @@ def build_pack(path):
     def blue(x, y):
         return (40, 90, 230, 255) if (x // 4 + y // 4) % 2 else (20, 50, 170, 255)
     files = {
-        'pack.mcmeta': json.dumps({'pack': {'description': 'Horizon server pack test',
+        'pack.mcmeta': json.dumps({'pack': {'description': 'Sunrise server pack test',
                                             'min_format': 97, 'max_format': 97}}).encode(),
         'assets/minecraft/textures/block/dirt.png': png(16, 16, blue),
         'assets/minecraft/lang/en_us.json': json.dumps({
@@ -206,11 +206,11 @@ class Game:
         self.home = work / 'home'
         for d in ('home', 'launcher', 'data', 'config'):
             (work / d).mkdir(parents=True)
-        self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_LAUNCHER_HOME=work / 'launcher',
+        self.env = lab.game_env(SUNRISE_HOME=self.home, SUNRISE_LAUNCHER_HOME=work / 'launcher',
                                 XDG_DATA_HOME=work / 'data', XDG_CONFIG_HOME=work / 'config')
-        self.base = [str(bins / 'horizon-ctl'), '--socket', str(work / 'c.sock')]
+        self.base = [str(bins / 'sunrise-ctl'), '--socket', str(work / 'c.sock')]
         self.log = work / 'c.log'
-        reply = self('launch', '--game', bins / 'horizon-client', '--offscreen', '--resources', resources)
+        reply = self('launch', '--game', bins / 'sunrise-client', '--offscreen', '--resources', resources)
         self.pid = reply.get('pid')
 
     def __call__(self, *words, ok=True, timeout=300):
@@ -264,7 +264,7 @@ class Run:
         lock, jars, libraries = base.verify_artifacts()
         deps = os.pathsep.join(map(str, [jars['server'], *libraries]))
         self.vanilla = ['java', '-Xmx2g', '-cp', deps, 'net.minecraft.server.Main', 'nogui']
-        self.resources = lab.LOCAL / 'horizon-client' / lab.VERSION
+        self.resources = lab.LOCAL / 'sunrise-client' / lab.VERSION
         self.files = {}
         self.http = Files(self.files)
         self.sha1 = build_pack(out / 'test-pack.zip')
@@ -290,8 +290,8 @@ class Run:
         (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()),
                                                      encoding='iso-8859-1')
         (directory / 'eula.txt').write_text('eula=true\n')
-        if self.args.horizon_server:
-            command = [self.args.horizon_server, '--resources', self.resources, '--dedicated', '--nogui']
+        if self.args.sunrise_server:
+            command = [self.args.sunrise_server, '--resources', self.resources, '--dedicated', '--nogui']
         else:
             command = self.vanilla
         server = Server(command, directory, f'server-{kind}')
@@ -338,7 +338,7 @@ class Run:
         work = Path(tempfile.mkdtemp(prefix='hz-server-packs-'))
         print(f'scratch: {work}')
         # The servers too get scratch homes (the game sets its own below).
-        for var, sub in (('HORIZON_HOME', 'home'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
+        for var, sub in (('SUNRISE_HOME', 'home'), ('SUNRISE_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
                          ('XDG_CONFIG_HOME', 'config')):
             (work / 'servers' / sub).mkdir(parents=True)
             os.environ[var] = str(work / 'servers' / sub)
@@ -494,16 +494,16 @@ class Run:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='horizon-client and horizon-ctl')
-    parser.add_argument('--horizon-server', help='a horizon-client binary to run as the dedicated server')
+    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='sunrise-client and sunrise-ctl')
+    parser.add_argument('--sunrise-server', help='a sunrise-client binary to run as the dedicated server')
     parser.add_argument('--out', default=str(lab.LOCAL / 'server-pack-e2e'))
     args = parser.parse_args()
-    out = Path(args.out) / ('horizon' if args.horizon_server else 'vanilla')
+    out = Path(args.out) / ('sunrise' if args.sunrise_server else 'vanilla')
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     run = Run(args, out)
     work = run.run()
-    print(f'\nserver: {"horizon" if args.horizon_server else "vanilla 26.3"}; evidence in {out}')
+    print(f'\nserver: {"sunrise" if args.sunrise_server else "vanilla 26.3"}; evidence in {out}')
     for name, result, detail in run.results:
         print(f'  {result:4}  {name}' + (f': {detail}' if detail else ''))
     shutil.rmtree(work, ignore_errors=True)

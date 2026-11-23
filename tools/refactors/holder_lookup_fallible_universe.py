@@ -4,13 +4,13 @@ from pathlib import Path
 import re
 
 paths = [
-    "crates/horizon-world/src/holder_set.rs",
-    "crates/horizon-world/src/worldgen/block_feature.rs",
-    "crates/horizon-world/src/worldgen/biome_predicate.rs",
-    "crates/horizon-world/src/worldgen/generator_structures.rs",
-    "crates/horizon-world/src/worldgen/biome_source/codec.rs",
-    "crates/horizon-world/src/worldgen/fluid_predicate.rs",
-    "crates/horizon-client/src/mod_content_biomes.rs",
+    "crates/sunrise-world/src/holder_set.rs",
+    "crates/sunrise-world/src/worldgen/block_feature.rs",
+    "crates/sunrise-world/src/worldgen/biome_predicate.rs",
+    "crates/sunrise-world/src/worldgen/generator_structures.rs",
+    "crates/sunrise-world/src/worldgen/biome_source/codec.rs",
+    "crates/sunrise-world/src/worldgen/fluid_predicate.rs",
+    "crates/sunrise-client/src/mod_content_biomes.rs",
 ]
 for name in paths:
     path = Path(name)

@@ -5,7 +5,7 @@
 //! %TEMP% when that is on the install folder's drive, else beside the install folder (its parent,
 //! always the same volume). Plain path text, so it is tested on every OS.
 
-/// The folders to try, in order, for the running launcher at `install\horizon-launcher.exe`.
+/// The folders to try, in order, for the running launcher at `install\sunrise-launcher.exe`.
 /// %TEMP% comes first only when it is on the same drive; the install folder's parent is the
 /// fallback either way (a %TEMP% behind a junction can still be another volume).
 pub fn aside_dirs(install: &str, temp: &str) -> Vec<String> {
@@ -45,7 +45,7 @@ fn parent(path: &str) -> Option<String> {
     let trimmed = path.trim_end_matches(['\\', '/']);
     let cut = trimmed.rfind(['\\', '/'])?;
     let parent = &trimmed[..cut];
-    // `C:\Horizon Launcher` → `C:\`, not the drive-relative `C:`.
+    // `C:\Sunrise Launcher` → `C:\`, not the drive-relative `C:`.
     Some(if parent.ends_with(':') {
         format!(r"{parent}\")
     } else {
@@ -62,13 +62,13 @@ mod tests {
         // GitHub's Windows runner: the smoke installs under D:, TEMP is on C:.
         assert_eq!(
             aside_dirs(
-                r"D:\a\_temp/setup-smoke\Horizon Launcher",
+                r"D:\a\_temp/setup-smoke\Sunrise Launcher",
                 r"C:\Users\RUNNER~1\AppData\Local\Temp"
             ),
             vec![r"D:\a\_temp/setup-smoke".to_string()]
         );
         assert_eq!(
-            aside_dirs(r"\\nas\games\Horizon Launcher", r"C:\Temp"),
+            aside_dirs(r"\\nas\games\Sunrise Launcher", r"C:\Temp"),
             vec![r"\\nas\games".to_string()]
         );
     }
@@ -77,7 +77,7 @@ mod tests {
     fn temp_on_the_same_drive_comes_first() {
         assert_eq!(
             aside_dirs(
-                r"C:\Users\p\AppData\Local\Programs\Horizon Launcher",
+                r"C:\Users\p\AppData\Local\Programs\Sunrise Launcher",
                 r"c:\Users\p\AppData\Local\Temp\"
             ),
             vec![
@@ -86,11 +86,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            aside_dirs(r"\\?\D:\Horizon Launcher\", r"D:\Temp"),
+            aside_dirs(r"\\?\D:\Sunrise Launcher\", r"D:\Temp"),
             vec![r"D:\Temp".to_string(), r"\\?\D:\".to_string()]
         );
         assert_eq!(
-            aside_dirs(r"\\NAS\Games\Horizon Launcher", r"\\?\UNC\nas\games\tmp"),
+            aside_dirs(r"\\NAS\Games\Sunrise Launcher", r"\\?\UNC\nas\games\tmp"),
             vec![
                 r"\\?\UNC\nas\games\tmp".to_string(),
                 r"\\NAS\Games".to_string()
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn an_unknown_temp_volume_is_never_trusted() {
         assert_eq!(
-            aside_dirs(r"C:\Games\Horizon Launcher", "tmp"),
+            aside_dirs(r"C:\Games\Sunrise Launcher", "tmp"),
             vec![r"C:\Games".to_string()]
         );
     }

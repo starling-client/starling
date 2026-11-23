@@ -3,7 +3,7 @@
 
 Starts vanilla's dedicated server of each version in a new folder, with the
 pack in its world's `datapacks/` (26.2 gets `--old-pack`, 26.3 gets
-`--new-pack`, the output of `horizon-port-pack upgrade-datapack`; without
+`--new-pack`, the output of `sunrise-port-pack upgrade-datapack`; without
 packs both run vanilla, which calibrates what 26.3 itself changed), force
 loads the same chunks, saves, and compares the saved chunks block by block.
 Prints how many blocks differ, the most common (26.2 -> 26.3) pairs and

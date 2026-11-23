@@ -5,7 +5,7 @@ use crate::{
 };
 use std::process::Command;
 
-pub const ENV: &str = "HORIZON_LAUNCHER_DEVELOPER_OFFLINE";
+pub const ENV: &str = "SUNRISE_LAUNCHER_DEVELOPER_OFFLINE";
 pub const FLAG: &str = "--developer-single-player";
 pub const NOTICE: &str = "Offline developer session: single-player only; no account features.";
 
@@ -22,7 +22,7 @@ pub fn enabled(tag: &str) -> bool {
     eligible(
         &base,
         &crate::backend::version_dir(&base),
-        native.as_ref().map(|a| a.horizon.as_str()),
+        native.as_ref().map(|a| a.sunrise.as_str()),
     )
 }
 
@@ -34,7 +34,7 @@ fn eligible(base: &str, directory: &std::path::Path, native_revision: Option<&st
 }
 
 pub const REBUILD: &str = "This game cannot enforce offline developer single-player. Rebuild and reinstall the developer game and its native mods.";
-const START_FAILED: &str = "The game failed to start while checking support for offline developer play. Repeat your horizon-launcher developer-install command, rebuild this build’s native mods with native-build, then try Play again. If it still fails, report this message on the Horizon Discord (linked in the launcher).\nDetails: {reason}";
+const START_FAILED: &str = "The game failed to start while checking support for offline developer play. Repeat your sunrise-launcher developer-install command, rebuild this build’s native mods with native-build, then try Play again. If it still fails, report this message on the Sunrise Discord (linked in the launcher).\nDetails: {reason}";
 pub fn require_capability(tag: &str) -> Result<(), String> {
     let program = crate::backend::client_program(tag);
     let output = Command::new(&program)
@@ -92,9 +92,9 @@ fn supports_restriction(bytes: &[u8]) -> bool {
 
 pub fn mark(cmd: &mut Command) {
     cmd.arg(FLAG)
-        .env_remove("HORIZON_SESSION_FILE")
-        .env_remove("HORIZON_ACCOUNT_SESSIONS")
-        .env_remove("HORIZON_LAUNCHER_EXE");
+        .env_remove("SUNRISE_SESSION_FILE")
+        .env_remove("SUNRISE_ACCOUNT_SESSIONS")
+        .env_remove("SUNRISE_LAUNCHER_EXE");
 }
 
 /// Validate after instance arguments and wrappers have been applied, before acquiring real leases.
@@ -102,7 +102,7 @@ pub fn validate(cmd: &Command) -> Result<(), String> {
     let offline = cmd.get_args().any(|a| a == FLAG);
     if offline
         && cmd.get_envs().any(|(key, value)| {
-            (key == "HORIZON_SESSION_FILE" || key == "HORIZON_ACCOUNT_SESSIONS")
+            (key == "SUNRISE_SESSION_FILE" || key == "SUNRISE_ACCOUNT_SESSIONS")
                 && value.is_some_and(|v| !v.is_empty())
         })
     {
@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     #[test]
     fn startup_failure_bounds_unicode_details_without_changing_short_diagnostics() {
-        let short = "dyld[4321]: Library not loaded: @rpath/libhorizon_mod_host.dylib";
+        let short = "dyld[4321]: Library not loaded: @rpath/libsunrise_mod_host.dylib";
         assert!(startup_failure(short).ends_with(short));
         let long = "界".repeat(501);
         let message = startup_failure(&long);
@@ -180,8 +180,8 @@ mod tests {
             let mut child = Command::new(std::env::current_exe().unwrap());
             child.args(["--exact", "developer_offline::tests::account_gate_is_preserved_without_opt_in_and_for_signed_lineage", "--nocapture"])
                 .env("OFFLINE_GATE_TEST_TAG", tag)
-                .env("HORIZON_LAUNCHER_HOME", root.path())
-                .env("HORIZON_HOME", root.path().join("game"))
+                .env("SUNRISE_LAUNCHER_HOME", root.path())
+                .env("SUNRISE_HOME", root.path().join("game"))
                 .env("XDG_CONFIG_HOME", root.path().join("config"))
                 .env("XDG_DATA_HOME", root.path().join("data"));
             if let Some(value) = opt_in {
@@ -237,13 +237,13 @@ mod tests {
     #[test]
     fn composition_cannot_reintroduce_account_state_or_clear_the_restriction() {
         let mut command = Command::new("game");
-        command.env("HORIZON_SESSION_FILE", "inherited-session.json");
-        command.env("HORIZON_ACCOUNT_SESSIONS", "inherited sessions");
+        command.env("SUNRISE_SESSION_FILE", "inherited-session.json");
+        command.env("SUNRISE_ACCOUNT_SESSIONS", "inherited sessions");
         mark(&mut command);
         for key in [
-            "HORIZON_SESSION_FILE",
-            "HORIZON_ACCOUNT_SESSIONS",
-            "HORIZON_LAUNCHER_EXE",
+            "SUNRISE_SESSION_FILE",
+            "SUNRISE_ACCOUNT_SESSIONS",
+            "SUNRISE_LAUNCHER_EXE",
         ] {
             assert_eq!(
                 command.get_envs().find(|(name, _)| *name == key).unwrap().1,
@@ -253,7 +253,7 @@ mod tests {
         command.env(ENV, "0");
         assert!(command.get_args().any(|argument| argument == FLAG));
         assert!(validate(&command).is_ok());
-        for key in ["HORIZON_SESSION_FILE", "HORIZON_ACCOUNT_SESSIONS"] {
+        for key in ["SUNRISE_SESSION_FILE", "SUNRISE_ACCOUNT_SESSIONS"] {
             let mut command = Command::new("game");
             mark(&mut command);
             let launch = crate::launch::Launch {

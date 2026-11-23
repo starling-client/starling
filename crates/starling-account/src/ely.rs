@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // SPDX-License-Identifier: MIT
-// Adapted from Vasysik/horizon-android launcher/src/account/ely.rs.
+// Adapted from Vasysik/sunrise-android launcher/src/account/ely.rs.
 //! Ely.by's documented Yggdrasil API. Passwords are used for one request only;
 //! the existing SecretStore holds the access token and launcher client token.
 //! https://docs.ely.by/en/minecraft-auth.html

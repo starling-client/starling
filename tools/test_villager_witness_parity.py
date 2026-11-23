@@ -25,27 +25,27 @@ def main(argv=None):
     build = lab.LOCAL / 'villager-witness-parity'
     classes = build / 'classes'
     classes.mkdir(parents=True, exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVillagerWitnessOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaVillagerWitnessOracle.java'
     sources = [Path(__file__), oracle,
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/villager_brain/reputation_witness_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/villagers.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/villager_witness_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/kill_die_vibration_tests.rs']
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation_witness_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/villagers.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/villager_witness_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/kill_die_vibration_tests.rs']
     hashes = base.source_hashes(sources)
     clean = dict(os.environ)
-    for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
+    for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         clean.pop(key, None)
-    env = lab.game_env(clean, HORIZON_TEST_RESOURCES=args.resources.resolve(), PYTHONNOUSERSITE=1)
+    env = lab.game_env(clean, SUNRISE_TEST_RESOURCES=args.resources.resolve(), PYTHONNOUSERSITE=1)
     scratch = Path(lab._scratch_dir('villager-reputation-cwd-'))
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-cp', cp, '-d', str(classes), str(oracle)], cwd=scratch, env=env, check=True)
     expected = build / 'vanilla.txt'
     subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
-                    'dev.horizonlab.parity.VanillaVillagerWitnessOracle', str(expected)],
+                    'dev.sunriselab.parity.VanillaVillagerWitnessOracle', str(expected)],
                    cwd=scratch, env=env, check=True)
     rows = expected.read_text(encoding='utf-8').splitlines()
     if [line.split()[0] for line in rows] != ['witnesses', 'cached', 'fresh']:
@@ -54,15 +54,15 @@ def main(argv=None):
         base.ensure_sources_unchanged(sources, hashes)
         print('\n'.join(rows))
         return
-    env['HORIZON_REPUTATION_ORACLE'] = str(expected.resolve())
+    env['SUNRISE_REPUTATION_ORACLE'] = str(expected.resolve())
     artifacts = {}
     executed = {}
     for package, group, count in [
-        ('horizon-client-lib', 'mobs::villager_brain::reputation_witness_tests', 1),
-        ('horizon-client', 'game::villagers::witness_tests', 1),
+        ('sunrise-client-lib', 'mobs::villager_brain::reputation_witness_tests', 1),
+        ('sunrise-client', 'game::villagers::witness_tests', 1),
     ]:
         if package not in artifacts:
-            source = (lab.ROOT / 'crates/horizon-client/src' / ('client_lib.rs' if package == 'horizon-client-lib' else 'lib.rs')).resolve()
+            source = (lab.ROOT / 'crates/sunrise-client/src' / ('client_lib.rs' if package == 'sunrise-client-lib' else 'lib.rs')).resolve()
             built = subprocess.run(['cargo', 'test', '--locked', '-p', package, '--lib', '--no-run', '--message-format=json'],
                                    cwd=lab.ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8')
             (build / (package + '-build.jsonl')).write_text(built.stdout, encoding='utf-8')

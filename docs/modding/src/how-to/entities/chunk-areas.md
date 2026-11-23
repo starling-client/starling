@@ -1,6 +1,6 @@
 # Chunk areas for a player
 
-A server mod can keep squares of chunks loaded, or ticking, for one player, in any level, and the engine sends them to that player's client. This is what a portal that shows another place needs, as Immersive Portals' `ChunkLoader` does. A level besides the player's own reaches only a Horizon client that can view it; it keeps that level's chunks and updates beside its own world, and nothing is drawn yet.
+A server mod can keep squares of chunks loaded, or ticking, for one player, in any level, and the engine sends them to that player's client. This is what a portal that shows another place needs, as Immersive Portals' `ChunkLoader` does. A level besides the player's own reaches only a Sunrise client that can view it; it keeps that level's chunks and updates beside its own world, and nothing is drawn yet.
 
 ```rust,ignore
 let nether = host.level("minecraft:the_nether").expect("the server has the Nether");
@@ -32,7 +32,7 @@ let _ = player.set_chunk_areas(host, &[]);
   - `RadiusTooLarge { radius, max: 32 }`.
   - `CenterOutOfRange { center, max: 1_875_000 }`: a centre more than 1,875,000 chunks (the largest world border's edge) from (0, 0) on an axis.
   - `TooManyAreas { asked, max: 32 }`: 32 areas per player, every mod's together.
-  - `TooManyLevels { asked, cap }`: more levels besides the player's own than its client can view. `cap` is the client's own answer: 2 for a Horizon client, 0 for vanilla or an older Horizon.
+  - `TooManyLevels { asked, cap }`: more levels besides the player's own than its client can view. `cap` is the client's own answer: 2 for a Sunrise client, 0 for vanilla or an older Sunrise.
   - `TooManyChunks { cap, level, asked, limit }`: more chunks in `level` than the server setting `cap` allows; `limit` is its value now.
   - `Unavailable`: a level handle of an earlier open of the world, or a call from outside any mod's hook (the engine keeps each mod's areas apart by its id).
 - **The chunk caps** are server settings ([hosting](https://github.com/arismoko/horizon/blob/main/docs/hosting.md#other-levels-a-mod-shows-a-player-max_viewed_)). Chunks are counted as the union of every mod's areas, by mode. A `Loaded` area loads one ring past its radius, so it counts (2r + 3)² chunks; a `Ticking` area's square counts as ticking and the two rings it loads around it as loaded.

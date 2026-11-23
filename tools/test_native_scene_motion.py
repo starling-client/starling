@@ -61,7 +61,7 @@ def attribute_corpus(controlled):
         for operation in range(3):
             for permanent in [False,True]:
                 ops=[attr('max_absorption',20),op('absorption',single(15)),op('refresh_attributes'),
-                     op('modifier',bits(-.5),name='minecraft:'+name,id='horizon:fixture',operation=operation,permanent=permanent),
+                     op('modifier',bits(-.5),name='minecraft:'+name,id='sunrise:fixture',operation=operation,permanent=permanent),
                      tick(),op('refresh_attributes'),tick(1),tick(0)]
                 yield dict(position=vec((25.5,4,25.5)),ops=ops)
     # Walk through a low tunnel, release Shift inside, then leave it; force a
@@ -843,17 +843,17 @@ def main():
         libraries=baking.client_libraries();jars={'client':jars['client']}
     build=lab.LOCAL/('rust-native-flight-scene' if args.flight_only else 'rust-native-sprint-scene' if args.sprint_input else 'rust-native-scene-motion');build.mkdir(exist_ok=True)
     report=build/'report.json';report.unlink(missing_ok=True)
-    resources=lab.LOCAL/'horizon-client'/lock['minecraft']['version']
+    resources=lab.LOCAL/'sunrise-client'/lock['minecraft']['version']
     resource_hash=client.resource_fingerprint(resources)
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSceneMotionOracle.java'
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSceneMotionOracle.java'
     helpers=[oracle.with_name(name+'.java') for name in ['VanillaSceneCollisionOracle','VanillaRegistryCollisionScanOracle',
         'VanillaHeightmapOracle','VanillaCollisionOracle','VanillaBlockStateCodecOracle','VanillaSuffocationOracle',
         'VanillaFaceSupportOracle','VanillaEntityAttributeOracle','VanillaBlockLandingOracle','VanillaMovementRegistryOracle','VanillaDamageSourceOracle']]
     if args.sprint_input:helpers.append(oracle.with_name('VanillaSprintInputOracle.java'))
     sources=[Path(__file__),lab.ROOT/'tools/test_native_client.py',lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',
              lab.ROOT/'tools/prepare_native_client.py',oracle,*helpers,lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',
-             lab.ROOT/'crates/horizon-client/examples/probe/scene_motion_probe.rs']
-    for crate in ['horizon-core','horizon-world','horizon-assets','horizon-client','horizon-client-render']:
+             lab.ROOT/'crates/sunrise-client/examples/probe/scene_motion_probe.rs']
+    for crate in ['sunrise-core','sunrise-world','sunrise-assets','sunrise-client','sunrise-client-render']:
         sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
     if args.sprint_input:sources.append(lab.ROOT/'tools/test_model_baking_parity.py')
     tested=base.source_hashes(sources)
@@ -870,7 +870,7 @@ def main():
     damage_dir=build/'damage';damage_dir.mkdir(exist_ok=True)
     for target, source in [('types.json','damage-types.json'),('tags.json','damage-tags.json')]:
         (damage_dir/target).write_bytes((resources/source).read_bytes())
-    run(['cargo','build','--locked','-p','horizon-client-lib','--example','client_probe',
+    run(['cargo','build','--locked','-p','sunrise-client-lib','--example','client_probe',
          *(['--no-default-features'] if args.no_default_features else [])],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version','1'],cwd=lab.ROOT))
     binary=Path(metadata['target_directory'])/'debug/examples'/('client_probe.exe' if os.name=='nt' else 'client_probe')
@@ -878,7 +878,7 @@ def main():
     references=[]
     for side,jar in jars.items():
         run(['java','-Xmx768M','-cp',os.pathsep.join([str(classes),str(jar),dependencies]),
-             'dev.horizonlab.parity.VanillaSceneMotionOracle',side,build,resources],side)
+             'dev.sunriselab.parity.VanillaSceneMotionOracle',side,build,resources],side)
         replay_hash=lab.digest(build/('inputs-'+side+'.txt'),'sha256')
         run([binary,'scene_motion_probe',resources,build,side],'rust-'+side)
         if replay_hash!=lab.digest(build/('inputs-'+side+'.txt'),'sha256'):raise AssertionError('Identity replay changed')

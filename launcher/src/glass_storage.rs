@@ -1,7 +1,7 @@
 //! Cached storage inventory; filesystem work never runs on the render thread.
 use super::*;
 use crate::glass_ui as ui;
-use horizon_launcher::browser;
+use sunrise_launcher::browser;
 use storage::Category;
 
 /// What a Clear click asks to confirm, and what answering does: `Some(clear)` starts that
@@ -46,7 +46,7 @@ impl Launcher {
                 == Some(tr(
                     "A native build or cache cleanup is running. Try again when it finishes.",
                 ));
-        let mut card = crate::glass::plate(horizon_theme::glass::radius::PANEL)
+        let mut card = crate::glass::plate(sunrise_theme::glass::radius::PANEL)
             .flex()
             .flex_col()
             .p(px(16.))
@@ -120,7 +120,7 @@ impl Launcher {
             card = card.child(self.storage_confirmation(asked, cx));
         }
         let summary = card;
-        let mut card = crate::glass::plate(horizon_theme::glass::radius::PANEL)
+        let mut card = crate::glass::plate(sunrise_theme::glass::radius::PANEL)
             .flex()
             .flex_col()
             .p(px(8.));
@@ -167,7 +167,7 @@ impl Launcher {
             ));
         }
         let breakdown = card;
-        let mut card = crate::glass::plate(horizon_theme::glass::radius::PANEL).p(px(8.));
+        let mut card = crate::glass::plate(sunrise_theme::glass::radius::PANEL).p(px(8.));
         if self.settings.native_mods_allowed_at.is_some() {
             card = card.child(ui::setting_row(
                 tr("Native mods"),

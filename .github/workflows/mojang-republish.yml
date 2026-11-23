@@ -5,7 +5,7 @@ name: mojang republish
 #   gh workflow run "mojang republish" -f dry_run=true
 on:
   schedule:
-    - cron: '23 * * * *'  # hourly: a republished JSON breaks horizon-prepare for every new player until accepted
+    - cron: '23 * * * *'  # hourly: a republished JSON breaks sunrise-prepare for every new player until accepted
   workflow_dispatch:
     inputs:
       dry_run:
@@ -21,9 +21,9 @@ concurrency:
 
 jobs:
   check:
-    # Horizon's own repository files these issues; a fork would only repeat them.
+    # Sunrise's own repository files these issues; a fork would only repeat them.
     if: github.repository == 'horizon-rust/horizon'
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "sunrise-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

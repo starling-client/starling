@@ -1,6 +1,6 @@
 # API stability and versioning
 
-The rules every Horizon API follows ([the APIs](README.md)): how each one is versioned, what the stability levels
+The rules every Sunrise API follows ([the APIs](README.md)): how each one is versioned, what the stability levels
 promise, how something is deprecated and removed, and the tests that keep old mods, scripts and tools working.
 
 ## Versions
@@ -16,9 +16,9 @@ promise, how something is deprecated and removed, and the tests that keep old mo
 
 | API | The version | A user names the line they need |
 | --- | --- | --- |
-| Content mods | the manifest's `api` line | `api = "0.2"` in `horizon-mod.toml` |
-| Native mods | the exact Horizon and horizon-mixins revisions the mod pins | `[native] horizon` and `mixins` in `horizon-mod.toml` |
-| Agent control | the control protocol's version (`hello` replies it; MCP `serverInfo` carries the release) | `horizon-ctl --api 0.1` (planned) |
+| Content mods | the manifest's `api` line | `api = "0.2"` in `sunrise-mod.toml` |
+| Native mods | the exact Sunrise and horizon-mixins revisions the mod pins | `[native] sunrise` and `mixins` in `sunrise-mod.toml` |
+| Agent control | the control protocol's version (`hello` replies it; MCP `serverInfo` carries the release) | `sunrise-ctl --api 0.1` (planned) |
 | Server control API | the path (`/api/v1/`) | the path |
 | `server.toml` | the file's keys; a key is never renamed in place | nothing: old files keep loading |
 | Launcher commands | the command names and their `--json` output | nothing |
@@ -47,7 +47,7 @@ Every part of an API has one level, shown in its reference and its surface page.
   mod, a host's script, an agent's tool) used it for a whole line and nothing broke. The maintainers' orchestrator
   proposes the promotion with the evidence (the compatibility tests, the complete docs, that line of use) and Ludovic
   approves it.
-- **Horizon-only by design.** An API is stable only for what Horizon itself does; a vanilla concept it exposes (a block
+- **Sunrise-only by design.** An API is stable only for what Sunrise itself does; a vanilla concept it exposes (a block
   id, a command, a `server.properties` key) changes when vanilla changes it, with a version port
   ([version-ports.md](../version-ports.md)), and the changelog says so.
 
@@ -58,7 +58,7 @@ Every part of an API has one level, shown in its reference and its surface page.
 2. The reference shows it as deprecated, and the surface page's changelog says what replaces it and when it goes.
 3. Using it logs one warning per mod, session or client, naming the replacement; it keeps working.
 4. It is removed only after the window, and only at the next line (preview) or major (stable).
-5. A line or major that is no longer served is refused with a clear message (`needs API 0.1; this Horizon serves 0.3
+5. A line or major that is no longer served is refused with a clear message (`needs API 0.1; this Sunrise serves 0.3
    and 0.4`), never loaded half-way.
 
 ## Compatibility tests
@@ -67,12 +67,12 @@ Every preview and stable API has tests that run old users against the current co
 
 | API | The test |
 | --- | --- |
-| Content mods | the content template builds and checks with `cargo horizon-mod`, and `mod_content`'s tests load content mods; a manifest's `api` must exactly match the content format this build supports |
-| Native mods | a mod builds against one exact Horizon source revision, named by its pin, and the launcher rebuilds it for that revision; no compatibility across revisions is promised |
+| Content mods | the content template builds and checks with `cargo sunrise-mod`, and `mod_content`'s tests load content mods; a manifest's `api` must exactly match the content format this build supports |
+| Native mods | a mod builds against one exact Sunrise source revision, named by its pin, and the launcher rebuilds it for that revision; no compatibility across revisions is promised |
 | Agent control | a transcript per protocol version: commands and the reply keys each must have |
 | Server | `api::ROUTES` against `route()` (generated reference); a `server.toml` from each release line parses to the same settings; golden replies per endpoint |
 | Launcher | the generated reference; golden `--json` output per command |
-| Launch | the generated reference, which holds `--launch-api`'s reply; every listed option is accepted; `horizon-prepare`'s `--progress json` lines (`progress_json_lines_keep_their_shape`), its `--launch-api` reply and options (`launch_api::tests`, `launch_api_options_are_in_the_help`) |
+| Launch | the generated reference, which holds `--launch-api`'s reply; every listed option is accepted; `sunrise-prepare`'s `--progress json` lines (`progress_json_lines_keep_their_shape`), its `--launch-api` reply and options (`launch_api::tests`, `launch_api_options_are_in_the_help`) |
 | Data formats | a sample file of every version a reader accepts, read by today's reader |
 
 The generated references are the API's own diff: a pull request that changes an API changes its reference, and the
@@ -89,15 +89,15 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | --- | --- | --- |
 | Content mods (`registries`: data-driven blocks, items, mob effects, thrown entity types and menu types) | preview | manifest `api = "0.2"` |
 | Native mods (flat Rust projects, [../modding/src/how-to/native-mods.md](../modding/src/how-to/native-mods.md)) | experimental | the pinned revisions |
-| `cargo horizon-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
+| `cargo sunrise-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
 | Shader API | experimental | 0.1 |
-| Shader API 0.2 (linear light, [hdr-linear-light.md](../design/hdr-linear-light.md)) | experimental, behind a switch: `horizon-shader` checks it, the game draws it only with `HORIZON_HDR_FRAME=float` set, and the registry doesn't list it | 0.2 |
-| `horizon-ctl` commands and MCP tools | preview | none yet (unversioned) |
-| The game's own control-socket commands outside `horizon-ctl`'s table (test hooks) | experimental | |
-| `horizon-server` commands, `server.toml` | stable | `horizon-server --version` |
+| Shader API 0.2 (linear light, [hdr-linear-light.md](../design/hdr-linear-light.md)) | experimental, behind a switch: `sunrise-shader` checks it, the game draws it only with `SUNRISE_HDR_FRAME=float` set, and the registry doesn't list it | 0.2 |
+| `sunrise-ctl` commands and MCP tools | preview | none yet (unversioned) |
+| The game's own control-socket commands outside `sunrise-ctl`'s table (test hooks) | experimental | |
+| `sunrise-server` commands, `server.toml` | stable | `sunrise-server --version` |
 | Server control API | stable | `/api/v1` |
-| `horizon-launcher` commands and MCP tools | preview | none yet (unversioned) |
-| Launch API: `horizon-client`'s launch options, session JSON, exit codes; `horizon-prepare`'s output and progress | experimental | 0.1.1, `horizon-client --launch-api` and `horizon-prepare --launch-api` |
+| `sunrise-launcher` commands and MCP tools | preview | none yet (unversioned) |
+| Launch API: `sunrise-client`'s launch options, session JSON, exit codes; `sunrise-prepare`'s output and progress | experimental | 0.1.1, `sunrise-client --launch-api` and `sunrise-prepare --launch-api` |
 | Benchmark report | stable | `"version": 1` |
-| `horizon-graphics.txt`, `horizon-extras.txt`, `horizon-mods.txt` | preview | none |
+| `sunrise-graphics.txt`, `sunrise-extras.txt`, `sunrise-mods.txt` | preview | none |
 | `SHA256SUMS` and `SHA256SUMS.sig` | stable | |

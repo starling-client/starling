@@ -1,6 +1,6 @@
-//! Horizon: the driver's compiled pipelines kept on disk between runs.
+//! Sunrise: the driver's compiled pipelines kept on disk between runs.
 //!
-//! Vulkan on Android has no cache of its own: every start compiles Horizon's
+//! Vulkan on Android has no cache of its own: every start compiles Sunrise's
 //! pipelines again, about 3.5 s of a POCO F6 Pro's (Adreno 740) start and
 //! longer on PowerVR. The application names one file with [`set_file`]. Every
 //! device opened after that gets a `VkPipelineCache` seeded from the file, and
@@ -27,7 +27,7 @@ use ash::vk;
 
 const MAGIC: &[u8; 8] = b"HZVKPC1\n";
 const HEADER: usize = MAGIC.len() + 8 + 8;
-/// Past this the data is not kept: Horizon's pipelines take a few megabytes.
+/// Past this the data is not kept: Sunrise's pipelines take a few megabytes.
 pub const MAX_BYTES: usize = 64 << 20;
 
 static FILE: OnceLock<PathBuf> = OnceLock::new();

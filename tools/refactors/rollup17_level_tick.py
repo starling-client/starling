@@ -1,6 +1,6 @@
 """Extract the client tick body verbatim for boundary failure testing."""
 from pathlib import Path
-p = Path('crates/horizon-client/src/game/network/remote/client_level_tick.rs')
+p = Path('crates/sunrise-client/src/game/network/remote/client_level_tick.rs')
 s = p.read_text()
 a = s.index('        self.ticks += 1;')
 b = s.index('        // `ClientLevel.tick`\'s RETURN', a)

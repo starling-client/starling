@@ -7,7 +7,7 @@ This is the final local smoke benchmark for the entity-occlusion pipeline before
 **World:** fresh temporary home, 32×32 platform at Y=300; wall scenes add a solid stone wall and an optional one-block slit
 **Entities:** 24 pigs in the normal scene, 192 pigs in wall scenes, 512 pigs in stress scenes
 **Settings:** render distance 8, `entityCullingPrecheck:64`, FPS overlay on, no resource-pack occlusion assumptions
-**Build:** `cargo build --release -p horizon-client`
+**Build:** `cargo build --release -p sunrise-client`
 
 ## Results
 
@@ -39,4 +39,4 @@ From the repository root, with prepared 26.3 resources available:
 python3 tools/entity_occlusion_bench.py
 ```
 
-The script uses fresh temporary game data, the release binary in `target/release`, OpenGL, the FPS overlay, and writes JSON plus captures under `/tmp/horizon-entity-occlusion-release-quick/`.
+The script uses fresh temporary game data, the release binary in `target/release`, OpenGL, the FPS overlay, and writes JSON plus captures under `/tmp/sunrise-entity-occlusion-release-quick/`.

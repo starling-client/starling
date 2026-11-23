@@ -401,7 +401,7 @@ impl Swapchain for NativeSwapchain {
 
         // We cannot take this by value, as the function returns `self`.
         // A lost device can leave a surface texture alive here: its semaphores are leaked with it
-        // (Horizon: rather than a panic in the middle of recovering from the loss).
+        // (Sunrise: rather than a panic in the middle of recovering from the loss).
         for semaphore in self.acquire_semaphores.drain(..) {
             let Some(arc_removed) = Arc::into_inner(semaphore) else {
                 log::warn!("A SwapchainAcquireSemaphore is still in use by a SurfaceTexture");

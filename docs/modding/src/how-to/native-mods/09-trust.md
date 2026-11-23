@@ -12,7 +12,7 @@ the flag; without consent they refuse to proceed. The window shows a red warning
 build, including the mod IDs and versions.
 
 The Mods page identifies each mod's author and marks third-party mods as not made or endorsed
-by the Horizon project.
+by the Sunrise project.
 
 ## Package checks
 
@@ -20,9 +20,9 @@ Registry entries distinguish native code with the `native-mod` kind and identify
 repository with `repo`. Registry review is separate from the launcher's local consent and
 validation checks; it does not sandbox the code you run.
 
-- A `.hmod` contains a flat Rust project and can include `assets/`, `data/` and `icon.png`.
+- A `.smod` contains a flat Rust project and can include `assets/`, `data/` and `icon.png`.
 - The launcher validates the bundle without running its code, then builds it on your computer.
-- Registry downloads are pinned by SHA-256. `horizon-mod.toml` supplies the mod identity and exact
+- Registry downloads are pinned by SHA-256. `sunrise-mod.toml` supplies the mod identity and exact
   game build pins. Revocation entries in `revoked.toml` prevent installing revoked releases.
 - A registry project's kind cannot change.
 

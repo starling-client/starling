@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The packets a Horizon client sends, tick by tick and field by field, against a real vanilla 26.3 client's
+"""The packets a Sunrise client sends, tick by tick and field by field, against a real vanilla 26.3 client's
 for the same scripted play: an anticheat (Grim, Vulcan, Polar, Watchdog, Intave...) judges the serverbound
-stream, also after ViaVersion translated it for an older server, so Horizon's must be vanilla's.
+stream, also after ViaVersion translated it for an older server, so Sunrise's must be vanilla's.
 
 A vanilla 26.3 dedicated server (flat world, offline) runs behind tools/net_capture.py. Each client joins it in
 turn as Steve and plays every scenario below: the harness resets the place and the player from the server's
-console, then hands the client the scenario, which it plays tick by tick from its own tick loop (Horizon:
-HORIZON_TICK_SCRIPT, game/world/tick_script.rs; vanilla: VanillaTickScript.java, the unchanged client with its
+console, then hands the client the scenario, which it plays tick by tick from its own tick loop (Sunrise:
+SUNRISE_TICK_SCRIPT, game/world/tick_script.rs; vanilla: VanillaTickScript.java, the unchanged client with its
 keys pressed through KeyMapping). Both send /wire-mark on the scenario's first tick. tools/wire_stream.py
 cuts each scenario's stream into client ticks (ClientTickEnd ends one) and decodes the packets; every tick
 must hold the same packets, in the same order, with the same fields (doubles and floats exactly). Packets
@@ -15,17 +15,17 @@ over the scenario, and must never fall between two packets of one tick.
 
   python3 tools/test_wire_stream_parity.py                      # every scenario
   python3 tools/test_wire_stream_parity.py --scenarios walk,bow --keep
-  python3 tools/test_wire_stream_parity.py --clients horizon,horizon-legacy   # Legacy (1.8.9) combat feel
+  python3 tools/test_wire_stream_parity.py --clients sunrise,sunrise-legacy   # Legacy (1.8.9) combat feel
 
-The second form plays the same scenarios with two Horizon clients, the second set to the Legacy combat feel with
-every combat extra on (horizon-extras.txt: `LEGACY_EXTRAS`), and compares their streams the same way: the feel
+The second form plays the same scenarios with two Sunrise clients, the second set to the Legacy combat feel with
+every combat extra on (sunrise-extras.txt: `LEGACY_EXTRAS`), and compares their streams the same way: the feel
 changes what the player sees and hears, never what the client sends, and the 1.8 rules ("in worlds you host")
 never reach a server that isn't the player's own.
 
-Horizon runs `--headless` (no window or GPU: the ticks are what it sends from); the vanilla client runs on the
-virtual screen (`vscreen`) on Linux, from the logged-in session on macOS. Every game and server here runs in fresh temporary folders (HORIZON_HOME,
-HORIZON_LAUNCHER_HOME, XDG_*), with no audio and no self-update. Needs .local (the vanilla jars and prepared
-resources) and a built horizon-client and horizon-ctl (--bin DIR, default the parity target's fast build).
+Sunrise runs `--headless` (no window or GPU: the ticks are what it sends from); the vanilla client runs on the
+virtual screen (`vscreen`) on Linux, from the logged-in session on macOS. Every game and server here runs in fresh temporary folders (SUNRISE_HOME,
+SUNRISE_LAUNCHER_HOME, XDG_*), with no audio and no self-update. Needs .local (the vanilla jars and prepared
+resources) and a built sunrise-client and sunrise-ctl (--bin DIR, default the parity target's fast build).
 """
 import argparse
 import json
@@ -72,11 +72,11 @@ TARGET = ('summon minecraft:husk {x} {y} {z} {{NoAI:1b,Silent:1b,PersistenceRequ
 PRELUDE = 10
 # Client ticks between a reset's last teleport and the scenario: the player lands and stands still.
 SETTLE = 40
-# The Legacy client's horizon-extras.txt (crates/horizon-client-render/src/pvp.rs): the 1.8.9 feel, its
+# The Legacy client's sunrise-extras.txt (crates/sunrise-client-render/src/pvp.rs): the 1.8.9 feel, its
 # indicator and sounds, and the 1.8 rules, which only a world the player hosts may use.
 LEGACY_EXTRAS = 'combatFeel:legacy\ncombatIndicator:true\ncombatSounds:true\ncombatRules:true\n'
 # The clients --clients may name: the first is the reference, the second must send what it sends.
-CLIENTS = {'vanilla': 'vanilla', 'horizon': 'Horizon', 'horizon-legacy': 'Horizon Legacy'}
+CLIENTS = {'vanilla': 'vanilla', 'sunrise': 'Sunrise', 'sunrise-legacy': 'Sunrise Legacy'}
 
 
 def taps(key, ticks):
@@ -175,8 +175,8 @@ SCENARIOS = {
 }
 
 
-def horizon_lines(lines):
-    """A scenario's lines for horizon-ctl: menu slot ids become its inventory indices (hotbar 0-8, main 9-35)."""
+def sunrise_lines(lines):
+    """A scenario's lines for sunrise-ctl: menu slot ids become its inventory indices (hotbar 0-8, main 9-35)."""
     out = []
     for line in lines:
         w = line.split()
@@ -187,10 +187,10 @@ def horizon_lines(lines):
     return out
 
 
-def script(name, spec, horizon):
+def script(name, spec, sunrise):
     steps = {0: ['key 1 tap', 'key w down'], 2: ['key w up']}
     for tick, lines in spec['steps'].items():
-        steps.setdefault(tick + PRELUDE, []).extend(horizon_lines(lines) if horizon else lines)
+        steps.setdefault(tick + PRELUDE, []).extend(sunrise_lines(lines) if sunrise else lines)
     return {'name': name, 'ticks': spec['ticks'] + PRELUDE, 'steps': {str(k): v for k, v in sorted(steps.items())}}
 
 
@@ -226,18 +226,18 @@ class VanillaClient:
         classes.mkdir(parents=True)
         jars = os.pathsep.join(map(str, vanilla_client.classpath()))
         release = str(lab.config()[0]['minecraft']['java_major'])
-        source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTickScript.java'
+        source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTickScript.java'
         subprocess.run(['javac', '--release', release, '-proc:none', '-nowarn', '-cp', jars, '-d', classes, source],
                        check=True, capture_output=True)
         args = argparse.Namespace(name=PLAYER, join=address, world=None, game_dir=work / 'client', assets=None,
                                   heap='2G', width=854, height=480, lan_port=None, backend=None)
         args.game_dir.mkdir()
-        # 20 frames a second at least: a tick's lines then act in their own frame, as Horizon's do.
+        # 20 frames a second at least: a tick's lines then act in their own frame, as Sunrise's do.
         vanilla_client.write_options(args.game_dir, {'maxFps': '60'})
         command = vanilla_client.command(args)
         cp = command.index('-cp') + 1
         command[cp] = os.pathsep.join([str(classes), command[cp]])
-        command[command.index('net.minecraft.client.main.Main')] = 'dev.horizonlab.parity.VanillaTickScript'
+        command[command.index('net.minecraft.client.main.Main')] = 'dev.sunriselab.parity.VanillaTickScript'
         self.log = open(log, 'w', encoding='utf-8')
         self.ready, self.done = threading.Event(), {}
         # Its window opens without the focus (SDL's hint), so it takes neither the keyboard nor the pointer of
@@ -282,18 +282,18 @@ class HeadlessGame(Game):
         for d in ('home', 'launcher', 'data', 'config'):
             (work / d).mkdir(parents=True)
         if extras:
-            # The game folder is the home here (Game runs horizon-ctl there): extras sit next to options.txt.
-            (self.home / 'horizon-extras.txt').write_text(extras)
-        self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_LAUNCHER_HOME=work / 'launcher',
+            # The game folder is the home here (Game runs sunrise-ctl there): extras sit next to options.txt.
+            (self.home / 'sunrise-extras.txt').write_text(extras)
+        self.env = lab.game_env(SUNRISE_HOME=self.home, SUNRISE_LAUNCHER_HOME=work / 'launcher',
                                 XDG_DATA_HOME=work / 'data', XDG_CONFIG_HOME=work / 'config',
-                                HORIZON_TELEMETRY_URL='off', HORIZON_TICK_SCRIPT=scripts / 'scenario.json')
-        self.base = [str(lab.binary(bins, 'horizon-ctl')), '--socket', str(work / 'c.sock')]
+                                SUNRISE_TELEMETRY_URL='off', SUNRISE_TICK_SCRIPT=scripts / 'scenario.json')
+        self.base = [str(lab.binary(bins, 'sunrise-ctl')), '--socket', str(work / 'c.sock')]
         self.log = self.home / 'logs' / 'latest.log'
-        reply = self('launch', '--game', lab.binary(bins, 'horizon-client'), '--headless', '--resources', resources)
+        reply = self('launch', '--game', lab.binary(bins, 'sunrise-client'), '--headless', '--resources', resources)
         self.pid = reply.get('pid')
 
 
-class HorizonClient:
+class SunriseClient:
     def __init__(self, bins, resources, work, address, scripts, extras=None):
         self.scripts = scripts
         self.game = HeadlessGame(bins, resources, work, scripts, extras)
@@ -309,7 +309,7 @@ class HorizonClient:
         deadline = time.time() + timeout
         while not done.exists():
             if time.time() > deadline:
-                raise Failed(f'Horizon: scenario {name} never finished (see horizon-client.log)')
+                raise Failed(f'Sunrise: scenario {name} never finished (see sunrise-client.log)')
             time.sleep(0.2)
 
     def close(self):
@@ -354,7 +354,7 @@ def settle(counts, accepted, timeout=120):
         time.sleep(0.2)
 
 
-def play_all(client, server, scenarios, scripts, horizon, capture):
+def play_all(client, server, scenarios, scripts, sunrise, capture):
     counts = ClientCounts(capture)
     for name in scenarios:
         spec = SCENARIOS[name]
@@ -365,8 +365,8 @@ def play_all(client, server, scenarios, scripts, horizon, capture):
         for command in commands:
             server.console(command)
         settle(counts, accepted)
-        path = scripts / f'{name}-{"horizon" if horizon else "vanilla"}.json'
-        path.write_text(json.dumps(script(name, spec, horizon)))
+        path = scripts / f'{name}-{"sunrise" if sunrise else "vanilla"}.json'
+        path.write_text(json.dumps(script(name, spec, sunrise)))
         client.play(path, name, timeout=60)
         time.sleep(0.5)
 
@@ -375,14 +375,14 @@ def run(args, out):
     lock, jars, libraries = base.verify_artifacts()
     deps = os.pathsep.join(map(str, [jars['server'], *libraries]))
     vanilla = ['java', '-Xmx1g', '-cp', deps, 'net.minecraft.server.Main', 'nogui']
-    resources = lab.LOCAL / 'horizon-client' / lab.VERSION
+    resources = lab.LOCAL / 'sunrise-client' / lab.VERSION
     work = Path(tempfile.mkdtemp(prefix='hz-wire-stream-'))
     print(f'scratch: {work}')
-    for var, sub in (('HORIZON_HOME', 'home'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
+    for var, sub in (('SUNRISE_HOME', 'home'), ('SUNRISE_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
                      ('XDG_CONFIG_HOME', 'config')):
         (work / 'env' / sub).mkdir(parents=True)
         os.environ[var] = str(work / 'env' / sub)
-    os.environ.update(lab.game_env(HORIZON_TELEMETRY_URL='off'))
+    os.environ.update(lab.game_env(SUNRISE_TELEMETRY_URL='off'))
     directory = work / 'server'
     directory.mkdir()
     port = free_port()
@@ -406,8 +406,8 @@ def run(args, out):
             client = None
             try:
                 if who != 'vanilla':
-                    client = HorizonClient(Path(args.bin).resolve(), resources, work / who, f'127.0.0.1:{listen}',
-                                           scripts, LEGACY_EXTRAS if who == 'horizon-legacy' else None)
+                    client = SunriseClient(Path(args.bin).resolve(), resources, work / who, f'127.0.0.1:{listen}',
+                                           scripts, LEGACY_EXTRAS if who == 'sunrise-legacy' else None)
                 else:
                     client = VanillaClient(f'127.0.0.1:{listen}', work / 'vanilla', out / 'vanilla-client.log')
                     if not client.ready.wait(900):
@@ -430,7 +430,7 @@ def run(args, out):
     return captures
 
 
-def anchored_diffs(v, h, ticks, anchor, problems, names=('vanilla', 'Horizon')):
+def anchored_diffs(v, h, ticks, anchor, problems, names=('vanilla', 'Sunrise')):
     """wire_stream.compare over the scenario's ticks. With an anchor (a frame packet the server's answer brings,
     as AcceptTeleportation), the two ticks that answer arrived in compare with each other
     (wire_stream.compare_answered). Numbers are vanilla's ticks."""
@@ -476,13 +476,13 @@ def compare(captures, scenarios):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='horizon-client and horizon-ctl')
+    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='sunrise-client and sunrise-ctl')
     parser.add_argument('--out', default=str(lab.LOCAL / 'wire-stream-parity'))
     parser.add_argument('--scenarios', default=','.join(SCENARIOS), type=lambda s: s.split(','))
-    parser.add_argument('--clients', default='vanilla,horizon', type=lambda s: s.split(','),
-                        help='the reference client and the one compared with it, of vanilla, horizon and '
-                             'horizon-legacy; one alone is only captured (a loaded machine whose vanilla client fails '
-                             'to log in: rerun horizon alone, copy an earlier vanilla.jsonl into --out, then '
+    parser.add_argument('--clients', default='vanilla,sunrise', type=lambda s: s.split(','),
+                        help='the reference client and the one compared with it, of vanilla, sunrise and '
+                             'sunrise-legacy; one alone is only captured (a loaded machine whose vanilla client fails '
+                             'to log in: rerun sunrise alone, copy an earlier vanilla.jsonl into --out, then '
                              '--compare-only)')
     parser.add_argument('--compare-only', action='store_true', help='compare the captures already in --out')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folders')

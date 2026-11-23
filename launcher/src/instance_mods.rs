@@ -1,7 +1,7 @@
 //! Home's Mods tab (docs/design-system.md, "Night"; plan R0, screens 5 and 6): every mod of the
 //! selected instance, the browser's and those put in its folder by hand, with its version, where
 //! it comes from, an update when the browser found one, and a switch. A Java instance turns a mod
-//! off by renaming its jar (`.disabled`, as `java_instance` does); a Horizon instance's mods are
+//! off by renaming its jar (`.disabled`, as `java_instance` does); a Sunrise instance's mods are
 //! the registry's, switched as the game's Options > Mods does. Adding mods is the Mods page's.
 //!
 //! Each row shows the mod's own icon: Modrinth's for what the browser installed from it (the URLs
@@ -11,8 +11,8 @@ use super::*;
 use crate::plate::alpha;
 use crate::shell::{c, Action};
 use build_mode::ModKind;
-use horizon_launcher::browser::{
-    horizon, images, installed, java, modrinth, Kind as PackKind, SourceId,
+use sunrise_launcher::browser::{
+    sunrise, images, installed, java, modrinth, Kind as PackKind, SourceId,
 };
 use servers_page::Field;
 use std::collections::{HashMap, HashSet};
@@ -38,7 +38,7 @@ pub(super) struct ModRow {
     pub(super) error: Option<String>,
     pub(super) native: Option<native_status::Installed>,
     pub(super) internals: Vec<String>,
-    /// What the package is and its mod id, for a Horizon mod; None for a Java jar.
+    /// What the package is and its mod id, for a Sunrise mod; None for a Java jar.
     pub(super) kind: Option<(ModKind, String)>,
 }
 
@@ -99,7 +99,7 @@ impl InstanceMods {
     }
 }
 
-/// The mods of the instance at `home`: a Java one's jars in `mods/` (on or off), a Horizon one's
+/// The mods of the instance at `home`: a Java one's jars in `mods/` (on or off), a Sunrise one's
 /// registry mods. Each jar names itself (`fabric.mod.json`, `quilt.mod.json`...), else its file.
 fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
     let entries: Vec<installed::Entry> = installed::Installed::load(home)
@@ -121,7 +121,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                     let entry = entries.iter().find(|e| e.file == file).cloned();
                     let (name, version) = match &entry {
                         Some(e) => (e.title.clone(), e.number.clone()),
-                        None => horizon_port_pack::jar::read(&f.path())
+                        None => sunrise_port_pack::jar::read(&f.path())
                             .map(|j| (j.name, j.version))
                             .unwrap_or_else(|_| {
                                 (jar.trim_end_matches(".jar").into(), String::new())
@@ -148,13 +148,13 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
         entries
             .into_iter()
             .map(|e| {
-                let package = horizon_mod_package::manifest::Package::read(&home.join(&e.file));
+                let package = sunrise_mod_package::manifest::Package::read(&home.join(&e.file));
                 let icon = mod_icons::load(package.as_ref().map(|p| p.icon.as_ref()));
                 ModRow {
                     file: e.file.clone(),
                     name: e.title.clone(),
                     version: e.number.clone(),
-                    on: horizon::mod_id(&e).is_some_and(|id| java::is_enabled(home, id)),
+                    on: sunrise::mod_id(&e).is_some_and(|id| java::is_enabled(home, id)),
                     entry: Some(e),
                     icon: icon.image,
                     error: icon.error,
@@ -205,7 +205,7 @@ impl Launcher {
         self.instance_mods.cull.reset();
     }
 
-    /// Whether the selected instance has mods to show: Horizon's always, a Java one with a loader.
+    /// Whether the selected instance has mods to show: Sunrise's always, a Java one with a loader.
     pub(super) fn has_mods_tab(&self) -> bool {
         self.selected_instance()
             .is_some_and(|i| i.java.as_ref().is_none_or(|j| j.loader.is_some()))
@@ -389,7 +389,7 @@ impl Launcher {
             .map(|j| j.loader.as_ref().map(|l| l.kind.name()));
         let title = match loader {
             Some(Some(loader)) => trf("{loader} mods", &[("loader", loader)]),
-            _ => tr("Horizon mods").to_string(),
+            _ => tr("Sunrise mods").to_string(),
         };
         let filter = self
             .servers
@@ -658,23 +658,23 @@ mod tests {
             ("broken", true, false, Some(b"not a PNG".as_slice())),
         ] {
             let folder = if code { native_mods::INSTALLED } else { "mods" };
-            let file = format!("{folder}/{id}.hmod");
+            let file = format!("{folder}/{id}.smod");
             let mut manifest = format!(
                 "id = '{id}'\nname = '{id}'\nversion = '1'\napi = '0.2'\ncapabilities = ['registries']\n"
             );
             if code {
                 manifest +=
-                    &format!("[native]\ngame = '26.3'\nhorizon = '{pin}'\nmixins = '{pin}'\n");
+                    &format!("[native]\ngame = '26.3'\nsunrise = '{pin}'\nmixins = '{pin}'\n");
                 if id == "tracked_code" || id == "local_code" {
                     manifest = manifest.replace("[native]", &format!(
-                        "internals = [{{path = 'horizon_client::game::Game', hash = '{}'}}]\n[native]",
+                        "internals = [{{path = 'sunrise_client::game::Game', hash = '{}'}}]\n[native]",
                         "b".repeat(64)
                     ));
                 }
             }
             let mut zip = zip::ZipWriter::new(std::fs::File::create(home.join(&file)).unwrap());
             let options = zip::write::SimpleFileOptions::default();
-            zip.start_file("horizon-mod.toml", options).unwrap();
+            zip.start_file("sunrise-mod.toml", options).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             if code {
                 zip.start_file("Cargo.toml", options).unwrap();
@@ -689,7 +689,7 @@ mod tests {
             }
             zip.finish().unwrap();
             if tracked {
-                entries.push(serde_json::from_value(serde_json::json!({"source":"horizon","project":id,"slug":id,"title":id,"kind":"mod","version":"1","number":"1","file":file,"checksum":"","page":""})).unwrap());
+                entries.push(serde_json::from_value(serde_json::json!({"source":"sunrise","project":id,"slug":id,"title":id,"kind":"mod","version":"1","number":"1","file":file,"checksum":"","page":""})).unwrap());
             }
         }
         installed::Installed { entries }.save(home).unwrap();
@@ -702,7 +702,7 @@ mod tests {
             let expected: &[&str] = if id == "content" {
                 &[]
             } else {
-                &["horizon_client::game::Game"]
+                &["sunrise_client::game::Game"]
             };
             assert_eq!(row.internals, expected);
         }
@@ -723,7 +723,7 @@ mod tests {
         let home = &scratch.0;
         let installed = home.join(native_mods::INSTALLED);
         std::fs::create_dir_all(&installed).unwrap();
-        std::fs::write(installed.join("first.hmod"), b"unreadable").unwrap();
+        std::fs::write(installed.join("first.smod"), b"unreadable").unwrap();
 
         let mut mods = InstanceMods {
             home: Some(home.clone()),
@@ -735,7 +735,7 @@ mod tests {
         let old_list = read(home, false);
         assert_eq!(old_list.len(), 1);
 
-        std::fs::write(installed.join("second.hmod"), b"unreadable").unwrap();
+        std::fs::write(installed.join("second.smod"), b"unreadable").unwrap();
         mods.observe_fingerprint(native_status::fingerprint(home, None));
         assert!(!mods.fresh);
         assert!(mods.reading, "the first read must still be pending");
@@ -748,8 +748,8 @@ mod tests {
         }
         let final_files: Vec<_> = mods.list.iter().map(|row| row.file.as_str()).collect();
         let final_listing_is_fresh = mods.fresh
-            && final_files.contains(&"horizon-native-mods/first.hmod")
-            && final_files.contains(&"horizon-native-mods/second.hmod");
+            && final_files.contains(&"sunrise-native-mods/first.smod")
+            && final_files.contains(&"sunrise-native-mods/second.smod");
         assert!(
             another_read_needed && final_listing_is_fresh,
             "a native change during a read must leave another read needed and deliver both files; another_read_needed={another_read_needed}, fresh={}, files={final_files:?}",
@@ -758,19 +758,19 @@ mod tests {
     }
 
     #[test]
-    fn horizon_mods_include_local_native_files_without_duplicating_registry_rows() {
+    fn sunrise_mods_include_local_native_files_without_duplicating_registry_rows() {
         let home =
             std::env::temp_dir().join(format!("instance-native-mods-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(native_mods::INSTALLED)).unwrap();
         for id in ["local", "registry"] {
             std::fs::write(
-                home.join(native_mods::INSTALLED).join(format!("{id}.hmod")),
+                home.join(native_mods::INSTALLED).join(format!("{id}.smod")),
                 b"unreadable",
             )
             .unwrap();
         }
-        let entry: installed::Entry = serde_json::from_value(serde_json::json!({"source":"horizon","project":"registry","slug":"registry","title":"Registry mod","kind":"mod","version":"1","number":"1","file":"horizon-native-mods/registry.hmod","checksum":"","page":""})).unwrap();
+        let entry: installed::Entry = serde_json::from_value(serde_json::json!({"source":"sunrise","project":"registry","slug":"registry","title":"Registry mod","kind":"mod","version":"1","number":"1","file":"sunrise-native-mods/registry.smod","checksum":"","page":""})).unwrap();
         installed::Installed {
             entries: vec![entry],
         }

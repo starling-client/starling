@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
-# The vanilla data for this checkout on the self-hosted runner. Horizon never downloads the game: the runner
-# holds the maintainer's own copy, imported and decompiled once (HORIZON_SHARED_SOURCE, default
-# ~/code/horizon-parity/shared-local; tools/ci/linux-runner.sh sets it on Linux). It is cloned once into the runner's
+# The vanilla data for this checkout on the self-hosted runner. Sunrise never downloads the game: the runner
+# holds the maintainer's own copy, imported and decompiled once (SUNRISE_SHARED_SOURCE, default
+# ~/code/sunrise-parity/shared-local; tools/ci/linux-runner.sh sets it on Linux). It is cloned once into the runner's
 # work folder ($RUNNER_WORKSPACE/shared-local; APFS clones, or reflinks where the file system has them, so no second
 # copy of the bytes), and .local/ links to it as in a parity worktree.
-# .local/horizon-client and the exporter outputs beside it, what horizon-prepare makes, are prepared by this
+# .local/sunrise-client and the exporter outputs beside it, what sunrise-prepare makes, are prepared by this
 # checkout's own preparer once per preparer version (its sources, the exporters and research-lock.json), so a
 # change to the preparer is checked with what it prepares; the four newest preparations are kept on legacy runners.
-# Dyna uses a per-slot HORIZON_PREPARED_CACHE and read-only HORIZON_SHARED_SOURCE; old keys stay until slot GC.
+# Dyna uses a per-slot SUNRISE_PREPARED_CACHE and read-only SUNRISE_SHARED_SOURCE; old keys stay until slot GC.
 set -euo pipefail
-shared="${HORIZON_PREPARED_CACHE:-${RUNNER_WORKSPACE:?}/shared-local}"
-source="${HORIZON_SHARED_SOURCE:-$HOME/code/horizon-parity/shared-local}"
-dyna="${HORIZON_DYNA_CACHE:-false}"
+shared="${SUNRISE_PREPARED_CACHE:-${RUNNER_WORKSPACE:?}/shared-local}"
+source="${SUNRISE_SHARED_SOURCE:-$HOME/code/sunrise-parity/shared-local}"
+dyna="${SUNRISE_DYNA_CACHE:-false}"
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' research-lock.json | head -1)
 if [ ! -f "$shared/minecraft/$version/prepared.json" ]; then
   [ -f "$source/minecraft/$version/prepared.json" ] || { echo "::error::no imported Minecraft $version"; exit 1; }
 fi
 mkdir -p .local "$shared/prepared"
 
-# HORIZON_PREPARE_KEY: the same key, computed where the Git history is (tools/pr_ready.py on another machine).
+# SUNRISE_PREPARE_KEY: the same key, computed where the Git history is (tools/pr_ready.py on another machine).
 sha256() { if command -v shasum > /dev/null; then shasum -a 256; else sha256sum; fi; }
-key=${HORIZON_PREPARE_KEY:-$(git ls-files -s crates/horizon-prepare mods/horizon/src/test/java research-lock.json tools/ci/vanilla-data.sh tools/ci/seed_prepared_extras.py tools/prepare_output.py | sha256 | cut -c1-16)}
+key=${SUNRISE_PREPARE_KEY:-$(git ls-files -s crates/sunrise-prepare mods/sunrise/src/test/java research-lock.json tools/ci/vanilla-data.sh tools/ci/seed_prepared_extras.py tools/prepare_output.py | sha256 | cut -c1-16)}
 prepared="$shared/prepared/$key"
 # .entries stores output names only, not a digest of the preparation that made them.
 # The directory name is the expected lookup key, not independent found-key evidence.
-export HORIZON_DIAGNOSTIC_EXPECTED_KEY="$key"
-export HORIZON_DIAGNOSTIC_CACHE_STATE=missing-entry-list
+export SUNRISE_DIAGNOSTIC_EXPECTED_KEY="$key"
+export SUNRISE_DIAGNOSTIC_CACHE_STATE=missing-entry-list
 if [ -f "$prepared/.entries" ]; then
-  export HORIZON_DIAGNOSTIC_CACHE_STATE=missing-horizon-client
+  export SUNRISE_DIAGNOSTIC_CACHE_STATE=missing-sunrise-client
 fi
 report_prepared() {
   echo "prepared cache footprint KiB: $(du -sk "$prepared" | cut -f1)"
@@ -60,7 +60,7 @@ use_private_copy() {
   while read -r name; do ln -sfn "$work/$name" ".local/$name"; done < "$work/.entries"
   echo "prepared key $key: private copy for this job ($(find "$work" -type f | wc -l) files)"
 }
-if [ "$dyna" = true ] && [ -f "$prepared/.entries" ] && grep -qx horizon-client "$prepared/.entries"; then
+if [ "$dyna" = true ] && [ -f "$prepared/.entries" ] && grep -qx sunrise-client "$prepared/.entries"; then
   expected=$(cat "$prepared/.manifest" 2>/dev/null || echo none)
   found=$(digest "$prepared")
   if [ "$found" = "$expected" ]; then
@@ -87,13 +87,13 @@ if [ "$dyna" = true ]; then
   # The preparer owns its scratch data; never let it write through the source mount.
   for name in minecraft tools; do ln -sfn "$source/$name" ".local/$name"; done
   # A killed preparation may have left private scratch that must not enter the next key.
-  for name in datagen command-registries horizon-client horizon-client-motion horizon-client-health horizon-client-collision horizon-client-render; do
+  for name in datagen command-registries sunrise-client sunrise-client-motion sunrise-client-health sunrise-client-collision sunrise-client-render; do
     if [ ! -L ".local/$name" ]; then rm -rf ".local/$name"; fi
   done
 else
   for entry in "$source"/*; do
     name=$(basename "$entry")
-    [ "$name" = horizon-client ] || [ -e "$shared/$name" ] && continue
+    [ "$name" = sunrise-client ] || [ -e "$shared/$name" ] && continue
     if [ "$(uname)" = Darwin ]; then cp -cR "$entry" "$shared/"; else cp -R --reflink=auto "$entry" "$shared/"; fi
   done
   for entry in "$shared"/*; do
@@ -102,24 +102,24 @@ else
     if [ -L ".local/$name" ] || [ ! -e ".local/$name" ]; then ln -sfn "$entry" ".local/$name"; fi
   done
 fi
-# horizon-prepare writes .local/horizon-client and its exporters' outputs beside it: all of them live in
+# sunrise-prepare writes .local/sunrise-client and its exporters' outputs beside it: all of them live in
 # $prepared, listed in $prepared/.entries, and .local/ links to them. A real folder of that kind in .local/ is
 # what an older failed preparation left: it would hide the preparations (and a new one would not count it as its
 # own output), so it goes.
-outputs=$({ cat "$shared"/prepared/*/.entries; cd .local && ls -d horizon-client*; } 2>/dev/null || true)
+outputs=$({ cat "$shared"/prepared/*/.entries; cd .local && ls -d sunrise-client*; } 2>/dev/null || true)
 for name in $(echo "$outputs" | LC_ALL=C sort -u); do
   if [ -e ".local/$name" ] && [ ! -L ".local/$name" ]; then
     rm -rf ".local/${name:?}"
     echo "Removed .local/$name, left by a failed preparation"
   fi
 done
-# A preparation made while such a folder was there did not list it (horizon-client above all), so it is made again.
-if [ -f "$prepared/.entries" ] && ! grep -qx horizon-client "$prepared/.entries"; then
-  echo "Preparation $key lacks horizon-client: preparing again"
+# A preparation made while such a folder was there did not list it (sunrise-client above all), so it is made again.
+if [ -f "$prepared/.entries" ] && ! grep -qx sunrise-client "$prepared/.entries"; then
+  echo "Preparation $key lacks sunrise-client: preparing again"
   rm -rf "$prepared"
 fi
 if [ ! -f "$prepared/.entries" ]; then
-  echo "Preparing resources with this checkout's horizon-prepare ($key)"
+  echo "Preparing resources with this checkout's sunrise-prepare ($key)"
   rm -rf "$prepared" && mkdir -p "$prepared"
   # Links to another preparation's outputs go first, so what this one writes shows up as new entries.
   for entry in .local/*; do
@@ -128,11 +128,11 @@ if [ ! -f "$prepared/.entries" ]; then
   before=$(ls -1A .local | LC_ALL=C sort)
   started=$SECONDS
   if [ "$dyna" = true ]; then
-    python3 tools/ci/preparation_step.py preparer-build "$RUNNER_TEMP/prepare-build.log" cargo build --release --locked -p horizon-prepare
+    python3 tools/ci/preparation_step.py preparer-build "$RUNNER_TEMP/prepare-build.log" cargo build --release --locked -p sunrise-prepare
   else
-    cargo build --release --locked -p horizon-prepare
+    cargo build --release --locked -p sunrise-prepare
   fi
-  if python3 tools/ci/preparation_step.py resource-export "$RUNNER_TEMP/prepare.log" "${CARGO_TARGET_DIR:-target}/release/horizon-prepare" --root "$PWD"; then
+  if python3 tools/ci/preparation_step.py resource-export "$RUNNER_TEMP/prepare.log" "${CARGO_TARGET_DIR:-target}/release/sunrise-prepare" --root "$PWD"; then
     :
   else
     status=$?
@@ -146,11 +146,11 @@ if [ ! -f "$prepared/.entries" ]; then
   while read -r name; do mv ".local/$name" "$prepared/$name"; done < "$RUNNER_TEMP/prepared-entries"
   if [ "$dyna" = true ]; then
     # Optional dispatch-only measurement before shared extras can affect the output.
-    if [ -n "${HORIZON_PREPARE_EXPORT_DIGEST:-}" ]; then
-      python3 tools/prepare_output.py digest "$prepared/horizon-client/$version" > "$HORIZON_PREPARE_EXPORT_DIGEST" 2> "$RUNNER_TEMP/export-digest.log" || { echo "::error::export digest unavailable"; exit 1; }
+    if [ -n "${SUNRISE_PREPARE_EXPORT_DIGEST:-}" ]; then
+      python3 tools/prepare_output.py digest "$prepared/sunrise-client/$version" > "$SUNRISE_PREPARE_EXPORT_DIGEST" 2> "$RUNNER_TEMP/export-digest.log" || { echo "::error::export digest unavailable"; exit 1; }
     fi
     # Only sounds, languages and their metadata may come from the shared preparation.
-    python3 tools/ci/preparation_step.py seed-extras "$RUNNER_TEMP/seed-extras.log" python3 -m tools.ci.seed_prepared_extras "$source/horizon-client/$version" "$prepared/horizon-client/$version/"
+    python3 tools/ci/preparation_step.py seed-extras "$RUNNER_TEMP/seed-extras.log" python3 -m tools.ci.seed_prepared_extras "$source/sunrise-client/$version" "$prepared/sunrise-client/$version/"
   fi
   mv "$RUNNER_TEMP/prepared-entries" "$prepared/.entries"
   if [ "$dyna" != true ]; then echo "Prepared in $((SECONDS - started)) s: $(tr '\n' ' ' < "$prepared/.entries")"; fi
@@ -170,11 +170,11 @@ while read -r name; do
   if [ -L ".local/$name" ] || [ ! -e ".local/$name" ]; then ln -sfn "$prepared/$name" ".local/$name"; else
     echo "::error::.local/$name is not a link to the prepared resources"; exit 1; fi
 done < "$prepared/.entries"
-# The game's sounds (horizon-prepare sounds copies them from the official launcher's asset store) depend only on the
+# The game's sounds (sunrise-prepare sounds copies them from the official launcher's asset store) depend only on the
 # Minecraft version: kept once in $shared/sounds/<version>/ (sounds.json and sounds/) and copied into each preparation
 # as clones (APFS, or reflinks on Linux: no second copy of the bytes). Not links: vanilla's resource packs refuse
 # symbolic links inside a pack, so its sound oracles would find no sound files.
-assets="$prepared/horizon-client/$version/assets/minecraft"
+assets="$prepared/sunrise-client/$version/assets/minecraft"
 if [ -f "$shared/sounds/$version/sounds.json" ] && [ -d "$assets" ]; then
   for entry in sounds.json sounds; do
     [ -L "$assets/$entry" ] && rm "$assets/$entry"
@@ -183,7 +183,7 @@ if [ -f "$shared/sounds/$version/sounds.json" ] && [ -d "$assets" ]; then
     else cp -R --reflink=auto "$shared/sounds/$version/$entry" "$assets/"; fi
   done
 fi
-# The languages (horizon-prepare languages copies them from the official launcher's asset store, which no runner
+# The languages (sunrise-prepare languages copies them from the official launcher's asset store, which no runner
 # has) depend only on the Minecraft version too: kept once in $shared/languages/<version>/ (assets/pack.mcmeta, the
 # language list, and assets/minecraft/lang/) and cloned into each preparation to fill missing files. Without them a
 # preparation has en_us alone, and pack_screen's harness, which draws ten languages, fails.

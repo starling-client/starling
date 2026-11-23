@@ -5,7 +5,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "686c686e75"
-AREA = "crates/horizon-client/src/game/modding"
+AREA = "crates/sunrise-client/src/game/modding"
 
 def method(source, name):
     start = source.index("    pub(super) fn " + name + "(")

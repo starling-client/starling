@@ -37,15 +37,15 @@ impl Launcher {
                     self.client_error = Some(e);
                 }
             } else {
-                if let Err(error) = horizon_launcher::developer_offline::require_capability(&tag) {
+                if let Err(error) = sunrise_launcher::developer_offline::require_capability(&tag) {
                     self.client_error = Some(error);
                     self.starting_pack = None;
                     self.joining = None;
                     self.quick_play = None;
                     return;
                 }
-                horizon_launcher::developer_offline::mark(&mut cmd);
-                self.client_error = Some(tr(horizon_launcher::developer_offline::NOTICE).into());
+                sunrise_launcher::developer_offline::mark(&mut cmd);
+                self.client_error = Some(tr(sunrise_launcher::developer_offline::NOTICE).into());
             }
             self.accounts = Accounts::load();
             // A pack's Play button plays that pack; Play plays the selected instance.
@@ -55,7 +55,7 @@ impl Launcher {
                         .into_iter()
                         .find(|i| i.work == work)
                         .map(|i| i.id);
-                    let applied = horizon_launcher::modpacks::apply_profile(&mut cmd, &work);
+                    let applied = sunrise_launcher::modpacks::apply_profile(&mut cmd, &work);
                     (applied, id)
                 }
                 None => {

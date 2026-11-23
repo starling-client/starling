@@ -4,7 +4,7 @@
 A fresh world's player file is given a horse with a pig passenger, present only
 in RootVehicle.Entity, as ServerPlayer.saveParentVehicle writes it. Attach names
 the pig rather than the root horse. Both loading this fixture and reopening its
-Horizon save must retain one horse, one pig, and the correct mounted player.
+Sunrise save must retain one horse, one pig, and the correct mounted player.
 Every process uses fresh scratch homes; only the fixture's saves are copied.
 """
 import argparse
@@ -28,11 +28,11 @@ def run(mode, bins, resources):
  with tempfile.TemporaryDirectory(prefix='vehicle-proof-') as tmp:
   work=Path(tmp); previous=None
   for stage in range(3):
-   env=lab.game_env({k:v for k,v in os.environ.items() if k not in ('HORIZON_HOME','HORIZON_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')})
-   home=Path(env['HORIZON_HOME'])
+   env=lab.game_env({k:v for k,v in os.environ.items() if k not in ('SUNRISE_HOME','SUNRISE_LAUNCHER_HOME','XDG_DATA_HOME','XDG_CONFIG_HOME')})
+   home=Path(env['SUNRISE_HOME'])
    if previous:shutil.copytree(previous,home/'saves')
-   sock=work/f'{stage}.sock';cli=Cli(bins/'horizon-ctl',sock,home,env)
-   args=[str(bins/'horizon-client'),'--resources',str(resources),'--world','VehicleProof','--creative','--offscreen','--render-distance','2','--control','--control-socket',str(sock)]
+   sock=work/f'{stage}.sock';cli=Cli(bins/'sunrise-ctl',sock,home,env)
+   args=[str(bins/'sunrise-client'),'--resources',str(resources),'--world','VehicleProof','--creative','--offscreen','--render-distance','2','--control','--control-socket',str(sock)]
    with (work/f'{stage}.log').open('w') as out:
     p=subprocess.Popen(args,cwd=home,env=env,stdout=out,stderr=out)
     try:

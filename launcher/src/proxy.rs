@@ -3,14 +3,14 @@
 //! `proxy` in `settings.json`) wins; without it the usual `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`
 //! and `NO_PROXY` variables apply, so a launcher started from a shell that has them needs nothing.
 //!
-//! What goes through it: Horizon's releases and the launcher's own update, Minecraft's files and
-//! Java from Mojang, Modrinth, CurseForge, Horizon's mod registry, pictures, Microsoft sign-in,
+//! What goes through it: Sunrise's releases and the launcher's own update, Minecraft's files and
+//! Java from Mojang, Modrinth, CurseForge, Sunrise's mod registry, pictures, Microsoft sign-in,
 //! Tailscale's API, and the jars a modpack import downloads. A local address never does, and the
 //! Servers page's calls to a game server's API (`servers.rs`) build their agent without it: they
 //! are on loopback and asked every second.
 //!
-//! Which hosts are reached directly, and how an address is read, are `horizon-port-pack`'s rules
-//! (`crates/horizon-port-pack/src/net.rs`): the jars an import fetches are downloaded there, and
+//! Which hosts are reached directly, and how an address is read, are `sunrise-port-pack`'s rules
+//! (`crates/sunrise-port-pack/src/net.rs`): the jars an import fetches are downloaded there, and
 //! the same hosts have to be left alone on both sides. This module adds what is the launcher's
 //! own — the setting in `settings.json`, kept in memory so a request doesn't read the file — and
 //! hands the address to the parts that build their agents.
@@ -24,16 +24,16 @@ static SET: Mutex<Option<Option<String>>> = Mutex::new(None);
 /// The proxy address to reach `url` through: the launcher's setting, else the environment's, unless
 /// `url` is a local address or `NO_PROXY` names its host.
 pub fn spec_for(url: &str) -> Option<String> {
-    let scheme = horizon_port_pack::net::scheme_of(url)?;
-    if horizon_port_pack::net::direct(url) {
+    let scheme = sunrise_port_pack::net::scheme_of(url)?;
+    if sunrise_port_pack::net::direct(url) {
         return None;
     }
-    setting().or_else(|| horizon_port_pack::net::env_for(scheme))
+    setting().or_else(|| sunrise_port_pack::net::env_for(scheme))
 }
 
 /// The proxy to reach `url` through: `spec_for`'s address, read as one.
 pub fn for_url(url: &str) -> Option<ureq::Proxy> {
-    spec_for(url).and_then(|spec| horizon_port_pack::net::parse(&spec))
+    spec_for(url).and_then(|spec| sunrise_port_pack::net::parse(&spec))
 }
 
 /// `builder`, reaching `url` through the proxy when one is set. For the parts that ask for a few
@@ -53,18 +53,18 @@ pub fn refuse(spec: &str) -> Option<String> {
     }
     // `ureq` takes `http://` without a host, which would leave a download failing with nothing
     // said about the proxy.
-    if horizon_port_pack::net::parse(spec).is_none()
-        || horizon_port_pack::net::host_of(spec).is_none_or(str::is_empty)
+    if sunrise_port_pack::net::parse(spec).is_none()
+        || sunrise_port_pack::net::host_of(spec).is_none_or(str::is_empty)
     {
         return Some(format!(
             "{} isn't a proxy address. Write it as http://host:port or socks5://host:port.",
-            horizon_port_pack::net::redacted(spec)
+            sunrise_port_pack::net::redacted(spec)
         ));
     }
     None
 }
 
-/// Tells the parts that build their own agents (`horizon-port-pack`) which proxy to use, and keeps
+/// Tells the parts that build their own agents (`sunrise-port-pack`) which proxy to use, and keeps
 /// the setting for the launcher's own requests. Called with what `settings.json` holds: at start,
 /// and whenever the player changes the setting.
 ///
@@ -75,7 +75,7 @@ pub fn announce(setting: Option<String>) {
         .map(|p| p.trim().to_owned())
         .filter(|p| !p.is_empty());
     *held() = Some(spec.clone());
-    horizon_port_pack::net::set_proxy(spec);
+    sunrise_port_pack::net::set_proxy(spec);
 }
 
 /// The launcher's setting: read from `settings.json` the first time it is needed and kept after
@@ -135,7 +135,7 @@ mod tests {
         assert!(refuse("socks5://").is_some());
     }
 
-    /// The reason is shown under the field and printed by `horizon-launcher settings set`.
+    /// The reason is shown under the field and printed by `sunrise-launcher settings set`.
     #[test]
     fn a_refused_address_keeps_its_credentials_to_itself() {
         let why = refuse("socks3://user:secret@127.0.0.1:7891").unwrap();

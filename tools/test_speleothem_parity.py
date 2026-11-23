@@ -38,7 +38,7 @@ def corpus(facts,placement):
         value=definition();del value[field];yield case(value)
         for raw in [None,[],{},False,'missing']:
             yield case(definition(**{field:raw}))
-    for value in ['#minecraft:dripstone_replaceable_blocks',[],['air','water','stone'],'air','#horizon:missing']:
+    for value in ['#minecraft:dripstone_replaceable_blocks',[],['air','water','stone'],'air','#sunrise:missing']:
         yield case(definition(replaceable_blocks=value),repeats=2)
     for origin in [[0,-64,0],[-17,319,-33],[2147483647,2147483647,-2147483648],[-2147483648,-2147483648,2147483647]]:
         below=[origin[0],((origin[1]-1+2**31)%2**32)-2**31,origin[2],get('stone')]

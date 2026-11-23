@@ -20,7 +20,7 @@ class ReleaseAssets(unittest.TestCase):
             root = Path(temp)
             visuals = root / "visuals"
             visuals.mkdir()
-            (visuals / "horizon-shaders.toml").write_bytes(b"original pack metadata")
+            (visuals / "sunrise-shaders.toml").write_bytes(b"original pack metadata")
             apks = {}
             for abi in ("arm64-v8a", "x86", "x86_64"):
                 path = root / f"starling-0.2.3-{abi}.apk"
@@ -34,6 +34,6 @@ class ReleaseAssets(unittest.TestCase):
             apks[armv7] = b"armv7 APK"
             release.prepare(root, "v0.2.3", visuals)
             with zipfile.ZipFile(root / "StarlingVisuals.zip") as archive:
-                self.assertEqual(archive.read("horizon-shaders.toml"), b"original pack metadata")
+                self.assertEqual(archive.read("sunrise-shaders.toml"), b"original pack metadata")
             for path, data in apks.items():
                 self.assertEqual(path.read_bytes(), data)

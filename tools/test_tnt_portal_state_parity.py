@@ -19,34 +19,34 @@ except ImportError:
 
 def child_env(scratch, resources=None):
     env = dict(os.environ)
-    env.pop("HORIZON_TEST_RESOURCES", None)
-    for key, child in [("HORIZON_HOME", "home"), ("HORIZON_LAUNCHER_HOME", "launcher"),
+    env.pop("SUNRISE_TEST_RESOURCES", None)
+    for key, child in [("SUNRISE_HOME", "home"), ("SUNRISE_LAUNCHER_HOME", "launcher"),
                        ("XDG_DATA_HOME", "xdg-data"), ("XDG_CONFIG_HOME", "xdg-config"),
-                       ("HORIZON_LAUNCHER_TRASH", "trash"),
-                       ("HORIZON_LAUNCHER_CLIPBOARD", "clipboard"),
-                       ("HORIZON_LAUNCHER_DESKTOP", "desktop")]:
+                       ("SUNRISE_LAUNCHER_TRASH", "trash"),
+                       ("SUNRISE_LAUNCHER_CLIPBOARD", "clipboard"),
+                       ("SUNRISE_LAUNCHER_DESKTOP", "desktop")]:
         env[key] = str(scratch / child)
     env = lab.game_env(env)
     if resources is not None:
-        env["HORIZON_TEST_RESOURCES"] = str(resources)
+        env["SUNRISE_TEST_RESOURCES"] = str(resources)
     return env
 
 
 def main():
-    resources = Path(os.environ.get("HORIZON_TEST_RESOURCES", lab.RESOURCES)).resolve()
+    resources = Path(os.environ.get("SUNRISE_TEST_RESOURCES", lab.RESOURCES)).resolve()
     if not (resources / "movement-properties.nbt").exists():
-        raise RuntimeError("Set HORIZON_TEST_RESOURCES to prepared pinned resources")
+        raise RuntimeError("Set SUNRISE_TEST_RESOURCES to prepared pinned resources")
     build = lab.LOCAL / "tnt-portal-state-parity"
     build.mkdir(parents=True, exist_ok=True)
     report = build / "report.json"
     report.unlink(missing_ok=True)
     sources = [Path(__file__), lab.ROOT / "research-lock.json", lab.ROOT / "Cargo.toml",
                lab.ROOT / "Cargo.lock", lab.ROOT / "tools/lab.py",
-               *sorted((lab.ROOT / "crates/horizon-client/src").rglob("*.rs")),
-               *sorted((lab.ROOT / "crates/horizon-client-render/src").rglob("*.rs"))]
+               *sorted((lab.ROOT / "crates/sunrise-client/src").rglob("*.rs")),
+               *sorted((lab.ROOT / "crates/sunrise-client-render/src").rglob("*.rs"))]
     hashes = base.source_hashes(sources)
-    with tempfile.TemporaryDirectory(prefix="horizon-tnt-state-build-") as directory:
-        command = ["cargo", "test", "--locked", "-p", "horizon-client", "--lib",
+    with tempfile.TemporaryDirectory(prefix="sunrise-tnt-state-build-") as directory:
+        command = ["cargo", "test", "--locked", "-p", "sunrise-client", "--lib",
                    "--no-run", "--message-format=json"]
         with (build / "compile.jsonl").open("w", encoding="utf-8") as output:
             result = subprocess.run(command, cwd=lab.ROOT,
@@ -60,7 +60,7 @@ def main():
         if result.returncode and row.get("reason") == "compiler-message":
             print(row.get("message", {}).get("rendered", ""), file=sys.stderr, end="")
         if row.get("reason") == "compiler-artifact" and row.get("executable") \
-                and row.get("target", {}).get("name") == "horizon_client" \
+                and row.get("target", {}).get("name") == "sunrise_client" \
                 and row.get("profile", {}).get("test"):
             artifacts.append(Path(row["executable"]))
     result.check_returncode()
@@ -68,7 +68,7 @@ def main():
         raise AssertionError("Expected one actual gameplay library test executable")
     binary = artifacts[0]
     binary_hash = lab.digest(binary, "sha256")
-    with tempfile.TemporaryDirectory(prefix="horizon-tnt-state-game-") as directory:
+    with tempfile.TemporaryDirectory(prefix="sunrise-tnt-state-game-") as directory:
         scratch = Path(directory)
         with (build / "rust.log").open("w", encoding="utf-8") as log:
             subprocess.run([str(binary), "portal_transfer_", "--include-ignored", "--color", "never"],

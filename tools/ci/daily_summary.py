@@ -163,7 +163,7 @@ def gib(size):
 
 def stopped_text(entry):
     """Why one run of a shard did not complete (ignored_tests.py's report: names and numbers only), as one sentence:
-    "`horizon-client#1of2` killed by signal 9 (SIGKILL), out of memory (1 kill); memory peak 32.0 GiB of 32.0 GiB;
+    "`sunrise-client#1of2` killed by signal 9 (SIGKILL), out of memory (1 kill); memory peak 32.0 GiB of 32.0 GiB;
     after 70 min; still running: `a::b`". Unknown fields are left out, never guessed."""
     shard = entry.get("shard")
     name = f"`{shard}`" if isinstance(shard, str) and SHARD_NAME.fullmatch(shard) else "a run"

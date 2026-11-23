@@ -1,15 +1,15 @@
 # Shader API reference (0.1)
 
-Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
+Generated from `crates/sunrise-shader-api` (`SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-shader-api --test reference`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-A stage is a function your WGSL defines, with the signature below; Horizon puts the prelude (these structs, the
+A stage is a function your WGSL defines, with the signature below; Sunrise puts the prelude (these structs, the
 resources and helpers) before your files and calls the function from its own pass. Your files declare no
-bindings and no entry points, and no names starting with `horizon_`.
+bindings and no entry points, and no names starting with `sunrise_`.
 
 ## Stages
 
-| Stage | In `horizon-shaders.toml` | Your function |
+| Stage | In `sunrise-shaders.toml` | Your function |
 | --- | --- | --- |
 | sky | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` |
 | vertex | `[vertex]` | `fn vertex(input: VertexInput) -> vec3<f32>` |
@@ -96,7 +96,7 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 
 ### `Surface`
 
-What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Horizon then applies the alpha test (cutout and translucent) and fog.
+What `material` returns. Vanilla's own is `albedo * tint * vec4(lightmap, 1.0)`; Sunrise then applies the alpha test (cutout and translucent) and fog.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -303,8 +303,8 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 ## Anti-aliasing
 
 While a pack's `[[post]]` chain draws the frame, the player's anti-aliasing settings do not run: `taa`, `fxaa`
-and `upscaling` in `horizon-graphics.txt` have no effect, and the frame's projection is never jittered, because the
-last post pass draws the picture itself and Horizon's own resolve, which does TAA, FXAA and TAA upscaling, is the
+and `upscaling` in `sunrise-graphics.txt` have no effect, and the frame's projection is never jittered, because the
+last post pass draws the picture itself and Sunrise's own resolve, which does TAA, FXAA and TAA upscaling, is the
 step it replaces. The world is still rendered at `resolutionScale` before the pack reads it.
 
 A pack that wants smooth edges draws them itself, in a post pass: a spatial filter (FXAA, SMAA and the like) works on
@@ -334,7 +334,7 @@ Each `[[options]]` entry sets the WGSL `override` of the same name when the pipe
 
 ## The check
 
-A pack runs only after it passes `horizon_shader_api::check` (the game when it loads a pack, the launcher before it
+A pack runs only after it passes `sunrise_shader_api::check` (the game when it loads a pack, the launcher before it
 installs one, the registry's CI): each stage is parsed and validated by naga, checked against its signature and
 the rules above, and translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL) with its options at their
 defaults, minimums and maximums. Every option must be an `override` of its type in some stage; an `override`

@@ -1,17 +1,17 @@
 name: mod-registry
-# The submission service is its own workspace (crates/horizon-mod-registry), so the checks job doesn't build
-# it: this one does, when it or horizon-mods (the checks it shares with the launcher and the game) changes.
+# The submission service is its own workspace (crates/sunrise-mod-registry), so the checks job doesn't build
+# it: this one does, when it or sunrise-mods (the checks it shares with the launcher and the game) changes.
 on:
   push:
     branches: [main]
     paths:
-      - 'crates/horizon-mod-package/**'
-      - 'crates/horizon-mod-registry/**'
+      - 'crates/sunrise-mod-package/**'
+      - 'crates/sunrise-mod-registry/**'
       - '.github/workflows/mod-registry.yml'
   pull_request:
     paths:
-      - 'crates/horizon-mod-package/**'
-      - 'crates/horizon-mod-registry/**'
+      - 'crates/sunrise-mod-package/**'
+      - 'crates/sunrise-mod-registry/**'
       - '.github/workflows/mod-registry.yml'
 permissions:
   contents: read
@@ -20,12 +20,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
-    # Our checks runners (label horizon-checks, docs/ci-runners.md); SELF_HOSTED_CI=light or off: GitHub's.
-    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "horizon-checks"]') || 'ubuntu-latest' }}
+    # Our checks runners (label sunrise-checks, docs/ci-runners.md); SELF_HOSTED_CI=light or off: GitHub's.
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && vars.SELF_HOSTED_CI != 'light' && fromJSON('["self-hosted", "linux", "sunrise-checks"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: crates/horizon-mod-registry
+        working-directory: crates/sunrise-mod-registry
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -33,7 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
         with:
-          workspaces: crates/horizon-mod-registry
+          workspaces: crates/sunrise-mod-registry
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo +stable fmt --check
       - run: cargo +stable clippy --all-targets --locked -- -D warnings

@@ -23,8 +23,8 @@ pub(super) struct ListedPoint {
 
 impl ListedPoint {
     /// The point as the shared API constructor emitter reads it.
-    pub(super) fn emitted(&self) -> horizon_mod_point_emit::Point {
-        horizon_mod_point_emit::Point {
+    pub(super) fn emitted(&self) -> sunrise_mod_point_emit::Point {
+        sunrise_mod_point_emit::Point {
             name: self.name.clone(),
             target: self.target.clone(),
             at_return: self.at_return,
@@ -47,7 +47,7 @@ pub(super) struct Catalog {
 
 pub(super) fn catalog(path: &Path) -> Result<Catalog, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (_, catalog) = horizon_mod_package::build_data::read(POINTS, &text)
+    let (_, catalog) = sunrise_mod_package::build_data::read(POINTS, &text)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(catalog)
 }

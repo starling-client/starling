@@ -4,7 +4,7 @@ from tools import test_decoration_parity as decoration
 
 class DecorationCorpusTests(unittest.TestCase):
     def test_global_indices_foreign_palettes_failures_and_reproducibility(self):
-        resources = {'a': [[], ['horizon:a', 'horizon:b']], 'b': [['horizon:c'], ['horizon:b']]}
+        resources = {'a': [[], ['sunrise:a', 'sunrise:b']], 'b': [['sunrise:c'], ['sunrise:b']]}
         fixtures = list(decoration.corpus(resources))
         self.assertEqual(fixtures, list(decoration.corpus(resources)))
         self.assertTrue(any(f['biomes'] == [[[0, 1]], [[1, 0]]] for f in fixtures))

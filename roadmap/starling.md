@@ -1,8 +1,8 @@
 # Starling roadmap
 
-What is being done on Starling, the Android port of Horizon, what comes next and what waits. There are
+What is being done on Starling, the Android port of Sunrise, what comes next and what waits. There are
 no dates: things are Now, Next or Later. Each item says in plain words what you will be able to do, with
-the technical picture under it. The game itself is Horizon's: its own roadmap is [ROADMAP.md](../ROADMAP.md).
+the technical picture under it. The game itself is Sunrise's: its own roadmap is [ROADMAP.md](../ROADMAP.md).
 
 ## At a glance
 
@@ -19,9 +19,9 @@ the technical picture under it. The game itself is Horizon's: its own roadmap is
 
 **Next**: a pack's own options in the game; secure chat
 for servers that require it; physical controllers on Android; Open to LAN and invites on a phone;
-keeping up with Horizon.
+keeping up with Sunrise.
 
-**Later**: a store release; more of the game open to mods; Horizon's native mods; a phone-sized mod
+**Later**: a store release; more of the game open to mods; Sunrise's native mods; a phone-sized mod
 browser.
 
 ## Now
@@ -30,7 +30,7 @@ browser.
 
 You install the APK, sign in with the Microsoft account that owns the game, and play: no computer.
 
-> Done (v0.1.0): the setup in place of the loading failure, drawn in Horizon's own font; the sign-in
+> Done (v0.1.0): the setup in place of the loading failure, drawn in Sunrise's own font; the sign-in
 > by code; the official files fetched from Mojang for an owner (starling-account); OpenJDK 25 for
 > Android fetched once, checked against its pinned hash, and run through a launcher the APK carries
 > in its library folder (the only place an app may run programs from), with the exporters compiled
@@ -40,7 +40,7 @@ You install the APK, sign in with the Microsoft account that owns the game, and 
 > made in the game) and Settings, the game's own Options screens in a hand-drawn skin
 > (packaging/lowbudget: our own handwriting, every letter written in five takes and picked by where
 > it stands; buttons drawn without a ruler in four takes). In v0.1.0.1: every language the game has
-> (the downloaded files carry them; resources prepared on a computer before horizon-prepare learnt
+> (the downloaded files carry them; resources prepared on a computer before sunrise-prepare learnt
 > them had English only); no file error under the card on a first start; the credits close with a
 > tap or the back key; Touch Controls opens the layout editor over the setup and the title too. Left: the download with an account that owns the game, tried end to end;
 > plainer words on the setup's errors; how long it takes on slower phones.
@@ -87,7 +87,7 @@ anticheat flags for digging up while flying.
 > latency; placing blocks while steering, which still waits a tick.
 >
 > Done (v0.1.2): Options > Skin Customization with the name the worlds use (vanilla's offline-name
-> rules, kept in horizon-player.txt; a signed-in account's name on servers, which cannot be told
+> rules, kept in sunrise-player.txt; a signed-in account's name on servers, which cannot be told
 > apart before joining) and a skin from `skins/` or the file picker, classic or slim, worn in the
 > atlas's own-skin slot the way a Mojang skin is (first and third person, the inventory, the player
 > list), a skin PNG opened with Starling put on at once; the player on the title screen beside the
@@ -97,7 +97,7 @@ anticheat flags for digging up while flying.
 > offline-mode server the players it sends no textures for; the Starling folder offered in the setup
 > before the sign-in; with no frame cap, the screen's fastest refresh rate asked for
 > (ANativeWindow_setFrameRate), where a phone's own policy held games at 60 Hz; the window's
-> surface dropped when the app goes to the background, as before v0.1.1 (Horizon's
+> surface dropped when the app goes to the background, as before v0.1.1 (Sunrise's
 > `release_surface` now keeps it for a replacement renderer, and the way back drew to the
 > destroyed window: a black screen after the sign-in or the file picker, and most likely the
 > crash a player had there on an Adreno 830). Left: a skin others see on servers (it is the
@@ -108,12 +108,12 @@ anticheat flags for digging up while flying.
 You play with Complementary or MakeUp on your phone at a frame rate you can play at, and choose the pack
 and its quality in the game.
 
-> Horizon's shader-pack translator (crates/horizon-shaders) runs Iris and OptiFine packs as they are,
+> Sunrise's shader-pack translator (crates/sunrise-shaders) runs Iris and OptiFine packs as they are,
 > GLSL translated to WGSL at load time; nothing is hard-coded per pack. On an Adreno 740 at half
 > resolution Complementary's LOW profile draws in about 16 to 21 ms of GPU time (45 to 55 fps) with the
-> experimental depth pass for solid terrain (`HORIZON_SHADER_PACK_PREPASS`), which lets the tiler drop
+> experimental depth pass for solid terrain (`SUNRISE_SHADER_PACK_PREPASS`), which lets the tiler drop
 > hidden grass and leaves before the pack's fragment stage runs. Done: the Shader Packs page (Video
-> Settings: the pack and its profile, saved in horizon-graphics.txt), option values and profiles,
+> Settings: the pack and its profile, saved in sunrise-graphics.txt), option values and profiles,
 > constant texture matrices, a depth pass that keeps no more than the pack's own alpha cut, resolution
 > down to 25%, outputs kept finite (Adreno made NaNs that turned Complementary black for good after a
 > pond was flooded), `cameraPositionInt`/`Fract`, terrain's face normals and `mc_Entity` off a Mac
@@ -127,7 +127,7 @@ and its quality in the game.
 > (packaging/shaderpacks/starling-visuals): lit per vertex, shadows with a soft edge, water with
 > waves and depth, haze, sun rays, bloom and light from what you hold; 70 to 80 fps with shadows at
 > full resolution on an Adreno 740. Left: the pack's own options screen
-> (`HORIZON_SHADER_OPTIONS` for now) and light defaults on phones; a cache of the built programs;
+> (`SUNRISE_SHADER_OPTIONS` for now) and light defaults on phones; a cache of the built programs;
 > `cloudHeight` and the other uniforms still read as zero; the depth pass on by default once it is
 > checked on more packs.
 
@@ -157,16 +157,16 @@ menus and dialogs, and stay on it without the anticheat pulling you back.
 Every option you see works, and those a phone can't use don't clutter the menus.
 
 > Done: Controller Off no longer turns the touch controls off; Entity Shadows, Chat Visibility and High
-> Contrast do what they say; options Horizon stores but does not draw are greyed out; the controller
+> Contrast do what they say; options Sunrise stores but does not draw are greyed out; the controller
 > page on a phone keeps what the touch controls use; Discord is gone on a phone. Left: a touch button
 > for Zoom; the Keystrokes overlay following the touch stick; one graphics preset instead of vanilla's
-> and Horizon's side by side.
+> and Sunrise's side by side.
 
 ## Next
 
-- **Keeping up with Horizon**: v0.1.1 merged Horizon's main of 2026-10-28 (2118 commits: the client
-  split into crates, server mods, HDR, Horizon's own shader packs); to merge it again often, so that
-  its fixes come over and mods made for a Horizon revision fit.
+- **Keeping up with Sunrise**: v0.1.1 merged Sunrise's main of 2026-10-28 (2118 commits: the client
+  split into crates, server mods, HDR, Sunrise's own shader packs); to merge it again often, so that
+  its fixes come over and mods made for a Sunrise revision fit.
 - **A pack's own options in the game**: the settings screen a shader pack describes, beside its profile.
 - **Secure chat**: signed chat and its acknowledgements, for servers that refuse unsigned messages.
 - **Physical controllers on Android**: a gamepad backend for the Android build (the desktop one is off
@@ -178,8 +178,8 @@ Every option you see works, and those a phone can't use don't clutter the menus.
 - **A store release**, once the first releases have been played for a while.
 - **More of the game open to mods**, guided by porting popular Java mods (see
   [mod-porting](../docs/mod-porting.md)).
-- **Horizon's native mods** ([horizon-mixins](https://github.com/horizon-rust/horizon-mixins)):
-  mixins rewrite the game's source and the game is built again with them, each mod for one Horizon
+- **Sunrise's native mods** ([horizon-mixins](https://github.com/horizon-rust/horizon-mixins)):
+  mixins rewrite the game's source and the game is built again with them, each mod for one Sunrise
   revision. On a phone that needs Starling at that revision and a way to build it there.
 - **A mod browser made for a phone.**
 - **Discord Rich Presence on a phone**: Discord's Social SDK (1.10 and later) shows the game through the

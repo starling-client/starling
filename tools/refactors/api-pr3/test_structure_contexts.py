@@ -12,7 +12,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "target/structure-context-proof"
-GAME = ROOT / "crates/horizon-client/src/game/modding"
+GAME = ROOT / "crates/sunrise-client/src/game/modding"
 
 
 def between(source, start, end):
@@ -24,9 +24,9 @@ def between(source, start, end):
 def prepare():
     OUT.mkdir(parents=True, exist_ok=True)
     deps = {name: ROOT / "crates" / name for name in [
-        "horizon-core", "horizon-world", "horizon-items", "horizon-mod-runtime", "horizon-client-core"]}
+        "sunrise-core", "sunrise-world", "sunrise-items", "sunrise-mod-runtime", "sunrise-client-core"]}
     manifest = '[package]\nname="structure-context-proof"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[lib]\npath="lib.rs"\n[dependencies]\nserde_json="1"\nlog="0.4"\n'
-    manifest += 'mod_api={package="horizon-mod-api",path=' + json.dumps(str(ROOT / "crates/horizon-mod-api")) + ',features=["testing"]}\n'
+    manifest += 'mod_api={package="sunrise-mod-api",path=' + json.dumps(str(ROOT / "crates/sunrise-mod-api")) + ',features=["testing"]}\n'
     for name, path in deps.items():
         manifest += name + '={path=' + json.dumps(str(path)) + '}\n'
     profiles = (ROOT / "Cargo.toml").read_text().split("[profile.dev]", 1)[1].split("[profile.release]", 1)[0]
@@ -34,10 +34,10 @@ def prepare():
     shutil.copyfile(ROOT / "Cargo.lock", OUT / "Cargo.lock")
 
     source = (GAME / "api_values.rs").read_text()
-    values = 'use horizon_items::items::Items;\n'
+    values = 'use sunrise_items::items::Items;\n'
     values += '#[path=' + json.dumps(str(GAME / "api_values/block_state.rs")) + '] pub(crate) mod block_state;\n'
-    values += between(source, "pub(in crate::game) fn resolve_block_definitions(", "impl TryIntoApi for horizon_client::boss_overlay")
-    values += between(source, "impl TryIntoApi for horizon_world::chunk::BlockState", "#[cfg(test)]")
+    values += between(source, "pub(in crate::game) fn resolve_block_definitions(", "impl TryIntoApi for sunrise_client::boss_overlay")
+    values += between(source, "impl TryIntoApi for sunrise_world::chunk::BlockState", "#[cfg(test)]")
     values += between(source, "fn block_metadata_table()", "impl super::Game")
     values += between(source, "pub(crate) trait TryIntoApi {", "/// Tests use")
     values += between(source, "pub(crate) trait TryIntoEngine<", "#[derive(Clone, Copy")
@@ -52,7 +52,7 @@ def prepare():
     (OUT / "structure_tests.rs").write_text((GAME / "native_structure_types/tests.rs").read_text() + ALLOCATION_TEST)
     modules = {"api_values": OUT / "api_values.rs", "native_structure_types": OUT / "structure.rs"}
     modules.update({name: GAME / (name + ".rs") for name in ["native_worldgen", "native_dimensions", "native_chunk_generator"]})
-    body = "#![allow(dead_code)]\npub use horizon_core::json_nbt;\n" + ALLOCATOR + "\npub mod game {\n"
+    body = "#![allow(dead_code)]\npub use sunrise_core::json_nbt;\n" + ALLOCATOR + "\npub mod game {\n"
     for name, path in modules.items():
         body += '#[path=' + json.dumps(str(path)) + '] pub(crate) mod ' + name + ';\n'
     (OUT / "lib.rs").write_text(body + "}\n")
@@ -131,11 +131,11 @@ def main():
     args = parser.parse_args()
     assert check().returncode == 0, "baseline must pass"
     if args.api_mutant:
-        path = ROOT / "crates/horizon-mod-api/src/world/structure_type.rs"
+        path = ROOT / "crates/sunrise-mod-api/src/world/structure_type.rs"
         original = path.read_bytes()
         old = b"i64::from(y) - i64::from(self.min)"
         assert original.count(old) == 1
-        command = ["cargo", "test", "-p", "horizon-mod-api", "--features", "wasm-host", "--lib", "noise_column_clips_outside_y_without_overflow"]
+        command = ["cargo", "test", "-p", "sunrise-mod-api", "--features", "wasm-host", "--lib", "noise_column_clips_outside_y_without_overflow"]
         def api_check():
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=590)
             print(result.stdout + result.stderr, end="", flush=True)

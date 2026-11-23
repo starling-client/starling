@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Move horizon-mod-wasm's wire_loopback test target into its own test-only package, with discovered modules.
+"""Move sunrise-mod-wasm's wire_loopback test target into its own test-only package, with discovered modules.
 
-The package crates/horizon-mod-wasm/wire-loopback has a build.rs that writes one `#[path = "<absolute>"] mod <stem>;`
+The package crates/sunrise-mod-wasm/wire-loopback has a build.rs that writes one `#[path = "<absolute>"] mod <stem>;`
 per file of tests/wire_loopback/ into OUT_DIR. Its own build script watches that folder, so editing a test reruns
-only the test package's script, never horizon-mod-wasm's (whose rerun rebuilds the library and everything above it).
+only the test package's script, never sunrise-mod-wasm's (whose rerun rebuilds the library and everything above it).
 This script, run once from the repository root:
-1. moves crates/horizon-mod-wasm/tests/wire_loopback.rs and tests/wire_loopback/ to
-   crates/horizon-mod-wasm/wire-loopback/tests/ (git mv);
+1. moves crates/sunrise-mod-wasm/tests/wire_loopback.rs and tests/wire_loopback/ to
+   crates/sunrise-mod-wasm/wire-loopback/tests/ (git mv);
 2. renames wire_loopback/loot_tags.rs to loot_tags_wire.rs, the one module whose name differed from its file, so
    every test keeps its path;
 3. deletes every `#[path = "wire_loopback/<file>.rs"]` + `mod <name>;` pair from the root, after checking that the
    pairs name each file of the folder exactly once and that each name is its file's stem;
 4. puts the `include!` of the generated list where the first pair stood (module order does not matter: the root
    and its children define no macro, and items resolve wherever they are declared);
-5. points prepared_equip.rs's `#[path]` to horizon-mod-wasm's src/prepared.rs one folder further up;
+5. points prepared_equip.rs's `#[path]` to sunrise-mod-wasm's src/prepared.rs one folder further up;
 6. runs rustfmt on the root, which removes the blank lines the deleted pairs leave behind.
 """
 
@@ -21,8 +21,8 @@ from pathlib import Path
 import re
 import subprocess
 
-OLD = Path("crates/horizon-mod-wasm/tests")
-NEW = Path("crates/horizon-mod-wasm/wire-loopback/tests")
+OLD = Path("crates/sunrise-mod-wasm/tests")
+NEW = Path("crates/sunrise-mod-wasm/wire-loopback/tests")
 FOLDER = NEW / "wire_loopback"
 ROOT = NEW / "wire_loopback.rs"
 PAIR = re.compile(r'^#\[path = "wire_loopback/(\w+)\.rs"\]\nmod (\w+);\n', re.M)

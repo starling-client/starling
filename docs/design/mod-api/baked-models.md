@@ -12,7 +12,7 @@ implemented; every stage below has file **none** pending design approval.
 ## Evidence and limits
 
 Vanilla 26.3 was inspected only through `tools/rea_vanilla.py` from
-`/workspace/horizon`: `method net.minecraft.client.renderer.chunk.SectionCompiler
+`/workspace/sunrise`: `method net.minecraft.client.renderer.chunk.SectionCompiler
 compile`, its `callers` query, and `method
 net.minecraft.client.renderer.item.ItemModelResolver updateForTopItem`.
 SectionCompiler reads a render region, selects block models by state, passes a
@@ -21,7 +21,7 @@ sorts translucent output. Its verified caller is CompileTask.doTask. Item
 resolution clears output and appends layers for nonempty stacks with display
 context, level, owner and seed. These observations do not establish a vanilla
 ModelData API or a vanilla mod callback. The owner-thread preparation boundary
-below is Horizon policy.
+below is Sunrise policy.
 
 The public [NeoForge model guide](https://docs.neoforged.net/docs/resources/client/models/modelsystem/)
 was reachable on 2026-11-09 but labelled 26.1. It describes client baking-result
@@ -97,11 +97,11 @@ these are seams, not already implemented callbacks):
 
 | Route | Owner | Proposed integration |
 | --- | --- | --- |
-| Block library construction | `crates/horizon-client-render/src/model_library.rs:64`, `:82` | Produce candidate block view before modified cache publication |
-| Item library construction | `crates/horizon-client-render/src/model_library.rs:120` | Produce item view in same generation |
-| Standalone additions and block preparation | `crates/horizon-client-render/src/models.rs:37`, `:142` | Preserve additions; edit baked results after preparation |
-| Terrain model consumption | `crates/horizon-client-render/src/mesher.rs:1840` | Read frozen model parts; no provider calls |
-| Item bounds and draw submission | `crates/horizon-client/src/item_render.rs:229`, `:267`, `:299` | Consume prepared item geometry including skinned submission |
+| Block library construction | `crates/sunrise-client-render/src/model_library.rs:64`, `:82` | Produce candidate block view before modified cache publication |
+| Item library construction | `crates/sunrise-client-render/src/model_library.rs:120` | Produce item view in same generation |
+| Standalone additions and block preparation | `crates/sunrise-client-render/src/models.rs:37`, `:142` | Preserve additions; edit baked results after preparation |
+| Terrain model consumption | `crates/sunrise-client-render/src/mesher.rs:1840` | Read frozen model parts; no provider calls |
+| Item bounds and draw submission | `crates/sunrise-client/src/item_render.rs:229`, `:267`, `:299` | Consume prepared item geometry including skinned submission |
 
 Initial mesh, remesh, halo changes, unload, reload, cancellation and stale upload
 all use section meshing's route and token table, not a second invalidation system.

@@ -1,16 +1,16 @@
 //! Modpacks: import a Java modpack (a Modrinth `.mrpack`, a CurseForge zip, an instance folder),
-//! show what Horizon runs of it, port that on this computer from the player's own downloads, and
+//! show what Sunrise runs of it, port that on this computer from the player's own downloads, and
 //! play it as a profile of its own (docs/modpacks.md).
 //!
-//! Each pack lives in `ports/<slug>/` in the game's home: the work folder `horizon-port-pack`
+//! Each pack lives in `ports/<slug>/` in the game's home: the work folder `sunrise-port-pack`
 //! writes (pack.json, inventory, the jars, the carried-over mods, the coverage report) and
 //! `home/`, the profile's own saves and options. Nothing is uploaded or shared: mod jars are
 //! often All Rights Reserved, so the ports stay on the player's machine.
 use crate::backend;
-use crate::browser::horizon::pack as horizon_pack;
+use crate::browser::sunrise::pack as sunrise_pack;
 use crate::other_launchers::{self, Found};
 use crate::sources::{Folders, Os};
-use horizon_port_pack::{
+use sunrise_port_pack::{
     datapacks,
     fetch::{Fetched, How},
     import::Pack,
@@ -99,7 +99,7 @@ impl Imported {
         parts.join("  ·  ")
     }
     /// The plain headline above the numbers, in the launcher's language: how much of the pack
-    /// comes over and what does not. The same lines as `horizon_port_pack::report::Summary::lines`
+    /// comes over and what does not. The same lines as `sunrise_port_pack::report::Summary::lines`
     /// (a test keeps the English equal); none for a pack with no mod to port.
     pub fn headline(&self) -> Vec<String> {
         use crate::i18n::{tr, trf};
@@ -117,7 +117,7 @@ impl Imported {
         if s.ready + s.blocked + s.later > 0 {
             lines.push(trf(
                 "Not yet: {ready} are content mods Port can carry over, {blocked} need mod support \
-                 Horizon does not have yet (machines, menus, behaviour, mobs, dimensions, client \
+                 Sunrise does not have yet (machines, menus, behaviour, mobs, dimensions, client \
                  features), {later} are not sorted yet (not identified, or waiting on other mods or \
                  other work).",
                 &[
@@ -171,9 +171,9 @@ impl Imported {
 pub fn row_plain(row: &Row) -> String {
     use crate::i18n::{tr, trf};
     let plain = match row.plain.as_str() {
-        "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run." => {
+        "Its blocks and items came over and passed Sunrise's checks; the mod's own code is not run." => {
             tr(
-                "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run.",
+                "Its blocks and items came over and passed Sunrise's checks; the mod's own code is not run.",
             )
         }
         "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what." => {
@@ -182,12 +182,12 @@ pub fn row_plain(row: &Row) -> String {
             )
         }
         "It does not come over yet." => tr("It does not come over yet."),
-        "Nothing to port: Horizon has it built in or does not need it." => {
-            tr("Nothing to port: Horizon has it built in or does not need it.")
+        "Nothing to port: Sunrise has it built in or does not need it." => {
+            tr("Nothing to port: Sunrise has it built in or does not need it.")
         }
-        "Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over." => {
+        "Sunrise cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over." => {
             tr(
-                "Horizon cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over.",
+                "Sunrise cannot tell yet what this mod does (it needs its jar or a reviewed entry), so it cannot say whether it will come over.",
             )
         }
         "It joins other mods together, so it waits until those are ported." => {
@@ -201,19 +201,19 @@ pub fn row_plain(row: &Row) -> String {
         "Content only (blocks, items, structures). It can come over once its jar is here." => {
             tr("Content only (blocks, items, structures). It can come over once its jar is here.")
         }
-        "Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over." => {
+        "Needs what blocks and items do when used, placed, broken or ticked, which Sunrise's mod API cannot run from a mod yet, so it does not come over." => {
             tr(
-                "Needs what blocks and items do when used, placed, broken or ticked, which Horizon's mod API cannot run from a mod yet, so it does not come over.",
+                "Needs what blocks and items do when used, placed, broken or ticked, which Sunrise's mod API cannot run from a mod yet, so it does not come over.",
             )
         }
-        "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over." => {
+        "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Sunrise's mod API does not have yet, so it does not come over." => {
             tr(
-                "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Horizon's mod API does not have yet, so it does not come over.",
+                "Needs machine-style features (block entities, menus, item, fluid and energy handling, networking) that Sunrise's mod API does not have yet, so it does not come over.",
             )
         }
-        "Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over." => {
+        "Needs mobs, custom rendering and models, dimensions or new game hooks that Sunrise's mod API does not have yet, so it does not come over." => {
             tr(
-                "Needs mobs, custom rendering and models, dimensions or new game hooks that Horizon's mod API does not have yet, so it does not come over.",
+                "Needs mobs, custom rendering and models, dimensions or new game hooks that Sunrise's mod API does not have yet, so it does not come over.",
             )
         }
         "Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet." => {
@@ -221,40 +221,40 @@ pub fn row_plain(row: &Row) -> String {
                 "Needs the game's client interfaces (keys, targeting, inventory reading, interface, rendering), so it does not come over yet.",
             )
         }
-        "Horizon has not worked out what this mod needs yet." => {
-            tr("Horizon has not worked out what this mod needs yet.")
+        "Sunrise has not worked out what this mod needs yet." => {
+            tr("Sunrise has not worked out what this mod needs yet.")
         }
-        "A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port." => {
+        "A library other mods build on. Sunrise's mod API and SDK take its place, so there is nothing to port." => {
             tr(
-                "A library other mods build on. Horizon's mod API and SDK take its place, so there is nothing to port.",
+                "A library other mods build on. Sunrise's mod API and SDK take its place, so there is nothing to port.",
             )
         }
-        "It makes the game faster. Horizon's own engine does that, so there is nothing to port." => {
+        "It makes the game faster. Sunrise's own engine does that, so there is nothing to port." => {
             tr(
-                "It makes the game faster. Horizon's own engine does that, so there is nothing to port.",
+                "It makes the game faster. Sunrise's own engine does that, so there is nothing to port.",
             )
         }
-        "Pack tooling or a game feature that Horizon already has, so there is nothing to port." => {
+        "Pack tooling or a game feature that Sunrise already has, so there is nothing to port." => {
             tr(
-                "Pack tooling or a game feature that Horizon already has, so there is nothing to port.",
+                "Pack tooling or a game feature that Sunrise already has, so there is nothing to port.",
             )
         }
-        "Built into Horizon already, so there is nothing to port." => {
-            tr("Built into Horizon already, so there is nothing to port.")
+        "Built into Sunrise already, so there is nothing to port." => {
+            tr("Built into Sunrise already, so there is nothing to port.")
         }
         "Nothing to port." => tr("Nothing to port."),
-        "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later." => {
-            tr("Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.")
+        "Made for Minecraft 1.20 or older: Sunrise ports mods made for 1.21 and later." => {
+            tr("Made for Minecraft 1.20 or older: Sunrise ports mods made for 1.21 and later.")
         }
         "Shader packs are not converted yet." => tr("Shader packs are not converted yet."),
-        "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen." => {
+        "Copied as a resource pack; Sunrise has not checked how it renders. Turn it on in the game's Resource Packs screen." => {
             tr(
-                "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
+                "Copied as a resource pack; Sunrise has not checked how it renders. Turn it on in the game's Resource Packs screen.",
             )
         }
         "Not downloaded yet; Port gets it." => tr("Not downloaded yet; Port gets it."),
-        "Horizon could not use this resource pack yet; the technical detail says why." => {
-            tr("Horizon could not use this resource pack yet; the technical detail says why.")
+        "Sunrise could not use this resource pack yet; the technical detail says why." => {
+            tr("Sunrise could not use this resource pack yet; the technical detail says why.")
         }
         other => other,
     };
@@ -273,7 +273,7 @@ pub fn row_plain(row: &Row) -> String {
 pub fn load(work: &Path) -> Result<Imported, String> {
     let pack: Pack = pipeline::read_json(&work.join("pack.json"))?;
     let rows: Vec<Row> = pipeline::read_json(&work.join("coverage.json")).unwrap_or_default();
-    let records: Vec<horizon_port_pack::inventory::Record> =
+    let records: Vec<sunrise_port_pack::inventory::Record> =
         pipeline::read_json(&work.join("inventory.json")).unwrap_or_default();
     let (mods, mut left_off) = pipeline::loadable(&carried(work));
     let fetched = Fetched::load(work);
@@ -354,7 +354,7 @@ pub fn carried(work: &Path) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path().join("carry"))
-        .filter(|c| c.join("horizon-mod.toml").is_file())
+        .filter(|c| c.join("sunrise-mod.toml").is_file())
         .collect();
     mods.sort();
     mods
@@ -364,7 +364,7 @@ pub fn carried(work: &Path) -> Vec<PathBuf> {
 /// metadata (Modrinth answers by file hash; nothing is downloaded yet). Importing the same pack
 /// again keeps the jars and ports it already has.
 pub fn import(path: &Path, log: Log) -> Result<Imported, String> {
-    let pack = horizon_port_pack::import::import(path)?;
+    let pack = sunrise_port_pack::import::import(path)?;
     let name = if pack.name.is_empty() || pack.name == "modlist" {
         path.file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -439,8 +439,8 @@ pub fn outcome(pack: &Imported) -> String {
 
 /// Removes an imported pack: its jars, ports and the profile's saves.
 pub fn remove(work: &Path) -> Result<(), String> {
-    if horizon_pack::is_pack(work) {
-        return horizon_pack::remove(work);
+    if sunrise_pack::is_pack(work) {
+        return sunrise_pack::remove(work);
     }
     if work.parent() != Some(ports_dir().as_path()) {
         return Err(format!("{} is not an imported pack", work.display()));
@@ -455,10 +455,10 @@ pub fn profile_home(work: &Path) -> PathBuf {
 
 /// Turns the game's command into this pack's profile: its own home (the player's options.txt
 /// copied in the first time, so keys and video settings carry over) and its carried-over mods.
-/// A modpack from Horizon's registry (`horizon-packs/<id>/`) plays its own profile the same way.
+/// A modpack from Sunrise's registry (`sunrise-packs/<id>/`) plays its own profile the same way.
 pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
-    if horizon_pack::is_pack(work) {
-        return horizon_pack::apply(cmd, work);
+    if sunrise_pack::is_pack(work) {
+        return sunrise_pack::apply(cmd, work);
     }
     // Only mods that load together: the game would refuse the later of two sharing a namespace.
     let (mods, _) = pipeline::loadable(&carried(work));
@@ -479,7 +479,7 @@ pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
     if !options.exists() && own.is_file() {
         let _ = fs::copy(own, &options);
     }
-    cmd.current_dir(&home).env("HORIZON_HOME", &home);
+    cmd.current_dir(&home).env("SUNRISE_HOME", &home);
     for m in mods {
         cmd.arg("--dev-mod").arg(m);
     }
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn found_packs_are_other_launchers_instances_with_mods() {
-        let root = std::env::temp_dir().join(format!("horizon-found-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sunrise-found-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let write = |path: &Path, text: &str| {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(found_slug(&found[1]), "all-the-mods-10");
         // The slug is the one importing it gives.
         for f in &found {
-            let pack = horizon_port_pack::import::import(&found_folder(f)).unwrap();
+            let pack = sunrise_port_pack::import::import(&found_folder(f)).unwrap();
             assert_eq!(found_slug(f), slug(&pack.name));
         }
         assert_eq!(
@@ -611,8 +611,8 @@ mod tests {
 
     #[test]
     fn jars_only_curseforge_serves_are_left_off_as_coming_soon() {
-        use horizon_port_pack::fetch::Outcome;
-        let work = std::env::temp_dir().join(format!("horizon-launcher-cf-{}", std::process::id()));
+        use sunrise_port_pack::fetch::Outcome;
+        let work = std::env::temp_dir().join(format!("sunrise-launcher-cf-{}", std::process::id()));
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).unwrap();
         pipeline::write_json(&work.join("pack.json"), &Pack::default()).unwrap();
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn a_profile_has_its_own_home_and_mods() {
         let root =
-            std::env::temp_dir().join(format!("horizon-launcher-pack-{}", std::process::id()));
+            std::env::temp_dir().join(format!("sunrise-launcher-pack-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let work = root.join("ports/small");
         let mut cmd = Command::new("true");
@@ -649,7 +649,7 @@ mod tests {
             let carry = work.join("mods").join(id).join("carry");
             fs::create_dir_all(&carry).unwrap();
             fs::write(
-                carry.join("horizon-mod.toml"),
+                carry.join("sunrise-mod.toml"),
                 format!(
                     "id = \"{id}\"\nname = \"{id}\"\nversion = \"1\"\napi = \"0.2\"\n\
                      capabilities = [\"registries\"]\nnamespaces = [{namespaces}]\n"
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn resource_only_profile_can_play_without_enabling_or_overwriting_packs() {
         let root = std::env::temp_dir().join(format!(
-            "horizon-launcher-resource-profile-{}",
+            "sunrise-launcher-resource-profile-{}",
             std::process::id()
         ));
         let work = root.join("ports/looks");
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(cmd.get_current_dir(), Some(home.as_path()));
         assert!(cmd
             .get_envs()
-            .any(|(k, v)| k == "HORIZON_HOME" && v == Some(home.as_os_str())));
+            .any(|(k, v)| k == "SUNRISE_HOME" && v == Some(home.as_os_str())));
         assert!(home.join("resourcepacks/Look/pack.mcmeta").is_file());
         assert_eq!(
             fs::read(home.join("resourcepacks/look.zip")).unwrap(),
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn a_profile_with_only_data_packs_plays_and_its_game_folder_holds_them() {
         let root = std::env::temp_dir().join(format!(
-            "horizon-launcher-datapack-profile-{}",
+            "sunrise-launcher-datapack-profile-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -752,12 +752,12 @@ mod tests {
     #[test]
     fn resource_downloads_enable_port_even_when_no_mods_are_portable() {
         let root = std::env::temp_dir().join(format!(
-            "horizon-launcher-resource-index-{}",
+            "sunrise-launcher-resource-index-{}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
         let pack = Pack {
-            files: vec![horizon_port_pack::import::PackFile {
+            files: vec![sunrise_port_pack::import::PackFile {
                 path: "resourcepacks/look.zip".into(),
                 ..Default::default()
             }],
@@ -777,12 +777,12 @@ mod tests {
     #[test]
     fn mods_made_for_1_20_are_not_portable() {
         let root = std::env::temp_dir().join(format!(
-            "horizon-launcher-old-layout-{}",
+            "sunrise-launcher-old-layout-{}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
         pipeline::write_json(&root.join("pack.json"), &Pack::default()).unwrap();
-        let record = |key: &str| horizon_port_pack::inventory::Record {
+        let record = |key: &str| sunrise_port_pack::inventory::Record {
             key: key.into(),
             class: "content".into(),
             tier: "data".into(),

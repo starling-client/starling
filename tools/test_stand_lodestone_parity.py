@@ -58,12 +58,12 @@ def main():
         lock,jars,libraries=runner.base.verify_artifacts()
         classes=out/'classes';classes.mkdir()
         dependency=os.pathsep.join(map(str,libraries))
-        oracle=runner.lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandExecOracle.java'
+        oracle=runner.lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandExecOracle.java'
         with (out/'compile-java.log').open('w') as log:
             subprocess.run(['javac','--release',str(lock['minecraft']['java_major']),'-proc:none','-cp',str(jars['server'])+os.pathsep+dependency,'-d',str(classes),str(oracle)],stdout=log,stderr=subprocess.STDOUT,check=True)
         cwd=out/'java';cwd.mkdir()
         with (out/'java.log').open('w') as log:
-            subprocess.run(['java','-Xmx3G','-Duser.timezone=UTC','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency]),'dev.horizonlab.parity.VanillaCommandExecOracle',str(cwd/'universe'),str(source),str(out/'java.jsonl'),str(runner.SEED)],cwd=cwd,stdout=log,stderr=subprocess.STDOUT,check=True)
+            subprocess.run(['java','-Xmx3G','-Duser.timezone=UTC','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency]),'dev.sunriselab.parity.VanillaCommandExecOracle',str(cwd/'universe'),str(source),str(out/'java.jsonl'),str(runner.SEED)],cwd=cwd,stdout=log,stderr=subprocess.STDOUT,check=True)
         rows=read(out/'java.jsonl');admit(rows)
         print('Fresh Java admitted',len(rows),'complete records',flush=True)
         return 0
@@ -74,7 +74,7 @@ def main():
     java=read(ref/'java.jsonl');admit(java)
     (out/'java.jsonl').write_bytes(reference_bytes)
     binary_sha=sha(binary);cwd=out/'native';cwd.mkdir()
-    env=runner.lab.game_env(HORIZON_PLAYER_NAME='Player',HORIZON_COMMAND_SCRIPT=source,HORIZON_COMMAND_OUTPUT=out/'native.jsonl',HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    env=runner.lab.game_env(SUNRISE_PLAYER_NAME='Player',SUNRISE_COMMAND_SCRIPT=source,SUNRISE_COMMAND_OUTPUT=out/'native.jsonl',SUNRISE_API_DISCOVERY='http://127.0.0.1:9/')
     with (out/'native.log').open('w') as log:
         result=runner.run_game([str(binary),'--resources',str(runner.lab.RESOURCES),'--world','harness','--seed',str(runner.SEED),'--radius','4'],cwd=cwd,env=env,stdout=log,stderr=subprocess.STDOUT)
     assert result.returncode==0,result.returncode

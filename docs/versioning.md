@@ -1,10 +1,10 @@
 # Versioning
 
-How Horizon's releases are numbered from 0.2 on, how that maps onto the release workflows, and how every install
+How Sunrise's releases are numbered from 0.2 on, how that maps onto the release workflows, and how every install
 made before 0.2 gets there. The workflows themselves are in [release-flow.md](release-flow.md).
 
 Until 0.2 the game was tagged by date (`v2026.10.19.15`) and the launcher counted on its own (`launcher-v0.16.0`).
-From 0.2 both follow [semantic versioning](https://semver.org) and share one release line: **Horizon 0.2.x** is the
+From 0.2 both follow [semantic versioning](https://semver.org) and share one release line: **Sunrise 0.2.x** is the
 game and the launcher of the 0.2 line.
 
 **Since 2026-10-28 the game ships only Nightlies** ([release-flow.md](release-flow.md#nightly-only)): no new `vX.Y.Z`
@@ -18,8 +18,8 @@ the release line. What follows describes the `vX.Y.Z` game tags as they were.
 | --- | --- | --- |
 | From 0.2 | `v0.2.0`, `v0.2.1`, … | `launcher@0.2.0`, `launcher@0.2.1`, … |
 | Before 0.2 | `v2026.10.19`, `v2026.10.19.15`, … | `launcher-v0.1.1` … `launcher-v0.16.0` (and the bridge, `launcher-v0.17.0`) |
-| Release title | `Horizon 0.2.3: <what changed>` | `Horizon launcher 0.2.1` |
-| The program says | `horizon-server 0.2.3`, `v0.2.3` in crash reports | `horizon-launcher 0.2.1` |
+| Release title | `Sunrise 0.2.3: <what changed>` | `Sunrise launcher 0.2.1` |
+| The program says | `sunrise-server 0.2.3`, `v0.2.3` in crash reports | `sunrise-launcher 0.2.1` |
 
 - **The line** (`MAJOR.MINOR`) is in `.github/release-line.txt`, one line such as `0.2`. Ludovic decides when it
   moves; moving it is a one-line pull request (`0.3`), and the new line's first releases (`v0.3.0`,
@@ -47,22 +47,22 @@ Every 0.2 tag is newer than every tag from before 0.2. Within each:
 
 A tag is a 0.2 tag when it is `v` or `launcher@` followed by exactly three numbers (and an optional `-PRE`) with a
 major below 1000; a date's first number is a year, so `v2026.10.21` never is. The rule is written once per
-language, with the same tests: `crates/horizon-server/src/update.rs` (`newer`), `launcher/src/backend.rs`
+language, with the same tests: `crates/sunrise-server/src/update.rs` (`newer`), `launcher/src/backend.rs`
 (`release_order`), `tools/release_train.py` (`tag_key`) and
 the website's `src/versions.js` (horizon-rust/horizon-site).
 
 ## The workflows
 
 - **`release.yml`**: `tools/release_train.py decide --kind game` picks the tag (`next_game_tag`); the build gets the
-  version without its `v` in `HORIZON_VERSION`, so `horizon_core::release::VERSION` (and `--version`, the user
+  version without its `v` in `SUNRISE_VERSION`, so `sunrise_core::release::VERSION` (and `--version`, the user
   agents and crash reports) say `0.2.3`. No version-bump commits: `Cargo.toml` versions are what builds
-  from source say. The build checks that `horizon-server --version` and `horizon-prepare --version` say it.
-- **`launcher.yml`**: `decide --kind launcher` picks `launcher@0.2.N`; the build gets `HORIZON_LAUNCHER_VERSION`
-  (`0.2.N`) and `HORIZON_LAUNCHER_TAG` (`launcher@0.2.N`). The tag tells the launcher which line it is on: a release
+  from source say. The build checks that `sunrise-server --version` and `sunrise-prepare --version` say it.
+- **`launcher.yml`**: `decide --kind launcher` picks `launcher@0.2.N`; the build gets `SUNRISE_LAUNCHER_VERSION`
+  (`0.2.N`) and `SUNRISE_LAUNCHER_TAG` (`launcher@0.2.N`). The tag tells the launcher which line it is on: a release
   built with only the version (every launcher before 0.2) is a `launcher-v` one.
 - **Notes**: a line's first release (`X.Y.0`) opens with a paragraph saying so; `v0.2.0`'s and `launcher@0.2.0`'s say
-  that releases are numbered from now on, and tell server owners to run `horizon-server update` (or, if their server
-  says it is up to date, `horizon-server update --version v0.2.0`).
+  that releases are numbered from now on, and tell server owners to run `sunrise-server update` (or, if their server
+  says it is up to date, `sunrise-server update --version v0.2.0`).
 - **A line's first release** goes out as soon as the release train runs after the line changes, without waiting for
   a pull request, but never while `RELEASES_PAUSED` is set.
 
@@ -75,9 +75,9 @@ Installs made before 0.2 run old code that compares tags number by number, so to
 | --- | --- | --- |
 | Launcher 0.16.0 and older, updating itself | Looks only at `launcher-v` tags and takes one above its own version. Never sees `launcher@`. | **The bridge**: one last `launcher-v0.17.0`, built with the new code. Old launchers take it as usual; it knows it is a `launcher-v` release and takes `launcher@0.2.0` next. Two updates, both by themselves. |
 | Launcher 0.16.0 and older, installing games | Sorts `v0.2.0` below every dated release and below the versions it has installed, so it never offers it. | Once the launcher has updated itself (above), it offers `v0.2.0` like any update. Until then a player can install `v0.2.0` by hand on the Versions page (it is listed last). |
-| Launcher that can't replace itself: opened from its disk image, a macOS app not moved out of Downloads (macOS runs it from a read-only copy), a `.zip` opened in Explorer without extracting it, a folder it can't write (#9287) | Finds every update and fails to put it in place at each check. Launchers released before #9287 say so only on Settings' Launcher line ("the update failed: …"), so the player sees nothing and stays on that version (launcher 0.2.0 seen on 2026-11-04 with 0.2.40 out). Newer ones say "A new version is available" with **Download again**. | Download the launcher again once from playhorizon.dev and put it where it can write: Applications on macOS, an extracted folder or `horizon-launcher-setup.exe` on Windows. It updates itself from then on. Nothing in a release can reach such a copy: it fails before it runs anything new. |
-| Launcher that never updates itself (`HORIZON_LAUNCHER_NO_SELF_UPDATE`, a package) | As above, without the bridge. | Update the package, or install `v0.2.0` by hand. |
-| `horizon-server` from before the bridge | Reads GitHub's *latest* release and installs it only if its tag compares higher: `v0.2.0` never does. `--version <tag>` skips the comparison. A server never updates itself: its supervisor only logs a notice every 6 hours, and the running process keeps its old code until the service restarts. | **The game bridge**: the last dated release, built with the new code, made stable (*latest*) before `v0.2.0` is published. `v0.2.0` then spends at least 6 hours as a beta, so *latest* stays the bridge for that long (the longer it stays a beta, the more servers are caught). An owner who runs `horizon-server update` in that time gets the bridge, and the command runs the new code at once, so the next `horizon-server update` takes `v0.2.0` once it is stable. The log notice only changes after the service restarts. An owner on old code after that time is told the server is up to date, and runs `horizon-server update --version v0.2.0` once. 0.2.0's notes say so. |
+| Launcher that can't replace itself: opened from its disk image, a macOS app not moved out of Downloads (macOS runs it from a read-only copy), a `.zip` opened in Explorer without extracting it, a folder it can't write (#9287) | Finds every update and fails to put it in place at each check. Launchers released before #9287 say so only on Settings' Launcher line ("the update failed: …"), so the player sees nothing and stays on that version (launcher 0.2.0 seen on 2026-11-04 with 0.2.40 out). Newer ones say "A new version is available" with **Download again**. | Download the launcher again once from playsunrise.net and put it where it can write: Applications on macOS, an extracted folder or `sunrise-launcher-setup.exe` on Windows. It updates itself from then on. Nothing in a release can reach such a copy: it fails before it runs anything new. |
+| Launcher that never updates itself (`SUNRISE_LAUNCHER_NO_SELF_UPDATE`, a package) | As above, without the bridge. | Update the package, or install `v0.2.0` by hand. |
+| `sunrise-server` from before the bridge | Reads GitHub's *latest* release and installs it only if its tag compares higher: `v0.2.0` never does. `--version <tag>` skips the comparison. A server never updates itself: its supervisor only logs a notice every 6 hours, and the running process keeps its old code until the service restarts. | **The game bridge**: the last dated release, built with the new code, made stable (*latest*) before `v0.2.0` is published. `v0.2.0` then spends at least 6 hours as a beta, so *latest* stays the bridge for that long (the longer it stays a beta, the more servers are caught). An owner who runs `sunrise-server update` in that time gets the bridge, and the command runs the new code at once, so the next `sunrise-server update` takes `v0.2.0` once it is stable. The log notice only changes after the service restarts. An owner on old code after that time is told the server is up to date, and runs `sunrise-server update --version v0.2.0` once. 0.2.0's notes say so. |
 | Servers the launcher hosts (Servers page) | Set up from the launcher's installed versions. | Follow the launcher. |
 | `install.sh`, `install.ps1` | Install *latest*. | Nothing to do. |
 | Crash reports of releases before 0.2 | Report the folder name (`v2026.10.19.15`). | Unchanged; 0.2 builds report `v0.2.x` from the built-in version. |

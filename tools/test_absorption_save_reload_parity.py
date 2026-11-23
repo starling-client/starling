@@ -4,7 +4,7 @@
 `LivingEntity.readAdditionalSaveData` stores it with `internalSetAbsorptionAmount`, which does not
 clamp (only `setAbsorptionAmount` does), and `addAdditionalSaveData` writes it back as it is. Pigs
 are summoned with several amounts, the world is saved and reloaded (tools/entity_save_reload.py),
-and each pig's `AbsorptionAmount` is read with `/data get` on vanilla's server and Horizon's.
+and each pig's `AbsorptionAmount` is read with `/data get` on vanilla's server and Sunrise's.
 """
 try:
     from . import entity_save_reload as harness

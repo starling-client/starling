@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native client arrow ticks with Horizon's production client arrow simulation."""
+"""Compare native client arrow ticks with Sunrise's production client arrow simulation."""
 import os
 from pathlib import Path
 import json
@@ -53,15 +53,15 @@ def main():
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/integration_env.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/arrows.rs',
-               lab.ROOT / 'crates/horizon-client/src/arrows_client_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/network/remote_projectiles.rs',
-               lab.ROOT / 'crates/horizon-client/src/motion/fluids.rs',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaClientArrowOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaArrowOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaRegistryCollisionScanOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSceneCollisionOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java']
+               lab.ROOT / 'crates/sunrise-client/src/arrows.rs',
+               lab.ROOT / 'crates/sunrise-client/src/arrows_client_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/network/remote_projectiles.rs',
+               lab.ROOT / 'crates/sunrise-client/src/motion/fluids.rs',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaClientArrowOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaArrowOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaRegistryCollisionScanOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSceneCollisionOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java']
     hashes = base.source_hashes(sources)
     rows = list(cases())
     inputs = build / 'inputs.txt'
@@ -71,10 +71,10 @@ def main():
                                                      {'client': client}, libraries, lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaClientArrowOracle',
                      [inputs, build / 'client.txt'], 'client')
-    with tempfile.TemporaryDirectory(prefix='horizon-client-arrow-parity-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-client-arrow-parity-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_CLIENT_ARROW_INPUT=str(inputs), HORIZON_CLIENT_ARROW_OUTPUT=str(build / 'rust.txt'))
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+        env.update(SUNRISE_CLIENT_ARROW_INPUT=str(inputs), SUNRISE_CLIENT_ARROW_OUTPUT=str(build / 'rust.txt'))
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client-lib', '--lib',
                             'arrows::client_tests::client_arrow_parity_fixture',
                             '--', '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'client.txt', build / 'rust.txt', len(rows))

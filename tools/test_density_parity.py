@@ -605,11 +605,11 @@ def corpus():
         seed = [0, 1, -1, -9223372036854775808, 9223372036854775807][scenario % 5] if scenario < 10 else rng.randrange(-2**63,2**63)
         yield f"gseed {seed} {scenario % 2}"
         definitions = [
-            ("horizon:primary", -7, 1.0, 4, scenario % 3, [1.0,0.0,-0.5,1.0] if scenario % 4 == 0 else []),
+            ("sunrise:primary", -7, 1.0, 4, scenario % 3, [1.0,0.0,-0.5,1.0] if scenario % 4 == 0 else []),
             ("minecraft:nether/temperature", -7, 1.0, 4, 2, []),
             ("minecraft:nether/vegetation", -8, 1.0, 4, 2, [1.0,0.0,0.5,1.0]),
-            ("horizon:empty", 0, 1.0, 0, 1, []),
-            ("horizon:secondary", -3, 0.75, 3, 0, [1.0,-0.5,0.0]),
+            ("sunrise:empty", 0, 1.0, 0, 1, []),
+            ("sunrise:secondary", -3, 0.75, 3, 0, [1.0,-0.5,0.0]),
         ]
         for name, base, amplitude, count, normalization, modifiers in definitions:
             yield f"gregister {name} {base} {number(amplitude)} {count} {normalization} {len(modifiers)} " + " ".join(number(v) for v in modifiers)
@@ -1058,10 +1058,10 @@ def main():
     commands = list(corpus())
     inputs = build / "inputs.txt"
     inputs.write_text("\n".join(commands) + "\n", encoding="utf-8")
-    source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDensityOracle.java"
+    source = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaDensityOracle.java"
     sources = [source, Path(__file__), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "tools/lab.py",
-               *sorted((lab.ROOT / "crates/horizon-core").rglob("*.rs")),
-               lab.ROOT / "crates/horizon-core/Cargo.toml", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"]
+               *sorted((lab.ROOT / "crates/sunrise-core").rglob("*.rs")),
+               lab.ROOT / "crates/sunrise-core/Cargo.toml", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"]
     tested_sources = test_rust_parity.source_hashes(sources)
     classes = build / "classes"
     classes.mkdir(exist_ok=True)
@@ -1069,9 +1069,9 @@ def main():
     run = test_rust_parity.run
     run(["javac", "--release", str(lock["minecraft"]["java_major"]), "-proc:none",
          "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(source)])
-    run(["cargo", "build", "--release", "--bin", "horizon-density-parity"])
+    run(["cargo", "build", "--release", "--bin", "sunrise-density-parity"])
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
-    binary = Path(metadata["target_directory"]) / "release" / ("horizon-density-parity.exe" if os.name == "nt" else "horizon-density-parity")
+    binary = Path(metadata["target_directory"]) / "release" / ("sunrise-density-parity.exe" if os.name == "nt" else "sunrise-density-parity")
     candidate = build / "rust.txt"
     with inputs.open("rb") as stdin, candidate.open("wb") as stdout:
         run([str(binary)], stdin=stdin, stdout=stdout)
@@ -1079,7 +1079,7 @@ def main():
     for side, jar in jars.items():
         reference = build / f"vanilla-{side}.txt"
         run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]),
-             "dev.horizonlab.parity.VanillaDensityOracle", str(inputs), str(reference)])
+             "dev.sunriselab.parity.VanillaDensityOracle", str(inputs), str(reference)])
         matched = test_rust_parity.compare(reference, candidate)
         references.append({"side": side, "jar_sha256": lab.digest(jar, "sha256"),
                            "output_sha256": lab.digest(reference, "sha256"), "matched_output_lines": matched})

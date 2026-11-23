@@ -5,13 +5,13 @@
 // server's world is not its own.
 use super::wrench::{self as wr};
 use super::{Game, GuestUse};
-use horizon_client::command::args::GameMode;
-use horizon_client::first_person::Hand;
-use horizon_client::text::Text;
-use horizon_core::position::BlockPos;
-use horizon_protocol::packets::play::{self, Clientbound as C};
-use horizon_world::chunk::BlockState;
-use horizon_world::level::flags;
+use sunrise_client::command::args::GameMode;
+use sunrise_client::first_person::Hand;
+use sunrise_client::text::Text;
+use sunrise_core::position::BlockPos;
+use sunrise_protocol::packets::play::{self, Clientbound as C};
+use sunrise_world::chunk::BlockState;
+use sunrise_world::level::flags;
 
 impl Game<'_> {
     /// `Game::use_item`'s HEAD: Some (the hand) when the wrench took the
@@ -162,7 +162,7 @@ impl Game<'_> {
         let line = Text::literal(text.to_owned());
         if self.lan_acting.is_some() {
             self.guest_packets.push(C::SystemChat(play::SystemChat {
-                content: horizon_client::lan::data::component_nbt(&line.component()),
+                content: sunrise_client::lan::data::component_nbt(&line.component()),
                 overlay: true,
             }));
         } else {

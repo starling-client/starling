@@ -29,8 +29,8 @@ def main():
                lab.ROOT / 'Cargo.lock', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/integration_env.py',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaNativeEntityMovesOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java']
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaNativeEntityMovesOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java']
     sources += sorted((lab.ROOT / 'crates').rglob('*.rs'))
     hashes = base.source_hashes(sources)
     expected = rows(golden)
@@ -43,21 +43,21 @@ def main():
         harness.java_run(build, classes, dependencies, 'VanillaNativeEntityMovesOracle',
                          [fixture, output], side)
         assert rows(output) == expected, f'{side}: committed outcomes differ from vanilla'
-    harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib', '--no-run', '--message-format=json'],
+    harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run', '--message-format=json'],
                        build, 'compile-rust', timeout=3600)
     artifacts = [json.loads(line) for line in (build / 'compile-rust.log').read_text().splitlines()
                  if line.startswith('{')]
     executables = {record['executable'] for record in artifacts
                    if record.get('reason') == 'compiler-artifact' and record.get('executable')
                    and record.get('profile', {}).get('test')
-                   and record['target']['name'] == 'horizon_client'
+                   and record['target']['name'] == 'sunrise_client'
                    and 'lib' in record['target']['kind']}
     assert len(executables) == 1, executables
     executable = executables.pop()
-    with tempfile.TemporaryDirectory(prefix='horizon-move-properties-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-move-properties-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        for key in ('XDG_CACHE_HOME', 'TMPDIR', 'HORIZON_LAUNCHER_TRASH',
-                    'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP'):
+        for key in ('XDG_CACHE_HOME', 'TMPDIR', 'SUNRISE_LAUNCHER_TRASH',
+                    'SUNRISE_LAUNCHER_CLIPBOARD', 'SUNRISE_LAUNCHER_DESKTOP'):
             directory = Path(scratch) / key
             directory.mkdir()
             env[key] = str(directory)

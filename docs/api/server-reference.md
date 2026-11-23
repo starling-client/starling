@@ -1,16 +1,16 @@
-<!-- Generated from crates/horizon-server/src and crates/horizon-server-launch/src (the help text, config::TEMPLATE, api::ROUTES) by reference.rs; a test fails when this file is out of date. Update it with: HORIZON_WRITE_DOCS=1 cargo test -p horizon-server reference -->
+<!-- Generated from crates/sunrise-server/src and crates/sunrise-server-launch/src (the help text, config::TEMPLATE, api::ROUTES) by reference.rs; a test fails when this file is out of date. Update it with: SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-server reference -->
 # Server reference
 
-Everything `horizon-server` offers a host or a tool: its commands, every `server.toml` key and the control API. How to host: [hosting.md](../hosting.md); the design: [server.md](../server.md); stability and versions: [stability.md](stability.md).
+Everything `sunrise-server` offers a host or a tool: its commands, every `server.toml` key and the control API. How to host: [hosting.md](../hosting.md); the design: [server.md](../server.md); stability and versions: [stability.md](stability.md).
 
 ## Commands
 
-`horizon-server help` prints:
+`sunrise-server help` prints:
 
 ```text
-horizon-server: host a Horizon (Minecraft Java Edition 26.3) server
+sunrise-server: host a Sunrise (Minecraft Java Edition 26.3) server
 
-Usage: horizon-server [--dir DIR] <command>
+Usage: sunrise-server [--dir DIR] <command>
 
   init        Set up a server here: the EULA, the world, the port, who may join (asks, or takes flags:
               --eula --world NAME --seed SEED --port N --whitelist/--no-whitelist --player NAME... --op NAME
@@ -58,7 +58,7 @@ Usage: horizon-server [--dir DIR] <command>
               at its next start
   import FILE Write server.toml from a vanilla server.properties
   import-resources DIR
-              Copy game files prepared elsewhere (by the launcher or horizon-prepare) into place, after
+              Copy game files prepared elsewhere (by the launcher or sunrise-prepare) into place, after
               checking they are complete and for this Minecraft version; the old copy stays on failure
   op NAME, deop NAME
   whitelist on|off|list, whitelist add|remove NAME
@@ -75,7 +75,7 @@ Settings live in server.toml; the server writes server.properties from it before
 
 ## `server.toml`
 
-Horizon server settings (docs/server.md). The server writes them into server.properties before every start: edit this file, not that one. Unknown keys are refused. `horizon-server init` writes this file with these defaults; `horizon-server config set SECTION.KEY=VALUE` changes it.
+Sunrise server settings (docs/server.md). The server writes them into server.properties before every start: edit this file, not that one. Unknown keys are refused. `sunrise-server init` writes this file with these defaults; `sunrise-server config set SECTION.KEY=VALUE` changes it.
 
 ### `[server]`
 
@@ -90,13 +90,13 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `enforce_whitelist` | `false` | `enforce-whitelist` | kick online players taken off the whitelist |
 | `view_distance` | `10` | `view-distance` | chunks sent around each player |
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
-| `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
-| `max_viewed_loaded_chunks` | `2048` | `horizon-max-viewed-loaded-chunks` | chunks a mod may keep loaded for one player in another level (0: none; at most 2048 for now) |
-| `max_viewed_ticking_chunks` | `441` | `horizon-max-viewed-ticking-chunks` | of them, ticking (one player's simulation area at distance 10) |
-| `max_viewed_loaded_chunks_per_level` | `16384` | `horizon-max-viewed-loaded-chunks-per-level` | the same for all players together, per level |
-| `max_viewed_ticking_chunks_per_level` | `3528` | `horizon-max-viewed-ticking-chunks-per-level` | ticking, all players together, per level |
-| `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
-| `accept_older_clients` | `false` | `horizon-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
+| `max_view_distance` | `0` | `sunrise-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
+| `max_viewed_loaded_chunks` | `2048` | `sunrise-max-viewed-loaded-chunks` | chunks a mod may keep loaded for one player in another level (0: none; at most 2048 for now) |
+| `max_viewed_ticking_chunks` | `441` | `sunrise-max-viewed-ticking-chunks` | of them, ticking (one player's simulation area at distance 10) |
+| `max_viewed_loaded_chunks_per_level` | `16384` | `sunrise-max-viewed-loaded-chunks-per-level` | the same for all players together, per level |
+| `max_viewed_ticking_chunks_per_level` | `3528` | `sunrise-max-viewed-ticking-chunks-per-level` | ticking, all players together, per level |
+| `admin_feedback_to_ops` | `true` | `sunrise-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
+| `accept_older_clients` | `false` | `sunrise-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
 ### `[world]`
 
@@ -116,7 +116,7 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 
 | Key | Default | In `server.properties` | What it does |
 | --- | --- | --- | --- |
-| `path` | `""` |  | the game program; empty: the one installed beside horizon-server |
+| `path` | `""` |  | the game program; empty: the one installed beside sunrise-server |
 | `resources` | `""` |  | the prepared game files; empty: resources/ here, else the usual places |
 | `restart_on_crash` | `true` |  | start the game again when it crashes |
 | `low_memory` | `false` |  | true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time |
@@ -176,7 +176,7 @@ Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-
 
 ## Control API (`/api/v1`)
 
-HTTP and JSON on 127.0.0.1. A running server writes its address and a random token to `.horizon/api.json`, readable only by its own user; every request sends `Authorization: Bearer <token>` and a `Host` that is that address. Errors answer `{"error": "..."}` with 400, 401, 403, 404, 405 or 409. The web panel uses the same routes with its session.
+HTTP and JSON on 127.0.0.1. A running server writes its address and a random token to `.sunrise/api.json`, readable only by its own user; every request sends `Authorization: Bearer <token>` and a `Host` that is that address. Errors answer `{"error": "..."}` with 400, 401, 403, 404, 405 or 409. The web panel uses the same routes with its session.
 
 | Method | Path | Takes | Answers | What it does |
 | --- | --- | --- | --- | --- |
@@ -196,9 +196,9 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `GET` | `/api/v1/crash-reports/read` | `?name=<file>` (a name `crash-reports` lists) | the report's text (`text/plain`) | Read one crash report |
 | `POST` | `/api/v1/restore` | `{"name": "<backup>", "dimension": "minecraft:the_nether"}` (`dimension` optional) | `{"name": "<backup>", "dimension": "<id>" or null}` | Restart the game with that backup's world, or only one dimension of it (what it replaces is kept in backups/) |
 | `POST` | `/api/v1/update` | `{"tag": "...", "timeout": seconds}` (both optional) | `{"ok": true}`; `status` says how it went (`update`) | Restart on that installed release, or download the newest first; goes back if the game isn't up within the timeout |
-| `GET` | `/api/v1/metrics/prometheus` | nothing | the latest sample as Prometheus text: `horizon_up`, `horizon_tps`, `horizon_mspt{stat}`, `horizon_players_online`, `horizon_memory_rss_bytes`, `horizon_loaded_chunks{dimension}` and `horizon_entities{dimension}` (players and block entities apart)... | Metrics for a monitoring tool to scrape |
+| `GET` | `/api/v1/metrics/prometheus` | nothing | the latest sample as Prometheus text: `sunrise_up`, `sunrise_tps`, `sunrise_mspt{stat}`, `sunrise_players_online`, `sunrise_memory_rss_bytes`, `sunrise_loaded_chunks{dimension}` and `sunrise_entities{dimension}` (players and block entities apart)... | Metrics for a monitoring tool to scrape |
 | `GET` | `/api/v1/players` | nothing | `online` (name, uuid, address, ping_ms, dimension, position, op_level), `max_players`, `ops`, `whitelist` (`enabled`, `players`), `bans`, `ip_bans` (with reason, source, created, expires) | Who is online, and vanilla's lists |
-| `GET` | `/api/v1/mods` | nothing | `mods` (id, version) from the running engine's LoadedMods inventory; `provenance` contains `engine` (found, target, base, horizon, hooks) and `native` (id, version, sha256) from the configured program's native-mods.json. 409 when the runtime inventory is unavailable | The packages loaded by the running server, with build provenance separate |
+| `GET` | `/api/v1/mods` | nothing | `mods` (id, version) from the running engine's LoadedMods inventory; `provenance` contains `engine` (found, target, base, sunrise, hooks) and `native` (id, version, sha256) from the configured program's native-mods.json. 409 when the runtime inventory is unavailable | The packages loaded by the running server, with build provenance separate |
 | `POST` | `/api/v1/players/kick` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Kick an online player |
 | `POST` | `/api/v1/players/ban` | `{"name", "reason"}` (reason optional) | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Ban a player (kicked if online) |
 | `POST` | `/api/v1/players/pardon` | `{"name"}` | `{"changed": bool, "output": [...]}`: whether the list (or who is online) changed, and the console's lines | Lift a player's ban |

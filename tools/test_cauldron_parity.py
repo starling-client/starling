@@ -3,7 +3,7 @@
 
 The Java oracle (VanillaCauldronOracle) calls the cauldron block's useItemOn
 with a recording level and player; the Rust example (cauldron_fixture) runs
-horizon_client::cauldron. Every item is used on every cauldron state (empty,
+sunrise_client::cauldron. Every item is used on every cauldron state (empty,
 water, lava and powder snow at each level), with water potions, dyed armour,
 patterned banners and shulker boxes, in survival and creative, under water or
 not, and with a crowded inventory. The result, block writes, sounds, drops and
@@ -70,7 +70,7 @@ def main():
                           'inventory': inventory})
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in cases))
     vanilla.run('VanillaCauldronOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'cauldron_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'cauldron_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
     total = lib.compare(cases, work / 'native.txt', work / 'rust.txt',
                         lambda case, line: case['state'].split('|')[0] + ' ' + line.split('\t')[0],
                         lambda case: json.dumps(case)[:700], args.limit)

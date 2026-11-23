@@ -38,7 +38,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = "crates/horizon-client/src/"
+SRC = "crates/sunrise-client/src/"
 GAME_RS = SRC + "game.rs"
 MANIFEST = Path(__file__).with_name("game-moves.tsv")
 

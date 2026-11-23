@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Redstone machines through the real tick loop in vanilla 26.3 and in Horizon, one tick at a time.
+"""Redstone machines through the real tick loop in vanilla 26.3 and in Sunrise, one tick at a time.
 
   redstone_diff.py [--machines N] [--seed S] [--ticks T] [--only NAME...] [--keep DIR]
 
@@ -11,10 +11,10 @@ after every tick both games report the machine's blocks (with their properties),
 where the blocks differ is printed with the ones that differ. The entities near the machine are recorded
 too (see --keep) but not compared yet.
 
-Vanilla is the client of tools/perf_bench.py's driver (mods/horizon/src/bench: RedstoneDiff snapshots
-the box around every stepped overworld tick; no server, no EULA); Horizon is horizon-ctl on the same
+Vanilla is the client of tools/perf_bench.py's driver (mods/sunrise/src/bench: RedstoneDiff snapshots
+the box around every stepped overworld tick; no server, no EULA); Sunrise is sunrise-ctl on the same
 commands, reading `simulation blocks`. Needs the same artifacts as perf_bench.py (your own client
-jar, built horizon-client and horizon-ctl, prepared resources).
+jar, built sunrise-client and sunrise-ctl, prepared resources).
 """
 import argparse
 import json
@@ -321,7 +321,7 @@ def run_vanilla(batch, args, work):
     command = [str(java), '-Xmx2G', *pb.LAUNCHER_JVM, *pb.runtime.conditional_client_jvm_options(manifest),
                *pb.manifest_jvm_flags(manifest), '--enable-native-access=ALL-UNNAMED',
                f'-Djava.library.path={natives}', f'-Dorg.lwjgl.system.SharedLibraryExtractPath={natives}',
-               f'-Dhorizon.bench.script={script}', f'-Dhorizon.bench.out={events}', '-Dfabric.log.disableAnsi=true',
+               f'-Dsunrise.bench.script={script}', f'-Dsunrise.bench.out={events}', '-Dfabric.log.disableAnsi=true',
                '-cp', os.pathsep.join(map(str, jars + fabric)), 'net.fabricmc.loader.impl.launch.knot.KnotClient',
                '--username', pb.BENCH_PLAYER, '--uuid', '00000000000000000000000000000000', '--accessToken', '0',
                '--offlineDeveloperMode', '--version', pb.lab.VERSION, '--gameDir', str(game_dir),
@@ -347,7 +347,7 @@ def run_vanilla(batch, args, work):
     return result
 
 
-# ---- Horizon -----------------------------------------------------------------------------------
+# ---- Sunrise -----------------------------------------------------------------------------------
 
 class Ctl:
     def __init__(self, ctl, sock):
@@ -369,21 +369,21 @@ class Ctl:
         return self.json('simulation')['game_time']
 
 
-def run_horizon(batch, args, work):
-    ctl_path = ROOT / 'target' / args.profile / ('horizon-ctl.exe' if os.name == 'nt' else 'horizon-ctl')
-    sock = work / 'horizon.sock'
-    game_dir = work / 'horizon-game'
+def run_sunrise(batch, args, work):
+    ctl_path = ROOT / 'target' / args.profile / ('sunrise-ctl.exe' if os.name == 'nt' else 'sunrise-ctl')
+    sock = work / 'sunrise.sock'
+    game_dir = work / 'sunrise-game'
     import shutil
     shutil.rmtree(game_dir, ignore_errors=True)
     game_dir.mkdir(parents=True)
-    env = lab.game_env(HORIZON_HOME=str(game_dir), HORIZON_TELEMETRY_URL='off')
+    env = lab.game_env(SUNRISE_HOME=str(game_dir), SUNRISE_TELEMETRY_URL='off')
     ctl = Ctl(ctl_path, sock)
     launch = subprocess.run([str(ctl_path), '--socket', str(sock), 'launch', '--world', WORLD, '--seed', str(SEED),
                              '--creative', '--wait', '--offscreen', '--resources', str(args.resources),
                              '--game-dir', str(game_dir), '--render-distance', '8', '--width', '640', '--height', '360'],
                             env=env, capture_output=True, text=True, timeout=900)
     if launch.returncode:
-        raise SystemExit('horizon launch failed: ' + launch.stdout + launch.stderr)
+        raise SystemExit('sunrise launch failed: ' + launch.stdout + launch.stderr)
     ox, oy, oz = ORIGIN
     ctl.command('gamemode spectator')
     ctl.run('tp', ox + SPACING * 3.5, oy + 6.0, oz + 4.0)
@@ -449,8 +449,8 @@ def main():
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--ticks', type=int, default=40)
     p.add_argument('--only', nargs='*', help='machine names')
-    p.add_argument('--profile', default='fast', help='the cargo profile of the built horizon-client and horizon-ctl')
-    p.add_argument('--resources', default=str(ROOT / '.local/horizon-client/26.3'))
+    p.add_argument('--profile', default='fast', help='the cargo profile of the built sunrise-client and sunrise-ctl')
+    p.add_argument('--resources', default=str(ROOT / '.local/sunrise-client/26.3'))
     p.add_argument('--near', nargs=4, type=int, metavar=('DX', 'DY', 'DZ', 'R'),
                    help='keep only the setup commands within R blocks of this offset from the machine\'s origin')
     p.add_argument('--drop', nargs='*', type=int, default=[], help='with --near: leave out these setblock commands (by index)')
@@ -465,7 +465,7 @@ def main():
     batches = {}
     for batch_no, m in machines:
         batches.setdefault(batch_no, []).append((batch_no, m))
-    vanilla, horizon = {}, {}
+    vanilla, sunrise = {}, {}
     for batch_no, batch in sorted(batches.items()):
         print(f'batch {batch_no}: {len(batch)} machines', flush=True)
         if args.skip_vanilla:
@@ -473,13 +473,13 @@ def main():
             vanilla = {k: [{'tick': f['tick'], 'blocks': {tuple(map(int, q.split(','))): s for q, s in f['blocks'].items()}, 'entities': f['entities']} for f in v] for k, v in vanilla.items()}
         else:
             vanilla.update(run_vanilla(batch, args, work))
-        horizon.update(run_horizon(batch, args, work))
+        sunrise.update(run_sunrise(batch, args, work))
     different = 0
     for _, m in machines:
         name = m['name']
-        a, b = vanilla.get(name), horizon.get(name)
+        a, b = vanilla.get(name), sunrise.get(name)
         if not a or not b:
-            print(f'{name}: missing ({"vanilla" if not a else "horizon"})')
+            print(f'{name}: missing ({"vanilla" if not a else "sunrise"})')
             different += 1
             continue
         d = diff_frames(a, b)
@@ -490,12 +490,12 @@ def main():
         tick, rows = d
         print(f'{name}: DIFFERS from tick {tick}: {len(rows)} blocks')
         for pos, x, y in rows[:6]:
-            print(f'    {pos}: vanilla {x}  horizon {y}')
+            print(f'    {pos}: vanilla {x}  sunrise {y}')
     if args.keep:
         keep = Path(args.keep)
         keep.mkdir(parents=True, exist_ok=True)
         dump = lambda t: {k: [{'tick': f['tick'], 'blocks': {','.join(map(str, q)): s for q, s in f['blocks'].items()}, 'entities': f['entities']} for f in v] for k, v in t.items()}
-        (keep / 'timelines.json').write_text(json.dumps({'vanilla': dump(vanilla), 'horizon': dump(horizon), 'machines': [m for _, m in machines]}))
+        (keep / 'timelines.json').write_text(json.dumps({'vanilla': dump(vanilla), 'sunrise': dump(sunrise), 'machines': [m for _, m in machines]}))
     print(f'{different} of {len(machines)} machines differ')
     return 1 if different else 0
 

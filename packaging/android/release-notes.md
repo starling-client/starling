@@ -1,15 +1,15 @@
-**Starling 0.9.0: a launcher before the game, Horizon's newest mod API, and the game built for your phone.**
+**Starling 0.9.0: a launcher before the game, Sunrise's newest mod API, and the game built for your phone.**
 
 ## Install
 
 - **Already have Starling:** tap **Update** inside the game.
-- **New here, or coming from Horizon Android:** download the APK for your phone below and open it. Almost every phone takes **`starling-0.9.0-arm64-v8a.apk`**. Older 32-bit phones take `armeabi-v7a`, and x86 tablets and emulators take `x86_64` or `x86`.
+- **New here, or coming from Sunrise Android:** download the APK for your phone below and open it. Almost every phone takes **`starling-0.9.0-arm64-v8a.apk`**. Older 32-bit phones take `armeabi-v7a`, and x86 tablets and emulators take `x86_64` or `x86`.
 
 ## What's new in 0.9.0
 
 ### New
 
-- **A launcher before the game,** from Horizon Android: profiles, each with its own worlds, mods and settings; a catalog of mods, resource packs and shader packs from Horizon and Modrinth; and your installed content, to turn on and off.
+- **A launcher before the game,** from Sunrise Android: profiles, each with its own worlds, mods and settings; a catalog of mods, resource packs and shader packs from Sunrise and Modrinth; and your installed content, to turn on and off.
 - **A wardrobe for skins and capes,** synced with your Microsoft account.
 - **Calibrate...** tries the ways your phone can draw the world and keeps the fastest.
 - **Custom GPU drivers** (64-bit ARM, experimental), from **GPU Drivers...** in the graphics settings, and **ray tracing** (experimental).
@@ -24,19 +24,19 @@
 
 ### Faster
 
-- **Horizon Android's performance work:** terrain drawn as Horizon Android 0.7.8 draws it, paused menus no longer drawing the world, shadow maps of at most 4096, and menus over the world at most 60 FPS, so they don't heat the phone.
+- **Sunrise Android's performance work:** terrain drawn as Sunrise Android 0.7.8 draws it, paused menus no longer drawing the world, shadow maps of at most 4096, and menus over the world at most 60 FPS, so they don't heat the phone.
 - **Games with mods open faster:** about 6 seconds less on a phone with 20 or so mods.
 
 ### Mods
 
-- **Mods use Horizon's newest mod API.** Content mods (`.hmod`) from Horizon's catalog load. **Native mods** from Horizon's catalog install from the launcher or the in-game catalog; then **Options > Mods > Compile** downloads a library built for your exact Starling, usually in seconds (64-bit ARM).
-- **Starling's old `.hnmod` mods no longer run.** Mods made for them need their Horizon versions.
+- **Mods use Sunrise's newest mod API.** Content mods (`.smod`) from Sunrise's catalog load. **Native mods** from Sunrise's catalog install from the launcher or the in-game catalog; then **Options > Mods > Compile** downloads a library built for your exact Starling, usually in seconds (64-bit ARM).
+- **Starling's old `.hnmod` mods no longer run.** Mods made for them need their Sunrise versions.
 - **Mod switches apply once, when you close Options,** and keep your choice.
 - **A mod's recipe for a type no mod adds no longer stops the world from loading.**
 
 ### Fixed
 
-- **The catalog lists Horizon's mods again,** and no longer downloads a mod you already have a second time.
+- **The catalog lists Sunrise's mods again,** and no longer downloads a mod you already have a second time.
 - **The crash when the app went to the background while a world was loading** (Mali-G57 and others).
 - **PowerVR:** the GE8320's crash on Vulkan, and the BXM's limit.
 - **Fujitsu and other 32-bit phones start again,** and slower phones no longer crash right after loading.
@@ -47,9 +47,9 @@
 - **Touch:** the camera and chat buttons, GoyControl's sneak, the F3+F4 switcher and the control editor work as they should again.
 - **The inventory's player preview** follows the virtual cursor, and vibration turned off stays off.
 
-### Newest Horizon
+### Newest Sunrise
 
-Starling now sits on Horizon's newest base, about 31,000 commits ahead of 0.8.0's, most of it the new mod API the mods above are built on.
+Starling now sits on Sunrise's newest base, about 31,000 commits ahead of 0.8.0's, most of it the new mod API the mods above are built on.
 
 ## Report a bug
 

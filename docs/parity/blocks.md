@@ -3,8 +3,8 @@
 Area: random and scheduled block ticks, growth, bone meal, TNT and
 explosions, hoppers, dispensers and droppers, comparators reading
 containers, weather-driven blocks. The library code lives in
-`crates/horizon-world/src/level/`. The client glue lives in
-`crates/horizon-client/src/game/` (`growth.rs`, `tnt.rs`, `explosion.rs`,
+`crates/sunrise-world/src/level/`. The client glue lives in
+`crates/sunrise-client/src/game/` (`growth.rs`, `tnt.rs`, `explosion.rs`,
 `machines.rs`, `blockctl.rs`).
 
 ## Implemented (ported from the 26.3 sources)
@@ -124,7 +124,7 @@ containers, weather-driven blocks. The library code lives in
   removals of block entity holders with contents match vanilla. The dispenser
   harness builds, shears and equips copper golems (6,000 cases match).
 
-- Unit tests in `crates/horizon-world/src/level/growth_tests.rs` cover:
+- Unit tests in `crates/sunrise-world/src/level/growth_tests.rs` cover:
   - every sapling kind, including the 2×2 trees
   - azalea and mangrove growth
   - random-tick stage advance followed by growth
@@ -136,11 +136,11 @@ containers, weather-driven blocks. The library code lives in
 
   They need the feature block exports in `worldgen/blocks`
   (`block-properties.nbt`). The shared `.local` bundle lacks those files, so
-  run the tests with `HORIZON_RESOURCES` pointing at a complete prepared
+  run the tests with `SUNRISE_RESOURCES` pointing at a complete prepared
   bundle. Without one, the tests skip.
 - Client tests cover the Java `Vec3i` hash and compare order and the
   explosion stack merging.
-- In the game on the virtual screen, driven by `horizon-ctl`:
+- In the game on the virtual screen, driven by `sunrise-ctl`:
   - Bone meal on oak, birch, cherry, 2×2 dark oak, spruce and jungle
     saplings grew all of them.
   - Flint and steel on a TNT cluster: the TNT flashed white and chain
@@ -152,7 +152,7 @@ containers, weather-driven blocks. The library code lives in
   - Landing on farmland turned it to dirt and popped the wheat.
   - The hopper screen shows the vanilla layout.
 
-  New `horizon-ctl` commands drive these checks: `setblock`, `fill`,
+  New `sunrise-ctl` commands drive these checks: `setblock`, `fill`,
   `getblock` and `container`.
 
 ## Known gaps
@@ -171,7 +171,7 @@ containers, weather-driven blocks. The library code lives in
   - Dispensers have no behaviour for fire charges, other projectiles,
     armour, shulker boxes, boats, minecarts or spawn eggs. Fire charges and
     most other items drop instead; projectiles, boats, minecarts and spawn
-    eggs are not entities in Horizon.
+    eggs are not entities in Sunrise.
   - Turtle hatchlings and happy ghastlings are reported as `BlockEvent`s and
     not spawned.
   - Hoppers do not see minecart containers. Item entities do not trigger the

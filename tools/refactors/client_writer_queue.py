@@ -6,7 +6,7 @@ error handling are intentionally separate hand-written changes.
 """
 from pathlib import Path
 
-path = Path("crates/horizon-client/src/net.rs")
+path = Path("crates/sunrise-client/src/net.rs")
 source = path.read_text()
 source = source.replace("ConnReader, ConnWriter, Connection", "ConnReader, Connection")
 source = source.replace("Mutex<Option<ConnWriter>>", "Mutex<Option<QueuedWriter>>")

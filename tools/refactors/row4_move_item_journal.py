@@ -2,7 +2,7 @@
 """Move the item-entity journal into an included implementation file unchanged."""
 from pathlib import Path
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/game/runtime/transactions.rs"
+source = root / "crates/sunrise-client/src/game/runtime/transactions.rs"
 destination = source.parent / "transactions/item_entity.rs"
 text = source.read_text()
 start = text.index("    pub(super) fn journal_set_item_entity(")

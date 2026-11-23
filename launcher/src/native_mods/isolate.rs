@@ -1,16 +1,16 @@
-//! A mod that alone stops a build (it hooks code the build's Horizon doesn't have, or declares
+//! A mod that alone stops a build (it hooks code the build's Sunrise doesn't have, or declares
 //! the same support module as another mod) is left out, with the mods that need it, and the
 //! build runs again without them: the player still gets a game with the others, and is told
 //! which mods were left out and why.
 use super::Bundle;
 use crate::i18n::trf;
-use horizon_mod_package::dependencies::Dependency;
+use sunrise_mod_package::dependencies::Dependency;
 use std::collections::BTreeSet;
 
 /// Why a mod was left out of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// It doesn't apply to, or compile on, the Horizon the build uses.
+    /// It doesn't apply to, or compile on, the Sunrise the build uses.
     OtherVersion,
     /// It declares the same support module, in the same file, as this mod.
     Clash(String),
@@ -43,7 +43,7 @@ impl LeftOut {
     pub fn label(&self) -> String {
         match &self.why {
             Why::OtherVersion => trf(
-                "{name} was left out: made for another Horizon version",
+                "{name} was left out: made for another Sunrise version",
                 &[("name", &self.id)],
             ),
             Why::Clash(other) => trf(
@@ -130,9 +130,9 @@ mod tests {
     }
 
     /// A helper that breaks a rule of the format is the mod's own source, not
-    /// a Horizon it doesn't fit: the build fails with the tool's diagnostic
+    /// a Sunrise it doesn't fit: the build fails with the tool's diagnostic
     /// (which names the injection and the code) rather than leaving the mod out
-    /// as "made for another Horizon version" (#13971).
+    /// as "made for another Sunrise version" (#13971).
 
     #[test]
     fn the_mods_needing_a_left_out_mod_go_too_but_not_optional_ones() {
@@ -143,7 +143,7 @@ mod tests {
             id: id.into(),
             requirement: semver::VersionReq::STAR,
             optional,
-            side: horizon_mod_package::manifest::Side::Both,
+            side: sunrise_mod_package::manifest::Side::Both,
             reason: None,
             url: None,
             order: mod_vocab::DependencyOrder::After,

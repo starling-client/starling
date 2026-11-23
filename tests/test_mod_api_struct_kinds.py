@@ -27,19 +27,19 @@ class StructKindFixtures(unittest.TestCase):
                   '#[doc(hidden)]\npub struct HiddenModValue { pub x: u8 }\n\n'
                   + marker + 'pub struct MarkedModValue { pub x: u8 }\n\n'
                   'pub struct ModValue { pub x: u8 }\n')
-        self.assertEqual(set(kinds(source, 'crates/horizon-mod-vocab/src/dispatch_scope.rs')),
+        self.assertEqual(set(kinds(source, 'crates/sunrise-mod-vocab/src/dispatch_scope.rs')),
                          {'HiddenModValue', 'MarkedModValue', 'ModValue'})
 
     def test_doc_hidden_alone_is_counted_even_inside_a_socket_file(self):
         source = '#[doc(hidden)]\npub struct ModValue { pub x: u8 }'
-        self.assertEqual(kinds(source, 'crates/horizon-mod-vocab/src/dispatch_scope.rs'),
+        self.assertEqual(kinds(source, 'crates/sunrise-mod-vocab/src/dispatch_scope.rs'),
                          {'ModValue': [False, False, True]})
 
     def test_platform_marker_outside_socket_files_cannot_exempt_a_struct(self):
         source = ('// hidden: platform-owned instrumentation plumbing, not a mod authoring surface.\n'
                   '#[doc(hidden)]\npub struct ModValue { pub x: u8 }')
-        for file in ('crates/horizon-mod-vocab/src/item/types.rs',
-                     'crates/horizon-mod-api/src/dispatch_scope.rs', ''):
+        for file in ('crates/sunrise-mod-vocab/src/item/types.rs',
+                     'crates/sunrise-mod-api/src/dispatch_scope.rs', ''):
             with self.subTest(file=file):
                 self.assertEqual(kinds(source, file), {'ModValue': [False, False, True]})
 
@@ -47,7 +47,7 @@ class StructKindFixtures(unittest.TestCase):
         source = ('// hidden: platform-owned instrumentation plumbing, not a mod authoring surface.\n'
                   '#[doc(hidden)]\npub struct EngineSocket { pub callback: fn() }\n'
                   '#[doc(hidden)]\npub struct HiddenModValue { pub x: u8 }')
-        self.assertEqual(set(kinds(source, 'crates/horizon-mod-vocab/src/dispatch_scope.rs')),
+        self.assertEqual(set(kinds(source, 'crates/sunrise-mod-vocab/src/dispatch_scope.rs')),
                          {'HiddenModValue'})
 
     def test_a_private_or_crate_field_stops_a_literal(self):
@@ -103,7 +103,7 @@ class StructKindFixtures(unittest.TestCase):
     def test_file_backed_module_prefixes_exclude_only_mirrors(self):
         with TemporaryDirectory() as folder:
             root = Path(folder)
-            src = root / 'crates/horizon-mod-vocab/src'
+            src = root / 'crates/sunrise-mod-vocab/src'
             fixtures = {
                 '__private.rs': 'mod built { pub struct Hidden { pub x: u8 } }',
                 '__private/built/mod.rs': 'pub struct AlsoHidden { pub x: u8 }',
@@ -124,14 +124,14 @@ class StructKindFixtures(unittest.TestCase):
             self.assertEqual(counts['constructor'], 1)
             self.assertEqual(counts['neither'], 1)
             self.assertEqual(neither, [
-                'crates/horizon-mod-vocab/src/ordinary/built.rs:1: Visible'])
+                'crates/sunrise-mod-vocab/src/ordinary/built.rs:1: Visible'])
 
     def test_file_prefix_is_part_of_impl_keys(self):
         for file, module in [
-            ('crates/horizon-mod-vocab/src/foo.rs', ('foo',)),
-            ('crates/horizon-mod-vocab/src/foo/mod.rs', ('foo',)),
-            ('crates/horizon-mod-vocab/src/__private.rs', ('__private',)),
-            ('crates/horizon-mod-vocab/src/lib.rs', ()),
+            ('crates/sunrise-mod-vocab/src/foo.rs', ('foo',)),
+            ('crates/sunrise-mod-vocab/src/foo/mod.rs', ('foo',)),
+            ('crates/sunrise-mod-vocab/src/__private.rs', ('__private',)),
+            ('crates/sunrise-mod-vocab/src/lib.rs', ()),
         ]:
             with self.subTest(file=file):
                 defaults, constructors = defaults_and_constructors(
@@ -143,7 +143,7 @@ class StructKindFixtures(unittest.TestCase):
     def test_same_line_declarations_keep_distinct_module_keys(self):
         with TemporaryDirectory() as folder:
             root = Path(folder)
-            path = root / 'crates/horizon-mod-vocab/src/foo.rs'
+            path = root / 'crates/sunrise-mod-vocab/src/foo.rs'
             path.parent.mkdir(parents=True)
             path.write_text(
                 'mod a { pub struct A { pub x: u8 } impl Default for A {} } '
@@ -152,7 +152,7 @@ class StructKindFixtures(unittest.TestCase):
             self.assertEqual(counts['public'], 2)
             self.assertEqual(counts['default'], 1)
             self.assertEqual(counts['neither'], 1)
-            self.assertEqual(neither, ['crates/horizon-mod-vocab/src/foo.rs:1: A'])
+            self.assertEqual(neither, ['crates/sunrise-mod-vocab/src/foo.rs:1: A'])
 
 
 class StructKindRepository(unittest.TestCase):

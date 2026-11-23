@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """List every place an engine crate touches a mod crate, for #2534's move of the mod host above the engine.
 
-Engine crates are the `engine` layer of tools/layers.json; mod crates are the workspace's `horizon-mod-*` crates.
+Engine crates are the `engine` layer of tools/layers.json; mod crates are the workspace's `sunrise-mod-*` crates.
 The scan reads `cargo metadata` and the Rust sources, without compiling, and finds:
 - manifest edges: each engine crate's dependency on a mod crate (normal, build, dev), with its Cargo.toml line;
-- source edges: each path into a mod crate (`mod_api::Flow`, `horizon_mod_runtime::attachments::Holder`), as a
+- source edges: each path into a mod crate (`mod_api::Flow`, `sunrise_mod_runtime::attachments::Holder`), as a
   `use` leaf, a re-export, an attribute, a trait impl, a call, a macro or a type, and every `include!` of a file
   the mod API generator writes;
 - the move set (game/modding/, game/native_hooks/): each file's strand and phase, the inherent and foreign-trait
   impls a move out of the crate must rewrite, the engine references into it (inbound: sockets or kept items) and the
   engine-private items it uses (outbound: what the move must make public);
-- the mod API's vocabulary question: which `horizon-mod-api` files are plain types and traits, and which carry a
+- the mod API's vocabulary question: which `sunrise-mod-api` files are plain types and traits, and which carry a
   build-script include, `unsafe`, process state or a dependency a crate below the engine can't have.
 
 Every edge has a strand (loading, host, slots, attachments, content_render, hooks) from the RULES table below, and
@@ -40,23 +40,23 @@ STRANDS = ["loading", "host", "slots", "attachments", "content_render", "hooks"]
 # storage is already engine-layer (phase 4 dropped), owner 2026-11-10.
 PHASE = {"loading": 1, "host": None, "slots": 3, "attachments": None, "content_render": 5, "hooks": 6}
 # The host areas the scan inventories, as repo paths.
-MOVE_SET = ("crates/horizon-client/src/game/modding/", "crates/horizon-client/src/game/native_hooks/")
-GAME = "crates/horizon-client/src/game"
-# horizon-client-lib's library root sits in horizon-client's src/; these paths there are horizon-client's own.
-CLIENT_SRC = "crates/horizon-client/src/"
-CLIENT_OWN = re.compile(r"crates/horizon-client/src/(game(\.rs|/)|entry\.rs|main\.rs|lib\.rs)")
+MOVE_SET = ("crates/sunrise-client/src/game/modding/", "crates/sunrise-client/src/game/native_hooks/")
+GAME = "crates/sunrise-client/src/game"
+# sunrise-client-lib's library root sits in sunrise-client's src/; these paths there are sunrise-client's own.
+CLIENT_SRC = "crates/sunrise-client/src/"
+CLIENT_OWN = re.compile(r"crates/sunrise-client/src/(game(\.rs|/)|entry\.rs|main\.rs|lib\.rs)")
 
 # (strand, pattern on the edge's path "crate::a::b"); the first match wins. Owners correct strands here.
 RULES = [
-    ("loading", r"^(horizon_mod_package|horizon_mod_wasm|horizon_mod_deps)\b"),
+    ("loading", r"^(sunrise_mod_package|sunrise_mod_wasm|sunrise_mod_deps)\b"),
     ("loading", r"^mod_api::(ModEntry|Mods|ModFields|__private::(install|mods|set_mod_enabled|ModPhase|PhaseOwner"
                 r"|current_phase|LoadAccess|check_access|with_test_packages|loaded_mods|LoadedMods"
                 r"|installed_code_ids|mod_index\w*|mark_game_thread|command_argument_types))\b"),
-    ("slots", r"^(mod_points|horizon_mod_api_macros|horizon_mod_api_gen|point_shape|horizon_mod_point_emit)\b"),
-    ("attachments", r"^horizon_mod_runtime::(attachments|impl_attachment_lifetime)\b"),
+    ("slots", r"^(mod_points|sunrise_mod_api_macros|sunrise_mod_api_gen|point_shape|sunrise_mod_point_emit)\b"),
+    ("attachments", r"^sunrise_mod_runtime::(attachments|impl_attachment_lifetime)\b"),
     ("attachments", r"^mod_api::(Attachment\w*|attachment_queries|__private::attach\w*)\b"),
     ("host", r"^mod_api::(\w*Host|HostSide|Backend\w*|__private::(backend\w*|game))\b"),
-    ("content_render", r"^mod_render\b|^horizon_mod_runtime\b"),
+    ("content_render", r"^mod_render\b|^sunrise_mod_runtime\b"),
     ("content_render", r"^mod_api::(content|client|sprite_source|RegistrationContext|Registr\w*|Config\w*"
                        r"|__private::(\w+_key(_id|_by_\w+)?|\w+_id|effect_index|resolve_\w+|block_definitions"
                        r"|tag_\w+))\b"),
@@ -116,14 +116,14 @@ class Workspace:
     def __init__(self, packages, layers):
         self.packages = {p["name"]: p for p in packages}
         self.layers = layers["crates"]
-        self.mod_crates = sorted(n for n in self.packages if n.startswith("horizon-mod-"))
+        self.mod_crates = sorted(n for n in self.packages if n.startswith("sunrise-mod-"))
         self.idents = {}
         for name in self.mod_crates:
             for target in self.packages[name]["targets"]:
                 if {"lib", "proc-macro", "rlib", "dylib"} & set(target["kind"]):
                     self.idents[target["name"].replace("-", "_")] = name
         self.ident_of = {name: ident for ident, name in self.idents.items()}
-        # horizon-mod-package and horizon-mod-runtime sit in the engine layer but are mod crates: not scanned.
+        # sunrise-mod-package and sunrise-mod-runtime sit in the engine layer but are mod crates: not scanned.
         self.engine = sorted(n for n in self.packages if self.layers.get(n) == "engine" and n not in self.mod_crates)
 
     def files(self):
@@ -146,7 +146,7 @@ class Workspace:
                 if repo in out and out[repo] != owner and not repo.startswith(CLIENT_SRC):
                     continue
                 if repo.startswith(CLIENT_SRC):
-                    owner_here = "horizon-client" if CLIENT_OWN.match(repo) else "horizon-client-lib"
+                    owner_here = "sunrise-client" if CLIENT_OWN.match(repo) else "sunrise-client-lib"
                 else:
                     owner_here = owner
                 out[repo] = owner_here
@@ -300,7 +300,7 @@ def source_edges(ws, src):
     for m in OUT_DIR_INCLUDE.finditer(src.text):
         if code[m.start()] == "i" and m.group(1) in GENERATED:
             edges.append({"crate": src.crate, "file": src.path, "line": src.line(m.start()), "kind": "generated",
-                          "mod_crate": "horizon-mod-api-gen", "path": m.group(1), "strand": GENERATED[m.group(1)],
+                          "mod_crate": "sunrise-mod-api-gen", "path": m.group(1), "strand": GENERATED[m.group(1)],
                           "test": src.is_test(m.start())})
     # How often each imported name is used in the file outside `use` lines.
     for edge in edges:
@@ -341,7 +341,7 @@ def public(defs):
 def move_set_analysis(sources, edges_by_file, defs):
     """Per move-set file: strand, phase, impls to rewrite, outbound engine-private names. Plus inbound edges."""
     files = {}
-    game_sources = [s for s in sources if s.crate == "horizon-client" and s.path.startswith(GAME)]
+    game_sources = [s for s in sources if s.crate == "sunrise-client" and s.path.startswith(GAME)]
     moved = [s for s in game_sources if in_move_set(s.path)]
     for s in moved:
         strand = next((st for st, rule in FILE_RULES if rule.search(s.path)), None)
@@ -420,14 +420,14 @@ def move_set_analysis(sources, edges_by_file, defs):
 
 
 def vocabulary(ws):
-    """Per `horizon-mod-api` source file: what keeps it from a crate below the engine."""
-    package = ws.packages["horizon-mod-api"]
+    """Per `sunrise-mod-api` source file: what keeps it from a crate below the engine."""
+    package = ws.packages["sunrise-mod-api"]
     base = Path(package["manifest_path"]).parent
     deps = sorted({(d["name"], d.get("kind") or "normal", ws.layers.get(d["name"]))
                    for d in package["dependencies"] if d.get("path")})
-    crate_names = {ident: name for ident, name in ws.idents.items() if name != "horizon-mod-api"}
-    crate_names["horizon_core"] = "horizon-core"
-    files, sources = [], [Source(rel(path), "horizon-mod-api") for path in sorted((base / "src").rglob("*.rs"))]
+    crate_names = {ident: name for ident, name in ws.idents.items() if name != "sunrise-mod-api"}
+    crate_names["sunrise_core"] = "sunrise-core"
+    files, sources = [], [Source(rel(path), "sunrise-mod-api") for path in sorted((base / "src").rglob("*.rs"))]
     mark_test_files(sources)
     for s in sources:
         row = {"file": s.path, "lines": s.text.count("\n"), "generated_include": [], "unsafe": [], "state": [],
@@ -446,7 +446,7 @@ def vocabulary(ws):
         row["crates"] = {k: sorted(set(v)) for k, v in sorted(row["crates"].items())}
         row["test"] = s.test_file
         row["pure"] = not (row["generated_include"] or row["unsafe"] or row["state"]
-                           or set(row["crates"]) - {"horizon-core"})
+                           or set(row["crates"]) - {"sunrise-core"})
         files.append(row)
     return {"deps": [{"name": n, "kind": k, "layer": layer} for n, k, layer in deps],
             "build_script": (base / "build.rs").is_file(), "files": files}
@@ -465,8 +465,8 @@ def scan():
     files, inbound = move_set_analysis(sources, by_file, Definitions(sources))
     return {
         "head": git_head(), "engine_crates": ws.engine, "mod_crates": ws.mod_crates,
-        "allowed_mod_rows": sorted(r for r in layers.get("allowed", []) if "horizon-mod" in r.split(" -> ")[0]
-                                   or "horizon-mod" in r.split(" -> ")[1]),
+        "allowed_mod_rows": sorted(r for r in layers.get("allowed", []) if "sunrise-mod" in r.split(" -> ")[0]
+                                   or "sunrise-mod" in r.split(" -> ")[1]),
         "manifest_edges": manifest_edges(ws), "edges": edges, "move_set": files, "inbound": inbound,
         "vocabulary": vocabulary(ws),
     }

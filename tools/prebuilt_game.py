@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The prebuilt game (#589): horizon-client as a Rust dylib plus every crate's metadata, so the launcher builds
+"""The prebuilt game (#589): sunrise-client as a Rust dylib plus every crate's metadata, so the launcher builds
 native trait mods against it with rustc alone, in seconds, without the game's source or a game build.
 
-    python3 tools/prebuilt_game.py build OUT [--server]   # build and collect the folder, write horizon-prebuilt.json
+    python3 tools/prebuilt_game.py build OUT [--server]   # build and collect the folder, write sunrise-prebuilt.json
     python3 tools/prebuilt_game.py smoke OUT              # build the starter mod and the game executable against OUT only
     python3 tools/prebuilt_game.py start OUT              # start smoke's executable, as installed, as far as no game data allows
     python3 tools/prebuilt_game.py exports OUT            # each DLL's exported names, toward Windows' limit
@@ -37,19 +37,19 @@ ROOT = Path(__file__).resolve().parent.parent
 PROFILE = "release"
 # What rustc writes for a dylib or proc macro on each OS, plus metadata and the MinGW import libraries.
 SUFFIXES = (".rmeta", ".so", ".dll", ".dll.a", ".dylib")
-IDENTITY = "horizon-prebuilt.json"
+IDENTITY = "sunrise-prebuilt.json"
 # The crate the game's library is built from; its build resolves what mods compile against.
-GAME = "horizon-mod-host"
+GAME = "sunrise-mod-host"
 LOCK = "Cargo.lock"
 # Where `smoke` installs the executable it builds, as the launcher does, for `start`: beside OUT, never inside it,
 # since the archive is OUT alone.
 SMOKE = "prebuilt-smoke"
 # Where `smoke` installs the same executable without selected mods, for `start`.
 SMOKE_API = "prebuilt-smoke-api"
-EXECUTABLE = "horizon-client.exe" if sys.platform == "win32" else "horizon-client"
+EXECUTABLE = "sunrise-client.exe" if sys.platform == "win32" else "sunrise-client"
 # The furthest a game started without its prepared files gets (game.rs `missing_resources`): past loading the
 # game's libraries and the mods' runtime environment (`entry::main_with`), where a split allocator aborts (#3877).
-NO_RESOURCES = "Horizon's prepared game files are missing"
+NO_RESOURCES = "Sunrise's prepared game files are missing"
 # The MinGW runtime the game's GNU DLLs import on Windows, installed beside the executable.
 MINGW_RUNTIME = ("libgcc_s_seh-1.dll", "libwinpthread-1.dll")
 # Windows' STATUS_DLL_NOT_FOUND, the exit status of a process whose imports could not all be loaded.
@@ -57,20 +57,20 @@ DLL_NOT_FOUND = 0xC0000135
 # The launcher's generated `main.rs` comes from the game it links against.
 TEMPLATE = "native_main.rs.template"
 NATIVE_MODS_TEMPLATE = "native_mod_entry.rs.template"
-API_MAIN = ROOT / "crates/horizon-client/src/native_main.rs.template"
+API_MAIN = ROOT / "crates/sunrise-client/src/native_main.rs.template"
 # The fixed executable folder in the runtime slice.
 RUNTIME = "bin"
-# The required inputs (`horizon_mod_package::sdk::Inputs`): `members` lists what each slice must hold.
-INPUTS = ROOT / "crates/horizon-mod-package/src/sdk/inputs.json"
+# The required inputs (`sunrise_mod_package::sdk::Inputs`): `members` lists what each slice must hold.
+INPUTS = ROOT / "crates/sunrise-mod-package/src/sdk/inputs.json"
 # The crates an API-only mod may name; their closure is the `api` archive.
-API_ROOTS = ("horizon-mod-api", "horizon-mod-points")
+API_ROOTS = ("sunrise-mod-api", "sunrise-mod-points")
 # The game libraries outside the API closure, in the runtime archive.
-GAME_LIBRARIES = ("horizon_mod_host", "horizon_mod_wasm")
+GAME_LIBRARIES = ("sunrise_mod_host", "sunrise_mod_wasm")
 # Source files the folder carries besides compiler outputs.
-CARRIED = {"Cargo.toml": None, IDENTITY: None, LOCK: ROOT / LOCK, TEMPLATE: ROOT / "crates/horizon-client/src" / TEMPLATE,
-           NATIVE_MODS_TEMPLATE: ROOT / "crates/horizon-client/src" / NATIVE_MODS_TEMPLATE}
-# What the game's build script asks the `horizon-client` executable's link for (Windows' 8 MB main stack).
-LINK_ARG = "cargo:horizon-executable-link-arg="
+CARRIED = {"Cargo.toml": None, IDENTITY: None, LOCK: ROOT / LOCK, TEMPLATE: ROOT / "crates/sunrise-client/src" / TEMPLATE,
+           NATIVE_MODS_TEMPLATE: ROOT / "crates/sunrise-client/src" / NATIVE_MODS_TEMPLATE}
+# What the game's build script asks the `sunrise-client` executable's link for (Windows' 8 MB main stack).
+LINK_ARG = "cargo:sunrise-executable-link-arg="
 # Native libraries the build scripts point the final link at (the `windows` crates' MinGW import libraries):
 # cargo passes their folders to rustc, a plain rustc gets them from here (`-L native=OUT/native`).
 NATIVE = "native"
@@ -79,7 +79,7 @@ NATIVE_SUFFIXES = (".a", ".lib")
 POINTS = "points.json"
 # The staged internals signatures, checked against a mod's declared access list.
 INTERNALS = "internals.json"
-# The published loops (`#[horizon_loop]`), which a mod's `[[native.loop]]` rows name.
+# The published loops (`#[sunrise_loop]`), which a mod's `[[native.loop]]` rows name.
 LOOPS = "loops.json"
 # The function index: where each function a mixin may target is, and whether it takes a replacement; the
 # launcher's patch step reads it instead of walking the game's source. Only the engine route patches functions, so it
@@ -91,7 +91,7 @@ BUILD_DATA = (FUNCTIONS, INTERNALS, LOOPS, POINTS)
 API_BUILD_DATA = (INTERNALS, LOOPS, POINTS)
 BUILD_DATA_SCHEMA = 1
 BUILD_DATA_ARCHIVE = "build-data.tar.xz"
-# The surface export (`horizon-stage surface`), an SDK asset of its own.
+# The surface export (`sunrise-stage surface`), an SDK asset of its own.
 SURFACE = "surface.json"
 # xz's default preset: the dictionary covers the large metadata files; the publish legs' time is measured by PR 5.
 XZ_PRESET = 6
@@ -117,7 +117,7 @@ def rustc_host() -> str:
 
 def package_format(root: Path) -> int:
     """The package layout's one number, from its one place (`sdk::PACKAGE_FORMAT` includes the same file)."""
-    text = (root / "crates/horizon-mod-package/src/sdk/package-format").read_text().rstrip()
+    text = (root / "crates/sunrise-mod-package/src/sdk/package-format").read_text().rstrip()
     if not re.fullmatch(r"[0-9]+", text):
         raise ValueError(f"sdk/package-format must hold one number, not {text!r}")
     return int(text)
@@ -159,7 +159,7 @@ def stage(target_dir: Path, stage_tool: Path | None = None) -> Path:
         (staged / name).write_bytes(data)
     arguments = [str(staged), str(staged / POINTS), str(staged / INTERNALS), commit]
     command = ([str(stage_tool.resolve())] if stage_tool is not None else
-               ["cargo", "run", "--locked", "--release", "-q", "-p", "horizon-mod-api-gen", "--bin", "horizon-stage", "--"])
+               ["cargo", "run", "--locked", "--release", "-q", "-p", "sunrise-mod-api-gen", "--bin", "sunrise-stage", "--"])
     print(f"stage_phase=copy_setup seconds={time.monotonic() - setup_started:.3f}", flush=True)
     started = time.monotonic()
     print(run(command + arguments, cwd=staged,
@@ -267,9 +267,9 @@ def api_route(out: Path, link_args: list[str]) -> list[str]:
     common = ["--edition", "2024", "-C", "prefer-dynamic", "-C", "opt-level=3", "-L", f"dependency={deps}",
               "-L", f"dependency={out / 'host'}", "-L", f"native={out / NATIVE}"]
     origin = {"linux": ["-Wl,-rpath,$ORIGIN"], "darwin": ["-Wl,-rpath,@executable_path"]}.get(sys.platform, [])
-    run(["rustc", *common, "--crate-type", "bin", "--crate-name", "horizon_native_game",
+    run(["rustc", *common, "--crate-type", "bin", "--crate-name", "sunrise_native_game",
          *(flag for arg in origin + link_args for flag in ("-C", f"link-arg={arg}")),
-         *extern_args(deps, "horizon_client"), *extern_args(deps, "mod_api"), *extern_args(deps, "horizon_mod_package"),
+         *extern_args(deps, "sunrise_client"), *extern_args(deps, "mod_api"), *extern_args(deps, "sunrise_mod_package"),
          "--extern", f"{GAME_LIBRARIES[0]}={dylib(deps, GAME_LIBRARIES[0])}",
  "-o", str(folder / EXECUTABLE), str(API_MAIN)])
     built = sorted(path.relative_to(out).as_posix() for path in folder.iterdir())
@@ -286,7 +286,7 @@ def api_route_files() -> set[str]:
 def holder_mark() -> bytes:
     """The bytes the launcher looks for in an executable before it runs it under the holder (`holder::capable`),
     read from their one definition, `holder.rs`'s `CAPABILITY`."""
-    source = ROOT / "crates/horizon-mod-package/src/holder.rs"
+    source = ROOT / "crates/sunrise-mod-package/src/holder.rs"
     found = re.search(rb'CAPABILITY: \[u8; \d+\] = \*b"([^"]+)"', source.read_bytes())
     if not found:
         sys.exit(f"{source.relative_to(ROOT)} no longer defines CAPABILITY as `[u8; N] = *b\"...\"`: "
@@ -362,7 +362,7 @@ def facade_crates(deps: Path, runtime: set[str]) -> list[str]:
 
 def assert_externs(out: Path, eligible: list[str]) -> None:
     """Runs in the SDK build on every OS, including macOS, before publication."""
-    for crate in set(eligible) | {"mod_api", "horizon_mod_package"}:
+    for crate in set(eligible) | {"mod_api", "sunrise_mod_package"}:
         extern_args(out / "deps", crate)
 
 
@@ -375,7 +375,7 @@ def build(out: Path, server: bool) -> None:
     metadata = json.loads(run(["cargo", "metadata", "--format-version", "1"], cwd=staged))
     closure = api_closure(metadata)
     for package in metadata["packages"]:
-        if package["id"] not in closure and package["name"] != "horizon-mod-wasm":
+        if package["id"] not in closure and package["name"] != "sunrise-mod-wasm":
             continue
         if not any(target["kind"] == ["lib"] for target in package["targets"]):
             continue
@@ -404,7 +404,7 @@ def build(out: Path, server: bool) -> None:
         ["cargo", "rustc", "--locked", "-p", GAME, "--lib", "--crate-type", "dylib",
          "--target", host, "--profile", PROFILE, "--message-format", "json-render-diagnostics", *features, *link],
         cwd=staged,
-        env={**environment, "HORIZON_GAME_BUILD_ID": head(), "RUSTFLAGS": rustflags + " -D warnings", "CARGO_TARGET_DIR": str(target_dir)},
+        env={**environment, "SUNRISE_GAME_BUILD_ID": head(), "RUSTFLAGS": rustflags + " -D warnings", "CARGO_TARGET_DIR": str(target_dir)},
     )
     artifacts = list(map(json.loads, messages.splitlines()))
     scripts = [
@@ -446,7 +446,7 @@ def build(out: Path, server: bool) -> None:
     for name, path in carried.items():
         (out / name).write_bytes(blobs[path])
     patches = carry_patches(staged, out)
-    game = next(script for script in scripts if script["package_id"].split("#")[0].endswith("/horizon-client"))
+    game = next(script for script in scripts if script["package_id"].split("#")[0].endswith("/sunrise-client"))
     for manifest in BUILD_DATA:
         shutil.copy2(staged / manifest, out / manifest)
     output = Path(game["out_dir"]).parent / "output"
@@ -468,7 +468,7 @@ def build(out: Path, server: bool) -> None:
         "game_features": sorted(next(
             message["features"] for message in artifacts
             if message["reason"] == "compiler-artifact"
-            and message["package_id"].split("#")[0].endswith("/horizon-client")
+            and message["package_id"].split("#")[0].endswith("/sunrise-client")
             and "lib" in message["target"]["kind"]
         )),
         "registry_patches": patches,
@@ -554,7 +554,7 @@ def check(out: Path) -> None:
     ]
     if stray:
         sys.exit(f"prebuilt folder holds files that aren't compiler outputs: {stray}")
-    for crate in ("horizon_mod_wasm", "horizon_mod_host"):
+    for crate in ("sunrise_mod_wasm", "sunrise_mod_host"):
         if dylib(out / "deps", crate) is None:
             sys.exit(f"prebuilt folder has no {crate.replace('_', '-')} dylib")
 
@@ -599,7 +599,7 @@ def smoke(out: Path) -> None:
     origin = {"linux": ["-Wl,-rpath,$ORIGIN"], "darwin": ["-Wl,-rpath,@executable_path"]}.get(sys.platform, [])
     identity = json.loads((out / IDENTITY).read_text())
     release = next(line.removeprefix("release: ") for line in identity["rustc"].splitlines() if line.startswith("release: "))
-    starter = (ROOT / "crates/cargo-horizon-mod/template/native/lib.rs").read_text()
+    starter = (ROOT / "crates/cargo-sunrise-mod/template/native/lib.rs").read_text()
     template = (out / NATIVE_MODS_TEMPLATE).read_text()
     smoke_library = installed / f"{dylib_prefix()}smoke{dylib_suffix()}"
     # `smoke_user` calls `smoke` through its library, as a mod calls a declared dependency: rustc links it against
@@ -624,12 +624,12 @@ def smoke(out: Path) -> None:
             (scratch / f"{mod}.rs").write_text(source + f'\n#[path = "{mod}_entry.rs"] mod entry;\n')
             library = installed / f"{dylib_prefix()}{mod}{dylib_suffix()}"
             run(["rustc", *common, "-L", f"dependency={installed}", "--crate-type", "dylib", "--crate-name", mod,
-                 *extern("mod_api"), "--extern", f"horizon_mod_host={dylib(deps, 'horizon_mod_host')}", *externs,
+                 *extern("mod_api"), "--extern", f"sunrise_mod_host={dylib(deps, 'sunrise_mod_host')}", *externs,
                  *(flag for arg in origin for flag in ("-C", f"link-arg={arg}")),
                  "-o", str(library), str(scratch / f"{mod}.rs")])
             records.append({"file": library.name, "sha256": sha256(library), "kind": "mod", "mod": mod,
                             "identity": build})
-            install_package(installed / "horizon-native-mods" / mod, mod, source, dependencies)
+            install_package(installed / "sunrise-native-mods" / mod, mod, source, dependencies)
     shutil.copy2(out / RUNTIME / EXECUTABLE, installed / EXECUTABLE)
     (installed / "native-mods.json").write_text(json.dumps({"libraries": records}))
     if holder_mark() not in (installed / EXECUTABLE).read_bytes():
@@ -665,18 +665,18 @@ pub fn greeting_length() -> usize {
 
 def install_package(folder: Path, mod: str, source: str, dependencies: str) -> None:
     """Mod MOD's package as the launcher leaves it beside the executable, which reads it back at start
-    (horizon-mod-package `runtime::Runtime::load`): the starter manifest with its DEPENDENCIES table and its
+    (sunrise-mod-package `runtime::Runtime::load`): the starter manifest with its DEPENDENCIES table and its
     [native] pins, and its source."""
-    manifest = (ROOT / "crates/cargo-horizon-mod/template/native/horizon-mod.toml").read_text()
+    manifest = (ROOT / "crates/cargo-sunrise-mod/template/native/sunrise-mod.toml").read_text()
     manifest = manifest.replace("{id}", mod).replace("{name}", mod) + dependencies
     mixins = re.search(r'pub const REV: &str = "([0-9a-f]{40})";',
-                       (ROOT / "crates/horizon-mod-package/src/mixins_tool.rs").read_text())[1]
+                       (ROOT / "crates/sunrise-mod-package/src/mixins_tool.rs").read_text())[1]
     game = re.search(r'pub const VERSION_ID: &str = "([^"]+)";',
-                     (ROOT / "crates/horizon-core/src/version.rs").read_text())[1]
-    horizon = run(["git", "rev-parse", "HEAD"], cwd=ROOT).strip()
-    manifest += f'\n[native]\ngame = "{game}"\nhorizon = "{horizon}"\nmixins = "{mixins}"\n'
+                     (ROOT / "crates/sunrise-core/src/version.rs").read_text())[1]
+    sunrise = run(["git", "rev-parse", "HEAD"], cwd=ROOT).strip()
+    manifest += f'\n[native]\ngame = "{game}"\nsunrise = "{sunrise}"\nmixins = "{mixins}"\n'
     (folder / "src").mkdir(parents=True)
-    (folder / "horizon-mod.toml").write_text(manifest)
+    (folder / "sunrise-mod.toml").write_text(manifest)
     (folder / "Cargo.toml").write_text(f'[package]\nname = "{mod}"\nversion = "0.1.0"\nedition = "2024"\n')
     (folder / "src/lib.rs").write_text(source)
 
@@ -713,7 +713,7 @@ def start(out: Path) -> None:
             scratch = Path(scratch)
             # Never a real player's folders, even ones this process inherited: every home is a folder of the scratch.
             homes = {key: scratch / key.lower() for key in
-                     ("HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")}
+                     ("SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")}
             for home in homes.values():
                 home.mkdir()
             environment = lab.game_env(RUST_BACKTRACE="1")
@@ -741,7 +741,7 @@ def start(out: Path) -> None:
                 bundle_tool = scratch / "bundle"
                 run(["rustc", "--edition=2021", str(bundle_source), "-o", str(bundle_tool)])
                 run([str(bundle_tool), str(installed)])
-                bundled = installed / "Horizon.app/Contents/MacOS/horizon-client"
+                bundled = installed / "Sunrise.app/Contents/MacOS/sunrise-client"
                 executable = bundled
                 probe = subprocess.run([str(bundled), "--launch-api"], cwd=game, env=environment,
                                        capture_output=True, text=True, timeout=60)
@@ -807,7 +807,7 @@ def pack(out: Path, dist: Path, stage_tool: Path | None = None) -> None:
         tar_xz(out, names, dist / f"{kind}-{identity['target']}{suffix}.tar.xz")
     tar_xz(out, [".", *BUILD_DATA], dist / BUILD_DATA_ARCHIVE)
     command = ([str(stage_tool.resolve())] if stage_tool is not None else
-               ["cargo", "run", "--locked", "--release", "-q", "-p", "horizon-mod-api-gen", "--bin", "horizon-stage", "--"])
+               ["cargo", "run", "--locked", "--release", "-q", "-p", "sunrise-mod-api-gen", "--bin", "sunrise-stage", "--"])
     run(command + ["surface", str(ROOT), str(dist / SURFACE)], cwd=ROOT)
     for asset in sorted(dist.iterdir()):
         print(f"{asset.name}: {asset.stat().st_size} bytes")
@@ -866,8 +866,8 @@ def gather(legs: Path, dist: Path) -> None:
 
 
 def index(dist: Path, nightly: str | None, previous: tuple[str, Path] | None = None) -> None:
-    """DIST/sdk.json over every asset in DIST, written and checked by the one implementation (`horizon_mod_package::sdk`).
-    `previous` is the SDK published before this one and the `horizon-stage surface-diff --json` of its surface
+    """DIST/sdk.json over every asset in DIST, written and checked by the one implementation (`sunrise_mod_package::sdk`).
+    `previous` is the SDK published before this one and the `sunrise-stage surface-diff --json` of its surface
     against DIST's, which fill the index's surface comparison."""
     commit = head()
     date = run(["git", "log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d"], cwd=ROOT,

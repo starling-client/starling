@@ -1,8 +1,8 @@
 """The website's native mods for the compatibility check (.github/workflows/hnmod-compat.yml).
 
     hnmod_fetch.py OUT            each native mod's newest version from the registry index, its hash checked, the
-                                  mixins/ folder of its .hnmod/.hmod unpacked to OUT/<id>/, and OUT/_list.tsv
-                                  (id, version, ok | revoked | package-fail, the Horizon commit it names)
+                                  mixins/ folder of its .hnmod/.smod unpacked to OUT/<id>/, and OUT/_list.tsv
+                                  (id, version, ok | revoked | package-fail, the Sunrise commit it names)
     hnmod_fetch.py --shards N OUT  after a fetch: the ids that are ok, split in N lists, as JSON for a job matrix
 
 Only reads and writes files: no mod code runs here (the mods compile later, on a runner with no secrets).

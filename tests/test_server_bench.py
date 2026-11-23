@@ -19,26 +19,26 @@ def run(server, bots, sent, new, waited=0.0, behaviour="mixed"):
 
 class ServerBenchWorkTests(unittest.TestCase):
     def test_shares_of_the_busiest_server(self):
-        [row] = work([run("horizon", 10, 98.2, 36.5), run("vanilla", 10, 24.3, 19.1, 12.0)])
+        [row] = work([run("sunrise", 10, 98.2, 36.5), run("vanilla", 10, 24.3, 19.1, 12.0)])
         self.assertFalse(row["equal"])
-        self.assertEqual(row["servers"]["horizon"]["chunks_per_second"], {"value": 98.2, "share": 1.0})
+        self.assertEqual(row["servers"]["sunrise"]["chunks_per_second"], {"value": 98.2, "share": 1.0})
         self.assertEqual(row["servers"]["vanilla"]["chunks_per_second"]["share"], 0.247)
         self.assertEqual(row["servers"]["vanilla"]["waited_ticks_per_second"], 12.0)
 
     def test_equal_within_ten_percent_or_a_chunk(self):
-        [row] = work([run("horizon", 25, 236, 28.9), run("vanilla", 25, 252, 28.9)])
+        [row] = work([run("sunrise", 25, 236, 28.9), run("vanilla", 25, 252, 28.9)])
         self.assertTrue(row["equal"])
         # One bot: 0.3 against 1.1 new chunks a second is within a chunk.
-        [row] = work([run("horizon", 1, 9.9, 0.3), run("vanilla", 1, 9.9, 1.1)])
+        [row] = work([run("sunrise", 1, 9.9, 0.3), run("vanilla", 1, 9.9, 1.1)])
         self.assertTrue(row["equal"])
 
     def test_only_counts_run_on_several_servers(self):
         failed = dict(run("vanilla", 50, 0, 0), error="watchdog")
-        self.assertEqual(work([run("horizon", 50, 450, 10), failed, run("horizon", 1, 9, 0.3)]), [])
+        self.assertEqual(work([run("sunrise", 50, 450, 10), failed, run("sunrise", 1, 9, 0.3)]), [])
 
     def test_each_round_is_compared_on_its_own(self):
-        rows = work([dict(run("horizon", 20, 236, 111), round=0), dict(run("pumpkin", 20, 190, 69), round=0),
-                     dict(run("horizon", 20, 237, 112), round=1), dict(run("pumpkin", 20, 237, 112), round=1)])
+        rows = work([dict(run("sunrise", 20, 236, 111), round=0), dict(run("pumpkin", 20, 190, 69), round=0),
+                     dict(run("sunrise", 20, 237, 112), round=1), dict(run("pumpkin", 20, 237, 112), round=1)])
         self.assertEqual([(r["round"], r["equal"]) for r in rows], [(0, False), (1, True)])
 
 
@@ -115,7 +115,7 @@ class PumpkinConfigTests(unittest.TestCase):
 
 
 class FakeServer:
-    """The console and the log of a server that prints what Horizon prints."""
+    """The console and the log of a server that prints what Sunrise prints."""
 
     def __init__(self, lines=()):
         self.typed = []
@@ -132,31 +132,31 @@ class FakeServer:
             raise RuntimeError(f'no {pattern!r} within {timeout} s')
 
 
-SAVED_LINE = ('[10:02:11] [Server thread/INFO]: Horizon: Saved reports/profile-20261108-100211Z.hzperf '
+SAVED_LINE = ('[10:02:11] [Server thread/INFO]: Sunrise: Saved reports/profile-20261108-100211Z.hzperf '
               '(the file stays on your computer)')
 
 
 class ServerBenchProfileTests(unittest.TestCase):
     def test_the_report_is_asked_for_the_measure_window_with_the_given_flags(self):
-        for profile, seconds, line in [('', 300, 'horizon-report 300'),
-                                       ('--no-samples', 120, 'horizon-report 120 --no-samples'),
+        for profile, seconds, line in [('', 300, 'sunrise-report 300'),
+                                       ('--no-samples', 120, 'sunrise-report 120 --no-samples'),
                                        # The game ends a report at 600 s.
-                                       ('', 900, 'horizon-report 600')]:
+                                       ('', 900, 'sunrise-report 600')]:
             server = FakeServer()
             args = SimpleNamespace(profile=profile, seconds=seconds)
-            self.assertTrue(start_profile(server, 'horizon', args))
+            self.assertTrue(start_profile(server, 'sunrise', args))
             self.assertEqual(server.typed, [line])
             self.assertEqual(report_line(seconds, profile), line)
 
     def test_nothing_is_recorded_without_the_flag_or_on_another_server(self):
         server = FakeServer()
-        self.assertFalse(start_profile(server, 'horizon', SimpleNamespace(profile=None, seconds=300)))
+        self.assertFalse(start_profile(server, 'sunrise', SimpleNamespace(profile=None, seconds=300)))
         for kind in ('vanilla', 'paper', 'fabric', 'pumpkin'):
             self.assertFalse(start_profile(server, kind, SimpleNamespace(profile='', seconds=300)))
         self.assertEqual(server.typed, [])
 
     def test_the_run_record_is_attached_to_the_capture_the_server_saved(self):
-        record = {'server': 'horizon', 'bots': 25, 'mspt': {'average': 12.4, 'p95': 20.1}}
+        record = {'server': 'sunrise', 'bots': 25, 'mspt': {'average': 12.4, 'p95': 20.1}}
         calls = []
 
         def attach(argv, **kwargs):
@@ -178,7 +178,7 @@ class ServerBenchProfileTests(unittest.TestCase):
 
     def test_a_server_that_never_saves_leaves_the_run_standing_with_the_reason(self):
         calls = []
-        result = {'server': 'horizon'}
+        result = {'server': 'sunrise'}
         with tempfile.TemporaryDirectory() as folder:
             finish_profile(FakeServer(['starting']), Path(folder), result, run=lambda *a, **k: calls.append(a))
         self.assertEqual(calls, [])
@@ -189,7 +189,7 @@ class ServerBenchProfileTests(unittest.TestCase):
         def fails(argv, **kwargs):
             raise subprocess.CalledProcessError(1, argv)
 
-        result = {'server': 'horizon'}
+        result = {'server': 'sunrise'}
         with tempfile.TemporaryDirectory() as folder:
             finish_profile(FakeServer([SAVED_LINE]), Path(folder), result, run=fails)
         self.assertNotIn('profile', result)

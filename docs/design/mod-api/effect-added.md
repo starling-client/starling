@@ -4,7 +4,7 @@
 
 ## Evidence and vanilla moment
 
-Inspected at base `95672cb54f` using `python3 tools/rea_vanilla.py` from `/workspace/horizon`: `LivingEntity.addEffect` overload 1, `LivingEntity.onEffectAdded`, and `MobEffectInstance.update`. No NeoForge source, patches or other project's source were consulted.
+Inspected at base `95672cb54f` using `python3 tools/rea_vanilla.py` from `/workspace/sunrise`: `LivingEntity.addEffect` overload 1, `LivingEntity.onEffectAdded`, and `MobEffectInstance.update`. No NeoForge source, patches or other project's source were consulted.
 
 Vanilla 26.3 first calls canBeAffected; refusal returns false. It looks up the active instance. An absent effect is inserted, onEffectAdded runs, changed becomes true, and the incoming instance's onEffectAdded runs. An existing instance is updated; only a true update result calls onEffectUpdated with forced=true and sets changed. Afterwards incoming.onEffectStarted runs even when update returned false. LivingEntity.onEffectAdded marks effects dirty, adds attribute modifiers and sends to passengers on the server. These are three distinct moments: first insertion, update, and accepted application attempt. Hidden-chain updates may mutate state while update returns false; false does not mean nothing changed. Stronger short effects preserve the former active instance in the hidden chain; equal-strength longer effects extend duration. Visibility/icon/ambient changes can count as updates.
 
@@ -28,7 +28,7 @@ Define API-owned snapshots for incoming and previous full instances, effect keys
 
 ## Route owners to migrate
 
-Paths below are relative to `crates/horizon-client/src/`; line numbers identify inspected current owners, not promised APIs. All rows enter the same coordinator; no producer gets its own Added dispatch.
+Paths below are relative to `crates/sunrise-client/src/`; line numbers identify inspected current owners, not promised APIs. All rows enter the same coordinator; no producer gets its own Added dispatch.
 
 | Route | Verified owner |
 | --- | --- |

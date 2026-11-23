@@ -65,16 +65,16 @@ def main():
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEnchantmentComponentsOracle.java'
-    probe = lab.ROOT / 'crates/horizon-items/examples/enchantment_components_probe.rs'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEnchantmentComponentsOracle.java'
+    probe = lab.ROOT / 'crates/sunrise-items/examples/enchantment_components_probe.rs'
     sources = [Path(__file__), Path(lab.__file__), Path(base.__file__), oracle,
                oracle.with_name('ParityData.java'), probe, lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-items/src/item_nbt.rs',
-               lab.ROOT / 'crates/horizon-core/src/nbt.rs',
-               lab.ROOT / 'crates/horizon-world/src/datafix/dynamic.rs',
-               lab.ROOT / 'crates/horizon-client-core/src/lang.rs',
-               lab.ROOT / 'crates/horizon-items/src/item_data.rs',
-               lab.ROOT / 'crates/horizon-items/src/enchant.rs']
+               lab.ROOT / 'crates/sunrise-items/src/item_nbt.rs',
+               lab.ROOT / 'crates/sunrise-core/src/nbt.rs',
+               lab.ROOT / 'crates/sunrise-world/src/datafix/dynamic.rs',
+               lab.ROOT / 'crates/sunrise-client-core/src/lang.rs',
+               lab.ROOT / 'crates/sunrise-items/src/item_data.rs',
+               lab.ROOT / 'crates/sunrise-items/src/enchant.rs']
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     fixtures = list(corpus())
@@ -88,18 +88,18 @@ def main():
             base.run(list(map(str, command)), stdout=log, stderr=subprocess.STDOUT, **kwargs)
 
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none',
-         '-sourcepath', lab.ROOT / 'mods/horizon/src/test/java', '-cp', str(jars['server']) + os.pathsep + deps,
+         '-sourcepath', lab.ROOT / 'mods/sunrise/src/test/java', '-cp', str(jars['server']) + os.pathsep + deps,
          '-d', classes, oracle], 'compile-java')
     os.environ.setdefault('CARGO_TARGET_DIR', str(lab.LOCAL / 'parity-target'))
     env = dict(os.environ)
-    run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-items',
+    run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-items',
          '--example', 'enchantment_components_probe'], 'compile-rust', env=env)
     binary = lab.cargo_target() / 'fast/examples' / ('enchantment_components_probe.exe' if os.name == 'nt' else 'enchantment_components_probe')
     run([binary, lab.RESOURCES, inputs, build / 'rust.txt'], 'rust')
     references = []
     for side, jar in jars.items():
         run(['java', '-Xmx1G', '-cp', os.pathsep.join(map(str, [classes, jar, *libraries])),
-             'dev.horizonlab.parity.VanillaEnchantmentComponentsOracle', inputs, build / f'{side}.txt'], side)
+             'dev.sunriselab.parity.VanillaEnchantmentComponentsOracle', inputs, build / f'{side}.txt'], side)
         matched = base.compare(build / f'{side}.txt', build / 'rust.txt')
         references.append({'side': side, 'jar_sha256': lab.digest(jar, 'sha256'), 'matched_lines': matched})
         print(f'{side}: {matched} enchantment component lines match Rust', flush=True)

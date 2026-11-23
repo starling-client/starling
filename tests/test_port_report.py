@@ -60,7 +60,7 @@ def diff():
                       "net/minecraft/elsewhere/Thing"],
             "removed": ["net/minecraft/network/protocol/game/Swing"], "moved": {},
             "changed": changed,
-            "horizon": {name: m["classes"][name] for name in changed if name in m["classes"]},
+            "sunrise": {name: m["classes"][name] for name in changed if name in m["classes"]},
         },
     }
 
@@ -94,11 +94,11 @@ class PortReportTests(unittest.TestCase):
 
     def test_regen_results_replace_the_stale_tables(self):
         regen = {"new": "26.3", "candidate": "/ports/26.3", "commit": "0123456789abcdef", "generators": {
-            "packet_ids": {"status": "regenerated", "outputs": ["crates/horizon-protocol/src/ids.rs"],
-                           "stat": {"crates/horizon-protocol/src/ids.rs": [142, 134]}},
-            "entity_tracking": {"status": "unchanged", "outputs": ["crates/horizon-client/src/lan/tracking.rs"],
+            "packet_ids": {"status": "regenerated", "outputs": ["crates/sunrise-protocol/src/ids.rs"],
+                           "stat": {"crates/sunrise-protocol/src/ids.rs": [142, 134]}},
+            "entity_tracking": {"status": "unchanged", "outputs": ["crates/sunrise-client/src/lan/tracking.rs"],
                                 "stat": {}},
-            "lan_command_order": {"status": "failed", "outputs": ["crates/horizon-client/src/lan/command_order.rs"],
+            "lan_command_order": {"status": "failed", "outputs": ["crates/sunrise-client/src/lan/command_order.rs"],
                                   "error": "javac exited 1",
                                   "compile_errors": ["ParityData.java:45: cannot find symbol: variable WORLD"]}}}
         built = self.build(regen=regen)
@@ -110,7 +110,7 @@ class PortReportTests(unittest.TestCase):
                          {"packet_ids": "regenerated", "entity_tracking": "unchanged", "lan_command_order": "failed"})
         text = report.markdown(built)
         self.assertIn("regenerated 1, unchanged 1, failed 1", text)
-        self.assertIn("`crates/horizon-protocol/src/ids.rs` (+142 -134)", text)
+        self.assertIn("`crates/sunrise-protocol/src/ids.rs` (+142 -134)", text)
         self.assertIn("- javac: `ParityData.java:45: cannot find symbol: variable WORLD`", text)
 
     def test_ranks_and_kinds(self):
@@ -122,8 +122,8 @@ class PortReportTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in built["items"]], list(range(1, len(kinds) + 1)))
         self.assertEqual(kinds, sorted(kinds, key=lambda k: k[0]))
         regenerated = {i["files"][0] for i in built["items"] if i["kind"] == "regenerate"}
-        self.assertEqual(regenerated, {"crates/horizon-core/src/version.rs", "crates/horizon-protocol/src/ids.rs",
-                                       "crates/horizon-client/src/lan/tracking.rs"})
+        self.assertEqual(regenerated, {"crates/sunrise-core/src/version.rs", "crates/sunrise-protocol/src/ids.rs",
+                                       "crates/sunrise-client/src/lan/tracking.rs"})
 
     def test_save_format_lists_new_schemas_and_fixes(self):
         save = next(i for i in self.build()["items"] if i["kind"] == "save-format")

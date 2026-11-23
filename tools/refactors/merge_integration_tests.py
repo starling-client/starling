@@ -6,7 +6,7 @@ binary instead of one per file; every test keeps its function name under its mod
 (`<name>::<test>`). Files named with --keep stay separate binaries: they hold process-global
 state another file's tests would observe (an installed hook, a set-once initializer).
 
-    python3 tools/refactors/merge_integration_tests.py crates/horizon-world --keep native_load_hooks
+    python3 tools/refactors/merge_integration_tests.py crates/sunrise-world --keep native_load_hooks
 """
 import argparse
 import subprocess

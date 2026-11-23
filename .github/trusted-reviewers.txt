@@ -12,4 +12,4 @@
 54669067 kacpherek       # added by Ludovic, 2026-10-27
 87152661 rdbtCVS         # added by Ludovic, 2026-10-27
 84875247 Online5277      # added by Ludovic, 2026-10-27 (his top three by merged pull requests)
-86072227 levzzz5154      # added by Ludovic, 2026-10-28 (Horizon Team; author of horizon-mixins)
+86072227 levzzz5154      # added by Ludovic, 2026-10-28 (Sunrise Team; author of horizon-mixins)

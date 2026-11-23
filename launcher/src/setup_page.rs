@@ -1,6 +1,6 @@
-//! The Windows setup window: `horizon-launcher-setup.exe` installs, `horizon-launcher.exe
+//! The Windows setup window: `sunrise-launcher-setup.exe` installs, `sunrise-launcher.exe
 //! uninstall` removes. The launcher's own sky and plates (docs/design-system.md, "Night"); the
-//! work is `horizon_launcher::installer`, on a thread, reported over a channel.
+//! work is `sunrise_launcher::installer`, on a thread, reported over a channel.
 use crate::glass_ui;
 use crate::scene;
 use crate::shell::{c, text};
@@ -12,9 +12,9 @@ use gpui::{
     div, prelude::*, px, size, App, Bounds, ClickEvent, Context, Div, PathPromptOptions, Render,
     Task, Window, WindowBounds, WindowOptions,
 };
-use horizon_launcher::backend::Settings;
-use horizon_launcher::i18n::{self, tr};
-use horizon_launcher::installer::{self, Mode, Options, Step};
+use sunrise_launcher::backend::Settings;
+use sunrise_launcher::i18n::{self, tr};
+use sunrise_launcher::installer::{self, Mode, Options, Step};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
@@ -57,7 +57,7 @@ pub fn open(mode: Mode, cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(760.), px(520.))),
             titlebar: Some(titlebar::options()),
-            app_id: Some(horizon_launcher::identity::APP_ID.into()),
+            app_id: Some(sunrise_launcher::identity::APP_ID.into()),
             ..Default::default()
         },
         |window, cx| cx.new(|cx| Setup::new(mode, window, cx)),
@@ -102,7 +102,7 @@ impl Setup {
     /// The settings file's write time and size, to notice a change made in the launcher.
     fn settings_stamp() -> Option<(std::time::SystemTime, u64)> {
         let meta =
-            std::fs::metadata(horizon_launcher::backend::data_dir().join("settings.json")).ok()?;
+            std::fs::metadata(sunrise_launcher::backend::data_dir().join("settings.json")).ok()?;
         Some((meta.modified().ok()?, meta.len()))
     }
 
@@ -278,7 +278,7 @@ impl Setup {
             Stage::Welcome if self.mode == Mode::Install => {
                 body = body
                     .child(text(night::UI, c(n.ink_soft)).child(
-                        tr(if cfg!(horizon_fork_launcher) { "Installs Horizon Fork Launcher (arismoko) for this account. No administrator needed." } else { "Installs Horizon Launcher for this account. No administrator needed." })
+                        tr(if cfg!(sunrise_fork_launcher) { "Installs Sunrise Fork Launcher (arismoko) for this account. No administrator needed." } else { "Installs Sunrise Launcher for this account. No administrator needed." })
                             .to_string(),
                     ))
                     .child(self.folder_row(cx))
@@ -307,7 +307,7 @@ impl Setup {
             Stage::Welcome => {
                 body = body
                     .child(text(night::UI, c(n.ink_soft)).child(
-                        tr(if cfg!(horizon_fork_launcher) { "Removes Horizon Fork Launcher (arismoko) from this computer. Your worlds and the game's folder stay." } else { "Removes Horizon Launcher from this computer. Your worlds and the game's folder stay." })
+                        tr(if cfg!(sunrise_fork_launcher) { "Removes Sunrise Fork Launcher (arismoko) from this computer. Your worlds and the game's folder stay." } else { "Removes Sunrise Launcher from this computer. Your worlds and the game's folder stay." })
                             .to_string(),
                     ))
                     .child(self.toggle(
@@ -346,16 +346,16 @@ impl Setup {
             }
             Stage::Done { left } => {
                 let said = match self.mode {
-                    Mode::Install => tr(if cfg!(horizon_fork_launcher) {
-                        "Horizon Fork Launcher (arismoko) is installed."
+                    Mode::Install => tr(if cfg!(sunrise_fork_launcher) {
+                        "Sunrise Fork Launcher (arismoko) is installed."
                     } else {
-                        "Horizon Launcher is installed."
+                        "Sunrise Launcher is installed."
                     })
                     .to_string(),
-                    Mode::Uninstall => tr(if cfg!(horizon_fork_launcher) {
-                        "Horizon Fork Launcher (arismoko) was removed."
+                    Mode::Uninstall => tr(if cfg!(sunrise_fork_launcher) {
+                        "Sunrise Fork Launcher (arismoko) was removed."
                     } else {
-                        "Horizon Launcher was removed."
+                        "Sunrise Launcher was removed."
                     })
                     .to_string(),
                 };
@@ -380,10 +380,10 @@ impl Setup {
                         div().flex().items_center().justify_end().child(
                             crate::button(
                                 "launch",
-                                tr(if cfg!(horizon_fork_launcher) {
-                                    "Launch Horizon Fork Launcher (arismoko)"
+                                tr(if cfg!(sunrise_fork_launcher) {
+                                    "Launch Sunrise Fork Launcher (arismoko)"
                                 } else {
-                                    "Launch Horizon"
+                                    "Launch Sunrise"
                                 }),
                                 Kind::Primary,
                                 &t,
@@ -407,14 +407,14 @@ impl Setup {
                     );
             }
         }
-        glass_ui::dialog_plate(horizon_theme::glass::radius::MODAL)
+        glass_ui::dialog_plate(sunrise_theme::glass::radius::MODAL)
             .w(px(560.))
             .p(px(32.))
             .flex()
             .flex_col()
             .gap(px(18.))
             .child(
-                text(night::DISPLAY, c(n.ink)).child(tr(horizon_launcher::identity::WINDOW_TITLE)),
+                text(night::DISPLAY, c(n.ink)).child(tr(sunrise_launcher::identity::WINDOW_TITLE)),
             )
             .child(body)
     }
@@ -454,8 +454,8 @@ impl Render for Setup {
         // player's accent as the launcher tints it, and the dawn sky in the light one (the
         // redesign has no light scene yet). The setup therefore looks like the client it
         // installs: a player with a blue accent gets the blue scene, not the night sunset.
-        let tint = (t.dark && t.look.accent != horizon_theme::glass::ACCENT)
-            .then(|| horizon_theme::glass::mix_oklab(t.look.accent, 0x767676, 0.58));
+        let tint = (t.dark && t.look.accent != sunrise_theme::glass::ACCENT)
+            .then(|| sunrise_theme::glass::mix_oklab(t.look.accent, 0x767676, 0.58));
         self.scene
             .update(cx, |scene, cx| scene.set_look(tint, t.look.blur, cx));
         let sky = if t.dark {

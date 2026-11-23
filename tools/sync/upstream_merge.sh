@@ -4,10 +4,10 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 target=${1:?usage: upstream_merge.sh upstream-sha}
 git rev-parse --verify "$target^{commit}" >/dev/null
-git config merge.horizon-lang.driver 'python3 tools/sync/merge_lang.py %O %A %B %L %P'
+git config merge.sunrise-lang.driver 'python3 tools/sync/merge_lang.py %O %A %B %L %P'
 git config rerere.enabled true
 git config rerere.autoupdate false
-cache=${HORIZON_SYNC_RERERE:-/box/shared/upstream-sync-2/rerere}
+cache=${SUNRISE_SYNC_RERERE:-/box/shared/upstream-sync-2/rerere}
 mkdir -p "$cache"
 rr="$(git rev-parse --git-common-dir)/rr-cache"
 if [[ -d "$rr" && ! -L "$rr" ]]; then

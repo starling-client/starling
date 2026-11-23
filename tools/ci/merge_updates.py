@@ -81,7 +81,7 @@ def main():
     request = urllib.request.Request(
         env["WEBHOOK"],
         data=json.dumps(message).encode(),
-        headers={"Content-Type": "application/json", "User-Agent": "horizon-merge-updates"},
+        headers={"Content-Type": "application/json", "User-Agent": "sunrise-merge-updates"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30) as response:

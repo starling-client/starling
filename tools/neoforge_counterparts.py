@@ -12,7 +12,7 @@ PAGE = "reference/neoforge-counterparts.md"
 
 def hooks(root):
     rows = []
-    for path in sorted((root / "crates/horizon-mod-vocab/src/hooks").glob("*.rs")):
+    for path in sorted((root / "crates/sunrise-mod-vocab/src/hooks").glob("*.rs")):
         if path.name == "mod.rs":
             continue
         text = path.read_text(encoding="utf8")
@@ -48,7 +48,7 @@ def page(root):
     ]
     return f"""# NeoForge counterparts
 
-Each hook's `neoforge = ...` key in `crates/horizon-mod-vocab/src/hooks/` names the NeoForge 26.3 event or method it
+Each hook's `neoforge = ...` key in `crates/sunrise-mod-vocab/src/hooks/` names the NeoForge 26.3 event or method it
 matches, since a counterpart's name and contract are the rule for a hook. This page lists the keys as declared.
 The book build renders it directly from those declarations; there is no generated Markdown snapshot to update.
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);

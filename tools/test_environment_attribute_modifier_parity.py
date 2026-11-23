@@ -79,4 +79,4 @@ if __name__ == '__main__':
         'environment_attribute_modifier_fixture', cases,
         'EnvironmentAttributeMap.Entry codec and AttributeModifier.apply for float, angle, RGB, ARGB and boolean '
         'attributes, with AttributeRange.sanitize',
-        sources=[lab.ROOT / 'crates/horizon-world/src/environment_attributes.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-world/src/environment_attributes.rs'])

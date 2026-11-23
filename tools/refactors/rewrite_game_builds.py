@@ -13,7 +13,7 @@ root = Path(__file__).resolve().parents[2]
 # Root documentation also contains developer build commands.
 for p in [root / 'AGENTS.md']:
     s = p.read_text()
-    p.write_text('\n'.join(re.sub(r'-p horizon-client(?![\w-])', '-p horizon-game', line) if 'cargo build' in line or 'cargo run' in line else line for line in s.split('\n')))
+    p.write_text('\n'.join(re.sub(r'-p sunrise-client(?![\w-])', '-p sunrise-game', line) if 'cargo build' in line or 'cargo run' in line else line for line in s.split('\n')))
 for base in ['tools', '.github', 'docs', 'packaging', 'xtask']:
     for p in (root / base).rglob('*'):
         if not p.is_file() or 'refactors' in p.parts:
@@ -26,12 +26,12 @@ for base in ['tools', '.github', 'docs', 'packaging', 'xtask']:
         def rewrite(m):
             text = m.group()
             if re.search(r"['\"]build['\"]", text) and '--example' not in text and '--lib' not in text:
-                text = re.sub(r"(['\"]-p['\"]\s*,\s*['\"])horizon-client(['\"])", r'\1horizon-game\2', text)
+                text = re.sub(r"(['\"]-p['\"]\s*,\s*['\"])sunrise-client(['\"])", r'\1sunrise-game\2', text)
             return text
         new = re.sub(r'\[[^\[\]]*\]', rewrite, s)
         # Shell build lines; retain library checks/tests.
-        new = new.replace('the game with `-p horizon-client`', 'the game with `-p horizon-game`')
-        new = re.sub(r'(?m)^(  -p )horizon-client(?![\w-])', r'\1horizon-game', new)
-        new = '\n'.join(re.sub(r'-p horizon-client(?![\w-])', '-p horizon-game', line) if 'cargo build' in line and '--example' not in line and '--lib' not in line else line for line in new.split('\n'))
+        new = new.replace('the game with `-p sunrise-client`', 'the game with `-p sunrise-game`')
+        new = re.sub(r'(?m)^(  -p )sunrise-client(?![\w-])', r'\1sunrise-game', new)
+        new = '\n'.join(re.sub(r'-p sunrise-client(?![\w-])', '-p sunrise-game', line) if 'cargo build' in line and '--example' not in line and '--lib' not in line else line for line in new.split('\n'))
         if new != s:
             p.write_text(new)

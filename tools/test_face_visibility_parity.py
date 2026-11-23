@@ -46,11 +46,11 @@ def main():
     lock,jars,libraries = base.verify_artifacts()
     build = lab.LOCAL/'rust-face-visibility-parity';build.mkdir(exist_ok=True)
     report_path = build/'report.json';report_path.unlink(missing_ok=True)
-    oracle = lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaFaceVisibilityOracle.java'
+    oracle = lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaFaceVisibilityOracle.java'
     helpers = [oracle.with_name(name) for name in ['VanillaCollisionOracle.java','VanillaHeightmapOracle.java']]
     sources = [oracle,*helpers,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/test_worldgen_parity.py',lab.ROOT/'tools/lab.py',
-               lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-world/examples/probe/face_visibility_fixture.rs']
-    for crate in ['horizon-core','horizon-world']:
+               lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-world/examples/probe/face_visibility_fixture.rs']
+    for crate in ['sunrise-core','sunrise-world']:
         sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
     tested = base.source_hashes(sources)
     tags = worldgen.tag_resources(jars['server'])
@@ -61,17 +61,17 @@ def main():
     def run(command,name):
         with (build/(name+'.log')).open('w') as log:
             subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=3600,stdout=log,stderr=subprocess.STDOUT)
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,oracle,*helpers],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,oracle,*helpers],'compile-java')
     def java(side,mode):
         run(['java','-Xmx768M','-cp',str(classes)+os.pathsep+str(jars[side])+os.pathsep+dependencies,
-             'dev.horizonlab.parity.VanillaFaceVisibilityOracle',mode,build],side+'-'+mode)
+             'dev.sunriselab.parity.VanillaFaceVisibilityOracle',mode,build],side+'-'+mode)
     java('server','export')
     definitions = json.loads((build/'definitions.json').read_text());pair_count=0
     with (build/'pairs.txt').open('w') as output:
         for a,b in pairs(definitions):output.write(f'{a} {b}\n');pair_count+=1
     fixture_paths = [build/name for name in ['pairs.txt','block-registry.nbt','occlusion.nbt','definitions.json','tags.json']]
     fixtures = base.source_hashes(fixture_paths)
-    run(['cargo','build','--locked','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--locked','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version','1'],cwd=lab.ROOT))
     binary = Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'face_visibility_fixture',build],'rust');references=[]

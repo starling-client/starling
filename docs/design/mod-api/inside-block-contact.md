@@ -28,7 +28,7 @@ any such contract. No NeoForge source, patches or other project's source was rea
 ## Current owners and proposed shared boundary
 
 References verified at worktree HEAD `1d1de8d42b`; client paths below are relative
-to `crates/horizon-client/src/`. These are current owners, not existing hook sites.
+to `crates/sunrise-client/src/`. These are current owners, not existing hook sites.
 
 | Route | Owner | Required integration |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ to `crates/horizon-client/src/`. These are current owners, not existing hook sit
 | Dropped items | `entities.rs:960`, `ItemEntity::environment_tick` and `ItemEntity::stuck_multiplier` | Replace subscription-only admission and separate block-effect scans with shared geometry |
 | Other projectiles / game entity batches | `game/mobs/creatures/mod.rs:205` | Same sweep adapter, bound to the actual entity |
 | Generic sweep | `block_contact.rs:240`, visitation `block_contact.rs:257` | Shared geometry decision before recording contacts |
-| Existing server callback | `game/native_hooks/entity_inside.rs:8`; catalog `crates/horizon-mod-vocab/src/hooks/entity_inside.rs:3` | The mid-walk notification moment is the one path now; the shape decision extends it, never filters after it |
+| Existing server callback | `game/native_hooks/entity_inside.rs:8`; catalog `crates/sunrise-mod-vocab/src/hooks/entity_inside.rs:3` | The mid-walk notification moment is the one path now; the shape decision extends it, never filters after it |
 
 Lower geometry prepares one candidate at a time in existing traversal order.
 The game adapter fires the Part query with typed HostSide, then lower geometry
@@ -163,7 +163,7 @@ Run each on player, mob, arrow, item and every projectile adapter, native and wa
 | Provider traps after attachment write | attachment unchanged; Default contact; provider disabled |
 | Entity retired or state/revision changes before apply | stale decision refused; zero committed effects |
 | Root abort during lifted pass | no retirement or journal emission; save request refused while savepoint open |
-| Default / no override | unchanged captured Horizon contacts and order on every route; separately record vanilla oracle differences across short/long moves and special blocks |
+| Default / no override | unchanged captured Sunrise contacts and order on every route; separately record vanilla oracle differences across short/long moves and special blocks |
 | Empty on dropped-item fire/cactus/lava-cauldron/cobweb/powder-snow contact | applicable block damage, ignition and slowing suppressed; independent fluid effects and existing burning timers preserved |
 | Origin block shape x [-1,0], entity wholly in neighboring cell, stationary | origin not queried; no origin block callback or effect |
 | Override with no entity_inside listeners | geometry still controls built-in block effects; fluid unaffected |

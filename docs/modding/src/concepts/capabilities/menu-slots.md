@@ -15,7 +15,7 @@ Attach a `MenuPart` to the registered menu type and filter its input slot with t
 
 ```rust,ignore
 struct PotInput;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::MenuPart for PotInput {
     fn menu_slot_rules(
         &self,
@@ -94,7 +94,7 @@ instead, as a Java menu overrides `stillValid`:
 
 ```rust,ignore
 struct ShellReach;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl mod_api::MenuPart for ShellReach {
     fn menu_still_valid(
         &self,

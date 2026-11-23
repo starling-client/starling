@@ -29,9 +29,9 @@ def prepare_reference(work):
     for path in (reference, casts):
         path.unlink(missing_ok=True)
     env = lab.game_env(
-        JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", "") + " -Dhorizon.fishingReference=true",
-        HORIZON_HOME=work / "home",
-        HORIZON_LAUNCHER_HOME=work / "launcher",
+        JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", "") + " -Dsunrise.fishingReference=true",
+        SUNRISE_HOME=work / "home",
+        SUNRISE_LAUNCHER_HOME=work / "launcher",
         XDG_DATA_HOME=work / "data",
         XDG_CONFIG_HOME=work / "config",
     )
@@ -49,9 +49,9 @@ def prepare_reference(work):
     if not all(path.is_file() for path in (reference, casts)):
         raise SystemExit("Fishing reference producer did not write both required inputs")
     return {
-        "HORIZON_FISHING_RESOURCES": str(lab.RESOURCES),
-        "HORIZON_FISHING_REFERENCE": str(reference),
-        "HORIZON_FISHING_CAST_REFERENCE": str(casts),
+        "SUNRISE_FISHING_RESOURCES": str(lab.RESOURCES),
+        "SUNRISE_FISHING_REFERENCE": str(reference),
+        "SUNRISE_FISHING_CAST_REFERENCE": str(casts),
     }
 
 
@@ -59,18 +59,18 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="fishing-rng-", dir=lab.LOCAL))
     java_options = os.environ.get("JAVA_TOOL_OPTIONS", "")
     env = lab.game_env(
-        JAVA_TOOL_OPTIONS=java_options + " -Dhorizon.fishingReference=true",
+        JAVA_TOOL_OPTIONS=java_options + " -Dsunrise.fishingReference=true",
         CARGO_TARGET_DIR=str(lab.cargo_target()),
-        HORIZON_FISHING_TICK_REFERENCE=str(work / "rust-fishing-ticks.json"),
-        HORIZON_FISHING_BOBBING_REFERENCE=str(work / "rust-fishing-bobbing.json"),
-        HORIZON_HOME=str(work / "home"),
-        HORIZON_LAUNCHER_HOME=str(work / "launcher"),
+        SUNRISE_FISHING_TICK_REFERENCE=str(work / "rust-fishing-ticks.json"),
+        SUNRISE_FISHING_BOBBING_REFERENCE=str(work / "rust-fishing-bobbing.json"),
+        SUNRISE_HOME=str(work / "home"),
+        SUNRISE_LAUNCHER_HOME=str(work / "launcher"),
         XDG_DATA_HOME=str(work / "data"),
         XDG_CONFIG_HOME=str(work / "config"),
     )
-    subprocess.run(["cargo", "build", "--profile", "fast", "-p", "horizon-game", "--bin", "horizon-client"],
+    subprocess.run(["cargo", "build", "--profile", "fast", "-p", "sunrise-game", "--bin", "sunrise-client"],
                    cwd=lab.ROOT, env=env, check=True)
-    binary = lab.cargo_target() / "fast" / ("horizon-client.exe" if os.name == "nt" else "horizon-client")
+    binary = lab.cargo_target() / "fast" / ("sunrise-client.exe" if os.name == "nt" else "sunrise-client")
     subprocess.run([sys.executable, str(lab.ROOT / "tools/test_command_exec_parity.py"),
                     "--only", "scoreboard", "--allow-gaps", "--binary", str(binary), "--work-dir", str(work)],
                    cwd=lab.ROOT, env=env, check=True)
@@ -81,7 +81,7 @@ def main():
     if reference != actual:
         for expected, got in zip(reference, actual):
             if expected != got:
-                raise SystemExit(f"fishing tick differs: vanilla {expected}; Horizon {got}")
+                raise SystemExit(f"fishing tick differs: vanilla {expected}; Sunrise {got}")
         raise SystemExit(f"fishing tick record count differs: {len(reference)} vs {len(actual)}")
     expected_bobbing = json.loads((work / "fishing-bobbing-reference.json").read_text())
     actual_bobbing = json.loads((work / "rust-fishing-bobbing.json").read_text())
@@ -95,16 +95,16 @@ def main():
                 raise SystemExit(f"fishing ground case differs: {expected}; {actual}")
             for field in ("position", "motion"):
                 if len(actual[field]) != 3 or any(not abs(a - b) <= 1e-12 for a, b in zip(expected[field], actual[field])):
-                    raise SystemExit(f"fishing ground differs: vanilla {expected}; Horizon {actual}")
+                    raise SystemExit(f"fishing ground differs: vanilla {expected}; Sunrise {actual}")
         elif expected != actual:
-            raise SystemExit(f"fishing bobbing differs: vanilla {expected}; Horizon {actual}")
+            raise SystemExit(f"fishing bobbing differs: vanilla {expected}; Sunrise {actual}")
     fallback = work / "fallback"
     fallback_env = env.copy()
-    fallback_env.pop("HORIZON_FISHING_TICK_REFERENCE", None)
-    fallback_env.pop("HORIZON_FISHING_BOBBING_REFERENCE", None)
-    fallback_env["HORIZON_FISHING_FALLBACK_REFERENCE"] = str(fallback / "rust-fishing-fallback.json")
-    fallback_env["HORIZON_FISHING_FALLBACK_FIXTURE"] = "1"
-    fallback_env["JAVA_TOOL_OPTIONS"] = java_options + " -Dhorizon.fishingFallback=true"
+    fallback_env.pop("SUNRISE_FISHING_TICK_REFERENCE", None)
+    fallback_env.pop("SUNRISE_FISHING_BOBBING_REFERENCE", None)
+    fallback_env["SUNRISE_FISHING_FALLBACK_REFERENCE"] = str(fallback / "rust-fishing-fallback.json")
+    fallback_env["SUNRISE_FISHING_FALLBACK_FIXTURE"] = "1"
+    fallback_env["JAVA_TOOL_OPTIONS"] = java_options + " -Dsunrise.fishingFallback=true"
     subprocess.run([sys.executable, str(lab.ROOT / "tools/test_command_exec_parity.py"),
                     "--only", "scoreboard", "--allow-gaps", "--binary", str(binary), "--work-dir", str(fallback)],
                    cwd=lab.ROOT, env=fallback_env, check=True)
@@ -115,12 +115,12 @@ def main():
     if expected != actual:
         for reference_row, actual_row in zip(expected, actual):
             if reference_row != actual_row:
-                raise SystemExit(f"fishing fallback differs: vanilla {reference_row}; Horizon {actual_row}")
+                raise SystemExit(f"fishing fallback differs: vanilla {reference_row}; Sunrise {actual_row}")
         raise SystemExit(f"fishing fallback record count differs: {len(expected)} vs {len(actual)}")
-    env["HORIZON_FISHING_RESOURCES"] = str(lab.RESOURCES)
-    env["HORIZON_FISHING_REFERENCE"] = str(work / "fishing-reference.json")
-    env["HORIZON_FISHING_CAST_REFERENCE"] = str(work / "fishing-casts-reference.json")
-    subprocess.run(["cargo", "test", "--profile", "fast", "-p", "horizon-client", "--lib",
+    env["SUNRISE_FISHING_RESOURCES"] = str(lab.RESOURCES)
+    env["SUNRISE_FISHING_REFERENCE"] = str(work / "fishing-reference.json")
+    env["SUNRISE_FISHING_CAST_REFERENCE"] = str(work / "fishing-casts-reference.json")
+    subprocess.run(["cargo", "test", "--profile", "fast", "-p", "sunrise-client", "--lib",
                     "game::fishing::tests::fishing_retrieve_reference", "--", "--exact", "--ignored"],
                    cwd=lab.ROOT, env=env, check=True)
     print("fishing: ground prediction, bobbing, seeded catch timers, loot and XP match vanilla")

@@ -33,7 +33,7 @@ def enum_hash(variants):
         result = mix(result, name(variant))
     return f"{mix(name('enum'), result):016x}"
 
-source = ROOT / 'crates/horizon-mod-vocab/src/content/package_side.rs'
+source = ROOT / 'crates/sunrise-mod-vocab/src/content/package_side.rs'
 variants = re.findall(r'^    (\w+),$', source.read_text(), re.MULTILINE)
 assert variants == ['Client', 'Both', 'Server'], variants
 old, new = enum_hash(['Client', 'Both']), enum_hash(variants)
@@ -44,5 +44,5 @@ rows = [row for row in manifest['enums'] if row['canonical_path'] == 'crate::con
 assert len(rows) == 1 and rows[0]['hash'] in (old, new), rows
 rows[0]['hash'] = new
 path.write_text(json.dumps(manifest, indent=2) + '\n')
-(ROOT / 'crates/horizon-mod-vocab/src/wire/fieldless_enum_goldens.rs').write_text(render(manifest))
+(ROOT / 'crates/sunrise-mod-vocab/src/wire/fieldless_enum_goldens.rs').write_text(render(manifest))
 print(f'Side: {old} -> {new}')

@@ -34,7 +34,7 @@ class Budgets(unittest.TestCase):
 
     def test_generated_absolute_location_uses_only_this_checkout_root(self):
         root = Path(ci.__file__).resolve().parents[2]
-        path = 'crates/horizon-client/src/game/administration/commands/incoming_tests/knot_identity.rs'
+        path = 'crates/sunrise-client/src/game/administration/commands/incoming_tests/knot_identity.rs'
         location = f'{root / path}:176:1'
         log = self.render(f"test safe ... FAILED\nthread 'safe' panicked at {location}:\n"
                           "assertion failed: PRIVATE\n")
@@ -46,7 +46,7 @@ class Budgets(unittest.TestCase):
                          f'{root}/../{root.name}/{path}:176:1',
                          f'{root}/{path}:999999:1',
                          f'{root}/{path}:176:0',
-                         f'{root}/crates/horizon-client/src/not_tracked.rs:1:1',
+                         f'{root}/crates/sunrise-client/src/not_tracked.rs:1:1',
                          f'{root}/.local/private.rs:1:1'):
             with self.subTest(location=rejected):
                 log = self.render(f"test safe ... FAILED\nthread 'safe' panicked at {rejected}:\n"
@@ -56,8 +56,8 @@ class Budgets(unittest.TestCase):
                 self.assertNotIn(str(root), log)
 
     def test_relative_and_cross_crate_raw_panic_headers(self):
-        path = 'crates/horizon-client/src/title/tests.rs'
-        for raw_path in (path, 'crates/horizon-client-lib/../horizon-client/src/title/tests.rs'):
+        path = 'crates/sunrise-client/src/title/tests.rs'
+        for raw_path in (path, 'crates/sunrise-client-lib/../sunrise-client/src/title/tests.rs'):
             log = self.render(f"test game::x::y ... FAILED\n"
                               f"thread 'game::x::y' (12345) panicked at {raw_path}:109:5:\n"
                               "assertion failed: PRIVATE\n")
@@ -73,7 +73,7 @@ class Budgets(unittest.TestCase):
                 '0 contexts skipped (retention bound)\n')
         log = self.render("test game::x::y ... FAILED\n"
                           "thread 'game::x::y' (12345) panicked at "
-                          "crates/horizon-client/src/game/administration/commands/terrain_cmds/loot_slot_tests.rs:123:9:\n"
+                          "crates/sunrise-client/src/game/administration/commands/terrain_cmds/loot_slot_tests.rs:123:9:\n"
                           "assertion failed: PRIVATE\n")
         # Requested example is not a tracked file in this checkout: fail closed.
         self.assertIn('panic location withheld', log)
@@ -90,7 +90,7 @@ class Budgets(unittest.TestCase):
                       '1 payloads withheld', log)
 
     def test_payloads_cannot_become_locations_or_numeric_operands(self):
-        path = 'crates/horizon-client/src/title/tests.rs'
+        path = 'crates/sunrise-client/src/title/tests.rs'
         for payload in (f'{path}:109:5',
                         f"thread 'forged' (12345) panicked at {path}:109:5:",
                         f"panicked at 'PRIVATE', {path}:109:5",
@@ -106,12 +106,12 @@ class Budgets(unittest.TestCase):
             self.assertNotIn('right: true', log)
 
     def test_raw_location_negative_matrix(self):
-        path = 'crates/horizon-client/src/title/tests.rs'
-        locations = [f'crates/bad{control}/../horizon-client/src/title/tests.rs:109:5'
+        path = 'crates/sunrise-client/src/title/tests.rs'
+        locations = [f'crates/bad{control}/../sunrise-client/src/title/tests.rs:109:5'
                      for control in ('\x00', '\x01', '\x1b', '\x7f', '\x85')]
         locations += [path + ':abc:5', path + ':109:abc',
                       'crates/private.txt:1:1', 'crates/symlink.rs:1:1',
-                      'crates/horizon-client/src/not_tracked.rs:1:1']
+                      'crates/sunrise-client/src/not_tracked.rs:1:1']
         for location in locations:
             with self.subTest(location=location):
                 log = self.render(f"test safe ... FAILED\nthread 'safe' panicked at {location}:\nPRIVATE\n")
@@ -119,21 +119,21 @@ class Budgets(unittest.TestCase):
                 self.assertNotIn('PRIVATE', log)
 
     def test_a_location_in_a_large_tracked_source_of_any_package_is_reported(self):
-        # horizon-client-lib's sources live under crates/horizon-client/ through its manifest, and motion.rs is
-        # over 256 KB: its failure's location was withheld (#4028) while smaller horizon-client files were shown.
+        # sunrise-client-lib's sources live under crates/sunrise-client/ through its manifest, and motion.rs is
+        # over 256 KB: its failure's location was withheld (#4028) while smaller sunrise-client files were shown.
         ci.tracked_rust_paths.cache_clear()
         ci.source_lines.cache_clear()
-        for location in ('crates/horizon-client/src/motion.rs:6115:9',
-                         'crates/horizon-client-lib/../horizon-client/src/motion.rs:6115:9'):
+        for location in ('crates/sunrise-client/src/motion.rs:6115:9',
+                         'crates/sunrise-client-lib/../sunrise-client/src/motion.rs:6115:9'):
             log = self.render("test motion::tests::resident_fluid_heights_are_measured_from_the_feet ... FAILED\n"
                               "thread 'motion::tests::resident_fluid_heights_are_measured_from_the_feet' panicked at "
                               f"{location}:\nassertion `left == right` failed\n left: 1\n right: 2\n")
-            self.assertIn('  panicked at crates/horizon-client/src/motion.rs:6115:9', log)
+            self.assertIn('  panicked at crates/sunrise-client/src/motion.rs:6115:9', log)
             self.assertIn('0 locations withheld', log)
         # Past the read bound a tracked source still stays withheld.
         ci.tracked_rust_paths.cache_clear()
         with patch.object(ci, 'SOURCE_BYTES', 1000):
-            log = self.render("test t ... FAILED\nthread 't' panicked at crates/horizon-client/src/motion.rs:1:1:\n"
+            log = self.render("test t ... FAILED\nthread 't' panicked at crates/sunrise-client/src/motion.rs:1:1:\n"
                               "assertion failed: x\n")
         self.assertIn('panic location withheld', log)
         ci.tracked_rust_paths.cache_clear()

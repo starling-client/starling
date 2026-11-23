@@ -4,10 +4,10 @@
 - `{{#sdk-assets}}`: the files of an `sdk-<build id>` release, from the list the publish job refuses to release
   without (`tools/ci/nightly.py`, `SDK_ASSETS`).
 - `{{#sdk-routes}}`: which compiled slices each launcher route fetches, from the SDK's input list
-  (`crates/horizon-mod-package/src/sdk/inputs.json`).
+  (`crates/sunrise-mod-package/src/sdk/inputs.json`).
 - `{{#sdk-hosts}}`: the computers an SDK is built for, from the packing legs (`nightly.py`, `SDK_LEGS`).
 - `{{#sdk-surface}}`: the record kinds of `surface.json`, each with its id form and how many this commit has, from
-  this checkout's own export (`horizon-stage surface`).
+  this checkout's own export (`sunrise-stage surface`).
 
 The words beside each kind, target, route and record prefix are here; a name that has none fails the build, and so
 do words for one that is gone, so the tables never drift from what is published. A marker no chapter holds fails the
@@ -20,16 +20,16 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ROOT / "crates/horizon-mod-package/src/sdk/inputs.json"
+INPUTS = ROOT / "crates/sunrise-mod-package/src/sdk/inputs.json"
 
-# What each asset kind holds (`horizon_mod_package::sdk::Kind`), and the files beside them.
+# What each asset kind holds (`sunrise_mod_package::sdk::Kind`), and the files beside them.
 KINDS = {
     "surface": "The stable surface: everything an API-only mod can name, each item with its fingerprint "
                "([`surface.json`](02-surface.md)).",
     "build-data": "`points.json`, `internals.json`, `loops.json` and `functions.json`: data pinned to this build, "
                   "with no compatibility promise.",
     "api-source": "The mod API's crates with their generated code written out: what a mod project's "
-                  "`.horizon/sdk/api/` holds.",
+                  "`.sunrise/sdk/api/` holds.",
     "runtime": "The game's libraries, the prebuilt program the API route links mods into, its stub mods library "
                "and the package's identity file.",
     "api": "Metadata of the mod API's crates and their procedural macros, the point data and the mods library's "
@@ -39,7 +39,7 @@ KINDS = {
     "index": "The index: the build, every other asset with its SHA-256, size, kind and codec "
              "([fields](01-release.md#sdkjson)).",
     "sums": "The SHA-256 of every file of the release.",
-    "signature": "Horizon's signature over `SHA256SUMS` for the tag `sdk-<build id>`.",
+    "signature": "Sunrise's signature over `SHA256SUMS` for the tag `sdk-<build id>`.",
 }
 BESIDE = {"sdk.json": "index", "SHA256SUMS": "sums", "SHA256SUMS.sig": "signature"}
 PER_TARGET = ("runtime", "api", "engine")
@@ -55,7 +55,7 @@ ROUTES = {
     "engine": "A mod has a `[native.*]` table, names game internals, or depends on a registry (crates.io) crate.",
 }
 
-# `surface.json`'s record kinds by id prefix (`horizon_mod_surface`, "Ids"); a member's id has a `.` after its owner.
+# `surface.json`'s record kinds by id prefix (`sunrise_mod_surface`, "Ids"); a member's id has a `.` after its owner.
 RECORDS = {
     "hook": "Hook: a moment the game tells mods about",
     "hook member": "An argument or the output of a hook",
@@ -175,10 +175,10 @@ def surface(document):
 
 
 def export_surface(root):
-    """This checkout's `surface.json`, exported by its own `horizon-stage`."""
+    """This checkout's `surface.json`, exported by its own `sunrise-stage`."""
     with tempfile.TemporaryDirectory() as folder:
         out = Path(folder) / "surface.json"
-        subprocess.run(["cargo", "run", "--quiet", "-p", "horizon-mod-api-gen", "--bin", "horizon-stage", "--",
+        subprocess.run(["cargo", "run", "--quiet", "-p", "sunrise-mod-api-gen", "--bin", "sunrise-stage", "--",
                         "surface", str(root), str(out)],
                        cwd=root, check=True, stdout=sys.stderr)
         return json.loads(out.read_text())

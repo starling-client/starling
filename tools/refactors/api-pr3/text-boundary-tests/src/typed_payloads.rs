@@ -1,5 +1,5 @@
 use super::{TryIntoApi, TryIntoEngine};
-use horizon_client_core::text::{ClickEvent, InlineObject, Span, Style, Text as Engine};
+use sunrise_client_core::text::{ClickEvent, InlineObject, Span, Style, Text as Engine};
 use mod_api::{
     Tag,
     text::{
@@ -42,7 +42,7 @@ fn proof_refuses_late_payload_in_every_tag_slot() {
             for slot in 0..8 {
                 for invalid_string in [false, true] {
                     let bad = if invalid_string {
-                        Tag::String(horizon_core::nbt::JavaString(vec![0xd800]))
+                        Tag::String(sunrise_core::nbt::JavaString(vec![0xd800]))
                     } else {
                         Tag::Double(f64::INFINITY.to_bits())
                     };
@@ -53,7 +53,7 @@ fn proof_refuses_late_payload_in_every_tag_slot() {
                     }
                     text.metadata = Tag::compound([("test:deep", deep)]);
                     let wrapped =
-                        || Tag::compound([("test:bad", horizon_core::nbt::clone_tag(&bad))]);
+                        || Tag::compound([("test:bad", sunrise_core::nbt::clone_tag(&bad))]);
                     match slot {
                         0 => text.metadata = wrapped(),
                         1 => text.style.metadata = wrapped(),
@@ -78,18 +78,18 @@ fn proof_refuses_late_payload_in_every_tag_slot() {
                         4 => {
                             text.style.click = Some(TextClick::Custom {
                                 id: "test:x".into(),
-                                payload: Some(horizon_core::nbt::clone_tag(&bad)),
+                                payload: Some(sunrise_core::nbt::clone_tag(&bad)),
                             })
                         }
                         5 => {
                             text.style.click =
-                                Some(TextClick::ShowDialog(horizon_core::nbt::clone_tag(&bad)))
+                                Some(TextClick::ShowDialog(sunrise_core::nbt::clone_tag(&bad)))
                         }
                         6 => {
                             text.style.hover = Some(TextHover::Item {
                                 id: "minecraft:stone".into(),
                                 count: 1,
-                                components: Some(horizon_core::nbt::clone_tag(&bad)),
+                                components: Some(sunrise_core::nbt::clone_tag(&bad)),
                             })
                         }
                         _ => {

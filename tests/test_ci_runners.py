@@ -1,8 +1,8 @@
 """Which jobs may run on our own runners (docs/ci-runners.md).
 
-- horizon-light (playhorizon's and other small runners, which refuse a fork's pull request): main's own scripts only.
-- horizon-checks (isolated runners that take any pull request, forks included): no secret and no token that writes.
-- Neither takes a job that holds a secret or whose token can push, publish or start workflows: playhorizon is a
+- sunrise-light (playsunrise's and other small runners, which refuse a fork's pull request): main's own scripts only.
+- sunrise-checks (isolated runners that take any pull request, forks included): no secret and no token that writes.
+- Neither takes a job that holds a secret or whose token can push, publish or start workflows: playsunrise is a
   partner's server, and a checks runner keeps what a fork's job left behind.
 """
 import re
@@ -11,8 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
-LIGHT = ("horizon-light", "playhorizon-light", "playhorizon-ci")
-CHECKS = ("horizon-checks",)
+LIGHT = ("sunrise-light", "playsunrise-light", "playsunrise-ci")
+CHECKS = ("sunrise-checks",)
 FORK_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 # dyna-ci.yml decides trust once, in its changes job (a fork's pull request, dispatched with `pr` or not).
 TRUSTED = "needs.changes.outputs.trusted == 'true'"
@@ -78,7 +78,7 @@ class OwnRunnerTests(unittest.TestCase):
             count += 1
             # dyna-ci.yml (ours) routes through the changes job's self_hosted
             # output and dyna-medium, or SELF_HOSTED_CI=all with the fork guard
-            # before the playhorizon-ci labels; the carried upstream files use
+            # before the playsunrise-ci labels; the carried upstream files use
             # SELF_HOSTED_CI != 'off'. Both fall back to GitHub's runners.
             if "dyna-ci.yml" in where:
                 self.assertIn("needs.changes.outputs.self_hosted == 'true'", value, where)
@@ -151,16 +151,16 @@ class OwnRunnerTests(unittest.TestCase):
         import tempfile
         from unittest.mock import patch
 
-        safe = ("jobs:\n  verify:\n    runs-on: horizon-checks\n    steps:\n"
+        safe = ("jobs:\n  verify:\n    runs-on: sunrise-checks\n    steps:\n"
                 "      - run: |\n          with open('output') as environment:\n              pass\n")
         forbidden = [
             safe.replace("    steps:", f"    {key} deployment\n    steps:")
             for key in ("environment:", "\"environment\":", "'environment' :")
         ] + [
-            "jobs:\n    verify:\n        runs-on: horizon-checks\n        environment: deployment\n",
-            "jobs:\n  verify: {runs-on: horizon-checks, environment: deployment}\n",
+            "jobs:\n    verify:\n        runs-on: sunrise-checks\n        environment: deployment\n",
+            "jobs:\n  verify: {runs-on: sunrise-checks, environment: deployment}\n",
             "env: &defaults {environment: deployment}\njobs:\n  verify:\n"
-            "    <<: *defaults\n    runs-on: horizon-checks\n",
+            "    <<: *defaults\n    runs-on: sunrise-checks\n",
         ]
         with tempfile.TemporaryDirectory() as directory, patch(f"{__name__}.WORKFLOWS", Path(directory)):
             workflow = Path(directory) / "fixture.yml"

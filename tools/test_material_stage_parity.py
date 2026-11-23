@@ -19,8 +19,8 @@ except ImportError:
 def synthetic_rules():
     block=lambda name:{'type':'block','result_state':'minecraft:'+name}
     conditional=lambda condition,name:{'type':'condition','if_true':condition,'then_run':block(name)}
-    rules={'horizon:water':block('water'),'horizon:air':block('air'),'horizon:stone':block('stone')}
-    rules['horizon:probe']={'type':'sequence','sequence':[
+    rules={'sunrise:water':block('water'),'sunrise:air':block('air'),'sunrise:stone':block('stone')}
+    rules['sunrise:probe']={'type':'sequence','sequence':[
         conditional({'type':'stone_depth','offset':0,'add_surface_depth':False,'secondary_depth_range':0,'surface_type':'ceiling'},'gravel'),
         conditional({'type':'steep'},'air'),
         conditional({'type':'water','offset':0,'surface_depth_multiplier':1,'add_stone_depth':True},'sand'),
@@ -50,7 +50,7 @@ def corpus(facts,biomes,settings=None,presets=None):
                 cx,cz=[(0,0),(-1,2),(107,-59),(-300,911)][(scenario+int(legacy))%4]
                 preliminary='minecraft:overworld/chunk_surface_level' if scenario%2==0 and rule=='overworld' else 0
                 yield {'seed':seed,'legacy':legacy,'cx':cx,'cz':cz,'min':minimum,'height':height,'noise_min':minimum,'noise_height':height,'sea':sea,'write_min':minimum,'write_max':minimum+height-1,'default':defaults['minecraft:'+default],'rule':'minecraft:'+rule,'preliminary':preliminary,'biome_choices':choices,'possible':choices if legacy else None,'prime':seed==0,'initial':initial(minimum,height,sea,defaults['minecraft:'+default],scenario),'repeats':2 if scenario==3 else 1}
-    for rule in ['horizon:water','horizon:air','horizon:probe']:
+    for rule in ['sunrise:water','sunrise:air','sunrise:probe']:
         for legacy in [False,True]:
             yield {'seed':1,'legacy':legacy,'cx':-1,'cz':1,'min':-64,'height':128,'noise_min':0,'noise_height':64,'sea':32,'write_min':-48,'write_max':47,'default':defaults['minecraft:stone'],'rule':rule,'preliminary':0,'biome_choices':['minecraft:plains'],'possible':None,'prime':False,'initial':initial(-64,128,32,defaults['minecraft:stone'],0),'repeats':2}
     for name in ['minecraft:plains','minecraft:eroded_badlands','minecraft:frozen_ocean']:
@@ -109,18 +109,18 @@ def main():
         if not bundle[field] or bundle[field]!=getter(jars['client']):raise ValueError('reference '+field+' resources differ')
     counts={key:len(value) for key,value in bundle.items()};bundle['rules'].update(synthetic_rules())
     for name,value in bundle.items():(build/(name+'.json')).write_text(json.dumps(value,separators=(',',':')),encoding='utf-8')
-    folder=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity';oracles=[folder/(name+'.java') for name in ['VanillaMaterialStageOracle','VanillaMaterialConditionOracle','VanillaAnchorOracle','VanillaBiomeTemperatureOracle','VanillaHeightmapOracle','VanillaBiomeExport']]
-    sources=[*oracles,Path(__file__),*[lab.ROOT/'tools'/name for name in ['test_material_condition_parity.py','test_biome_temperature_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/material_stage_fixture.rs']
+    folder=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity';oracles=[folder/(name+'.java') for name in ['VanillaMaterialStageOracle','VanillaMaterialConditionOracle','VanillaAnchorOracle','VanillaBiomeTemperatureOracle','VanillaHeightmapOracle','VanillaBiomeExport']]
+    sources=[*oracles,Path(__file__),*[lab.ROOT/'tools'/name for name in ['test_material_condition_parity.py','test_biome_temperature_parity.py','test_worldgen_parity.py','test_rust_parity.py','lab.py']],lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/material_stage_fixture.rs']
     tested_sources=base.source_hashes(sources);classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
-    dependencies=os.pathsep.join(map(str,libraries));run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
-    def java(side,mode,path):run(['java','-Xmx1G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.horizonlab.parity.VanillaMaterialStageOracle',mode,path],side+'-'+mode)
+    dependencies=os.pathsep.join(map(str,libraries));run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
+    def java(side,mode,path):run(['java','-Xmx1G','-cp',os.pathsep.join([str(classes),str(jars[side]),dependencies]),'dev.sunriselab.parity.VanillaMaterialStageOracle',mode,path],side+'-'+mode)
     for side in jars:java(side,'export',build/f'facts-{side}.json')
     preset_exports=[]
     for side,jar in jars.items():
         path=build/f'presets-{side}.json';preset_exports.append(path)
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependencies]),'dev.horizonlab.parity.VanillaBiomeExport',path],side+'-presets')
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependencies]),'dev.sunriselab.parity.VanillaBiomeExport',path],side+'-presets')
         presets=json.loads(path.read_text())
         if not presets or ('presets' in bundle and presets!=bundle['presets']):raise ValueError('reference biome presets differ')
         bundle['presets']=presets
@@ -132,7 +132,7 @@ def main():
         f['top_queries']=top_queries(f);f['carving']=carving_fixture(f,facts)
     inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(f,separators=(',',':'))+'\n' for f in fixtures),encoding='utf-8')
     fixture_paths=[inputs,*preset_exports,build/'facts-client.json',build/'facts-server.json',*[build/(name+'.json') for name in bundle]];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust');metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True));binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe');run([binary,'material_stage_fixture',build],'rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust');metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True));binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe');run([binary,'material_stage_fixture',build],'rust')
     with (build/'rust.txt').open() as stream:
         if any((line.startswith('surface ') or line.startswith('top ') or line.startswith('carving ') or line.startswith('generatedcarving ')) and line.endswith(' error\n') for line in stream):raise AssertionError('valid surface fixture failed; inspect private Rust log')
     references=[]

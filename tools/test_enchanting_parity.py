@@ -2,7 +2,7 @@
 """Compare enchanting-table offers (costs, clues, applied enchantments) with vanilla.
 
 Java loads the vanilla data pack's enchantment registry and runs
-EnchantmentHelper as EnchantmentMenu does; Rust runs horizon_client::stations
+EnchantmentHelper as EnchantmentMenu does; Rust runs sunrise_client::stations
 on the prepared resources. Every enchantable item and the book are tested
 across seeds and bookshelf counts.
 """
@@ -55,10 +55,10 @@ def main():
     catalog = json.loads((resources / 'items.json').read_text())
     items = sorted((k, v.get('minecraft:max_damage', 0)) for k, v in catalog.items()
                    if 'minecraft:enchantable' in v)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEnchantingOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client/examples/probe/enchanting_fixture.rs',
-               *sorted((lab.ROOT / 'crates/horizon-client/src').glob('*.rs')),
-               *sorted((lab.ROOT / 'crates/horizon-client-render/src').glob('*.rs'))]
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEnchantingOracle.java'
+    sources = [oracle, Path(__file__), lab.ROOT / 'crates/sunrise-client/examples/probe/enchanting_fixture.rs',
+               *sorted((lab.ROOT / 'crates/sunrise-client/src').glob('*.rs')),
+               *sorted((lab.ROOT / 'crates/sunrise-client-render/src').glob('*.rs'))]
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     fixtures = list(corpus(items, not args.no_components))
@@ -70,14 +70,14 @@ def main():
     def run(command, name):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
             base.run(list(map(str, command)), stdout=log, stderr=subprocess.STDOUT)
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'), '-cp', str(jars['server']) + os.pathsep + deps, '-d', classes, oracle], 'compile-java')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'), '-cp', str(jars['server']) + os.pathsep + deps, '-d', classes, oracle], 'compile-java')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast/examples' / ('client_probe.exe' if os.name=='nt' else 'client_probe')
     run([binary, 'enchanting_fixture',resources, inputs, build / 'rust.txt'], 'rust')
     references = []
     for side in ['server']:
-        run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars[side]), deps]), 'dev.horizonlab.parity.VanillaEnchantingOracle', inputs, build / f'{side}.txt'], side)
+        run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars[side]), deps]), 'dev.sunriselab.parity.VanillaEnchantingOracle', inputs, build / f'{side}.txt'], side)
         matched = base.compare(build / f'{side}.txt', build / 'rust.txt')
         references.append({'side': side, 'jar_sha256': lab.digest(jars[side], 'sha256'), 'matched_output_lines': matched})
         print(f'{side}: {matched:,} enchanting offer lines match Rust', flush=True)

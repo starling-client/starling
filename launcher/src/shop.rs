@@ -1,12 +1,12 @@
 //! The Shop's rules, beside its page (`wardrobe_page/shop.rs`):
 //!
-//! - Whether the top bar has the Wardrobe and Shop pages at all: only when Horizon's cosmetics
+//! - Whether the top bar has the Wardrobe and Shop pages at all: only when Sunrise's cosmetics
 //!   service says there is something to show, whatever the cosmetics switch says. The service
 //!   decides with its founder-set window (`GET /v1/shop`): the set can be claimed now (the public
 //!   window, or a preview for an account on its list), the account claimed it, or the public
 //!   window has dates. With no window set, the launcher shows neither.
 //! - A basket's prices, before the checkout, with the service's own rules (the website's shop
-//!   does the same, `components/shop/pricing.ts` in horizon-site): an item the account owns drops
+//!   does the same, `components/shop/pricing.ts` in sunrise-site): an item the account owns drops
 //!   out, an item also inside a set in the same basket drops out, a set partly owned costs its
 //!   price times the share of its items not owned yet. The checkout's total is what Paddle
 //!   charges; the launcher only previews it and never decides a price. Every price comes from
@@ -17,7 +17,7 @@ use crate::wardrobe::{Catalogue, Claim, Set};
 use std::collections::{BTreeMap, HashSet};
 
 /// Where the website opens Paddle's checkout for a transaction the service started.
-pub const PAY_URL: &str = "https://playhorizon.dev/shop/pay";
+pub const PAY_URL: &str = "https://playsunrise.net/shop/pay";
 
 /// The founder set's id in an order: the free claim, through the same checkout.
 pub const FOUNDER_SET: &str = "founder_set";
@@ -29,7 +29,7 @@ pub fn shown(claim: &Claim) -> bool {
         || (claim.starts_at.is_some() && claim.ends_at.is_some())
 }
 
-/// Whether the top bar has the Wardrobe page: `HORIZON_COSMETICS=1` asked for it (`forced`), or
+/// Whether the top bar has the Wardrobe page: `SUNRISE_COSMETICS=1` asked for it (`forced`), or
 /// the service's last answer (`status`) or the account's own (`kept`, from its last visit) shows
 /// the founder set. Cosmetics being on in the game (the default) doesn't: the page waits for it.
 pub fn in_top_bar(forced: bool, status: Option<&Claim>, kept: Option<&Claim>) -> bool {

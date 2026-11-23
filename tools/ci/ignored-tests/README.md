@@ -17,7 +17,7 @@ harness's own step: its harness runs it with the environment it needs, and the j
 that needs a graphics adapter: it runs, and must pass, only where the runner has a Vulkan driver. `needs` marks a
 test that reads an input only its harness provides: refused by name when the variable is unset, run and required
 to pass when it is set. `ignored_tests.py --needs VARIABLE --one-process-each` runs one variable's tests, each
-alone in its own process (`wasm-mods.yml` does this for `HORIZON_WASM_FIXTURE`).
+alone in its own process (`wasm-mods.yml` does this for `SUNRISE_WASM_FIXTURE`).
 
 `needs-plain` has the same variable and refusal policy as `needs`, but is not an ignored test or a known
 failure. The one-process runner selects it with `--exact` without `--ignored`; ordinary data shards skip it
@@ -31,7 +31,7 @@ longer runs fails. Its package's shard runs it when that shard builds its target
 every other one; verify-static fails a row no leg runs. `python3 tools/ci/move_to_daily.py apply LIST` writes the
 attribute and the row (its docstring has the list format). The attribute is the source's mark and the row is the
 daily run's list of what must run: an attribute without a row in a package no shard covers would run nowhere.
-A launcher test is moved the same way (`daily-horizon-launcher.txt`): its own leg, `daily-rows-launcher`, runs it
+A launcher test is moved the same way (`daily-sunrise-launcher.txt`): its own leg, `daily-rows-launcher`, runs it
 from `launcher/`, its own workspace, against its own lockfile. A launcher test that starts the launcher binary also belongs to
 the Windows release job `launcher-processes` (`launcher-windows-check.yml`), which runs those `tests/` targets by
 `--test` name: add its target there too.
@@ -43,7 +43,7 @@ such function, fails (`check_ignored_test_rows.py`; matched by package and funct
 `wasm-mods.yml`) and the note says why (a benchmark, a fixture writer, a real GPU, the OS keychain, ...). The shards
 skip it.
 
-A rowless `#[ignore]` in a target a package's shard builds (`horizon-client`'s targets, the other shard packages'
+A rowless `#[ignore]` in a target a package's shard builds (`sunrise-client`'s targets, the other shard packages'
 libraries) still runs every day with `--include-ignored` and must pass, so it needs no row. Anywhere else it would run
 nowhere, so verify-static fails it until it has a row: `daily` to run it in the daily run, or `manual` to say who does.
 

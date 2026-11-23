@@ -5,7 +5,7 @@
 // `github` carries PROJECT_TOKEN (board reads); `issues` carries the workflow's own token, which
 // may edit issues (PROJECT_TOKEN may not).
 module.exports = async ({ github, issues, core }) => {
-  const OWNER = 'arismoko', REPO = 'horizon', NUMBER = 1, ISSUE = 771;
+  const OWNER = 'arismoko', REPO = 'sunrise', NUMBER = 1, ISSUE = 771;
   const START = '<!-- progress:start -->', END = '<!-- progress:end -->';
 
   const q = async (query, vars) => {

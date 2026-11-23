@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Respawning in a hardcore world on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one hardcore
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one hardcore
 flat world vanilla generated first, with Alice an operator in survival. LocatorBarClient (a player made of
 vanilla's protocol code) joins, runs /kill on itself and presses the death screen's button
 (ServerboundClientCommandPacket PERFORM_RESPAWN). Vanilla's ServerGamePacketListenerImpl.handleClientCommand

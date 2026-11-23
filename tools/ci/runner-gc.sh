@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Keeps the Mac mini's Horizon runners from filling its disk. launchd runs a copy taken from main
+# Keeps the Mac mini's Sunrise runners from filling its disk. launchd runs a copy taken from main
 # (~/.actions-runners/runner-gc.sh, never a pull request's checkout) every 30 minutes; see docs/release-flow.md.
 #   - A runner in the middle of a job is left alone.
 #   - A checkout whose cargo build folders (target/ and the harness probes' targets under .local/, the
@@ -24,21 +24,21 @@ busy() { pgrep -f "$1/bin[^/]*/Runner.Worker" > /dev/null; }
 # checkouts and fetches into them at every job, so the packs pile up (the desktop's reached 111 GB on 2026-11-09). The
 # nightly runner is included: the loop below only cleans build folders of the others.
 slim="$(dirname "$0")/git-slim.sh"
-for runner in "$root"/horizon "$root"/horizon-*; do
-  [ -d "$runner/_work/horizon/horizon/.git" ] || continue
+for runner in "$root"/sunrise "$root"/sunrise-*; do
+  [ -d "$runner/_work/sunrise/sunrise/.git" ] || continue
   busy "$runner" && continue
   if [ -f "$slim" ]; then
-    bash "$slim" "$runner/_work/horizon/horizon" || echo "$(basename "$runner"): git-slim failed"
+    bash "$slim" "$runner/_work/sunrise/sunrise" || echo "$(basename "$runner"): git-slim failed"
   fi
 done
 [ -f "$slim" ] || echo "git-slim.sh is not beside runner-gc.sh: checkouts' .git not collected (docs/release-flow.md, Disk)"
 
 any_busy=0
-for runner in "$root"/horizon "$root"/horizon-[0-9]*; do
+for runner in "$root"/sunrise "$root"/sunrise-[0-9]*; do
   [ -d "$runner/_work" ] || continue
   if busy "$runner"; then echo "$(basename "$runner"): in a job, skipped"; any_busy=1; continue; fi
   rm -rf "${runner:?}/_work/_temp/"* 2>/dev/null || true
-  checkout="$runner/_work/horizon/horizon"
+  checkout="$runner/_work/sunrise/sunrise"
   [ -d "$checkout" ] || continue
   stale=0
   for dir in "$checkout"/.local/*/; do
@@ -63,14 +63,14 @@ for runner in "$root"/horizon "$root"/horizon-[0-9]*; do
     find "$checkout/.local" -mindepth 2 -maxdepth 2 -name CACHEDIR.TAG -type f 2>/dev/null)
   # The probes' build folder lives in shared-local (a symlink from .local), which the scan above doesn't follow:
   # it grew to 19-24 GB per runner (2026-11-06, the Mac down to 6 GB free).
-  [ -d "$runner/_work/horizon/shared-local/parity-target" ] && targets+=("$runner/_work/horizon/shared-local/parity-target")
+  [ -d "$runner/_work/sunrise/shared-local/parity-target" ] && targets+=("$runner/_work/sunrise/shared-local/parity-target")
   [ ${#targets[@]} -gt 0 ] || continue
   size=$(du -sk "${targets[@]}" | awk '{s += $1} END {print s}')
   if [ "$size" -gt "$max_kb" ]; then
     rm -rf "${targets[@]}"
     # .local/parity-target is a symlink into shared-local: cargo can't create a directory through a dangling
     # link ("Not a directory"), which failed every harness of parity-main on 2026-11-06. Recreate it empty.
-    mkdir -p "$runner/_work/horizon/shared-local/parity-target" 2>/dev/null || true
+    mkdir -p "$runner/_work/sunrise/shared-local/parity-target" 2>/dev/null || true
     echo "$(basename "$runner"): removed ${#targets[@]} build folders ($(( size / 1024 / 1024 )) GB)"
   fi
 done
@@ -86,7 +86,7 @@ minutes() {
 orphan_min=$(( ${ORPHAN_HOURS:-3} * 60 ))
 ps -A -o pid=,ppid=,etime=,command= | while read -r pid ppid etime command; do
   case "$command" in *java*) ;; *) continue ;; esac
-  case "$command" in *"$root"/*/_work/*|*/.claude/worktrees/*/.local/*|*/code/horizon/.local/*) ;; *) continue ;; esac
+  case "$command" in *"$root"/*/_work/*|*/.claude/worktrees/*/.local/*|*/code/sunrise/.local/*) ;; *) continue ;; esac
   [ "$(minutes "$etime")" -ge "$orphan_min" ] || continue
   if [ "$ppid" != 1 ]; then
     case "$(ps -o command= -p "$ppid" 2>/dev/null)" in *"systemd --user"*) ;; *) continue ;; esac
@@ -94,7 +94,7 @@ ps -A -o pid=,ppid=,etime=,command= | while read -r pid ppid etime command; do
   if kill "$pid" 2>/dev/null; then echo "orphaned java $pid ($etime old) stopped: ${command:0:160}"; fi
 done
 
-prepared="$root/horizon/_work/horizon/shared-local/prepared"
+prepared="$root/sunrise/_work/sunrise/shared-local/prepared"
 if [ "$any_busy" = 0 ] && [ -d "$prepared" ] && mkdir "$prepared/.lock" 2>/dev/null; then
   trap 'rmdir "$prepared/.lock" 2>/dev/null || true' EXIT
   ls -1t "$prepared" | tail -n +"$(( keep + 1 ))" | while read -r old; do

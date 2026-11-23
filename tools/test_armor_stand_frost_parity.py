@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Armor-stand Frost Walker through real vanilla and Horizon servers.
+"""Armor-stand Frost Walker through real vanilla and Sunrise servers.
 
 Count frozen water after equipment changes, movement, landing and piston
 pushes. Negative controls keep equipment in the wrong slot, change an

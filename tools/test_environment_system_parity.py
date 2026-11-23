@@ -37,7 +37,7 @@ def f32(x):
 
 
 def cases(build):
-    data_root = lab.LOCAL / 'horizon-client/26.3/data/minecraft'
+    data_root = lab.LOCAL / 'sunrise-client/26.3/data/minecraft'
     data = {}
     for path in sorted((data_root / 'worldgen/biome').glob('*.json')):
         data['biome:' + path.stem] = json.loads(path.read_text()).get('attributes', {})
@@ -77,6 +77,6 @@ if __name__ == '__main__':
         'environment-system-parity', 'VanillaEnvironmentSystemOracle', 'environment_system_fixture', cases,
         'EnvironmentAttributeSystem (constant, biome, timeline and weather layers, bakeLayerSampler, sanitize), '
         'WeatherAttributes, SpatialAttributeInterpolator and GaussianSampler',
-        sources=[lab.ROOT / 'crates/horizon-world/src/environment_attributes.rs',
-                 lab.ROOT / 'crates/horizon-world/src/environment_system.rs',
-                 lab.ROOT / 'crates/horizon-world/src/environment_timeline.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-world/src/environment_attributes.rs',
+                 lab.ROOT / 'crates/sunrise-world/src/environment_system.rs',
+                 lab.ROOT / 'crates/sunrise-world/src/environment_timeline.rs'])

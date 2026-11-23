@@ -7,7 +7,7 @@ the move went anywhere. Its own tick only releases it once the block at its posi
 machine that lifts or slides an arrow and lets it drop onto something on the next tick (the Orbital Skybender's
 switch arrow) depends on the push's release.
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen. An arrow with no owner is dropped onto a stone and sticks on its top. A piston beside it then extends its
 head through the arrow's block, pushing the arrow east off the stone, over air. After every step the arrow's exact
 Pos, Motion and inGround are read. The transcripts must match vanilla's (the oracle) line for line, and vanilla's
@@ -94,17 +94,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'piston arrow fall: {len(vanilla)} lines identical')
 

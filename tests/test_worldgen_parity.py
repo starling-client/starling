@@ -125,7 +125,7 @@ class WorldgenRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             exports = []
             def run(command, **kwargs):
-                if "dev.horizonlab.parity.VanillaBiomeExport" in command:
+                if "dev.sunriselab.parity.VanillaBiomeExport" in command:
                     destination = Path(command[-1])
                     destination.write_text(json.dumps({"minecraft:fixture":str(len(exports))}))
                     exports.append(destination)

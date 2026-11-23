@@ -12,7 +12,7 @@ Then use a terminal inside the repository:
 
 ```sh
 # Replace 12345 with the game's Java PID and use your own absolute .local path.
-jcmd 12345 JFR.start name=horizon settings=profile duration=120s filename=/absolute/path/to/repo/.local/profiles/mac.jfr
+jcmd 12345 JFR.start name=sunrise settings=profile duration=120s filename=/absolute/path/to/repo/.local/profiles/mac.jfr
 ```
 
 Keep the same route, resolution, heap, collector and video settings used for your

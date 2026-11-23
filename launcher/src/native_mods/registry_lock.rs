@@ -1,7 +1,7 @@
 //! The trust boundary for a mod-owned registry lock. Never resolve missing pins online.
 use std::collections::BTreeMap;
 
-const CRATES_IO: &str = horizon_addresses::CARGO_CRATES_IO_SOURCE;
+const CRATES_IO: &str = sunrise_addresses::CARGO_CRATES_IO_SOURCE;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Identity {

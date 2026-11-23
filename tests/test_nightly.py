@@ -11,7 +11,7 @@ NOW = "2026-10-28T12:00:00+00:00"
 PATTERNS = ns.guarded_patterns((Path(__file__).resolve().parents[1] / ".github/CODEOWNERS").read_text())
 
 
-def pr(n, head="h", state="open", files=("crates/horizon-world/src/lib.rs",), base="main"):
+def pr(n, head="h", state="open", files=("crates/sunrise-world/src/lib.rs",), base="main"):
     return ns.PullRequest(n, state, f"{head}{n}", f"Fix {n}", f"dev{n}", base, list(files))
 
 
@@ -27,7 +27,7 @@ def run(state, text, login="kacpherek", *prs):
 T = dt.datetime(2026, 10, 28, 12, 0, tzinfo=dt.timezone.utc)
 
 
-def merged_pr(n, title, labels, issues=(), paths=("crates/horizon-world/src/lib.rs",)):
+def merged_pr(n, title, labels, issues=(), paths=("crates/sunrise-world/src/lib.rs",)):
     return {"number": n, "title": title, "labels": labels, "issues": list(issues), "author": f"dev{n}",
             "paths": list(paths)}
 
@@ -82,7 +82,7 @@ class NightlyTests(unittest.TestCase):
         self.assertTrue(text.endswith(nightly.train.DISCLAIMER + "\n"))
 
     def test_other_repositories_keep_the_upstream_intro(self):
-        with mock.patch.object(nightly.train, "REPO", "another/horizon"):
+        with mock.patch.object(nightly.train, "REPO", "another/sunrise"):
             self.assertTrue(notes().startswith(nightly.train.PLAYERS + "\n\n"))
             self.assertIn(nightly.PLAYERS, notes())
 
@@ -134,13 +134,13 @@ if __name__ == "__main__":
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
-# Starling's repository drops Horizon's nightly and release workflows (it builds its own APK).
-HORIZON_RELEASES = unittest.skipUnless(
-    (WORKFLOWS / "nightly-build.yml").exists(), "Horizon's nightly workflows are not in this repository"
+# Starling's repository drops Sunrise's nightly and release workflows (it builds its own APK).
+SUNRISE_RELEASES = unittest.skipUnless(
+    (WORKFLOWS / "nightly-build.yml").exists(), "Sunrise's nightly workflows are not in this repository"
 )
 
 
-@HORIZON_RELEASES
+@SUNRISE_RELEASES
 class FirstNightlyTests(unittest.TestCase):
     def test_fetch_succeeds_with_or_without_an_existing_nightly_tag(self):
         class ReachedGreenBase(Exception):
@@ -162,7 +162,7 @@ class FirstNightlyTests(unittest.TestCase):
                 self.assertEqual("+refs/tags/nightly:refs/tags/nightly" in fetched, existing)
 
 
-@HORIZON_RELEASES
+@SUNRISE_RELEASES
 class UntrustedBuildTests(unittest.TestCase):
     """A nightly can hold pull requests nobody reviewed: nothing its build leaves may reach a release (game-build.yml)."""
 
@@ -188,7 +188,7 @@ class UntrustedBuildTests(unittest.TestCase):
         runs_on = [line for line in self.game.splitlines() if "runs-on: ${{" in line]
         self.assertEqual(len(runs_on), 3)
         # The nightly's own runner: never the release runner, and never behind pull requests' parity queue.
-        nightly_default = "'[\"self-hosted\", \"macOS\", \"horizon-nightly\"]'"
+        nightly_default = "'[\"self-hosted\", \"macOS\", \"sunrise-nightly\"]'"
         for line, variable in zip(runs_on, ("NIGHTLY_EXPORTERS_RUNNER", "NIGHTLY_MAC_RUNNER")):
             self.assertIn("inputs.trusted && toJSON(vars.MAC_RUNNER)", line)
             self.assertIn(f"vars.DYNA_CI_SELF_HOSTED == 'true' && vars.{variable}", line)
@@ -198,9 +198,9 @@ class UntrustedBuildTests(unittest.TestCase):
 
     def test_a_trusted_build_never_reads_the_shared_sccache(self):
         calls = self.game.count("bash tools/ci/runner-env.sh")
-        self.assertEqual(self.game.count("HORIZON_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}"), calls)
+        self.assertEqual(self.game.count("SUNRISE_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}"), calls)
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
-        self.assertEqual(env.count('-z "${HORIZON_NO_SCCACHE:-}"'), 2)
+        self.assertEqual(env.count('-z "${SUNRISE_NO_SCCACHE:-}"'), 2)
 
 
 class PruneBuildsTests(unittest.TestCase):
@@ -230,19 +230,19 @@ class PruneBuildsTests(unittest.TestCase):
                     "feature/nightly/build-2026-10-01-1": "g", "nightly/build-2026-10-02-1": "n"}
         self.assertEqual(nightly.stale_builds(branches, set(), self.TODAY, 7), [])
 
-    @HORIZON_RELEASES
+    @SUNRISE_RELEASES
     def test_the_source_is_archived_from_git_signed_attached_and_tagged(self):
         build = (WORKFLOWS / "nightly-build.yml").read_text()
         pick = build.split("\n  build:", 1)[0]
-        self.assertIn('git archive --format=tar.gz --prefix="horizon-${SHA:0:7}/" -o horizon-source.tar.gz "$SHA"',
+        self.assertIn('git archive --format=tar.gz --prefix="sunrise-${SHA:0:7}/" -o sunrise-source.tar.gz "$SHA"',
                       pick)
         sign = build.split("\n  sign:", 1)[1].split("\n  publish:", 1)[0]
-        self.assertIn("dist/horizon-source.tar.gz", sign.split('sign_release.sh "$KIND"', 1)[1])
+        self.assertIn("dist/sunrise-source.tar.gz", sign.split('sign_release.sh "$KIND"', 1)[1])
         publish = build.split("\n  publish:", 1)[1].split("\n  answer:", 1)[0]
-        self.assertIn('"dist/horizon-source.tar.gz#Source of this Nightly', publish)
+        self.assertIn('"dist/sunrise-source.tar.gz#Source of this Nightly', publish)
         self.assertIn('nightly.py keep-source "$SHA" "$DATE"', publish)
 
-    @HORIZON_RELEASES
+    @SUNRISE_RELEASES
     def test_the_workflow_prunes_on_real_runs_only(self):
         build = (WORKFLOWS / "nightly-build.yml").read_text()
         step = build.split("Old nightly/build-* branches deleted", 1)[1].split("- uses:", 1)[0]
@@ -366,7 +366,7 @@ class SdkPairTests(unittest.TestCase):
 
     def test_an_sdk_asset_is_trusted_only_under_the_forks_signature_for_its_own_tag(self):
         command = nightly.signature_check("a" * 40, Path("/tmp/x"), ["sdk.json"])
-        self.assertEqual(command[:6], ["cargo", "run", "--locked", "--quiet", "-p", "horizon-release-sign"])
+        self.assertEqual(command[:6], ["cargo", "run", "--locked", "--quiet", "-p", "sunrise-release-sign"])
         arguments = command[command.index("--") + 1:]
         self.assertEqual(arguments, ["verify", "--repository", "arismoko/horizon", "--tag", "sdk-" + "a" * 40,
                                      "--only", "sdk.json", "/tmp/x"])

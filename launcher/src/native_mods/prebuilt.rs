@@ -9,10 +9,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const IDENTITY: &str = "horizon-prebuilt.json";
+const IDENTITY: &str = "sunrise-prebuilt.json";
 /// Names the folder of a prebuilt game built from a developer install's checkout
 /// (`tools/prebuilt_game.py build`). Read for developer installs only: their commit has no release.
-pub(super) const DEVELOPER_SDK: &str = "HORIZON_LAUNCHER_DEVELOPER_SDK";
+pub(super) const DEVELOPER_SDK: &str = "SUNRISE_LAUNCHER_DEVELOPER_SDK";
 #[cfg(test)]
 pub(super) const TEMPLATE: &str = "native_main.rs.template";
 /// The optimization level of the `release` profile the prebuilt game is built with: the mods' code
@@ -122,10 +122,10 @@ pub(super) fn expected_sum(listing: &str, name: &str) -> Option<String> {
     })
 }
 
-fn side(target: Target) -> horizon_mod_package::sdk::Side {
+fn side(target: Target) -> sunrise_mod_package::sdk::Side {
     match target {
-        Target::Client => horizon_mod_package::sdk::Side::Client,
-        Target::Server => horizon_mod_package::sdk::Side::Server,
+        Target::Client => sunrise_mod_package::sdk::Side::Client,
+        Target::Server => sunrise_mod_package::sdk::Side::Server,
     }
 }
 
@@ -309,7 +309,7 @@ impl Identity {
     /// Which package files the `runtime` and `api` slices hold.
     pub(super) fn slices(&self) -> Result<&Slices, String> {
         self.slices.as_ref().ok_or_else(|| {
-            tr("This prebuilt game has no slices. Update Horizon and rebuild the mods against this game.")
+            tr("This prebuilt game has no slices. Update Sunrise and rebuild the mods against this game.")
                 .to_string()
         })
     }
@@ -327,7 +327,7 @@ pub(super) fn identity(dir: &Path) -> Result<Identity, String> {
     let format: Format =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let found = format.package_format.or(format.format_version).unwrap_or(0);
-    let supported = horizon_mod_package::sdk::PACKAGE_FORMAT;
+    let supported = sunrise_mod_package::sdk::PACKAGE_FORMAT;
     let (version, supported_text) = (found.to_string(), supported.to_string());
     let args = [
         ("version", version.as_str()),
@@ -413,18 +413,18 @@ pub(super) fn wrapper_externs(
 ) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut externs = BTreeMap::new();
     for name in [
-        "horizon_client",
+        "sunrise_client",
         "mod_api",
         "mod_vocab",
         "mod_points",
-        "horizon_mod_package",
+        "sunrise_mod_package",
     ] {
         externs.insert(name.to_owned(), library(deps, name)?);
     }
-    if template.contains("horizon_mod_host::") {
+    if template.contains("sunrise_mod_host::") {
         externs.insert(
-            "horizon_mod_host".into(),
-            library(deps, "horizon_mod_host")?,
+            "sunrise_mod_host".into(),
+            library(deps, "sunrise_mod_host")?,
         );
     }
     Ok(externs)
@@ -567,9 +567,9 @@ pub(super) fn changes_game(project: &api::Project<'_>) -> Option<&'static str> {
     let manifest = &project.bundle.manifest;
     // Every row kind by name: a new one does not compile until it is routed here.
     if let Some(native) = &manifest.native {
-        let horizon_mod_package::manifest::Native {
+        let sunrise_mod_package::manifest::Native {
             game: _,
-            horizon: _,
+            sunrise: _,
             mixins: _,
             mixin,
             module,
@@ -631,7 +631,7 @@ pub(super) fn compile(
     consent: Option<&dyn Fn(&super::RegistryInventory) -> bool>,
 ) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let mut names = std::collections::HashSet::new();
-    names.insert(dylib_name("horizon_patch").to_ascii_lowercase());
+    names.insert(dylib_name("sunrise_patch").to_ascii_lowercase());
     for item in fs::read_dir(package.runtime.join("deps")).map_err(|e| e.to_string())? {
         names.insert(
             item.map_err(|e| e.to_string())?
@@ -709,7 +709,7 @@ pub(super) fn compile(
             libraries.insert(name, library(&deps, name)?);
         }
     }
-    let game_library = library(&deps, "horizon_client")?;
+    let game_library = library(&deps, "sunrise_client")?;
     let mut facades = std::collections::HashMap::new();
     libraries.insert("mod_vocab", library(&deps, "mod_vocab")?);
     let mut rlibs: std::collections::HashMap<&str, PathBuf> = std::collections::HashMap::new();
@@ -732,12 +732,12 @@ pub(super) fn compile(
                 .arg("-C")
                 .arg(format!("metadata={id}"))
                 .arg("--extern")
-                .arg(format!("horizon_client={}", game_library.display()))
+                .arg(format!("sunrise_client={}", game_library.display()))
                 .arg("-o")
                 .arg(&rlib)
                 .arg(source);
             for krate in &facade.crates {
-                if krate != "horizon_client" {
+                if krate != "sunrise_client" {
                     cmd.arg("--extern").arg(format!(
                         "{krate}={}",
                         facade_library(&deps, krate, &sdk)?.display()
@@ -791,19 +791,19 @@ pub(super) fn compile(
         installed.push(rlibs[projects[index].bundle.manifest.id.as_str()].clone());
     }
     if let Some(patch) = patch {
-        let source = out.join("horizon_patch.rs");
+        let source = out.join("sunrise_patch.rs");
         let template = api::template(&game.join(super::api_route::TEMPLATE))?;
         let entry = library_entry(
             &template,
             &[],
             &catalog,
             sdk.commit(),
-            "horizon_patch",
+            "sunrise_patch",
             "0",
             &patch.installs,
         );
         fs::write(&source, &entry).map_err(|e| e.to_string())?;
-        let library = out.join(dylib_name("horizon_patch"));
+        let library = out.join(dylib_name("sunrise_patch"));
         let mut hash = Sha256::new();
         hash.update(&entry);
         for (_, path) in &patch.rlibs {
@@ -814,7 +814,7 @@ pub(super) fn compile(
         let unchanged =
             library.is_file() && fs::read_to_string(&saved).ok().as_deref() == Some(&fingerprint);
         let mut cmd = rustc(rust, game, out, "2024", &sdk.link_args);
-        cmd.args(["--crate-type", "dylib", "--crate-name", "horizon_patch"]);
+        cmd.args(["--crate-type", "dylib", "--crate-name", "sunrise_patch"]);
         for (name, path) in wrapper_externs(&deps, &template)? {
             cmd.arg("--extern")
                 .arg(format!("{name}={}", path.display()));
@@ -828,8 +828,8 @@ pub(super) fn compile(
             super::run(cmd, tr("Compiling the patch library"), |_| {})?;
             fs::write(saved, fingerprint).map_err(|e| e.to_string())?;
         }
-        super::library_record::validate_exports(&library, "horizon_patch")?;
-        super::library_record::stamp(&library, sdk.commit(), "horizon_patch", "0", true)?;
+        super::library_record::validate_exports(&library, "sunrise_patch")?;
+        super::library_record::stamp(&library, sdk.commit(), "sunrise_patch", "0", true)?;
         installed.push(library);
     }
     Ok((
@@ -841,7 +841,7 @@ pub(super) fn compile(
 pub(super) fn refuse_closure_rlib(id: &str, name: &str, path: &Path) -> Result<(), String> {
     if matches!(
         name,
-        "mod_api" | "mod_vocab" | "mod_points" | "horizon_mod_runtime" | "horizon_core"
+        "mod_api" | "mod_vocab" | "mod_points" | "sunrise_mod_runtime" | "sunrise_core"
     ) && path.extension().is_some_and(|ext| ext == "rlib")
     {
         return Err(trf("Native mod {mod} links API closure crate {crate} as an rlib. Rebuild the SDK with a shared API closure.", &[("mod", id), ("crate", name)]));
@@ -860,7 +860,7 @@ pub(super) fn dylib_name(krate: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn library_entry(
     template: &str,
-    mods: &[&horizon_mod_package::Manifest],
+    mods: &[&sunrise_mod_package::Manifest],
     catalog: &internals::Catalog,
     build: &str,
     id: &str,
@@ -916,11 +916,11 @@ pub(super) fn compile_mod<'a>(
             .unwrap_or("src/lib.rs"),
     );
     let mut cmd = rustc(edition);
-    fs::write(source.with_file_name("__horizon_entry.rs"), entry).map_err(|e| e.to_string())?;
+    fs::write(source.with_file_name("__sunrise_entry.rs"), entry).map_err(|e| e.to_string())?;
     let mut root = fs::read_to_string(&source).map_err(|e| e.to_string())?;
     check_entry_root(&root, id)?;
     root.push_str(
-        "\n#[allow(unsafe_code)]\n#[path = \"__horizon_entry.rs\"] mod __horizon_entry;\n",
+        "\n#[allow(unsafe_code)]\n#[path = \"__sunrise_entry.rs\"] mod __sunrise_entry;\n",
     );
     fs::write(&source, root).map_err(|e| e.to_string())?;
     cmd.args(["--crate-type", "dylib", "--crate-name", &krate])
@@ -1227,7 +1227,7 @@ mod tests {
 
     #[test]
     fn the_route_is_chosen_once_from_the_whole_set() {
-        use horizon_mod_package::manifest::{loops, mixin, Internal, Module};
+        use sunrise_mod_package::manifest::{loops, mixin, Internal, Module};
         let folder = super::super::tests::dir("prebuilt-route");
         let write = |name: &str, dependencies: &str| {
             let dir = folder.join(name);
@@ -1243,19 +1243,19 @@ mod tests {
         };
         let api_only = write(
             "api_only",
-            "horizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nhorizon-mod-points={path='.horizon/sdk/api/crates/horizon-mod-points'}",
+            "sunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\nsunrise-mod-points={path='.sunrise/sdk/api/crates/sunrise-mod-points'}",
         );
-        let facade = write("facade", "horizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nhorizon-internals={path='.horizon/sdk/api/crates/horizon-internals'}");
+        let facade = write("facade", "sunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\nsunrise-internals={path='.sunrise/sdk/api/crates/sunrise-internals'}");
         let registry = write(
             "registry",
-            "horizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nserde='1'",
+            "sunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\nserde='1'",
         );
-        let with = |change: &dyn Fn(&mut horizon_mod_package::manifest::Manifest)| {
+        let with = |change: &dyn Fn(&mut sunrise_mod_package::manifest::Manifest)| {
             let mut bundle = api_only.clone();
             change(&mut bundle.manifest);
             bundle
         };
-        let native = |change: &dyn Fn(&mut horizon_mod_package::manifest::Native)| {
+        let native = |change: &dyn Fn(&mut sunrise_mod_package::manifest::Native)| {
             with(&|manifest| change(manifest.native.as_mut().unwrap()))
         };
         let forwarded = || mixin::Forwarded {
@@ -1291,7 +1291,7 @@ mod tests {
             }),
             with(&|m| {
                 m.internals.push(Internal {
-                    path: "horizon_client::Game".into(),
+                    path: "sunrise_client::Game".into(),
                     kind: None,
                     hash: None,
                 })
@@ -1351,18 +1351,18 @@ mod tests {
             "libfixture_meta-host.rmeta",
             "libfixture_meta-target.rmeta",
             "libbuild_tool-one.rmeta",
-            "libhorizon_core-one.rmeta",
+            "libsunrise_core-one.rmeta",
         ] {
             fs::write(deps.join(name), b"").unwrap();
         }
         let mut sdk: Identity = serde_json::from_value(serde_json::json!({
             "commit": "test", "rustc": "test", "target": "test", "side": "client",
-            "link_args": [], "facade_crates": ["horizon_core"],
+            "link_args": [], "facade_crates": ["sunrise_core"],
         }))
         .unwrap();
         assert_eq!(
-            facade_library(&deps, "horizon_core", &sdk).unwrap(),
-            deps.join("libhorizon_core-one.rmeta")
+            facade_library(&deps, "sunrise_core", &sdk).unwrap(),
+            deps.join("libsunrise_core-one.rmeta")
         );
         for krate in ["fixture_meta", "build_tool"] {
             let refusal = facade_library(&deps, krate, &sdk).unwrap_err();
@@ -1388,15 +1388,15 @@ mod tests {
         let sdk: Identity = serde_json::from_value(serde_json::json!({
             "commit": "test", "rustc": "test", "target": "test", "side": "client", "link_args": [],
             "slices": {"runtime": [
-                "bin/horizon-client.exe", "deps/horizon_engine_slots.dll", "deps/horizon_mod_host.dll",
-                "deps/libhorizon_mod_host.dll.a", "deps/libmod_api.so", "deps/mod_points.dylib",
-                "horizon-prebuilt.json",
+                "bin/sunrise-client.exe", "deps/sunrise_engine_slots.dll", "deps/sunrise_mod_host.dll",
+                "deps/libsunrise_mod_host.dll.a", "deps/libmod_api.so", "deps/mod_points.dylib",
+                "sunrise-prebuilt.json",
             ], "api": []},
         }))
         .unwrap();
         let recorded = [
-            "horizon_engine_slots.dll",
-            "horizon_mod_host.dll",
+            "sunrise_engine_slots.dll",
+            "sunrise_mod_host.dll",
             "libmod_api.so",
             "mod_points.dylib",
         ]
@@ -1455,7 +1455,7 @@ mod tests {
         let dir = super::super::tests::dir("prebuilt-exact-build");
         let check = |commit: &str, rustc: &str, target: &str, side: &str| {
             let identity = serde_json::json!({
-                "package_format": horizon_mod_package::sdk::PACKAGE_FORMAT,
+                "package_format": sunrise_mod_package::sdk::PACKAGE_FORMAT,
                 "commit": commit, "rustc": rustc, "target": target, "side": side, "link_args": [],
             });
             fs::write(dir.join(IDENTITY), identity.to_string()).unwrap();
@@ -1490,42 +1490,42 @@ mod tests {
         let whole = dir.join("whole");
         let write = |slices: serde_json::Value| {
             let identity = serde_json::json!({
-                "package_format": horizon_mod_package::sdk::PACKAGE_FORMAT,
+                "package_format": sunrise_mod_package::sdk::PACKAGE_FORMAT,
                 "commit": "abc123", "rustc": "", "target": "", "side": "client", "link_args": [],
                 "slices": slices,
             });
             fs::write(whole.join(IDENTITY), identity.to_string()).unwrap();
         };
         for (name, text) in [
-            ("bin/horizon-client", "exe"),
+            ("bin/sunrise-client", "exe"),
             ("deps/libmod_api-1.rmeta", "api"),
-            ("deps/libhorizon_client-1.rlib", "engine"),
+            ("deps/libsunrise_client-1.rlib", "engine"),
             ("points.json", "{}"),
         ] {
             fs::create_dir_all(whole.join(name).parent().unwrap()).unwrap();
             fs::write(whole.join(name), text).unwrap();
         }
-        let runtime = serde_json::json!([IDENTITY, "bin/horizon-client"]);
+        let runtime = serde_json::json!([IDENTITY, "bin/sunrise-client"]);
         write(
             serde_json::json!({"runtime": runtime, "api": ["deps/libmod_api-1.rmeta", "points.json"]}),
         );
         let package = lay_out(&whole, &dir.join("linked"), true).unwrap();
         assert_eq!(package, Package::at(&dir.join("linked")));
         let read = |path: PathBuf| fs::read_to_string(path).unwrap();
-        assert_eq!(read(package.runtime.join("bin/horizon-client")), "exe");
+        assert_eq!(read(package.runtime.join("bin/sunrise-client")), "exe");
         assert_eq!(read(package.api.join("deps/libmod_api-1.rmeta")), "api");
         assert_eq!(
-            read(package.engine.join("deps/libhorizon_client-1.rlib")),
+            read(package.engine.join("deps/libsunrise_client-1.rlib")),
             "engine"
         );
         assert!(!package.engine.join("points.json").exists());
         // Linking leaves the developer's folder as it was.
-        assert_eq!(read(whole.join("bin/horizon-client")), "exe");
+        assert_eq!(read(whole.join("bin/sunrise-client")), "exe");
         let union = package.whole(&dir.join("union")).unwrap();
         for name in [
-            "bin/horizon-client",
+            "bin/sunrise-client",
             "deps/libmod_api-1.rmeta",
-            "deps/libhorizon_client-1.rlib",
+            "deps/libsunrise_client-1.rlib",
             IDENTITY,
         ] {
             assert!(union.join(name).is_file(), "{name}");
@@ -1546,7 +1546,7 @@ mod tests {
             serde_json::json!({"runtime": runtime, "api": ["deps/libmod_api-1.rmeta", "points.json"]}),
         );
         lay_out(&whole, &dir.join("moved"), false).unwrap();
-        assert!(!whole.join("bin/horizon-client").exists());
+        assert!(!whole.join("bin/sunrise-client").exists());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1554,16 +1554,16 @@ mod tests {
     fn mods_on_the_mod_api_alone_take_the_prebuilt_game() {
         assert_eq!(
             refusal_of(
-                "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}"
+                "[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}"
             ),
             None
         );
         assert_eq!(
-            refusal_of("build=false\n[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}"),
+            refusal_of("build=false\n[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}"),
             None
         );
         assert_eq!(
-            refusal_of("[dependencies.api]\npackage='horizon-mod-api'\npath='.horizon/sdk/api/crates/horizon-mod-api'"),
+            refusal_of("[dependencies.api]\npackage='sunrise-mod-api'\npath='.sunrise/sdk/api/crates/sunrise-mod-api'"),
             None
         );
     }
@@ -1571,8 +1571,8 @@ mod tests {
     #[test]
     fn registry_dependencies_do_not_rebuild_the_game() {
         for cargo in [
-            "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nserde='1'",
-            "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\n[target.'cfg(unix)'.dependencies]\nlibc='0.2'",
+            "[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\nserde='1'",
+            "[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\n[target.'cfg(unix)'.dependencies]\nlibc='0.2'",
         ] {
             assert_eq!(refusal_of(cargo), None);
         }
@@ -1583,15 +1583,15 @@ mod tests {
         let id = || "example".to_owned();
         for (cargo, reason) in [
             (
-                "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api',features=['testing']}",
+                "[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api',features=['testing']}",
                 Refusal::Features { mod_id: id() },
             ),
             (
-                "[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\n[features]\nextra=[]",
+                "[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\n[features]\nextra=[]",
                 Refusal::Features { mod_id: id() },
             ),
             (
-                "build='make.rs'\n[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}",
+                "build='make.rs'\n[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}",
                 Refusal::BuildScript { mod_id: id() },
             ),
         ] {
@@ -1618,7 +1618,7 @@ mod tests {
         assert!(error.contains("SDK format 5 is too old"), "{error}");
         let error = refusal("{}");
         assert!(error.contains("SDK format 0 is too old"), "{error}");
-        let newer = horizon_mod_package::sdk::PACKAGE_FORMAT + 1;
+        let newer = sunrise_mod_package::sdk::PACKAGE_FORMAT + 1;
         let error = refusal(&format!(r#"{{"package_format": {newer}}}"#));
         assert!(error.contains("update the launcher"), "{error}");
     }

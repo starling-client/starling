@@ -17,11 +17,11 @@ class BlockStateSwapTest(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         root = Path(scratch.name)
         (root / "Cargo.toml").write_text("[workspace]\n")
-        api = root / "crates/horizon-mod-api/src"
+        api = root / "crates/sunrise-mod-api/src"
         api.mkdir(parents=True)
         (api / "values.rs").write_text(source)
         (api / "also.rs").write_text("pub type Read = BlockStateId;\n")
-        engine = root / "crates/horizon-world/src/registry.rs"
+        engine = root / "crates/sunrise-world/src/registry.rs"
         engine.parent.mkdir(parents=True)
         engine.write_text("pub struct BlockStateId(pub u32);\n")
         report = root / "report.json"
@@ -53,7 +53,7 @@ class BlockStateSwapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / "target", prefix="swap-deferred-") as directory:
             root = Path(directory)
             (root / "Cargo.toml").write_text("[workspace]\n")
-            api = root / "crates/horizon-mod-api/src"
+            api = root / "crates/sunrise-mod-api/src"
             api.mkdir(parents=True)
             fixture = api / "wasm_key_tests.rs"
             fixture.write_text("fn fixture() { let state = BlockStateId(19); }\n")
@@ -68,10 +68,10 @@ class BlockStateSwapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / "target", prefix="swap-arms-") as directory:
             root = Path(directory)
             (root / "Cargo.toml").write_text("[workspace]\n")
-            (root / "crates/horizon-mod-api/src").mkdir(parents=True)
-            dispatch = root / "crates/horizon-mod-api-gen/src/dispatch.rs"
+            (root / "crates/sunrise-mod-api/src").mkdir(parents=True)
+            dispatch = root / "crates/sunrise-mod-api-gen/src/dispatch.rs"
             dispatch.parent.mkdir(parents=True)
-            preserved = 'normalize("BlockStateId"); engine::<horizon_world::registry::BlockStateId>();\n'
+            preserved = 'normalize("BlockStateId"); engine::<sunrise_world::registry::BlockStateId>();\n'
             dispatch.write_text(preserved + '                    "BlockStateId" if table == "block" => { first() }\n                    "BlockStateId" => { second() }\n                    "& ItemStack" => { third() }\n')
             report = root / "report.json"
             subprocess.run(["python3", str(SCRIPT), "--root", str(root), "--report", str(report), "--apply"], check=True, capture_output=True)
@@ -79,7 +79,7 @@ class BlockStateSwapTest(unittest.TestCase):
             self.assertEqual(json.loads(report.read_text())["files"][0]["states_after"], 2)
 
     def test_qualified_engine_import_requires_ownership_review(self):
-        source = "use horizon_world::registry::BlockStateId;\n"
+        source = "use sunrise_world::registry::BlockStateId;\n"
         run, result, report = self.run_swap(source, True)
         self.assertNotEqual(run.returncode, 0)
         self.assertEqual(result, source)

@@ -4,7 +4,7 @@
 //! Arguments: game DLL, std DLL, the allocator's exported alloc and dealloc names.
 // Links the game DLL like the shipped executable does; without it rustc never loads it, and `mod_api` (metadata
 // only in the SDK) would have to be linked statically.
-extern crate horizon_client;
+extern crate sunrise_client;
 
 use std::ffi::{CString, c_void};
 

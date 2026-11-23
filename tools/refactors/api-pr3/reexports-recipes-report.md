@@ -13,10 +13,10 @@
 
 `python3 -m unittest tests.test_mod_api_boundary tests.test_mod_port_harness tests.test_version_port`: 22 tests passed.
 
-`cargo test -p horizon-mod-api case_order`: 2 passed (both new enum-order tests).
-`cargo test -p horizon-mod-api namespaced_identifier_samples`: 1 passed.
+`cargo test -p sunrise-mod-api case_order`: 2 passed (both new enum-order tests).
+`cargo test -p sunrise-mod-api namespaced_identifier_samples`: 1 passed.
 
-`cargo check -p horizon-client --tests --examples` completed with inherited Text ownership errors in native_unspawned_mob, add_attribute_tooltips and a stations test. It also found two new test-only Arc/str comparisons, corrected in a follow-up commit. No second game check or successful game-test run is claimed after that correction. No new production recipe, enum or jar diagnostic implementation produced a compiler diagnostic in that run. Full-workspace compilation and Clippy were not run; the known Text failures block the game, and the room leaves Clippy to CI.
+`cargo check -p sunrise-client --tests --examples` completed with inherited Text ownership errors in native_unspawned_mob, add_attribute_tooltips and a stations test. It also found two new test-only Arc/str comparisons, corrected in a follow-up commit. No second game check or successful game-test run is claimed after that correction. No new production recipe, enum or jar diagnostic implementation produced a compiler diagnostic in that run. Full-workspace compilation and Clippy were not run; the known Text failures block the game, and the room leaves Clippy to CI.
 
 Resource-backed recipe tests and jar diagnostic conversion tests are in `api_values/small_values.rs`. The recipe test requires prepared game resources and is explicitly ignored by default. No successful run is claimed until recorded by the worker result.
 

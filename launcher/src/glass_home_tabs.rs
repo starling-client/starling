@@ -6,7 +6,7 @@ use super::*;
 use crate::glass_ui::{self as ui, white};
 use crate::scrollbar::TakeWheel;
 use home_tabs::HomeTab;
-use horizon_theme::glass::{ink, radius};
+use sunrise_theme::glass::{ink, radius};
 
 /// The tabbed panel's own body is at least this tall (`min-h-[340px]`), and so is the patch log.
 const BODY: f32 = 340.;
@@ -316,12 +316,12 @@ impl Launcher {
             .child(body)
     }
 
-    /// The patch log (`PatchLog`): a Horizon instance's Nightly changes by section (the newest
+    /// The patch log (`PatchLog`): a Sunrise instance's Nightly changes by section (the newest
     /// Nightly's when it plays another version), else the newest launcher release's; "All
     /// notes" opening Patch notes. It fills its column and scrolls inside.
     fn patch_log(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let horizon = self.selected_instance().is_some_and(|i| i.java.is_none());
-        let played = horizon.then(|| self.selected().cloned()).flatten();
+        let sunrise = self.selected_instance().is_some_and(|i| i.java.is_none());
+        let played = sunrise.then(|| self.selected().cloned()).flatten();
         let (note, sections) = match &self.releases {
             Load::Ready(list) => patch_source(list, played.as_deref()),
             _ => None,
@@ -551,7 +551,7 @@ mod tests {
             ),
             release(
                 "launcher@0.2.37",
-                "Horizon launcher 0.2.37",
+                "Sunrise launcher 0.2.37",
                 "2026-11-02",
                 false,
                 "### Fixed\n- Launcher fix",

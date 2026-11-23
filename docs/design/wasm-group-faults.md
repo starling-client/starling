@@ -2,7 +2,7 @@
 
 Design note for #2766 (interruption counted by work, not by wall clock) and #2761 (one failing mod shouldn't
 disable its whole group). Both come down to one question: when a call into a group fails, what is still safe to run?
-This note answers that question. It changes no code. The facts below are from `crates/horizon-mod-wasm` at main
+This note answers that question. It changes no code. The facts below are from `crates/sunrise-mod-wasm` at main
 fbf4f06490, except where a line says a stage has landed.
 
 ## Decisions
@@ -67,7 +67,7 @@ fbf4f06490, except where a line says a stage has landed.
 - **What a trap skips in the guest.** `wire_guest::run` pushes a `Keep` and takes a per-depth reply buffer, then
   pops and returns them when the call ends. A trap skips the pop. It also skips every `Drop` and every `RefCell`
   borrow release in the frames it unwinds, and an allocation that was mid-update in the std member's allocator
-  stays mid-update. The group state (`horizon_group_state`: the handler table, the cache budget, the eviction
+  stays mid-update. The group state (`sunrise_group_state`: the handler table, the cache budget, the eviction
   callbacks) belongs to the std member, so every member shares it.
 - **What a fault can't leave half-done on the host.** Under the #1909 boundary, the host decodes a reply completely
   before writing any field back, and point records do the same. So a call that faults applies none of its reply.
@@ -97,7 +97,7 @@ tank, and a guest that empties it traps with `Trap::OutOfFuel`.
     between the outer and nested calls.
 - **Budgets.** Fuel counts instructions, not milliseconds, so today's 100 and 30,000 epochs don't carry over. Each
   budget is set from measurement: the most fuel any ordinary call and any `Load` call uses in the in-tree samples and
-  fixtures (horizon-machine-sample, the wasm fixture, the group fixtures), with a margin stated next to the
+  fixtures (sunrise-machine-sample, the wasm fixture, the group fixtures), with a margin stated next to the
   constant. The 100-epoch value is not evidence for any particular fuel number.
 - **Cost.** Fuel instruments guest code. #1780's profile shows guest dispatch glue, codecs and allocation are a large
   share of the remaining wasm tick, so the overhead is measured on #1780's scene before fuel replaces epochs (see

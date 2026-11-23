@@ -50,7 +50,7 @@ fn a_packs_index_names_its_game_and_loader() {
 
 #[test]
 fn a_modded_pack_fills_the_instance_it_is_imported_into() {
-    let root = std::env::temp_dir().join(format!("horizon-mrpack-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("sunrise-mrpack-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let home = root.join("instance");
     fs::create_dir_all(&root).unwrap();
@@ -78,7 +78,7 @@ fn a_modded_pack_fills_the_instance_it_is_imported_into() {
         zip.write_all(&body).unwrap();
     }
     zip.finish().unwrap();
-    // A Horizon instance takes no loader pack; a Java one does.
+    // A Sunrise instance takes no loader pack; a Java one does.
     let make = |name: &str| -> Result<Instance, String> {
         fs::create_dir_all(&home).unwrap();
         Ok(Instance {

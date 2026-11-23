@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR 0: move the plain vocabulary types into horizon-core and rewrite every path.
+"""PR 0: move the plain vocabulary types into sunrise-core and rewrite every path.
 
 Run from the repository root. Step 1 moves whole modules (`git mv`) and cuts single
 types out of their files verbatim; step 2 rewrites `use` trees and inline paths.
@@ -8,10 +8,10 @@ Every moved line is checked afterwards by `moved-lines-check.py`.
 import re, subprocess, sys, pathlib
 
 ROOT = pathlib.Path('.')
-W = ROOT / 'crates/horizon-world/src'
-C = ROOT / 'crates/horizon-core/src'
+W = ROOT / 'crates/sunrise-world/src'
+C = ROOT / 'crates/sunrise-core/src'
 
-# (module path inside horizon-world) -> horizon-core module path. Whole modules.
+# (module path inside sunrise-world) -> sunrise-core module path. Whole modules.
 MODULES = {'nbt': 'nbt', 'identifier': 'identifier', 'java_hash_map': 'java_hash_map'}
 
 # single types: (old file, type name, new core module, old path prefix, doc/attr header start marker)
@@ -89,7 +89,7 @@ def step1():
 
 # ---- step 2: rewriting -------------------------------------------------------------------
 
-# old path (relative to crate root horizon_world) -> new path (relative to horizon_core)
+# old path (relative to crate root sunrise_world) -> new path (relative to sunrise_core)
 MOVED = {}
 for m in MODULES:
     MOVED[(m,)] = (m,)
@@ -194,7 +194,7 @@ def map_leaf(segs, root_names, base=None):
         for cand in absolute_candidates(segs, base):
             for n in range(len(cand), 0, -1):
                 if tuple(cand[:n]) in MOVED:
-                    return ['horizon_core'] + list(MOVED[tuple(cand[:n])]) + cand[n:]
+                    return ['sunrise_core'] + list(MOVED[tuple(cand[:n])]) + cand[n:]
         return None
     if segs[0] not in root_names:
         return None
@@ -202,7 +202,7 @@ def map_leaf(segs, root_names, base=None):
     for n in range(len(rest), 0, -1):
         if tuple(rest[:n]) in MOVED:
             new = MOVED[tuple(rest[:n])]
-            return ['horizon_core'] + list(new) + rest[n:]
+            return ['sunrise_core'] + list(new) + rest[n:]
     return None
 
 
@@ -210,8 +210,8 @@ USE_RE = re.compile(r'(?P<head>^[ \t]*(?:#\[[^\n]*\]\s*)*(?:pub(?:\([a-z]+\))? )
 
 
 def relative_prefixes(f):
-    """The absolute module path (inside horizon-world) of file f, and its inline-module variant."""
-    rel = f[len('crates/horizon-world/src/'):-3].split('/')
+    """The absolute module path (inside sunrise-world) of file f, and its inline-module variant."""
+    rel = f[len('crates/sunrise-world/src/'):-3].split('/')
     if rel[-1] == 'mod':
         rel = rel[:-1]
     if rel == ['lib']:
@@ -257,7 +257,7 @@ def rewrite_text(text, root_names, base=None):
                 out.append((segs, alias))
         if not changed:
             return m.group(0)
-        # `use horizon_world::nbt::{self}` style leaves: 'self' leaf -> drop self
+        # `use sunrise_world::nbt::{self}` style leaves: 'self' leaf -> drop self
         fixed = []
         for segs, alias in out:
             if segs[-1] == 'self' and len(segs) > 1:
@@ -272,7 +272,7 @@ def rewrite_text(text, root_names, base=None):
     for root in root_names:
         for old, new in sorted(MOVED.items(), key=lambda kv: -len(kv[0])):
             pat = r'\b' + re.escape(root) + '::' + '::'.join(old) + r'\b'
-            text = re.sub(pat, 'horizon_core::' + '::'.join(new), text)
+            text = re.sub(pat, 'sunrise_core::' + '::'.join(new), text)
     if base is not None:
         def inline(m):
             segs = m.group(0).split('::')
@@ -288,11 +288,11 @@ def step2():
     for f in files:
         p = ROOT / f
         text = p.read_text()
-        if f.startswith('crates/horizon-world/src/') and not f.startswith('crates/horizon-world/src/lib.rs'):
-            roots = {'crate', 'horizon_world'}
+        if f.startswith('crates/sunrise-world/src/') and not f.startswith('crates/sunrise-world/src/lib.rs'):
+            roots = {'crate', 'sunrise_world'}
         else:
-            roots = {'horizon_world'}
-        base = relative_prefixes(f) if f.startswith('crates/horizon-world/src/') else None
+            roots = {'sunrise_world'}
+        base = relative_prefixes(f) if f.startswith('crates/sunrise-world/src/') else None
         new = rewrite_text(text, roots, base)
         if new != text:
             p.write_text(new)

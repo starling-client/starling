@@ -7,43 +7,43 @@ Create a project, edit its JSON files, then build and run it.
 
 ```sh
 # A prebuilt binary for Linux x86_64/aarch64, macOS x86_64/arm64 or Windows x86_64:
-cargo binstall --git https://github.com/arismoko/horizon cargo-horizon-mod
+cargo binstall --git https://github.com/arismoko/horizon cargo-sunrise-mod
 # Or build it from source, without cargo-binstall:
-cargo install --git https://github.com/arismoko/horizon cargo-horizon-mod
-cargo horizon-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
+cargo install --git https://github.com/arismoko/horizon cargo-sunrise-mod
+cargo sunrise-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
 cd my-mod
-cargo horizon-mod run               # build my-mod.hmod, then start the game with it turned on
-cargo horizon-mod build             # only build: target/horizon-mod/my_mod.hmod
-cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks; --json for JSON
+cargo sunrise-mod run               # build my-mod.smod, then start the game with it turned on
+cargo sunrise-mod build             # only build: target/sunrise-mod/my_mod.smod
+cargo sunrise-mod check target/sunrise-mod/my_mod.smod   # the registry's checks; --json for JSON
 ```
 
 - `new <path> [--name "Name"]` writes the content template. `--template native` writes
-  a flat native mod instead, and `--template wasm` a wasm one: `horizon-mod.toml`, root `Cargo.toml`
+  a flat native mod instead, and `--template wasm` a wasm one: `sunrise-mod.toml`, root `Cargo.toml`
   and `src/lib.rs`, and empty `assets/` and `data/` directories. The mod is pinned to the build of the current
-  Nightly (players have it), or to `--horizon`'s: `nightly-<YYYY-MM-DD>`, or a commit sha (7 hex digits are enough when
-  they name one build). A native mod pins it in `[native] horizon`, a wasm mod in `Cargo.toml`'s
-  `[package.metadata.horizon] sdk`. `Cargo.toml` names the API by path,
-  `horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }`, the only form the tool and the launcher
+  Nightly (players have it), or to `--sunrise`'s: `nightly-<YYYY-MM-DD>`, or a commit sha (7 hex digits are enough when
+  they name one build). A native mod pins it in `[native] sunrise`, a wasm mod in `Cargo.toml`'s
+  `[package.metadata.sunrise] sdk`. `Cargo.toml` names the API by path,
+  `sunrise-mod-api = { path = ".sunrise/sdk/api/crates/sunrise-mod-api" }`, the only form the tool and the launcher
   take. Every other form is refused under `E_SDK_SOURCE`, naming why: the old git form, a version alone (Cargo
-  would take the crate from crates.io, where anyone can publish its name), another source, or another path. `new` fetches that build's SDK into `.horizon/sdk/`,
+  would take the crate from crates.io, where anyone can publish its name), another source, or another path. `new` fetches that build's SDK into `.sunrise/sdk/`,
   and every command that compiles the mod fetches it again when it is missing or another build's, so a fresh clone
-  works after one command; your editor needs that first command too. `.horizon/` is in the template's `.gitignore`
-  and is never packed. The fetch checks Horizon's signature on the release and every file against its `sdk.json`;
-  `HORIZON_SDK_BASE` (a URL or a folder) reads the releases from a mirror instead. When that Nightly has no SDK,
-  `new` says so and asks for `--horizon`. `update` repins a native mod the same way
+  works after one command; your editor needs that first command too. `.sunrise/` is in the template's `.gitignore`
+  and is never packed. The fetch checks Sunrise's signature on the release and every file against its `sdk.json`;
+  `SUNRISE_SDK_BASE` (a URL or a folder) reads the releases from a mirror instead. When that Nightly has no SDK,
+  `new` says so and asks for `--sunrise`. `update` repins a native mod the same way
   ([the SDK in a mod project](../reference/sdk/03-in-a-project.md)). Its root `impl Hooks` uses
-  `#[mod_api::horizon_mod]`. Compile it with `horizon-launcher native-build <path> --trust-native-code`
+  `#[mod_api::sunrise_mod]`. Compile it with `sunrise-launcher native-build <path> --trust-native-code`
   ([writing hooks](../start/writing-hooks.md)). Any other `--template` is refused.
-- `build` packs the checked project into `target/horizon-mod/<id>.hmod`: `horizon-mod.toml`, `assets/`,
+- `build` packs the checked project into `target/sunrise-mod/<id>.smod`: `sunrise-mod.toml`, `assets/`,
   `data/`, optional `icon.png` and, for code, the root Cargo project. It validates content with the same
   checks as the game; without `--wasm`, it does not compile code. Native code requires both `Cargo.toml` and `[native]`; inconsistent
   declarations and a manifest without capability `registries` are refused.
-- `run` builds, then starts `horizon-client` (on `PATH`, or `--game PATH`, or `HORIZON_CLIENT`) with
-  `--dev-mod target/horizon-mod/<id>.hmod`, always on. Arguments after `--` go to the game. The game reads content once
+- `run` builds, then starts `sunrise-client` (on `PATH`, or `--game PATH`, or `SUNRISE_CLIENT`) with
+  `--dev-mod target/sunrise-mod/<id>.smod`, always on. Arguments after `--` go to the game. The game reads content once
   at start, so rebuild and run again after an edit.
 - `check <file>` runs what the registry runs: the file's size and SHA-256, its manifest and content, and a signature
-  with `--key <public key> --signature <file>.minisig`. It reads `.hmod`, `.hpack`, resource pack `.zip`
-  and `.hshader` files.
+  with `--key <public key> --signature <file>.minisig`. It reads `.smod`, `.spack`, resource pack `.zip`
+  and `.sshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([the registry index](../reference/registry-index.md)).
 - `use-jar <path>` records an original Java jar as an external asset/data source, without copying it into the mod
   ([Java jars as external assets](#java-jars-as-external-assets)).
@@ -109,7 +109,7 @@ tier = 3
 The optional fields fill the game's Mods screen, which lists every mod with its icon, name, version, id, license,
 authors, credits and description, as NeoForge's mod list does. A link must be `http` or `https` and at most 2048
 characters; the others are plain text. The screen has no switch: a mod runs or not by what the launcher and
-`horizon-mods.txt` say.
+`sunrise-mods.txt` say.
 
 Unknown keys are refused, so a typo is an error, not a silently ignored permission. The shared manifest
 uses exactly `api = "0.2"` and `capabilities = ["registries"]`, with `side = "client"` (the default) or `"both"`.
@@ -117,7 +117,7 @@ Code mods add `[native]` for exact build pins and optional raw injections ([Inje
 from this manifest, not Cargo metadata ([Native mods](native-mods/02-the-package.md)). Both content and code mods support `[dependencies]`: use `base = "^1.2"` for a required dependency or
 `extra = { version = "^2", optional = true }` for an optional one. Missing required dependencies, incompatible installed versions and cycles refuse startup. Content layers load after their dependencies; an absent optional dependency is ignored. Both kinds may include a fixed-name `icon.png` at the top level, with no
 manifest key: a valid square PNG, at most 512 × 512 pixels and 256 KiB encoded ([Mod files](../reference/manifest.md)).
-Use `cargo horizon-mod build --wasm` to build a Rust mod as `mod.wasm`. A wasm package
+Use `cargo sunrise-mod build --wasm` to build a Rust mod as `mod.wasm`. A wasm package
 requires a matching `[wasm]` declaration. Loading refuses an undeclared or missing module, a module
 over 64 MiB, invalid WebAssembly or shared-group structure, or bytes that do not match the declared SHA-512.
 
@@ -126,12 +126,12 @@ over 64 MiB, invalid WebAssembly or shared-group structure, or bytes that do not
 From a content or native mod's project folder:
 
 ```sh
-cargo horizon-mod use-jar /path/to/original-mod.jar
+cargo sunrise-mod use-jar /path/to/original-mod.jar
 ```
 
-The command reads NeoForge or Fabric metadata and appends a `[[jar]]` table to `horizon-mod.toml` with the original
+The command reads NeoForge or Fabric metadata and appends a `[[jar]]` table to `sunrise-mod.toml` with the original
 `id`, `version` and the exact file's `sha512` (128 lowercase hexadecimal characters). It does not infer identity
-from the filename, rename the Java mod to the Horizon mod's namespace, or run Java code. An unknown jar, invalid
+from the filename, rename the Java mod to the Sunrise mod's namespace, or run Java code. An unknown jar, invalid
 identity, unresolved version or file larger than the shared 512 MiB hash limit is refused without changing the manifest.
 
 The original manifest text, comments and existing list order are preserved. Listing the same hash and identity again
@@ -140,14 +140,14 @@ not another entry. Use `[[jar]]` tables rather than an inline `jar = [...]` arra
 The list is ordered: new references are appended, not sorted.
 
 Jar bytes stay external. The launcher finds the exact hash locally or asks before downloading that exact file from
-Modrinth. Its `assets/` and `data/` are passive pack layers below the Horizon mod's own files; a player-local runtime
-cache is not part of the mod package. Do not copy a jar or its extracted files into the mod's source or `.hmod`.
+Modrinth. Its `assets/` and `data/` are passive pack layers below the Sunrise mod's own files; a player-local runtime
+cache is not part of the mod package. Do not copy a jar or its extracted files into the mod's source or `.smod`.
 A jar reference supplies assets and data, not the original Java behavior: port that behavior through the mod API.
 
 ### Content mods (API 0.2)
 
-A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
-by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
+A content mod has capability `registries` and carries `assets/` and `data/` in the `.smod`. It adds blocks and items
+by declaring them in `data/<id>/sunrise/block/*.json` and `data/<id>/sunrise/item/*.json`, each copying a vanilla
 template ([modpacks.md](https://github.com/arismoko/horizon/blob/main/docs/modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and creative tabs, mob
 effects, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `entity_type/` and `menu/` beside
 them. `fluid/` gives a fluid a client look (`sprite`, an atlas sprite id, and `tint`, `0xAARRGGBB`, both optional), as
@@ -162,24 +162,24 @@ its `tint`; with neither it looks like water, and a `tint` alone colours water's
 It is collected again before each resource bake, so a resource reload can change model identifiers as well as textures. Far terrain (LOD) omits mod fluids. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
 content is refused when it joins, with the reason.
 
-Every Horizon server checks loaded mods in the configuration phase (`horizon_protocol::mod_list`, channel
-`horizon:mod_list`), including when its own list is empty. Only the ids and versions of `side = "both"` mods cross
+Every Sunrise server checks loaded mods in the configuration phase (`sunrise_protocol::mod_list`, channel
+`sunrise:mod_list`), including when its own list is empty. Only the ids and versions of `side = "both"` mods cross
 this channel. Missing mods, extra both-side mods and version differences refuse the join, naming every id and
 version in a translated, wrapped disconnect. Client-only mods stay private and never block a join. A manifest
 with no `side` line is `client`, so a mod meant for both halves must say `side = "both"`. A vanilla or other
-non-Horizon client is refused when the server needs both-side mods, with their names and versions and an English
-fallback for clients without Horizon translations. The content registry identity check remains separate; the
+non-Sunrise client is refused when the server needs both-side mods, with their names and versions and an English
+fallback for clients without Sunrise translations. The content registry identity check remains separate; the
 mod list does not hash package bytes. Native build inventory validation is a separate server-export concern.
 
 A payload that breaks the format (an oversized list, a duplicate id, trailing bytes) is refused the same way a
 mismatch is: the join ends in a translated disconnect naming the decode error, never in play, and never as a
 silently empty list.
 
-Horizon peers identify themselves before sharing mod lists. After receiving the server's `horizon` brand, the
+Sunrise peers identify themselves before sharing mod lists. After receiving the server's `sunrise` brand, the
 client announces its own brand and list before answering known packs; that reply orders the compatibility
-check without an extra ping. The server sends its list only to an identified Horizon client, including when
+check without an extra ping. The server sends its list only to an identified Sunrise client, including when
 either list is empty. Vanilla clients receive no mod-list payload, and clients do not disclose their mod
-identities to servers that have not identified themselves as Horizon. Nothing here repeats per tick.
+identities to servers that have not identified themselves as Sunrise. Nothing here repeats per tick.
 
 A block names its template and what differs from it:
 
@@ -462,8 +462,8 @@ Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
 JSON values become NBT values. Values must fit the network NBT limits and
 round-trip through saved NBT; negative zero is not supported. A key such as
-`"!sample:charge": {}` removes the template's default. Unknown types fail when Horizon builds the content root;
-`cargo horizon-mod check` cannot check native registrations.
+`"!sample:charge": {}` removes the template's default. Unknown types fail when Sunrise builds the content root;
+`cargo sunrise-mod check` cannot check native registrations.
 
 `crafting_remainder` names what the item leaves in the crafting grid when a
 recipe uses it, as a milk bucket leaves a bucket (vanilla's
@@ -504,7 +504,7 @@ chorus plant's (10 pixels across) unless it sets `"thickness"`, 2 to 14
 pixels: its outline and collision are then built as `PipeBlock` builds its
 own, a core and an arm to each joined side.
 
-A mod's creative inventory tabs are `data/<id>/horizon/creative_tab/*.json`:
+A mod's creative inventory tabs are `data/<id>/sunrise/creative_tab/*.json`:
 a title, the item on the tab's button, and its items in order (items the game
 doesn't have are left out):
 
@@ -527,7 +527,7 @@ client hook `build_creative_mode_tab_contents` (NeoForge's
 Unknown component types fail content loading unless a code mod registers them.
 Item-id-specific behaviour does not follow a template: a copy of the trident does not throw.
 
-A mod effect is declared in `data/<id>/horizon/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its
+A mod effect is declared in `data/<id>/sunrise/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its
 category (`beneficial`, `harmful` or `neutral`) and its RGB colour (0 to `0xFFFFFF`), which its particles take:
 
 ```json
@@ -549,7 +549,7 @@ which returns `EffectCategory::Beneficial`, `Harmful` or `Neutral`. For an activ
 instance, use `active_effect.id.category(host)`. The read works on both sides and
 returns `None` before the effect registry is complete; it never guesses a category.
 
-A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
+A mod entity type is declared in `data/<id>/sunrise/entity_type/<name>.json`. It copies a vanilla type:
 `minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own
 items (one type per item), and `damage` (0 by default) is what a hit deals to anything it hits, as `thrown` damage from
 the thrower (the snowball's 3 to blazes is not copied):
@@ -654,7 +654,7 @@ modifier lines read on item tooltips, as NeoForge's `IAttributeExtension` does:
 
 - `display: AttributeDisplay::Percentage` (NeoForge's `PercentageAttribute`) shows added values as percentages
   too, so `+0.05` reads `+5% Swim Speed`. `AttributeDisplay::Boolean` (`BooleanAttribute`) shows an added
-  value above zero as enabled and any other as disabled (`horizon.attribute.modifier.enabled` and
+  value above zero as enabled and any other as disabled (`sunrise.attribute.modifier.enabled` and
   `.disabled`). `Ranged`, the default, is vanilla's.
 - `base_modifier: Some("mymod:base_mana")` (`getBaseId`) makes a modifier with that namespaced id read as the
   green total of the player's base value and its amount, as attack damage's base modifier does. The recipe
@@ -730,7 +730,7 @@ inherits the template's goals.
 
 #### Menu types
 
-A mod menu type (vanilla's `MenuType`) is declared in `data/<id>/horizon/menu/<name>.json`: its container's slot count
+A mod menu type (vanilla's `MenuType`) is declared in `data/<id>/sunrise/menu/<name>.json`: its container's slot count
 (1 to 256), the data slots its menu syncs (`ContainerData`, 0 to 256, 0 by default), and the slots players only take
 from (`results`, as a furnace's result slot):
 
@@ -743,9 +743,9 @@ It is the menu type `<id>:<name>`, with its network id after vanilla's. A mod bl
 its slots, then the player's 36. A shift-click from the inventory goes to the first slots with room, never a result
 slot, and one on the container goes to the inventory, as a chest's does. `results` fence players only: hoppers follow the
 container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
-(16-bit on the network, as vanilla's), all sent when it opens, then each change. A Horizon client shows it through the
+(16-bit on the network, as vanilla's), all sent when it opens, then each change. A Sunrise client shows it through the
 mod's own screen (`screen`); without one it closes again. Clients join a server only with the same mods' menu
-types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
+types, as with its blocks, and a client that isn't Sunrise's is never sent one: the block opens nothing for it. Its
 clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
 mod can decide what a slot takes in code with `menu_slot_rules` ([hook notes](https://github.com/arismoko/horizon/blob/main/crates/horizon-mod-vocab/src/hooks/menu_slot_rules.rs))
 and how far away the menu stays open with `menu_still_valid` ([hook notes](https://github.com/arismoko/horizon/blob/main/crates/horizon-mod-vocab/src/hooks/menu_still_valid.rs)).
@@ -757,7 +757,7 @@ For a mod crafting menu, a server `recipe_sources` listener can lend the chest
 beside its machine to recipe-book placement and transfer checks:
 
 ```rust,ignore
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl mod_api::Hooks for Machine {
     fn recipe_sources(
         &self,
@@ -811,16 +811,16 @@ namespaces = ["kaisyn", "towns_and_towers"]
 
 A listed namespace is the mod's as its id is: its `assets/` and `data/` files load, and the game reads its tags,
 recipes, names and loot. Blocks, items, creative tabs, mob effects, entity types and menu types may be declared in
-`data/<owned_namespace>/horizon/`. The same owned set governs code declarations.
+`data/<owned_namespace>/sunrise/`. The same owned set governs code declarations.
 For example, a package with ID `ported_farmersdelight` and
 `namespaces = ["farmersdelight"]` can declare `farmersdelight:cooking_pot`
 and its `farmersdelight:` block entity type without changing saved-world IDs.
 The namespace collision fence applies. `minecraft`, `c` and
-`horizon` cannot be listed. Two mods that are on may not own the same namespace (one's id or listed namespace being
+`sunrise` cannot be listed. Two mods that are on may not own the same namespace (one's id or listed namespace being
 the other's): the game keeps the first in load order and leaves the other's content out, with "mods A and B both use
 the namespace N; turn one of them off" in the log. Paths use vanilla's resource characters, at most 65,536 files, 16
 MiB each and 512 MiB in all. A mod whose content is refused is left out, with the reason in the log. The game reads
-this content into its block and item tables (`horizon_client::mod_content`, [modpacks.md](https://github.com/arismoko/horizon/blob/main/docs/modpacks.md)). A tag entry
+this content into its block and item tables (`sunrise_client::mod_content`, [modpacks.md](https://github.com/arismoko/horizon/blob/main/docs/modpacks.md)). A tag entry
 naming an id nobody registers (a block a port left out, another mod's item) is dropped, so the rest of the tag
 loads; vanilla would drop the whole tag.
 
@@ -860,19 +860,19 @@ hook reads the held stack's enchantments, or claims a `post_attack` effect of it
 ([enchantment effect kinds](items/enchantment-effect-kinds.md)).
 
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
-mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data
+mod's houses) with a set, pool or processor list file in its own namespace holding `sunrise:add_to`, a key vanilla data
 never has. Its entries are appended to each set, pool or list named, after every mod's own files, by
-`horizon:priority` (lower first, 1000 when it has none), then in mod and file order; the file is no set, pool or list
+`sunrise:priority` (lower first, 1000 when it has none), then in mod and file order; the file is no set, pool or list
 itself. A name nobody defines is skipped.
 
 ```json
-{ "horizon:add_to": "minecraft:villages",
+{ "sunrise:add_to": "minecraft:villages",
   "structures": [ { "structure": "mymod:village_beach", "weight": 10 } ] }
 ```
 
 A pool addition holds `"elements"` as a pool does, a processor list addition `"processors"`. This is what
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
-do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
+do on NeoForge and Fabric, and `sunrise-port-pack carry` writes the last two from those.
 
 A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, `placed_feature/`) generate in
 biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in `data/<ns>/neoforge/biome_modifier/`
@@ -895,16 +895,16 @@ data pack adds is not known to them, and carver tags are not read. NeoForge's do
 caves are not carvers.
 
 NeoForge calls a modifier once in each of five phases (`BEFORE_EVERYTHING`, `ADD`, `REMOVE`, `MODIFY`,
-`AFTER_EVERYTHING`, in that order; its public biome modifier documentation). Horizon applies every addition, then every
+`AFTER_EVERYTHING`, in that order; its public biome modifier documentation). Sunrise applies every addition, then every
 removal, then every `MODIFY` modifier, in mod order within each. NeoForge's own modifier types only add and remove;
-`MODIFY` is for the single values (climate, colours) that a mod's own modifier type changes, so Horizon's is its own
-type, `horizon:modify_biome`, which sets any of `temperature`, `downfall`, `has_precipitation`, `temperature_modifier`
+`MODIFY` is for the single values (climate, colours) that a mod's own modifier type changes, so Sunrise's is its own
+type, `sunrise:modify_biome`, which sets any of `temperature`, `downfall`, `has_precipitation`, `temperature_modifier`
 (`none` or `frozen`) and `effects` colours (`sky_color`, `fog_color`, `water_color`, `water_fog_color`,
 `foliage_color`, `dry_foliage_color`, `grass_color`), with vanilla's biome JSON names, on its `biomes`:
 
 ```json
 {
-  "type": "horizon:modify_biome",
+  "type": "sunrise:modify_biome",
   "biomes": "#minecraft:is_forest",
   "temperature": 0.3,
   "has_precipitation": true,
@@ -932,7 +932,7 @@ the keys it leaves out stay:
 
 ```json
 {
-  "type": "horizon:modify_biome",
+  "type": "sunrise:modify_biome",
   "biomes": "minecraft:plains",
   "attributes": {
     "minecraft:visual/ambient_particles": [{ "particle": { "type": "minecraft:ash" }, "probability": 0.25 }],
@@ -963,9 +963,9 @@ file and attribute. A client plays these from the biome data the server sends. I
 three ambient sound fields together make the one `ambient_sounds` value, and a value out of range refuses the mods at
 startup.
 
-**When they apply.** Modifiers are applied while the world's worldgen data is loaded, before any chunk is generated: the content build writes the modified biomes into the content root, and when a world opens, `horizon_client::vanillagen::biome_modifiers_over_packs` applies them again over the world's data packs (`shared_data_with` for the generator, `packed_biomes` for the game's biome table), so a pack that replaces a vanilla biome keeps the mods' changes and a pack's own biome a tag selects gets them. Modifiers a mod declares in code (`Registrar::declare_biome_modifier`) register before any world opens and are read at the same moment. The generator's data is loaded once per bundle and set of packs and shared by the world's dimensions, so a modifier never applies halfway through a world. The dedicated server is the same game run headless (`horizon-client --dedicated`, [server.md](https://github.com/arismoko/horizon/blob/main/docs/server.md)), so it takes this path too; `horizon-server` only supervises it.
+**When they apply.** Modifiers are applied while the world's worldgen data is loaded, before any chunk is generated: the content build writes the modified biomes into the content root, and when a world opens, `sunrise_client::vanillagen::biome_modifiers_over_packs` applies them again over the world's data packs (`shared_data_with` for the generator, `packed_biomes` for the game's biome table), so a pack that replaces a vanilla biome keeps the mods' changes and a pack's own biome a tag selects gets them. Modifiers a mod declares in code (`Registrar::declare_biome_modifier`) register before any world opens and are read at the same moment. The generator's data is loaded once per bundle and set of packs and shared by the world's dimensions, so a modifier never applies halfway through a world. The dedicated server is the same game run headless (`sunrise-client --dedicated`, [server.md](https://github.com/arismoko/horizon/blob/main/docs/server.md)), so it takes this path too; `sunrise-server` only supervises it.
 
-A biome holder set can also use Horizon's own `horizon:climate` type, alone or nested in those boolean sets; it is not
+A biome holder set can also use Sunrise's own `sunrise:climate` type, alone or nested in those boolean sets; it is not
 a NeoForge format. It filters each biome's base `temperature` and `downfall` (the names in
 [Fabric's public biome weather API](https://maven.fabricmc.net/docs/yarn-1.21-rc1+build.1/net/minecraft/world/biome/Biome.Weather.html)),
 not its positional temperature. Each range takes `min`, `max`, or both, inclusive; an omitted bound is unbounded. At
@@ -974,7 +974,7 @@ load. Climate sets apply only to `biomes`, not `features`.
 
 ```json
 { "type": "neoforge:and", "values": ["#minecraft:is_overworld",
-  { "type": "horizon:climate", "temperature": { "min": 0.8 }, "downfall": { "max": 0.5 } }] }
+  { "type": "sunrise:climate", "temperature": { "min": 0.8 }, "downfall": { "max": 0.5 } }] }
 ```
 
 ```json
@@ -1000,7 +1000,7 @@ declares a **biome region** instead: `Registrar::declare_biome_region(path, regi
 `points`, the same `BiomePoint`s as a mod dimension's). An area belongs to one region, and the region's own points
 choose the biome there. A malformed or repeated id, an id outside the mod's namespace, another dimension, a weight
 outside 1 to 1000, no points or an invalid point refuse the mods at startup, naming the mod. A new world records the
-declared regions in `data/horizon/biome_regions.dat`, and from then on that record decides: a changed or added region
+declared regions in `data/sunrise/biome_regions.dat`, and from then on that record decides: a changed or added region
 reaches an existing world only when its owner opts in, and a world whose region's mod is missing asks before it opens
 (a dedicated server reads `[biome_regions] missing = "refuse" | "vanilla"` in `server.toml`).
 
@@ -1029,7 +1029,7 @@ A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate
 until `count` are placed. Neither goes below a piece shallower than `min_depth` (the start is at depth 0).
 
 A structure (and any of its pool elements, in place of the structure's) may hold
-`horizon:enhanced_terrain_adaptation`: MoogsStructureLib's terrain kernel, which carves or buries terrain around the
+`sunrise:enhanced_terrain_adaptation`: MoogsStructureLib's terrain kernel, which carves or buries terrain around the
 pieces on top of vanilla's `terrain_adaptation`. `kernel_size` and `kernel_distance` shape the kernel; `top` and
 `bottom` (`carve`, `bury` or `none`) act above and below a piece's floor; `bottom_offset`, `padding` (`x`, `top`,
 `bottom`, `z`) and MoogsStructureLib's `band` (`bottom`, `top`, `piece_heights`) move the box it measures from. On a
@@ -1037,7 +1037,7 @@ structure, `rigid_junctions` adds rigid pieces' junctions as well and `inflate` 
 radius. `kernel_size` 0 is none.
 
 ```json
-{ "horizon:enhanced_terrain_adaptation": { "kernel_size": 24, "kernel_distance": 24,
+{ "sunrise:enhanced_terrain_adaptation": { "kernel_size": 24, "kernel_distance": 24,
     "top": "carve", "bottom": "none", "rigid_junctions": true, "inflate": true } }
 ```
 

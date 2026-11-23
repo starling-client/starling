@@ -3,7 +3,7 @@
 
   world_compare.py WORLD_A WORLD_B [--noise WORLD_C] [--dimension overworld]
 
-WORLD_A is the reference (a world vanilla 26.3 saved), WORLD_B the world Horizon saved from the same
+WORLD_A is the reference (a world vanilla 26.3 saved), WORLD_B the world Sunrise saved from the same
 seed; only the chunks both saved are compared. What a generator must match and what it need not:
 
 - The spawn, the biome of every cell and every structure start must be identical (a chunk that has
@@ -242,7 +242,7 @@ def percent(x):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('a', help='the reference world (vanilla)')
-    p.add_argument('b', help='the world to check (Horizon)')
+    p.add_argument('b', help='the world to check (Sunrise)')
     p.add_argument('--noise', help="a second world of A's game and seed: the floor between two runs of one game")
     p.add_argument('--dimension', default='overworld')
     args = p.parse_args()

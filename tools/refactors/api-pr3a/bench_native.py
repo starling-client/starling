@@ -43,11 +43,11 @@ def main():
     template = Path(__file__).with_name("bench_native.rs").read_text()
     provenance = {}
     if args.mode == "owned":
-        source = (root / "crates/horizon-client/src/game/modding/api_values.rs").read_text()
+        source = (root / "crates/sunrise-client/src/game/modding/api_values.rs").read_text()
         markers = ["pub(in crate::game) trait TryIntoApi", "pub(in crate::game) enum StackReadError", "impl TryIntoApi for EngineStack"]
         chunks = [block(source, marker) for marker in markers]
         provenance = {marker: hashlib.sha256(chunk.encode()).hexdigest() for marker, chunk in zip(markers, chunks)}
-        converter = "pub mod api_values { use horizon_items::items::ItemStack as EngineStack; use horizon_core::nbt::Tag; use mod_api::ItemStack as ApiStack;\n" + chunks[0] + "\n#[derive(Debug)]\n" + chunks[1] + "\n" + chunks[2] + "\n}\npub fn snapshot(stack: &EngineStack) -> mod_api::ItemStack { use api_values::TryIntoApi; stack.try_into_api().unwrap() }"
+        converter = "pub mod api_values { use sunrise_items::items::ItemStack as EngineStack; use sunrise_core::nbt::Tag; use mod_api::ItemStack as ApiStack;\n" + chunks[0] + "\n#[derive(Debug)]\n" + chunks[1] + "\n" + chunks[2] + "\n}\npub fn snapshot(stack: &EngineStack) -> mod_api::ItemStack { use api_values::TryIntoApi; stack.try_into_api().unwrap() }"
         template = template.replace("// COPIED_CONVERTER", converter)
         template = template.replace("// RESOLVE_ITEMS", 'mod_api::__private::resolve_items(["minecraft:stick", "minecraft:iron_sword"]).unwrap();')
         template = template.replace("// SNAPSHOT_REPORT", 'report(&format!("snapshot/{name}"), || { black_box(game::snapshot(black_box(stack))); });')
@@ -71,12 +71,12 @@ edition = "2024"
 alloc-count = []
 [dependencies]
 '''
-    for package in ["horizon-core", "horizon-items", "horizon-mod-api"]:
-        key = "mod_api" if package == "horizon-mod-api" else package
-        features = ', features = ["testing"]' if package == "horizon-mod-api" else ""
+    for package in ["sunrise-core", "sunrise-items", "sunrise-mod-api"]:
+        key = "mod_api" if package == "sunrise-mod-api" else package
+        features = ', features = ["testing"]' if package == "sunrise-mod-api" else ""
         manifest += f'{key} = {{ package = "{package}", path = {json.dumps(str(root / "crates" / package))}{features} }}\n'
     manifest += f'''[build-dependencies]
-horizon-mod-api-gen = {{ path = {json.dumps(str(root / "crates/horizon-mod-api-gen"))} }}
+sunrise-mod-api-gen = {{ path = {json.dumps(str(root / "crates/sunrise-mod-api-gen"))} }}
 [profile.release]
 opt-level = 3
 lto = false
@@ -84,13 +84,13 @@ codegen-units = 16
 [profile.release.package."*"]
 opt-level = 1
 '''
-    for package in ["horizon-core", "horizon-items", "horizon-mod-api", "horizon-mod-runtime"]:
+    for package in ["sunrise-core", "sunrise-items", "sunrise-mod-api", "sunrise-mod-runtime"]:
         manifest += f'[profile.release.package."{package}"]\nopt-level = 3\n'
     (output / "Cargo.toml").write_text(manifest)
     (output / "build.rs").write_text('''fn main() {
     let root = std::path::PathBuf::from(std::env::var("BENCH_REPO").unwrap());
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    horizon_mod_api_gen::generate(&root, &out, horizon_mod_api_gen::Target::Client).unwrap();
+    sunrise_mod_api_gen::generate(&root, &out, sunrise_mod_api_gen::Target::Client).unwrap();
     let source = std::fs::read_to_string(out.join("mod_api_fire_generated.rs")).unwrap();
     let fire = source.lines().find(|line| line.contains("fn fire_use_item ") || line.contains("fn fire_use_item(")).expect("generated use_item shim");
     std::fs::write(out.join("bench_fire.rs"), fire).unwrap();

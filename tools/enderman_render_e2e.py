@@ -2,7 +2,7 @@
 """Capture real carried grass/cross models from a vanilla 26.3 server.
 
 Uses fresh scratch homes and a scratch flat world. The vanilla server supplies
-carriedBlockState metadata (including properties); Horizon renders the frames.
+carriedBlockState metadata (including properties); Sunrise renders the frames.
 Screenshots are evidence for visual review, not an automatic framebuffer diff.
 """
 import argparse
@@ -46,7 +46,7 @@ def main():
         log = (out / 'client.log').open('w')
 
         def ctl(*words):
-            reply = subprocess.run([str(args.bin_dir / 'horizon-ctl'), '--socket', str(socket),
+            reply = subprocess.run([str(args.bin_dir / 'sunrise-ctl'), '--socket', str(socket),
                                     '--timeout', '30', *map(str, words)], env=env, cwd=work,
                                    check=True, capture_output=True, text=True, timeout=40)
             value = json.loads(reply.stdout)
@@ -56,7 +56,7 @@ def main():
 
         try:
             server.wait_for(r'Done \(', timeout=60)
-            game = subprocess.Popen([str(args.bin_dir / 'horizon-client'), '--resources', str(lab.RESOURCES),
+            game = subprocess.Popen([str(args.bin_dir / 'sunrise-client'), '--resources', str(lab.RESOURCES),
                                      '--server', f'127.0.0.1:{port}', '--name', 'RenderTest', '--offscreen',
                                      '--width', '1280', '--height', '720', '--render-distance', '4',
                                      '--control-socket', str(socket)], cwd=work, env=env, stdout=log, stderr=log)

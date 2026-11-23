@@ -35,9 +35,9 @@ def main():
         lock['minecraft']['java_major'])
     vanilla = subprocess.check_output([
         'java', '-cp', str(classes) + os.pathsep + dependencies,
-        'dev.horizonlab.parity.VanillaEntityLookupOrderOracle'], text=True)
+        'dev.sunriselab.parity.VanillaEntityLookupOrderOracle'], text=True)
     rust = subprocess.check_output([
-        'cargo', 'test', '-p', 'horizon-client-lib', '--lib',
+        'cargo', 'test', '-p', 'sunrise-client-lib', '--lib',
         'lookup_iteration_preserves_insertion_order_not_id_or_family_order',
         '--', '--nocapture'], cwd=lab.ROOT, text=True)
     expected, actual = snapshots(vanilla), snapshots(rust)

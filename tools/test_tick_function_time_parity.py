@@ -3,7 +3,7 @@
 
 `MinecraftServer.tickChildren` runs the `#minecraft:tick` functions (`ServerFunctionManager.tick`) before
 the world clocks and the levels tick. The Overworld's `ServerLevel.tickTime` then raises the game time
-and runs the `/schedule`d functions due at the new time. Real dedicated servers, vanilla and Horizon,
+and runs the `/schedule`d functions due at the new time. Real dedicated servers, vanilla and Sunrise,
 take one `/tick step 1` from a frozen world with:
 
 - a function scheduled from the console for the next tick (`sched`),
@@ -12,7 +12,7 @@ take one `/tick step 1` from a frozen world with:
 Each records its place in the run order and what `time query gametime` and `time query time` return,
 relative to the frozen values.
 
-  test_tick_function_time_parity.py [--binary HORIZON] [--out DIR]
+  test_tick_function_time_parity.py [--binary SUNRISE] [--out DIR]
 """
 import argparse
 import json
@@ -128,31 +128,31 @@ def run_side(command, out, label, jar):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon server (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise server (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'tick-function-time-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
     results = {label: run_side(command, out, label, jars['server']) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     assert results['vanilla'] == EXPECTED, f'vanilla changed: {results["vanilla"]}'
     failures = [{'function': name, 'field': field, 'vanilla': EXPECTED[name][field],
-                 'horizon': results['horizon'][name][field]}
+                 'sunrise': results['sunrise'][name][field]}
                 for name in FUNCTIONS for field in FIELDS
-                if results['horizon'][name][field] != EXPECTED[name][field]]
+                if results['sunrise'][name][field] != EXPECTED[name][field]]
     print(f'{len(FUNCTIONS) * len(FIELDS) - len(failures)}/{len(FUNCTIONS) * len(FIELDS)} observations match',
           flush=True)
     lab.write_json(out / 'report.json', {'schema': 1, 'minecraft': lock['minecraft']['version'],

@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from layering.rust_text import blank, item_end
 
-VOCAB = ROOT / "crates/horizon-mod-vocab/src"
-API = ROOT / "crates/horizon-mod-api/src/parts"
+VOCAB = ROOT / "crates/sunrise-mod-vocab/src"
+API = ROOT / "crates/sunrise-mod-api/src/parts"
 
 
 def modules(source, target):

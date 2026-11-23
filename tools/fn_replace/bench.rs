@@ -1,4 +1,4 @@
-//! fn-replace bench: one game point, `horizon_client::game::autosave_interval(rate: f32) -> i64`,
+//! fn-replace bench: one game point, `sunrise_client::game::autosave_interval(rate: f32) -> i64`,
 //! called from outside the prebuilt game, built with rustc against the SDK folder alone.
 //!
 //! usage: bench <mode> [millions of calls]
@@ -7,9 +7,9 @@
 //!   patched  the patched copy installed through the typed installer
 //!   listened an API listener at the function's return, through its injection point
 //!   both     the patched copy, with the API listener around it
-extern crate horizon_mod_host;
+extern crate sunrise_mod_host;
 extern crate mod_points;
-use horizon_client::game as g;
+use sunrise_client::game as g;
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -47,7 +47,7 @@ fn main() {
         );
         mod_points::register(&double).unwrap();
         mod_points::__private::seal();
-        horizon_client::__fnr_arm();
+        sunrise_client::__fnr_arm();
     }
     let f: fn(f32) -> i64 = if mode == "plain" {
         plain

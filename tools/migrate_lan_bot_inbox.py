@@ -7,7 +7,7 @@ uses push_back in this file; reject unexpected tuple credit or expression shapes
 from pathlib import Path
 import re
 
-path = Path("crates/horizon-client/tests/lan_bot.rs")
+path = Path("crates/sunrise-client/tests/lan_bot.rs")
 source = path.read_text()
 assert "guest::InboxItem," not in source, "migration already applied"
 source = source.replace("        entity::EntityState,\n", "        entity::EntityState,\n        guest::InboxItem,\n", 1)

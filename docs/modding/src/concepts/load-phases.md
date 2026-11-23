@@ -104,7 +104,7 @@ and dependencies express intermod ordering. Load complete is the edge after init
 `server_about_to_start`, not a hook.
 
 FML's file and path APIs (`ModList` file reads, config full paths, the game directory, update URLs) are
-replaced on purpose; [FML loader APIs and their Horizon routes](../reference/fml-loader-apis.md) lists each one.
+replaced on purpose; [FML loader APIs and their Sunrise routes](../reference/fml-loader-apis.md) lists each one.
 
 ## Settings snapshot limits
 

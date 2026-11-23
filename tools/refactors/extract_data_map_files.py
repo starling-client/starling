@@ -2,7 +2,7 @@
 """Extract the shared data-map file merger without moving host-answer bodies."""
 from pathlib import Path
 
-root = Path('crates/horizon-client/src/game/modding')
+root = Path('crates/sunrise-client/src/game/modding')
 p = root / 'native_data_maps.rs'
 s = p.read_text()
 a = s.index('/// `minecraft:` for an id written without a namespace.')

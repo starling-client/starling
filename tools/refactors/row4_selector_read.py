@@ -3,7 +3,7 @@
 from pathlib import Path
 import subprocess
 root = Path(__file__).resolve().parents[2]
-relative = "crates/horizon-client/src/game/modding/native_entity_refs.rs"
+relative = "crates/sunrise-client/src/game/modding/native_entity_refs.rs"
 path = root / relative
 base = subprocess.check_output(["git", "show", "686c686e75:" + relative], cwd=root, text=True)
 start = base.index("    pub(super) fn level_all_entities(")

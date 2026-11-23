@@ -50,7 +50,7 @@ impl Heads {
             );
             let (account, resources, tx) = (account.clone(), resources.clone(), tx.clone());
             std::thread::spawn(move || {
-                let (face, failed) = horizon_launcher::heads::profile_face(
+                let (face, failed) = sunrise_launcher::heads::profile_face(
                     &account,
                     &backend::data_dir().join("profile-heads"),
                     &resources,
@@ -137,7 +137,7 @@ mod tests {
         assert!(heads.0["player"].retry_at.is_none());
         let theme = Theme::for_appearance(
             backend::Appearance::Dark,
-            horizon_launcher::themes::Accent::VIOLET,
+            sunrise_launcher::themes::Accent::VIOLET,
             gpui::WindowAppearance::Dark,
         );
         let _ = heads.draw(Some("player"), 32., 2., &theme);

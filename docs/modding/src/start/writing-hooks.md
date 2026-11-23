@@ -5,9 +5,9 @@ This page gives the rules that shape follows.
 
 ## The crate
 
-- `horizon-mod.toml` is the only source of the mod's id and version. Cargo's package name and version are not
+- `sunrise-mod.toml` is the only source of the mod's id and version. Cargo's package name and version are not
   the mod's identity.
-- `Cargo.toml` depends on `horizon-mod-api` (lib name `mod_api`), never on the game's own crates. Other
+- `Cargo.toml` depends on `sunrise-mod-api` (lib name `mod_api`), never on the game's own crates. Other
   dependencies follow [The mod's crate](../how-to/native-mods/01-the-mods-crate.md).
 - `src/lib.rs` holds the one marked `impl Hooks`, at the crate root.
 
@@ -19,14 +19,14 @@ use mod_api::{self, Hooks};
 #[derive(Default)]
 struct Mod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     // The hooks this mod needs.
 }
 ```
 
 - The mod type implements `Default`; the game makes one value of it per mod.
-- `#[mod_api::horizon_mod]` generates the mod's `hooks()` factory and subscribes the mod to exactly the methods
+- `#[mod_api::sunrise_mod]` generates the mod's `hooks()` factory and subscribes the mod to exactly the methods
   written in the block. Do not write a factory yourself.
 - The marked impl must be at the crate root. If the build reports "cannot find function `hooks`", the marked
   impl is in a submodule.

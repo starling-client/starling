@@ -1,5 +1,5 @@
-"""The hosting panel setups for horizon-server (docs/hosting.md, "Hosting panels"), the Pterodactyl egg and the AMP
-template, name only things the server has: its HORIZON_* variables, its start script, its ready line and the `port`
+"""The hosting panel setups for sunrise-server (docs/hosting.md, "Hosting panels"), the Pterodactyl egg and the AMP
+template, name only things the server has: its SUNRISE_* variables, its start script, its ready line and the `port`
 key of server.toml."""
 import json
 import re
@@ -14,21 +14,21 @@ SERVER = ROOT / "packaging/server"
 EGG = SERVER / "pterodactyl-egg.json"
 START = SERVER / "panel-start.sh"
 AMP = SERVER / "amp"
-INIT_RS = (ROOT / "crates/horizon-server/src/init.rs").read_text()
-CONFIG_RS = (ROOT / "crates/horizon-server-launch/src/config.rs").read_text()
-DEDICATED_RS = (next(ROOT.glob('crates/horizon-client/src/game/*/dedicated/mod.rs'))).read_text()
-LAN_RS = (ROOT / "crates/horizon-client/src/game/network/lan/mod.rs").read_text()
+INIT_RS = (ROOT / "crates/sunrise-server/src/init.rs").read_text()
+CONFIG_RS = (ROOT / "crates/sunrise-server-launch/src/config.rs").read_text()
+DEDICATED_RS = (next(ROOT.glob('crates/sunrise-client/src/game/*/dedicated/mod.rs'))).read_text()
+LAN_RS = (ROOT / "crates/sunrise-client/src/game/network/lan/mod.rs").read_text()
 
 # Read at install only, so init.rs does not know them.
-INSTALL_ONLY = {"HORIZON_VERSION"}
+INSTALL_ONLY = {"SUNRISE_VERSION"}
 # The panel allocates the port: the start script passes SERVER_PORT, so no variable for it.
-PANEL_OWNED = {"HORIZON_PORT"}
+PANEL_OWNED = {"SUNRISE_PORT"}
 
 
 def init_variables():
-    """The HORIZON_* names `Answers::from_env` reads."""
+    """The SUNRISE_* names `Answers::from_env` reads."""
     body = INIT_RS.split("pub fn from_env", 1)[1].split("\n    }\n", 1)[0]
-    return set(re.findall(r'(?:var|flag)\("(HORIZON_[A-Z]+)"\)', body))
+    return set(re.findall(r'(?:var|flag)\("(SUNRISE_[A-Z]+)"\)', body))
 
 
 class EggTests(unittest.TestCase):
@@ -74,14 +74,14 @@ class EggTests(unittest.TestCase):
         self.assertEqual({v["env_variable"] for v in self.egg["variables"]} - INSTALL_ONLY, init_variables() - PANEL_OWNED)
 
     def test_the_eula_is_never_assumed(self):
-        eula = next(v for v in self.egg["variables"] if v["env_variable"] == "HORIZON_EULA")
+        eula = next(v for v in self.egg["variables"] if v["env_variable"] == "SUNRISE_EULA")
         self.assertEqual(eula["default_value"], "false")
 
     def test_the_start_script_is_the_one_in_the_repository(self):
         script = self.egg["scripts"]["installation"]["script"]
         embedded = script.split("<<'START'\n", 1)[1].split("\nSTART\n", 1)[0] + "\n"
         self.assertEqual(embedded, START.read_text())
-        self.assertIn("horizon-start.sh", self.egg["startup"])
+        self.assertIn("sunrise-start.sh", self.egg["startup"])
 
     def test_the_ready_line_is_the_one_the_game_logs(self):
         done = json.loads(self.egg["config"]["startup"])["done"]
@@ -118,15 +118,15 @@ def read_kvp(path):
 class AmpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.kvp = read_kvp(AMP / "horizon.kvp")
-        cls.config = json.loads((AMP / "horizonconfig.json").read_text())
-        cls.updates = json.loads((AMP / "horizonupdates.json").read_text())
-        cls.ports = json.loads((AMP / "horizonports.json").read_text())
+        cls.kvp = read_kvp(AMP / "sunrise.kvp")
+        cls.config = json.loads((AMP / "sunriseconfig.json").read_text())
+        cls.updates = json.loads((AMP / "sunriseupdates.json").read_text())
+        cls.ports = json.loads((AMP / "sunriseports.json").read_text())
         cls.egg = json.loads(EGG.read_text())
 
     def test_every_file_the_template_names_is_there(self):
         kvp = self.kvp
-        self.assertEqual(kvp["Meta.ConfigRoot"], "horizon.kvp")
+        self.assertEqual(kvp["Meta.ConfigRoot"], "sunrise.kvp")
         for key in ("Meta.ConfigManifest", "Meta.MetaConfigManifest"):
             self.assertTrue((AMP / kvp[key]).is_file(), kvp[key])
         for key in ("App.Ports", "App.UpdateSources"):
@@ -139,13 +139,13 @@ class AmpTests(unittest.TestCase):
         # Same names, defaults and kinds, so both panels set a server up the same way.
         settings = {s["FieldName"]: s for s in self.config}
         env = json.loads(self.kvp["App.EnvironmentVariables"])
-        passed = {name: re.fullmatch(r"\{\{(\w+)\}\}", value).group(1) for name, value in env.items() if name.startswith("HORIZON_")}
+        passed = {name: re.fullmatch(r"\{\{(\w+)\}\}", value).group(1) for name, value in env.items() if name.startswith("SUNRISE_")}
         for name, field in passed.items():
             self.assertIn(field, settings, name)
-        # HORIZON_VERSION is read at install only: the install stage passes it.
+        # SUNRISE_VERSION is read at install only: the install stage passes it.
         install = [f for f in settings if "{{%s}}" % f in json.dumps(self.updates)]
         self.assertEqual(len(install), 1)
-        fields = dict(passed, HORIZON_VERSION=install[0])
+        fields = dict(passed, SUNRISE_VERSION=install[0])
         self.assertEqual(len(self.config), len(fields))
         for var in self.egg["variables"]:
             name = var["env_variable"]
@@ -166,10 +166,10 @@ class AmpTests(unittest.TestCase):
         script = created["UpdateSourceArgs"].rsplit("}", 1)[1]
         run = next(u for u in self.updates if u["UpdateSource"] == "Executable")
         self.assertIn(script, run["UpdateSourceArgs"])
-        self.assertIn("HORIZON_INSTALL_DIR='{{$FullBaseDir}}'", run["UpdateSourceArgs"])
-        # The install script writes horizon-start.sh (panel-start.sh) beside the program; AMP runs it.
-        self.assertIn('cat > "$DIR/horizon-start.sh"', created["UpdateSourceData"])
-        self.assertTrue(self.kvp["App.CommandLineArgs"].endswith("horizon-start.sh"))
+        self.assertIn("SUNRISE_INSTALL_DIR='{{$FullBaseDir}}'", run["UpdateSourceArgs"])
+        # The install script writes sunrise-start.sh (panel-start.sh) beside the program; AMP runs it.
+        self.assertIn('cat > "$DIR/sunrise-start.sh"', created["UpdateSourceData"])
+        self.assertTrue(self.kvp["App.CommandLineArgs"].endswith("sunrise-start.sh"))
         self.assertEqual(self.kvp["App.ExitString"], "stop")
 
     def test_the_console_patterns_match_what_the_server_logs(self):

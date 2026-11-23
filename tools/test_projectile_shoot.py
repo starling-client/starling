@@ -39,11 +39,11 @@ def main():
             '{Owner:$owner,Motion:[0.0d,-0.6d,0.0d]' + flag + '}')
         lines += ['at 3 ' + action, 'end']
         scenarios += lines
-    inputs, output = out / 'scenarios.txt', out / 'horizon.txt'
+    inputs, output = out / 'scenarios.txt', out / 'sunrise.txt'
     inputs.write_text('\n'.join(scenarios) + '\n')
     with tempfile.TemporaryDirectory(prefix='hz-shoot-home-') as home, (out / 'game.log').open('w') as log:
-        env = dict(os.environ, HOME=home, HORIZON_SCULK_FIXTURE=f'{inputs},{output}')
-        result = integration_env.run_game([args.bin.resolve(), '--resources', lab.LOCAL / 'horizon-client/26.3'],
+        env = dict(os.environ, HOME=home, SUNRISE_SCULK_FIXTURE=f'{inputs},{output}')
+        result = integration_env.run_game([args.bin.resolve(), '--resources', lab.LOCAL / 'sunrise-client/26.3'],
                                           env=env, stdout=log, stderr=log, timeout=180)
         if result.returncode:
             raise RuntimeError(f'game failed ({result.returncode}); see {out / "game.log"}')

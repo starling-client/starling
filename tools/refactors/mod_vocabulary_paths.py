@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-paths = list((root / 'crates/horizon-mod-api-gen/src').rglob('*.rs'))
+paths = list((root / 'crates/sunrise-mod-api-gen/src').rglob('*.rs'))
 paths += list((root / 'tools').glob('*.py'))
 # These fixtures model the old crate or historical refactors, not current source locations.
 fixture_tests = {'test_mod_api_wire.py', 'test_block_state_swap.py', 'test_scan_engine_mod_edges.py'}
@@ -14,8 +14,8 @@ paths += [root / name for name in (
 )]
 for path in paths:
     source = path.read_text()
-    moved = source.replace('crates/horizon-mod-api/src', 'crates/horizon-mod-vocab/src')
+    moved = source.replace('crates/sunrise-mod-api/src', 'crates/sunrise-mod-vocab/src')
     if path.name == 'lib.rs':
-        moved = moved.replace('("mod_api::", "horizon-mod-api")', '("mod_api::", "horizon-mod-vocab")')
+        moved = moved.replace('("mod_api::", "sunrise-mod-api")', '("mod_api::", "sunrise-mod-vocab")')
     if source != moved:
         path.write_text(moved)

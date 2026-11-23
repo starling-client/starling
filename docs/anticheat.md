@@ -1,6 +1,6 @@
 # The dedicated server's anticheat
 
-Horizon's dedicated server checks what players send beyond what vanilla checks. It is **on** by default,
+Sunrise's dedicated server checks what players send beyond what vanilla checks. It is **on** by default,
 every check with it, but only the checks a vanilla client can't trip act on their own: `combat` drops the
 attacks of a kill aura, kicks it, and bans it when it comes back and does it again; `ground` drops the
 false ground claims of a no-fall or a walk on water (never sending the player back), kicks one that keeps at
@@ -32,14 +32,14 @@ ban_after = 0              # the kick (counting this check's earlier ones) that 
 | `ground` | yes: 10, 15, 30, and `ban_after = 2`. On the official server's first two hours (67 players, log only), every player not flying or walking on water peaked at level 7; those who were, at 113 to 3749 | |
 | `prediction` | no, logs only | 5, 15, 60 |
 
-It lives in the server for now, in its own crate (`horizon-anticheat`) plus one file of the hub
+It lives in the server for now, in its own crate (`sunrise-anticheat`) plus one file of the hub
 (`lan/anticheat.rs`), because the native mod API ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)) has no hooks yet for a
 player's moves (the position, the on-ground claim, cancelling a move) or for packet timing. It moves into a
 native mod once those hooks exist.
 
-horizon-server checks the section before every start: with a wrong one, `horizon-server start` and `run` don't
+sunrise-server checks the section before every start: with a wrong one, `sunrise-server start` and `run` don't
 start and print the error, which names the key. The game reads it from `server.toml` when it starts
-(`horizon-client --dedicated` run by hand reads the same file from its folder, if there is one); a wrong section
+(`sunrise-client --dedicated` run by hand reads the same file from its folder, if there is one); a wrong section
 there turns the anticheat off, with an error in the log.
 
 ## How a check acts
@@ -53,7 +53,7 @@ are told (at most once a second per player and check); from `kick` on, the playe
 
 A check's kicks are counted for each player, across sessions and restarts (`strikes`,
 `anticheat-strikes.json`). The kick that reaches the check's `ban_after` bans instead: the player goes
-into `banned-players.json` as `/ban` puts them, with "Horizon anticheat" as the source and "Horizon
+into `banned-players.json` as `/ban` puts them, with "Sunrise anticheat" as the source and "Sunrise
 anticheat: <check>" as the reason, and is sent away with vanilla's ban message. A ban starts the count
 again, so a player an operator pardons (`/pardon`) is kicked once more before another ban. By default
 `combat` and `ground` ban at the second kick (`ban_after = 2`), `timer` and `prediction` never do; `ban_after = 0`
@@ -93,10 +93,10 @@ ones in this version.
 
 ## Writing a check
 
-- The rules are in `crates/horizon-anticheat` (no game state: unit-test them there); the hub runs them
-  where it handles the packet (`crates/horizon-client/src/lan/`) and calls `Hub::flag`, which carries out
+- The rules are in `crates/sunrise-anticheat` (no game state: unit-test them there); the hub runs them
+  where it handles the packet (`crates/sunrise-client/src/lan/`) and calls `Hub::flag`, which carries out
   setback, alert and kick (`lan/anticheat.rs`).
-- A check is one entry in the `checks!` table of `horizon-anticheat/src/lib.rs`: its name in
+- A check is one entry in the `checks!` table of `sunrise-anticheat/src/lib.rs`: its name in
   `server.toml`, its default thresholds and its own settings.
 - Predict what vanilla allows (effects, ice, elytra, riptide, vehicles, knockback, levitation, slime,
   bubble columns, latency). A false positive is worse than a missed cheat: when unsure, don't flag.
@@ -107,13 +107,13 @@ ones in this version.
 - Original code only (CONTRIBUTING.md): written from vanilla 26.3 and public descriptions of what cheats
   do. Never read, copy or paraphrase another anticheat's source (Grim, NoCheatPlus, Vulcan, Matrix,
   Spartan, Paper's anti-xray...), its decompiled jars or docs quoting its code.
-- Test it both ways in `tools/anticheat_e2e.py`: a horizon-bots cheat is caught, legit bots are never
+- Test it both ways in `tools/anticheat_e2e.py`: a sunrise-bots cheat is caught, legit bots are never
   flagged, and nothing happens with the anticheat off.
 
 ```sh
-cargo build --profile fast -p horizon-game --bin horizon-client
-cargo build --profile fast -p horizon-bots
+cargo build --profile fast -p sunrise-game --bin sunrise-client
+cargo build --profile fast -p sunrise-bots
 python3 tools/anticheat_e2e.py --bin-dir target/fast
-python3 tools/server_bench.py --servers horizon --bots 60 --behaviour walk --anticheat   # its cost
-python3 tools/server_bench.py --servers horizon --bots 60 --behaviour walk --ground --anticheat   # survival, on the ground
+python3 tools/server_bench.py --servers sunrise --bots 60 --behaviour walk --anticheat   # its cost
+python3 tools/server_bench.py --servers sunrise --bots 60 --behaviour walk --ground --anticheat   # survival, on the ground
 ```

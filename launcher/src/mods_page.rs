@@ -1,20 +1,20 @@
 //! The Mods page: its tabs are the kinds (mods, modpacks, resource packs, shader packs, data
-//! packs). Search Horizon's own registry for what was made for Horizon, or Modrinth (CurseForge:
+//! packs). Search Sunrise's own registry for what was made for Sunrise, or Modrinth (CurseForge:
 //! coming soon) for Java mods, modpacks, resource packs and data packs (a Java instance's files
 //! always come from Modrinth, for its version), see where each comes
-//! from and how well it runs (a Java mod's jar is checked first; a Horizon mod says whether it is
-//! signed and what it may do), install it with its checksum checked, turn Horizon mods on and
-//! off, and update or remove what was installed (`horizon_launcher::browser`). Imported modpacks
+//! from and how well it runs (a Java mod's jar is checked first; a Sunrise mod says whether it is
+//! signed and what it may do), install it with its checksum checked, turn Sunrise mods on and
+//! off, and update or remove what was installed (`sunrise_launcher::browser`). Imported modpacks
 //! are listed on its Modpacks tab.
 use super::line_edit::{self, Key, LineEdit};
 use super::*;
-use horizon_launcher::browser::{
-    self, horizon, installed, java, java_instance, Kind as PackKind, Project, Query, SourceId,
+use sunrise_launcher::browser::{
+    self, sunrise, installed, java, java_instance, Kind as PackKind, Project, Query, SourceId,
     Support,
 };
-use horizon_launcher::modpacks;
-use horizon_launcher::native_status;
-use horizon_port_pack::check::Check;
+use sunrise_launcher::modpacks;
+use sunrise_launcher::native_status;
+use sunrise_port_pack::check::Check;
 use java_instance::Target;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ const CHECKING: usize = 2;
 /// The sources to pick from on the tabs that have both ([`switches`]); CurseForge is shown
 /// beside them as coming soon.
 pub(super) const SOURCES: [(SourceId, &str); 2] = [
-    (SourceId::Horizon, "Horizon"),
+    (SourceId::Sunrise, "Sunrise"),
     (SourceId::Modrinth, "Modrinth"),
 ];
 const PAGE: usize = 20;
@@ -48,11 +48,11 @@ pub(super) enum Event {
     Updates(HashMap<(SourceId, String), String>),
     /// A Java mod's check: its jar read, or why it couldn't be.
     Checked((SourceId, String), Result<Box<Check>, String>),
-    /// What a Horizon registry project says before install: signed or not, what it may do.
+    /// What a Sunrise registry project says before install: signed or not, what it may do.
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
     TakenDown(Vec<String>),
-    /// What the automatic updates did (`horizon::auto`).
+    /// What the automatic updates did (`sunrise::auto`).
     AutoUpdated(Vec<String>),
     /// A project page's part, an image or a filter's values (`mods_project`).
     Loaded(super::mods_project::Loaded),
@@ -86,9 +86,9 @@ pub(super) struct Mods {
     error: Option<String>,
     pub(super) installed: Vec<installed::Entry>,
     /// The registry native mods' versions the player picked on their Versions tab, by id
-    /// (`horizon::chosen`), read with `installed`.
+    /// (`sunrise::chosen`), read with `installed`.
     pub(super) chosen: std::collections::BTreeMap<String, String>,
-    /// The Horizon the selected instance played when its updates were last looked for.
+    /// The Sunrise the selected instance played when its updates were last looked for.
     pub(super) checked_for: Option<String>,
     loaded: bool,
     /// Whether the page searched for the instance as it is (its version and loader).
@@ -129,7 +129,7 @@ pub(super) struct Mods {
     native_files: std::cell::RefCell<Option<(String, Vec<native_status::Installed>)>>,
     /// Java mods' checks, by source and project.
     pub(super) checks: HashMap<(SourceId, String), Checking>,
-    /// Horizon registry projects' trust and capabilities, by id ([`horizon::trust_and_capabilities`]).
+    /// Sunrise registry projects' trust and capabilities, by id ([`sunrise::trust_and_capabilities`]).
     pub(super) about: HashMap<String, Vec<String>>,
     /// The project page, filters and images.
     pub(super) browse: super::mods_project::Browse,
@@ -149,7 +149,7 @@ impl Mods {
     pub(super) fn reload_installed(&mut self) {
         let home = self.home();
         self.installed = installed::Installed::load(&home).entries;
-        self.chosen = horizon::chosen(&home);
+        self.chosen = sunrise::chosen(&home);
     }
 
     pub(super) fn home(&self) -> PathBuf {
@@ -159,7 +159,7 @@ impl Mods {
     /// Reads the instance's worlds again; the world picked for data packs stays when it is
     /// still there, else the last played.
     fn read_worlds(&mut self) {
-        self.worlds = horizon_launcher::worlds::list(&self.home())
+        self.worlds = sunrise_launcher::worlds::list(&self.home())
             .into_iter()
             .map(|w| (w.path, w.name))
             .collect();
@@ -179,7 +179,7 @@ impl Mods {
 
     pub(super) fn new(cx: &mut App) -> Self {
         let (tx, rx) = channel();
-        let page = std::env::var("HORIZON_LAUNCHER_PAGE");
+        let page = std::env::var("SUNRISE_LAUNCHER_PAGE");
         let kind = match page.as_deref() {
             Ok("modpacks") => PackKind::Modpack,
             Ok("resourcepacks") => PackKind::ResourcePack,
@@ -252,7 +252,7 @@ impl Mods {
     pub(super) fn checking(&self, p: &Project) -> bool {
         self.java_for(p.kind).is_none()
             && p.kind == PackKind::Mod
-            && p.source != SourceId::Horizon
+            && p.source != SourceId::Sunrise
             && matches!(
                 self.checks.get(&(p.source, p.id.clone())),
                 None | Some(Checking::Running)
@@ -267,7 +267,7 @@ impl Mods {
             return Support::Works;
         }
         let metadata = p.support();
-        if p.kind != PackKind::Mod || p.source == SourceId::Horizon || !metadata.installable() {
+        if p.kind != PackKind::Mod || p.source == SourceId::Sunrise || !metadata.installable() {
             return metadata;
         }
         match self.checks.get(&(p.source, p.id.clone())) {
@@ -295,7 +295,7 @@ fn count(n: u64) -> String {
 pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
     let github = github_stars(id, t);
     let row = div().flex().items_center().gap(px(2.));
-    let row = match horizon::rating(id) {
+    let row = match sunrise::rating(id) {
         Some(Some(r)) => {
             let lit = r.average.round() as usize;
             row.children((0..5).map(|i| {
@@ -320,15 +320,15 @@ pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
     };
     match github {
         Some(g) => Some(row.gap(px(8.)).child(g)),
-        None if horizon::rating(id).is_some() => Some(row),
+        None if sunrise::rating(id).is_some() => Some(row),
         None => None,
     }
 }
 
 /// A registry project's GitHub stars: GitHub's mark, a star and how many, as its repository
-/// shows them; None when it has none (`horizon::github_stars`).
+/// shows them; None when it has none (`sunrise::github_stars`).
 pub(super) fn github_stars(id: &str, t: &theme::Theme) -> Option<Div> {
-    let n = horizon::github_stars(id)?;
+    let n = sunrise::github_stars(id)?;
     Some(
         div()
             .flex()
@@ -459,7 +459,7 @@ impl Launcher {
                 }
             }
         }
-        // `HORIZON_LAUNCHER_PROJECT=<slug>` (with `HORIZON_LAUNCHER_PAGE=mods`): opens that
+        // `SUNRISE_LAUNCHER_PROJECT=<slug>` (with `SUNRISE_LAUNCHER_PAGE=mods`): opens that
         // project's page once a search finds it, for screenshots. Once per run, kept in a flag
         // rather than by removing the variable: `remove_var` races `getenv` on the download, check
         // and keyring threads running by now (unsound, and `unsafe` from edition 2024).
@@ -468,7 +468,7 @@ impl Launcher {
         if self.mods.browse.open.is_none()
             && !PROJECT_OPENED.load(std::sync::atomic::Ordering::Relaxed)
         {
-            if let Ok(want) = std::env::var("HORIZON_LAUNCHER_PROJECT") {
+            if let Ok(want) = std::env::var("SUNRISE_LAUNCHER_PROJECT") {
                 if let Some(p) = self
                     .mods
                     .results
@@ -524,7 +524,7 @@ impl Launcher {
                 ..Query::new(m.text.text(), m.kind)
             },
         };
-        // A Java instance's files are Modrinth's; Horizon's registry is for Horizon.
+        // A Java instance's files are Modrinth's; Sunrise's registry is for Sunrise.
         let source = match m.java_for(m.kind) {
             Some(_) => SourceId::Modrinth,
             None => m.source,
@@ -535,12 +535,12 @@ impl Launcher {
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => {
-                    let instance = horizon_launcher::instances::selected();
+                (Ok(found), SourceId::Sunrise) => {
+                    let instance = sunrise_launcher::instances::selected();
                     found
                         .iter()
                         .map(|p| {
-                            let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
+                            let lines = sunrise::trust_and_capabilities(&p.id, Some(&instance));
                             (p.id.clone(), lines)
                         })
                         .collect()
@@ -555,30 +555,30 @@ impl Launcher {
     }
 
     /// Reads the registry's index again when something installed came from it, and turns off
-    /// what it took down since (`horizon::turn_off_revoked`).
+    /// what it took down since (`sunrise::turn_off_revoked`).
     fn mods_taken_down(&mut self) {
         if !self
             .mods
             .installed
             .iter()
-            .any(|e| e.source == SourceId::Horizon)
+            .any(|e| e.source == SourceId::Sunrise)
         {
             return;
         }
         let tx = self.mods.tx.clone();
         let home = self.mods.home();
         std::thread::spawn(move || {
-            let Ok(index) = horizon::index() else {
+            let Ok(index) = sunrise::index() else {
                 return;
             };
-            let lines = horizon::turn_off_revoked(&index, &home);
+            let lines = sunrise::turn_off_revoked(&index, &home);
             if !lines.is_empty() {
                 let _ = tx.send(Event::TakenDown(lines));
             }
         });
     }
 
-    /// At start: recover interrupted updates, then update every Horizon instance's registry
+    /// At start: recover interrupted updates, then update every Sunrise instance's registry
     /// content when enabled ([`auto_update`]), reading the selected instance's list again after.
     pub(super) fn mods_auto_update(&mut self) {
         let enabled = self.settings.auto_updates_mods();
@@ -599,7 +599,7 @@ impl Launcher {
         });
     }
 
-    /// Turns a Horizon mod the browser installed on or off, as the game's Options > Mods does;
+    /// Turns a Sunrise mod the browser installed on or off, as the game's Options > Mods does;
     /// in a Java instance, renames its file.
     pub(super) fn mods_switch(&mut self, e: &installed::Entry) {
         let home = self.mods.home();
@@ -619,7 +619,7 @@ impl Launcher {
             }));
             return;
         }
-        let Some(id) = horizon::mod_id(e) else {
+        let Some(id) = sunrise::mod_id(e) else {
             return;
         };
         let on = !java::is_enabled(&home, id);
@@ -630,7 +630,7 @@ impl Launcher {
             self.pending_consent = Some(PendingConsent::Toggle(e.clone()));
             return;
         }
-        let revoked = horizon::known_index().and_then(|index| {
+        let revoked = sunrise::known_index().and_then(|index| {
             let hash = e.checksum.trim_start_matches("SHA-256:");
             index.revoked(&e.project, hash).map(|r| r.reason.clone())
         });
@@ -655,7 +655,7 @@ impl Launcher {
         }
         let todo: Vec<Project> = found
             .into_iter()
-            .filter(|p| p.kind == PackKind::Mod && p.source != SourceId::Horizon)
+            .filter(|p| p.kind == PackKind::Mod && p.source != SourceId::Sunrise)
             .filter(|p| p.support().installable())
             .filter(|p| !m.checks.contains_key(&(p.source, p.id.clone())))
             .collect();
@@ -805,9 +805,9 @@ impl Launcher {
             return;
         }
         // The first native mod: the trust notice, before anything is installed.
-        let first_native = source == SourceId::Horizon
+        let first_native = source == SourceId::Sunrise
             && self.settings.native_mods_allowed_at.is_none()
-            && horizon::is_native_mod(&id);
+            && sunrise::is_native_mod(&id);
         if first_native {
             self.pending_consent = Some(PendingConsent::Install(source, id, known));
             self.content_scroll
@@ -829,7 +829,7 @@ impl Launcher {
         let java = self.mods.java.clone();
         let instance = self
             .selected_instance()
-            .map_or_else(|| "Horizon".to_string(), |i| i.name.clone());
+            .map_or_else(|| "Sunrise".to_string(), |i| i.name.clone());
         let world = self.mods.world.clone().and_then(|path| {
             let (_, name) = self.mods.worlds.iter().find(|(p, _)| *p == path)?;
             Some((path, name.clone()))
@@ -881,11 +881,11 @@ impl Launcher {
                         ));
                     }
                     modpack = p.kind == PackKind::Modpack;
-                    if modpack && p.source == SourceId::Horizon {
-                        let pack = horizon::pack::install(&p.id, &progress)?;
+                    if modpack && p.source == SourceId::Sunrise {
+                        let pack = sunrise::pack::install(&p.id, &progress)?;
                         if let Some(url) = &p.icon {
-                            horizon_launcher::instances::adopt_icon(
-                                &horizon::pack::home(&pack.work),
+                            sunrise_launcher::instances::adopt_icon(
+                                &sunrise::pack::home(&pack.work),
                                 url,
                             );
                         }
@@ -907,7 +907,7 @@ impl Launcher {
                         let log = |line: String| progress(&line, 1.);
                         let pack = modpacks::import_and_port(&file, resources.as_deref(), &log)?;
                         if let Some(url) = &p.icon {
-                            horizon_launcher::instances::adopt_icon(
+                            sunrise_launcher::instances::adopt_icon(
                                 &modpacks::profile_home(&pack.work),
                                 url,
                             );
@@ -930,9 +930,9 @@ impl Launcher {
                             &[("mods", &mods), ("instance", &instance)],
                         ));
                     }
-                    if p.source == SourceId::Horizon && p.kind == PackKind::Mod {
+                    if p.source == SourceId::Sunrise && p.kind == PackKind::Mod {
                         return Ok(trf(
-                            "Installed {mods} into horizon-mods and turned it on, checksum \
+                            "Installed {mods} into sunrise-mods and turned it on, checksum \
                              checked (Options > Mods in the game).",
                             &[("mods", &mods)],
                         ));
@@ -940,7 +940,7 @@ impl Launcher {
                     if p.kind == PackKind::Mod {
                         let skipped = done.last().map_or(0, |e| e.skipped.len());
                         let ported = trf(
-                            "Ported {mods} into horizon-mods and turned on (Options > Mods in \
+                            "Ported {mods} into sunrise-mods and turned on (Options > Mods in \
                              the game).",
                             &[("mods", &mods)],
                         );
@@ -1024,7 +1024,7 @@ impl Launcher {
                 .border_0()
                 .rounded(px(12.))
                 .bg(crate::glass_ui::white(if focused { 0.11 } else { 0.07 }))
-                .font_family(horizon_theme::glass::FONT)
+                .font_family(sunrise_theme::glass::FONT)
                 .text_size(px(14.))
         } else {
             field
@@ -1046,7 +1046,7 @@ impl Launcher {
             self.mods.asked = false;
         }
         self.mods.java = java;
-        // The instance moved to another Horizon (picked, or an update it follows): the versions
+        // The instance moved to another Sunrise (picked, or an update it follows): the versions
         // that fit change, so look for updates again.
         let plays = self
             .selected_instance()
@@ -1122,7 +1122,7 @@ impl Launcher {
         removed
     }
 
-    /// The palette's search (`glass_palette`): up to four of Horizon's registry mods for `text`,
+    /// The palette's search (`glass_palette`): up to four of Sunrise's registry mods for `text`,
     /// answered as [`Event::Palette`]. None for a Java instance, which takes Modrinth's files.
     pub(super) fn palette_mods(&mut self, text: &str, search: u64) {
         self.mods_load();
@@ -1135,7 +1135,7 @@ impl Launcher {
             ..Query::new(text, PackKind::Mod)
         };
         std::thread::spawn(move || {
-            let found = browser::source(SourceId::Horizon)
+            let found = browser::source(SourceId::Sunrise)
                 .ok_or_else(|| "not set up".to_string())
                 .and_then(|s| s.search(&query))
                 .unwrap_or_default();
@@ -1160,7 +1160,7 @@ impl Launcher {
         }
         let header = page_header(
             "Mods",
-            "Mods and shader packs made for Horizon from its own reviewed registry, and \
+            "Mods and shader packs made for Sunrise from its own reviewed registry, and \
              resource packs from Modrinth. Each file is checked against its source's checksum \
              before it reaches your game folder.",
             &t,
@@ -1200,9 +1200,9 @@ impl Launcher {
         let java = self.mods.java_for(self.mods.kind).is_some();
         let source_note = (switches(self.mods.kind) && !java)
             .then(|| div().flex().child(self.mods_source_switch(cx)));
-        // The registry lists only what was made for Horizon: no "everything", and of the filters
+        // The registry lists only what was made for Sunrise: no "everything", and of the filters
         // only its categories.
-        let registry = self.mods.source == SourceId::Horizon && !java;
+        let registry = self.mods.source == SourceId::Sunrise && !java;
         let filters = self.mods_filters(cx);
         // The registry's sort sits below the GitHub row, above the list it orders.
         let registry_sort = registry.then(|| self.mods_sort_bar(cx));
@@ -1243,7 +1243,7 @@ impl Launcher {
                 .child(section_title("Browse modpacks", "search", &t));
         }
         body = body.child(controls);
-        // Native mods from a GitHub link: Horizon instances, on the Mods tab.
+        // Native mods from a GitHub link: Sunrise instances, on the Mods tab.
         if self.mods.kind == PackKind::Mod && self.mods.java.is_none() {
             body = body.child(self.github_panel(cx));
         }
@@ -1450,7 +1450,7 @@ impl Launcher {
                 .mods
                 .chosen
                 .get(&e.project)
-                .filter(|_| e.source == SourceId::Horizon)
+                .filter(|_| e.source == SourceId::Sunrise)
             {
                 let mut recommended = button(
                     SharedString::from(format!("mods-recommended-{}", e.project)),
@@ -1464,7 +1464,7 @@ impl Launcher {
                     let id = e.project.clone();
                     recommended =
                         recommended.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.mods_install(SourceId::Horizon, id.clone(), None);
+                            this.mods_install(SourceId::Sunrise, id.clone(), None);
                             cx.notify();
                         }));
                 }
@@ -1494,8 +1494,8 @@ impl Launcher {
             let on = match &self.mods.java {
                 _ if e.kind != PackKind::Mod => None,
                 Some(_) => Some(java_instance::is_on(&self.mods.home(), e)),
-                None if e.source == SourceId::Horizon => Some(
-                    horizon::mod_id(e).is_some_and(|id| java::is_enabled(&self.mods.home(), id)),
+                None if e.source == SourceId::Sunrise => Some(
+                    sunrise::mod_id(e).is_some_and(|id| java::is_enabled(&self.mods.home(), id)),
                 ),
                 None => None,
             };
@@ -1678,12 +1678,12 @@ impl Launcher {
                     ),
                     &t,
                 );
-            } else if m.source == SourceId::Horizon {
-                tr("Nothing in Horizon's registry matches yet.")
+            } else if m.source == SourceId::Sunrise {
+                tr("Nothing in Sunrise's registry matches yet.")
             } else if m.everything {
                 tr("Nothing found.")
             } else {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
+                tr("Nothing found that runs in Sunrise. Show everything lists the rest.")
             };
             return centered(line, &t);
         }
@@ -1766,7 +1766,7 @@ impl Launcher {
                 .child(div().truncate().child(p.summary.clone()))
                 .child(by.join(" · "))
                 .children(
-                    (p.source == SourceId::Horizon)
+                    (p.source == SourceId::Sunrise)
                         .then(|| stars(&p.id, &t))
                         .flatten(),
                 )
@@ -1778,7 +1778,7 @@ impl Launcher {
                 .children(
                     m.about
                         .get(&p.id)
-                        .filter(|_| p.source == SourceId::Horizon)
+                        .filter(|_| p.source == SourceId::Sunrise)
                         .map(|lines| div().text_color(t.ink_soft).child(lines.join(" · "))),
                 );
             let open = p.clone();
@@ -1827,7 +1827,7 @@ pub(super) struct AutoTarget {
     pub(super) instance: instances::Instance,
 }
 
-/// Updates the registry projects of `targets`: Horizon's own instances only, never a modpack's
+/// Updates the registry projects of `targets`: Sunrise's own instances only, never a modpack's
 /// profile, whose pack pins its mods. Returns what happened for the page's notice.
 pub(super) fn auto_update(targets: &[AutoTarget], enabled: bool) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1837,33 +1837,33 @@ pub(super) fn auto_update(targets: &[AutoTarget], enabled: bool) -> Vec<String> 
         let (false, None) = (pack, &i.java) else {
             continue;
         };
-        let ctx = horizon::auto::Context {
-            in_pack: horizon::auto::in_pack(&i.home),
+        let ctx = sunrise::auto::Context {
+            in_pack: sunrise::auto::in_pack(&i.home),
         };
-        if let Some(report) = horizon::auto::run(&i.home, &ctx, enabled, &|_, _| {}) {
+        if let Some(report) = sunrise::auto::run(&i.home, &ctx, enabled, &|_, _| {}) {
             lines.extend(report.lines());
         }
     }
     lines
 }
 
-/// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
+/// Where a kind's tab searches first: Sunrise's registry for mods and shader packs, Modrinth for
 /// the rest.
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
-        PackKind::Mod | PackKind::Shader => SourceId::Horizon,
+        PackKind::Mod | PackKind::Shader => SourceId::Sunrise,
         PackKind::ResourcePack | PackKind::Modpack | PackKind::DataPack => SourceId::Modrinth,
     }
 }
 
 /// Whether a kind's tab picks its source: mods, modpacks, resource packs and data packs are on
-/// both Horizon's registry and Modrinth; Horizon's shader packs are on its registry only.
+/// both Sunrise's registry and Modrinth; Sunrise's shader packs are on its registry only.
 pub(super) fn switches(kind: PackKind) -> bool {
     kind != PackKind::Shader
 }
 
 impl Launcher {
-    /// The source switch: Modrinth or Horizon's registry, CurseForge shown as coming soon and not
+    /// The source switch: Modrinth or Sunrise's registry, CurseForge shown as coming soon and not
     /// clickable, like the Microsoft account's "Coming soon".
     fn mods_source_switch(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let this = cx.entity().downgrade();

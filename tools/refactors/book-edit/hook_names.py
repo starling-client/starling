@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCES = [ROOT / 'crates' / name / 'src' for name in
-           ('horizon-mod-vocab', 'horizon-mod-api', 'horizon-mod-runtime')]
+           ('sunrise-mod-vocab', 'sunrise-mod-api', 'sunrise-mod-runtime')]
 # Only methods of a `trait Hooks` block are hooks (scoped Part hooks are declared there too); a `Notes` or
 # `UpstreamNotes` trait carries prose about engine functions, whose `native_*` names stay.
 hooks = set()

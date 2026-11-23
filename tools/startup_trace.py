@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The game's start, step by step: launches it the way a player does (no
 control socket, so the title shows while the world tables load), with
-`HORIZON_STARTUP_TRACE` set, and prints the timeline the game wrote: every
+`SUNRISE_STARTUP_TRACE` set, and prints the timeline the game wrote: every
 named step (resource tables, the renderer's device and pipelines, the world's
 open on the server thread) on the thread that ran it, and the marks (title
 drawn, first frame in a world, the view filled).
@@ -12,7 +12,7 @@ drawn, first frame in a world, the view filled).
     python3 tools/startup_trace.py --runs 3 --warm         # 3 later starts (caches built by a first one)
     python3 tools/startup_trace.py --runs 5 --stats       # named-step and RSS breakdown
 
-Every run gets fresh scratch folders (HORIZON_HOME, launcher and XDG dirs, the
+Every run gets fresh scratch folders (SUNRISE_HOME, launcher and XDG dirs, the
 working directory where saves go); `--warm` keeps one scratch for all runs and
 starts once first, so the runs measured are later starts. `--keep FILE` writes
 the trace wrapped as a JSON array: Perfetto (ui.perfetto.dev) opens it.
@@ -115,18 +115,18 @@ def scratch_env(home):
     for d in ("home", "launcher", "data", "config", "trash"):
         (home / d).mkdir(parents=True, exist_ok=True)
     return lab.game_env(
-        HORIZON_HOME=home / "home",
-        HORIZON_LAUNCHER_HOME=home / "launcher",
+        SUNRISE_HOME=home / "home",
+        SUNRISE_LAUNCHER_HOME=home / "launcher",
         XDG_DATA_HOME=home / "data",
         XDG_CONFIG_HOME=home / "config",
-        HORIZON_LAUNCHER_TRASH=home / "trash",
+        SUNRISE_LAUNCHER_TRASH=home / "trash",
     )
 
 
 def run_once(args, home, label):
     trace = home / f"trace-{label}.jsonl"
     env = scratch_env(home)
-    env["HORIZON_STARTUP_TRACE"] = str(trace)
+    env["SUNRISE_STARTUP_TRACE"] = str(trace)
     cmd = [args.bin, "--resources", args.resources]
     if args.world:
         cmd += ["--world", args.world, "--seed", str(args.seed), "--creative",
@@ -176,8 +176,8 @@ def print_timeline(steps, marks, floor_ms):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bin", default=str(ROOT / "target/release/horizon-client"))
-    ap.add_argument("--resources", default=str(ROOT / ".local/horizon-client/26.3"))
+    ap.add_argument("--bin", default=str(ROOT / "target/release/sunrise-client"))
+    ap.add_argument("--resources", default=str(ROOT / ".local/sunrise-client/26.3"))
     ap.add_argument("--world", help="open (or create) this world from the command line")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--server", help="join this server from the command line")
@@ -197,13 +197,13 @@ def main():
     # The game runs in its scratch folder.
     args.bin, args.resources = (str(pathlib.Path(p).resolve()) for p in (args.bin, args.resources))
 
-    shared = pathlib.Path(tempfile.mkdtemp(prefix="horizon-startup-")) if args.warm else None
+    shared = pathlib.Path(tempfile.mkdtemp(prefix="sunrise-startup-")) if args.warm else None
     if shared:
         run_once(args, shared, "warmup")
     results = []
     step_runs = []
     for i in range(args.runs):
-        home = shared or pathlib.Path(tempfile.mkdtemp(prefix="horizon-startup-"))
+        home = shared or pathlib.Path(tempfile.mkdtemp(prefix="sunrise-startup-"))
         steps, marks, trace, rss = run_once(args, home, f"run{i + 1}")
         step_runs.append(steps)
         results.append(marks)

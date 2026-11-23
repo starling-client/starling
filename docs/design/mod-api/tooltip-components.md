@@ -18,15 +18,15 @@ type and data, rather than adding another item-dispatched special case.
 
 | Contract | Today's owner | Required change |
 | --- | --- | --- |
-| Item font, then Pre font, controls measurement | `crates/horizon-mod-vocab/src/hooks/render_tooltip_pre.rs:21`; `crates/horizon-client/src/game/blocks/stations/tooltip.rs:48`, `:137`, `:212` | Pre currently has no font field; wrapping and widths use the atlas font. Carry the selected font explicitly. |
-| Exact component-type factory, arbitrary data | `crates/horizon-mod-vocab/src/hooks/tooltip_component.rs:16`, `tooltip_component_draw.rs:18`; `crates/horizon-mod-vocab/src/item/tooltip_element.rs:24` | Replace item-keyed sizing/drawing parts and stack-only data with registration-time typed factories. |
-| Height, width, text drawing and image drawing | `crates/horizon-client/src/game/blocks/stations/tooltip.rs:134`, `:149`, `:244` | The two loops exist, but custom images only receive the image pass. Call both methods on each prepared custom component. |
-| Only text wraps, once | `crates/horizon-client/src/game/blocks/stations/tooltip.rs:183`, `:218`, `:229`; `crates/horizon-client/src/game/blocks/stations.rs:12` | Text currently splits when max_width is nonnegative; invalid image sizes silently disappear. Preserve components, refuse invalid mod output explicitly, and wrap before Pre under the supplied contract. |
-| Whole-tooltip cancellation | `crates/horizon-mod-vocab/src/hooks/render_tooltip_gather_components.rs:21`, `render_tooltip_pre.rs:21`, `render_tooltip_texture.rs:18`; `crates/horizon-client/src/game/blocks/stations/tooltip.rs:57`, `:209` | Gather empties the list; Pre skips the whole tooltip; neither component callback has cancellation. Texture stays noncancellable. |
+| Item font, then Pre font, controls measurement | `crates/sunrise-mod-vocab/src/hooks/render_tooltip_pre.rs:21`; `crates/sunrise-client/src/game/blocks/stations/tooltip.rs:48`, `:137`, `:212` | Pre currently has no font field; wrapping and widths use the atlas font. Carry the selected font explicitly. |
+| Exact component-type factory, arbitrary data | `crates/sunrise-mod-vocab/src/hooks/tooltip_component.rs:16`, `tooltip_component_draw.rs:18`; `crates/sunrise-mod-vocab/src/item/tooltip_element.rs:24` | Replace item-keyed sizing/drawing parts and stack-only data with registration-time typed factories. |
+| Height, width, text drawing and image drawing | `crates/sunrise-client/src/game/blocks/stations/tooltip.rs:134`, `:149`, `:244` | The two loops exist, but custom images only receive the image pass. Call both methods on each prepared custom component. |
+| Only text wraps, once | `crates/sunrise-client/src/game/blocks/stations/tooltip.rs:183`, `:218`, `:229`; `crates/sunrise-client/src/game/blocks/stations.rs:12` | Text currently splits when max_width is nonnegative; invalid image sizes silently disappear. Preserve components, refuse invalid mod output explicitly, and wrap before Pre under the supplied contract. |
+| Whole-tooltip cancellation | `crates/sunrise-mod-vocab/src/hooks/render_tooltip_gather_components.rs:21`, `render_tooltip_pre.rs:21`, `render_tooltip_texture.rs:18`; `crates/sunrise-client/src/game/blocks/stations/tooltip.rs:57`, `:209` | Gather empties the list; Pre skips the whole tooltip; neither component callback has cancellation. Texture stays noncancellable. |
 
-`crates/horizon-mod-vocab/src/hooks/notes.rs:1744–1750` describes the old
+`crates/sunrise-mod-vocab/src/hooks/notes.rs:1744–1750` describes the old
 stack-based contract and must change with implementation. The adapters are
-`crates/horizon-client/src/game/native_hooks/base.rs:3377`, `:3387`, and
+`crates/sunrise-client/src/game/native_hooks/base.rs:3377`, `:3387`, and
 `native_hooks/render_tooltip_{gather_components,pre,texture}.rs:15`, `:9`, `:9`.
 
 All item routes converge on `draw_stack_tooltip_with` (`tooltip.rs:82`), including
@@ -35,7 +35,7 @@ trades (`game/items/trading.rs:908`), creative (`game/interface/creative_screen.
 chat hover (`game/interface/chat.rs:1805`), statistics
 (`game/interface/stats_screen.rs:670`), native panels
 (`game/modding/native_panel.rs:518`) and dialogs (`game/interface/dialogs.rs:776`).
-Paths in this paragraph are relative to `crates/horizon-client/src/` unless qualified.
+Paths in this paragraph are relative to `crates/sunrise-client/src/` unless qualified.
 Text-only tooltips converge on `game/blocks/stations.rs:2867`; creative tab labels
 also have `game/interface/creative_screen.rs:59`. Both must use the selected-font
 Pre/measure/draw path. Recipe-book labels (`game/items/recipe_book.rs:2016`,
@@ -200,11 +200,11 @@ inside Pre has its existing semantics, separate from component cancellation.
 
 ## Bounds, failure and unused cost
 
-Use existing codec bounds only: `crates/horizon-mod-vocab/src/wire/mod.rs:4`
+Use existing codec bounds only: `crates/sunrise-mod-vocab/src/wire/mod.rs:4`
 specifies u32 collection lengths, checked against available encoded bytes;
 `:92` owns `MAX_DEPTH = 32`; `:477` validates lengths against the remaining input.
 Text conversion separately owns `MAX_TEXT_DEPTH = 512` at
-`crates/horizon-mod-vocab/src/text/mod.rs:476`. Do not turn those into a new tooltip
+`crates/sunrise-mod-vocab/src/text/mod.rs:476`. Do not turn those into a new tooltip
 count, pixel, payload-byte or screen-width cap. Payloads retain the owning Wire
 transport's configured budget. Native inputs receive the same structural checks.
 

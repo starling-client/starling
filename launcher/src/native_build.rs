@@ -2,14 +2,14 @@ use super::*;
 
 impl Launcher {
     /// Builds the selected instance's native mods, once the player accepted the warning. The
-    /// build stays on the Horizon the instance plays (`native_mods::base_for`), unless the
-    /// warning was Update's: then it moves to that newer Horizon.
+    /// build stays on the Sunrise the instance plays (`native_mods::base_for`), unless the
+    /// warning was Update's: then it moves to that newer Sunrise.
     pub(super) fn build_native(&mut self) {
         self.build_native_on(None, false)
     }
 
     /// [`Self::build_native`] on `base` when given (an update's newer release or Nightly) instead
-    /// of the Horizon the instance plays; with `back_up`, the player chose to back up the worlds
+    /// of the Sunrise the instance plays; with `back_up`, the player chose to back up the worlds
     /// saved with mods the build switches off, then build without those mods.
     pub(super) fn build_native_on(&mut self, base: Option<String>, back_up: bool) {
         if self.native_step.is_some() {
@@ -27,7 +27,7 @@ impl Launcher {
         let plays = self.version_of(&instance).cloned();
         let base = base.or_else(|| native_mods::base_for(plays.as_deref(), &self.installed, false));
         let Some(base) = base else {
-            let error = tr("Install Horizon first.").to_string();
+            let error = tr("Install Sunrise first.").to_string();
             self.native_log_preflight(&error);
             self.native_error = Some(error);
             return;

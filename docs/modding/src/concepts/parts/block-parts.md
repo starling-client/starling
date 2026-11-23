@@ -127,7 +127,7 @@ Entity/menu placeholder coordinates are not block notices.
 Read the committed items through the typed level:
 
 ```rust,ignore
-{{#include ../../../../../crates/horizon-client/src/game/blocks/machines/contents_changed_tests.rs:contents_changed_listener}}
+{{#include ../../../../../crates/sunrise-client/src/game/blocks/machines/contents_changed_tests.rs:contents_changed_listener}}
 ```
 
 ## Crop fertility and farmland hydration

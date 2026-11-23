@@ -10,9 +10,9 @@ The parallel contributor sync, fork PR #3575 at `a0858ab2204f61e3c7312667f29be43
 
 | Path | Resolution and behavior |
 | --- | --- |
-| `crates/horizon-client/src/mobs/ai.rs` | Clean automatic merge. Vex gravity is reset in canonical `finish_tick`, after the living tick, for AI and NoAI routes alike. Registration-time initialization alone would not cover later gravity changes. Both endermite lifetime callers move to the hostile module. |
-| `crates/horizon-client/src/mobs/hostile.rs` | Clean automatic merge. `endermite_lifetime` moves unchanged with `pub(super)` visibility: counter increments, persistence and removal threshold remain identical. |
-| `crates/horizon-threads/src/stack_dump.rs` | Only conflict: two hunks overlap the fork's already-carried atomic readiness handshake with upstream's equivalent fix. Keep one release store inside the named busy frame, its acquire wait, and upstream's yielding wait rather than the fork's spin hint. No duplicate readiness store remains. Production stack capture is unchanged. |
+| `crates/sunrise-client/src/mobs/ai.rs` | Clean automatic merge. Vex gravity is reset in canonical `finish_tick`, after the living tick, for AI and NoAI routes alike. Registration-time initialization alone would not cover later gravity changes. Both endermite lifetime callers move to the hostile module. |
+| `crates/sunrise-client/src/mobs/hostile.rs` | Clean automatic merge. `endermite_lifetime` moves unchanged with `pub(super)` visibility: counter increments, persistence and removal threshold remain identical. |
+| `crates/sunrise-threads/src/stack_dump.rs` | Only conflict: two hunks overlap the fork's already-carried atomic readiness handshake with upstream's equivalent fix. Keep one release store inside the named busy frame, its acquire wait, and upstream's yielding wait rather than the fork's spin hint. No duplicate readiness store remains. Production stack capture is unchanged. |
 | `tools/command_exec_corpus.py` | Clean automatic merge. Retain the incoming Vex NoGravity command case and corpus registration, including NoAI and explicitly cleared gravity inputs, a tick, then saved-state queries. It requires the existing real-game/vanilla command harness resources; it was not run locally. |
 
 An independent static mob-area audit found no additional moved-equivalent port necessary. Typed ownership, mod hooks and player-kind boundaries remain unchanged. No retired file, string game-rule API, native diagnostic hook or alternate injection path is restored. No mod API contract or mod wasm runtime changes in this sync.

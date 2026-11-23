@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / 'crates/horizon-client/src'
+SRC = ROOT / 'crates/sunrise-client/src'
 
 
 def change(path, old, new):
@@ -40,12 +40,12 @@ def append_impl(path, body, target="Game<'_>"):
 
 def additions():
     game = SRC / 'game.rs'
-    change(game, '    local_player_residency: horizon_client::join_seq::residency::member::Member,\n', '')
-    change(game, '    knots: horizon_client::join_seq::JoinList<leads::Knot>,\n', '')
-    change(game, '    /// Journal-fed residency across active and parked server dimensions.\n    entity_residency: Box<RefCell<horizon_client::join_seq::residency::table::EntityTable>>,', '    resident_entities: resident_state::ResidentEntities,')
+    change(game, '    local_player_residency: sunrise_client::join_seq::residency::member::Member,\n', '')
+    change(game, '    knots: sunrise_client::join_seq::JoinList<leads::Knot>,\n', '')
+    change(game, '    /// Journal-fed residency across active and parked server dimensions.\n    entity_residency: Box<RefCell<sunrise_client::join_seq::residency::table::EntityTable>>,', '    resident_entities: resident_state::ResidentEntities,')
     change(game, '            local_player_residency: Default::default(),\n', '')
     change(game, '            knots: Default::default(),\n', '')
-    change(game, '            entity_residency: Box::new(RefCell::new(\n                horizon_client::join_seq::residency::table::EntityTable::new(Default::default()),\n            )),', '            resident_entities: Default::default(),')
+    change(game, '            entity_residency: Box::new(RefCell::new(\n                sunrise_client::join_seq::residency::table::EntityTable::new(Default::default()),\n            )),', '            resident_entities: Default::default(),')
     for path in [game, *sorted((SRC / 'game').rglob('*.rs'))]:
         text = path.read_text()
         for old, new in [('.entity_residency', '.resident_entities.table'), ('.local_player_residency', '.resident_entities.local_player'), ('.knots', '.resident_entities.knots')]:
@@ -57,27 +57,27 @@ def additions():
 use super::*;
 #[derive(Default)]
 pub(super) struct ResidentEntities {
-    pub table: Box<RefCell<horizon_client::join_seq::residency::table::EntityTable>>,
-    pub local_player: horizon_client::join_seq::residency::member::Member,
-    pub knots: horizon_client::join_seq::JoinList<leads::Knot>,
+    pub table: Box<RefCell<sunrise_client::join_seq::residency::table::EntityTable>>,
+    pub local_player: sunrise_client::join_seq::residency::member::Member,
+    pub knots: sunrise_client::join_seq::JoinList<leads::Knot>,
 }
 ''')
     # EntityTable has no Default: initialize its single journal explicitly.
     change(state, '#[derive(Default)]\n', '')
     append_impl(state, '''    fn default() -> Self {
         Self {
-            table: Box::new(RefCell::new(horizon_client::join_seq::residency::table::EntityTable::new(Default::default()))),
+            table: Box::new(RefCell::new(sunrise_client::join_seq::residency::table::EntityTable::new(Default::default()))),
             local_player: Default::default(), knots: Default::default(),
         }
     }
 ''', 'Default for ResidentEntities')
     dragon = SRC / 'game/mobs/dragon.rs'
     change(dragon, 'mod save_lending;\n', 'mod save_lending;\n#[path = "dragon/residency.rs"]\nmod residency;\n')
-    change(dragon, 'pub(in crate::game) struct Dragon {\n    /// Entity-owned registration metadata; content clones are detached.\n    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,', 'pub(in crate::game) struct Dragon {\n    pub(super) residency: residency::DragonResidency,')
+    change(dragon, 'pub(in crate::game) struct Dragon {\n    /// Entity-owned registration metadata; content clones are detached.\n    pub(super) attachment_lifetime: sunrise_mod_runtime::attachments::AttachmentLifetime,', 'pub(in crate::game) struct Dragon {\n    pub(super) residency: residency::DragonResidency,')
     change(dragon, '    pub(super) part_uuids: [[i32; 4]; 8],\n', '')
     change(dragon, '    pub(super) fn new(position: Vec3, yaw: f32, seed: i64) -> Self {\n        Self {\n            attachment_lifetime: Default::default(),', '    pub(super) fn new(position: Vec3, yaw: f32, seed: i64) -> Self {\n        Self {\n            residency: Default::default(),')
-    change(dragon, "            // Parts construct their own entity random; these UUID draws never\n            // advance the level's or dragon's ongoing stream.\n            part_uuids: std::array::from_fn(|_| {\n                horizon_client::save::insecure_uuid(&mut random_source::entity())\n            }),\n", '')
-    change(dragon, 'horizon_mod_runtime::impl_attachment_lifetime!(Breath, Dragon);', 'horizon_mod_runtime::impl_attachment_lifetime!(Breath);')
+    change(dragon, "            // Parts construct their own entity random; these UUID draws never\n            // advance the level's or dragon's ongoing stream.\n            part_uuids: std::array::from_fn(|_| {\n                sunrise_client::save::insecure_uuid(&mut random_source::entity())\n            }),\n", '')
+    change(dragon, 'sunrise_mod_runtime::impl_attachment_lifetime!(Breath, Dragon);', 'sunrise_mod_runtime::impl_attachment_lifetime!(Breath);')
     body = function(dragon, 'resident_dragon_part', remove=False)
     delegate = body[:body.index('{') + 1] + '\n        self.resident_dragon_part_source(id)\n    }\n'
     change(dragon, body, delegate)
@@ -88,7 +88,7 @@ pub(super) struct ResidentEntities {
     child.write_text('''//! Dragon-owned identity and attachment metadata.
 use super::*;
 pub(in crate::game) struct DragonResidency {
-    pub(super) lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
+    pub(super) lifetime: sunrise_mod_runtime::attachments::AttachmentLifetime,
     pub(in crate::game) part_uuids: [[i32; 4]; 8],
 }
 impl Default for DragonResidency {
@@ -96,12 +96,12 @@ impl Default for DragonResidency {
         Self {
             lifetime: Default::default(),
             // Independent entity streams, never the level or dragon's ongoing RNG.
-            part_uuids: std::array::from_fn(|_| horizon_client::save::insecure_uuid(&mut random_source::entity())),
+            part_uuids: std::array::from_fn(|_| sunrise_client::save::insecure_uuid(&mut random_source::entity())),
         }
     }
 }
-impl horizon_mod_runtime::attachments::HasAttachmentLifetime for Dragon {
-    fn attachment_lifetime(&mut self) -> &mut horizon_mod_runtime::attachments::AttachmentLifetime {
+impl sunrise_mod_runtime::attachments::HasAttachmentLifetime for Dragon {
+    fn attachment_lifetime(&mut self) -> &mut sunrise_mod_runtime::attachments::AttachmentLifetime {
         &mut self.residency.lifetime
     }
 }

@@ -1,17 +1,17 @@
 # Contributing to Starling
 
-Thanks for helping. Starling is the Android port of [Horizon](https://github.com/ludovic111/horizon), Minecraft: Java Edition 26.3 rewritten in Rust. This page is the short version of how we work.
+Thanks for helping. Starling is the Android port of [Sunrise](https://github.com/ludovic111/sunrise), Minecraft: Java Edition 26.3 rewritten in Rust. This page is the short version of how we work.
 
 ## Where a change goes
 
-- **The game itself** (gameplay, world generation, rendering shared with the desktop, menus) belongs upstream, in Horizon, where it is checked against vanilla. Follow [Horizon's contributing guide](https://github.com/ludovic111/horizon/blob/main/CONTRIBUTING.md): vanilla is the specification, and gameplay changes come with a parity harness.
-- **The Android app** belongs here: the packaging (`packaging/android/`), the app's entry (`crates/horizon-client/src/android_lib.rs`), touch controls (`touch.rs`, `game/touch.rs`), the Starling folder and imports (`import.rs`, `game/imports.rs`, `game/files_offer.rs`) and anything that only matters on a phone.
+- **The game itself** (gameplay, world generation, rendering shared with the desktop, menus) belongs upstream, in Sunrise, where it is checked against vanilla. Follow [Sunrise's contributing guide](https://github.com/ludovic111/sunrise/blob/main/CONTRIBUTING.md): vanilla is the specification, and gameplay changes come with a parity harness.
+- **The Android app** belongs here: the packaging (`packaging/android/`), the app's entry (`crates/sunrise-client/src/android_lib.rs`), touch controls (`touch.rs`, `game/touch.rs`), the Starling folder and imports (`import.rs`, `game/imports.rs`, `game/files_offer.rs`) and anything that only matters on a phone.
 
 **Mod-related pull requests go to [arismoko/horizon](https://github.com/arismoko/horizon)**, the fork that carries the
 mod API and reviews and merges that work. That covers the mod API, native hooks and events for mods, native mods,
-content mods (`.hmod`), mixins, wasm mods, `cargo horizon-mod`, `horizon-mods`, mod builds and the registry, and
+content mods (`.smod`), mixins, wasm mods, `cargo sunrise-mod`, `sunrise-mods`, mod builds and the registry, and
 their docs ([mods](docs/mods.md), [native mods](docs/native-mods.md)). Open the pull request there from your usual
-branch. Mod-related pull requests opened here are closed with a pointer to it. Engine extension points that Horizon's
+branch. Mod-related pull requests opened here are closed with a pointer to it. Engine extension points that Sunrise's
 own crates register (the [layer split](docs/layers.md)), resource and shader pack formats, and gameplay fixes stay
 here.
 
@@ -28,11 +28,11 @@ The APK carries no game files. On its first start the app signs in, downloads th
 
 ## Test on a phone
 
-Say what you checked on a real device, and on which one. A `horizon-args.txt` in the app's own files adds command-line arguments and environment variables at launch (one per line, `NAME=value` for the environment); with `--control-socket` and `HORIZON_CONTROL_PORT`, `horizon-ctl` drives the game over `adb forward`. Empty the file afterwards so the app starts normally.
+Say what you checked on a real device, and on which one. A `sunrise-args.txt` in the app's own files adds command-line arguments and environment variables at launch (one per line, `NAME=value` for the environment); with `--control-socket` and `SUNRISE_CONTROL_PORT`, `sunrise-ctl` drives the game over `adb forward`. Empty the file afterwards so the app starts normally.
 
 ## Only original code, or code whose license allows it
 
-Starling is MIT, as Horizon is. Its code is written from Minecraft 26.3 itself and from public documentation. Another project's source may also be read and used, **only when that project's license allows it**:
+Starling is MIT, as Sunrise is. Its code is written from Minecraft 26.3 itself and from public documentation. Another project's source may also be read and used, **only when that project's license allows it**:
 
 - **Allowed:** MIT, MIT-0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, zlib, Apache-2.0, Unlicense, and the CC0-1.0 public-domain dedication. That code may be read, copied or adapted.
 - **Java's own library is GPL too.** OpenJDK's source (`java.lang.Math`, `StrictMath`, `FdLibm`, `HashMap`, the sorts, `Double.toString`, HotSpot's intrinsics...) is GPL-2.0, so it is off limits like the rest. Reproduce Java's behaviour from its API documentation (the Javadoc) and from what a JVM returns, or from a permissive original such as Sun's fdlibm C sources (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see #6741.

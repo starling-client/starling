@@ -3,9 +3,9 @@
 from pathlib import Path
 import re
 root=Path(__file__).resolve().parents[3]
-api=root/'crates/horizon-mod-api/src'
-client=root/'crates/horizon-client/src'
-s=(api/'recipe_rule.rs').read_text().replace('use crate::{Ingredient, ItemStack, Tag};','use super::{Ingredient, ItemStack};\nuse horizon_core::nbt::Tag;')
+api=root/'crates/sunrise-mod-api/src'
+client=root/'crates/sunrise-client/src'
+s=(api/'recipe_rule.rs').read_text().replace('use crate::{Ingredient, ItemStack, Tag};','use super::{Ingredient, ItemStack};\nuse sunrise_core::nbt::Tag;')
 c=(api/'crafting.rs').read_text()
 s+='\n'+c[c.index('/// A recipe in force'):c.index('/// What a crafting grid makes')].replace('pub struct Recipe {','pub struct RecipeSnapshot {').replace('impl Recipe {','impl RecipeSnapshot {')
 s=s.replace('#[non_exhaustive]\n', '')

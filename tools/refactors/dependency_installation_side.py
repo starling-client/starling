@@ -7,11 +7,11 @@ Runtime consumers are then corrected individually to their actual installation.
 from pathlib import Path
 
 files = [
-    "crates/horizon-client/src/game/modding/mods/mod.rs",
-    "crates/horizon-client/src/game/modding/api_values/package_snapshot.rs",
-    "crates/horizon-mod-wasm/src/lib.rs",
-    "crates/horizon-mod-host/src/loading.rs",
-    "crates/horizon-mod-package/src/dependencies.rs",
+    "crates/sunrise-client/src/game/modding/mods/mod.rs",
+    "crates/sunrise-client/src/game/modding/api_values/package_snapshot.rs",
+    "crates/sunrise-mod-wasm/src/lib.rs",
+    "crates/sunrise-mod-host/src/loading.rs",
+    "crates/sunrise-mod-package/src/dependencies.rs",
     "launcher/src/native_mods.rs",
     "launcher/src/native_mods/internals_sync.rs",
 ]
@@ -47,7 +47,7 @@ for filename in files:
             cursor += 1
         positions.append(cursor - 1)
         start = cursor
-    side = "crate::manifest::Side::Both" if path.name == "dependencies.rs" else "horizon_mod_package::manifest::Side::Both"
+    side = "crate::manifest::Side::Both" if path.name == "dependencies.rs" else "sunrise_mod_package::manifest::Side::Both"
     for position in reversed(positions):
         text = text[:position] + ", " + side + text[position:]
     path.write_text(text)

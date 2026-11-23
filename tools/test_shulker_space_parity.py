@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native shulker attachment queries with Horizon's production block queries."""
+"""Compare native shulker attachment queries with Sunrise's production block queries."""
 import os
 from pathlib import Path
 import json
@@ -40,14 +40,14 @@ def main():
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/integration_env.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/mobs/shulker.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/shulker_space_tests.rs',
-               lab.ROOT / 'crates/horizon-client-render/src/collisions.rs',
-               lab.ROOT / 'crates/horizon-world/src/block_collision.rs',
-               lab.ROOT / 'crates/horizon-world/src/collision_context.rs',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaShulkerSpaceOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBlockUpdateOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java']
+               lab.ROOT / 'crates/sunrise-client/src/mobs/shulker.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/shulker_space_tests.rs',
+               lab.ROOT / 'crates/sunrise-client-render/src/collisions.rs',
+               lab.ROOT / 'crates/sunrise-world/src/block_collision.rs',
+               lab.ROOT / 'crates/sunrise-world/src/collision_context.rs',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaShulkerSpaceOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaBlockUpdateOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java']
     hashes = base.source_hashes(sources)
     rows = list(cases())
     inputs = build / 'inputs.txt'
@@ -57,10 +57,10 @@ def main():
                                                      {'client': client}, libraries, lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaShulkerSpaceOracle',
                      [inputs, build / 'client.txt'], 'client')
-    with tempfile.TemporaryDirectory(prefix='horizon-shulker-space-parity-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-shulker-space-parity-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_SHULKER_SPACE_INPUT=str(inputs), HORIZON_SHULKER_SPACE_OUTPUT=str(build / 'rust.txt'))
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+        env.update(SUNRISE_SHULKER_SPACE_INPUT=str(inputs), SUNRISE_SHULKER_SPACE_OUTPUT=str(build / 'rust.txt'))
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client-lib', '--lib',
                             'mobs::shulker::space_tests::shulker_space_parity_fixture',
                             '--', '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'client.txt', build / 'rust.txt', len(rows))
@@ -71,7 +71,7 @@ def main():
         client_jar_sha256=lab.digest(client, 'sha256'), input_sha256=input_hash,
         matched_output_lines=matched, output_sha256=lab.digest(build / 'rust.txt', 'sha256'),
         scope='Actual native Shulker.canStayAt, loadedAndEntityCanStandOnFace and noCollision on a recording level, '
-              'compared with the production Horizon block query used by attachment and teleport. '
+              'compared with the production Sunrise block query used by attachment and teleport. '
               'Five support blocks,all six faces,blocked targets,nine current heights and three chunk-boundary positions. '
               'Rust uses original minimal facts/collision fixtures; normal scale and empty equipment. '
               'No nearby entities,world border,random teleport destination selection,AI ticks,networking or rendered interpolation comparison.'))

@@ -120,14 +120,14 @@ impl Entry {
         } else if parent == Path::new("native/prebuilt") {
             let (revision, rest) = name.split_once('-')?;
             // A build's SDK slices (`<build id>-<target>[-server]`, a developer install's with
-            // `.developer`), and the older single-archive caches (`<commit>-horizon-prebuilt-v<n>-
+            // `.developer`), and the older single-archive caches (`<commit>-sunrise-prebuilt-v<n>-
             // <target>`), which native builds no longer read but eviction must still recognize.
             let rest = rest.strip_suffix(".developer").unwrap_or(rest);
-            let current = horizon_mod_package::index::native::prebuilt_prefix();
+            let current = sunrise_mod_package::index::native::prebuilt_prefix();
             let target = [
-                "horizon-prebuilt-v3-",
-                "horizon-prebuilt-v4-",
-                "horizon-prebuilt-v5-",
+                "sunrise-prebuilt-v3-",
+                "sunrise-prebuilt-v4-",
+                "sunrise-prebuilt-v5-",
                 current.as_str(),
             ]
             .into_iter()
@@ -411,7 +411,7 @@ impl Storage {
             let root = Root::open(&instance.home)?;
             old_logs(&mut entries, &root)?;
             unused_jars(&mut entries, &root)?;
-            for relative in [".horizon-cache", "wasm-cache", "cache"] {
+            for relative in [".sunrise-cache", "wasm-cache", "cache"] {
                 add(&mut entries, &root, relative, Category::OtherCaches)?;
             }
         }
@@ -493,13 +493,13 @@ impl Storage {
             for bundle in crate::native_status::bundles_on(&instance.home) {
                 if let Some(native) = bundle.manifest.native {
                     native_enabled = true;
-                    revisions.insert(native.horizon);
+                    revisions.insert(native.sunrise);
                 }
             }
             match instance.resolve_version(None) {
                 Ok(version) => {
                     if let Some(about) = native_mods::about(&version) {
-                        revisions.insert(about.horizon);
+                        revisions.insert(about.sunrise);
                     } else if let Some(nightly) = version.strip_prefix("nightly-") {
                         revisions.insert(nightly.rsplit('-').next().unwrap_or(nightly).to_owned());
                     } else {
@@ -652,7 +652,7 @@ impl Storage {
         // Also refuse an external Cargo holding a target lock before starting a cleanup.
         self.lease.bytes()?;
         if clear.is_some() || all {
-            use horizon_mod_package::runtime_leases::{cleanup::Cleanup, Error as LeaseError};
+            use sunrise_mod_package::runtime_leases::{cleanup::Cleanup, Error as LeaseError};
             match Cleanup::existing(&backend::data_dir()) {
                 Ok(cleanup) => {
                     cleanup.collect_records()?;
@@ -809,7 +809,7 @@ fn old_logs(entries: &mut Vec<Entry>, home: &Root) -> Result<(), Error> {
 }
 
 fn unused_jars(entries: &mut Vec<Entry>, home: &Root) -> Result<(), Error> {
-    use horizon_mod_package::{
+    use sunrise_mod_package::{
         mod_list::{DIR, NATIVE_DIR},
         Package,
     };
@@ -820,7 +820,7 @@ fn unused_jars(entries: &mut Vec<Entry>, home: &Root) -> Result<(), Error> {
     let mut referenced = HashSet::new();
     for directory in [DIR, NATIVE_DIR] {
         let path = Entry::fixed(home, Path::new(directory), Category::OtherCaches)?.path;
-        for package in horizon_mod_package::find(&path) {
+        for package in sunrise_mod_package::find(&path) {
             // A malformed package cannot prove a jar is unused. Retain all jars in that case.
             let Ok(package) = Package::read(&package) else {
                 return Ok(());
@@ -888,27 +888,27 @@ mod eviction_tests {
             (format!("native/source/not-{sha}"), None),
             (format!("native/tools/{}", &sha[..12]), Some(&sha[..12])),
             (
-                format!("native/prebuilt/{sha}-horizon-prebuilt-v3-x86_64-unknown-linux-gnu"),
+                format!("native/prebuilt/{sha}-sunrise-prebuilt-v3-x86_64-unknown-linux-gnu"),
                 Some(sha),
             ),
             (
-                format!("native/prebuilt/{sha}-horizon-prebuilt-v3-x86_64-unknown-linux-gnu-server"),
+                format!("native/prebuilt/{sha}-sunrise-prebuilt-v3-x86_64-unknown-linux-gnu-server"),
                 Some(sha),
             ),
             (
-                format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu"),
+                format!("native/prebuilt/{sha}-sunrise-prebuilt-v4-x86_64-unknown-linux-gnu"),
                 Some(sha),
             ),
             (
-                format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu-server"),
+                format!("native/prebuilt/{sha}-sunrise-prebuilt-v4-x86_64-unknown-linux-gnu-server"),
                 Some(sha),
             ),
-            (format!("native/prebuilt/{sha}-horizon-prebuilt-v3-unknown-target"), None),
-            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-unknown-target"), None),
-            (format!("native/prebuilt/{sha}-horizon-prebuilt-v30-x86_64-unknown-linux-gnu"), None),
-            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu-server-server"), None),
-            (format!("native/prebuilt/{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu.tar.gz"), None),
-            (format!("native/prebuilt/not-{sha}-horizon-prebuilt-v4-x86_64-unknown-linux-gnu"), None),
+            (format!("native/prebuilt/{sha}-sunrise-prebuilt-v3-unknown-target"), None),
+            (format!("native/prebuilt/{sha}-sunrise-prebuilt-v4-unknown-target"), None),
+            (format!("native/prebuilt/{sha}-sunrise-prebuilt-v30-x86_64-unknown-linux-gnu"), None),
+            (format!("native/prebuilt/{sha}-sunrise-prebuilt-v4-x86_64-unknown-linux-gnu-server-server"), None),
+            (format!("native/prebuilt/{sha}-sunrise-prebuilt-v4-x86_64-unknown-linux-gnu.tar.gz"), None),
+            (format!("native/prebuilt/not-{sha}-sunrise-prebuilt-v4-x86_64-unknown-linux-gnu"), None),
             // A build's SDK slices, and a developer install's laid-out game.
             (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu"), Some(sha)),
             (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu-server"), Some(sha)),
@@ -930,7 +930,7 @@ mod eviction_tests {
         }
         // What an interrupted unpack or download left is known as such, and nothing else is.
         for (path, leftover) in [
-            (format!("native/prebuilt/.{sha}-horizon-prebuilt-v6-x86_64-unknown-linux-gnu.tar.gz.partial"), true),
+            (format!("native/prebuilt/.{sha}-sunrise-prebuilt-v6-x86_64-unknown-linux-gnu.tar.gz.partial"), true),
             (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu.lock"), true),
             ("native/prebuilt/runtime-x86_64-unknown-linux-gnu.tar.xz.download".to_owned(), true),
             (format!("native/prebuilt/{sha}-x86_64-unknown-linux-gnu"), false),
@@ -984,10 +984,10 @@ mod eviction_tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    #[ignore = "manual allocated 40 GiB proof; requires HORIZON_EVICTION_PROOF_ROOT in checkout scratch"]
+    #[ignore = "manual allocated 40 GiB proof; requires SUNRISE_EVICTION_PROOF_ROOT in checkout scratch"]
     fn allocated_forty_gib_cleanup_proof() {
         let path = PathBuf::from(
-            std::env::var_os("HORIZON_EVICTION_PROOF_ROOT").expect("isolated proof root"),
+            std::env::var_os("SUNRISE_EVICTION_PROOF_ROOT").expect("isolated proof root"),
         );
         fs::create_dir_all(&path).unwrap();
         let home = crate::storage::tests::Home(path.canonicalize().unwrap());
@@ -1015,16 +1015,16 @@ mod eviction_tests {
         }
         fs::write(
             leased.join(backend::CLIENT),
-            horizon_mod_package::holder::CAPABILITY,
+            sunrise_mod_package::holder::CAPABILITY,
         )
         .unwrap();
         fs::write(legacy.join(backend::CLIENT), b"pre-holder game").unwrap();
         crate::run_leases::publish(&leased).unwrap();
-        let registry = horizon_mod_package::runtime_leases::Registry::existing(&home.0).unwrap();
+        let registry = sunrise_mod_package::runtime_leases::Registry::existing(&home.0).unwrap();
         let _game = registry
             .lock(
-                &horizon_mod_package::runtime_leases::open_directory(&leased).unwrap(),
-                horizon_mod_package::locks::LockMode::Shared,
+                &sunrise_mod_package::runtime_leases::open_directory(&leased).unwrap(),
+                sunrise_mod_package::locks::LockMode::Shared,
             )
             .unwrap();
         let storage = Storage::at(&home.0).unwrap();

@@ -10,7 +10,7 @@ Keep all fork-base `.github/workflows/` and `tools/ci/` files. Upstream's runner
 
 ## Launcher uninstall and identity
 
-Take upstream's moved-data uninstall handling and its build-directory ownership guard. The default data-directory ownership check continues to use the fork's complete identity namespace rather than upstream's generic `horizon-launcher` leaf. The incoming default-path test uses the configured launcher identity so it applies to both builds. Moved locations keep upstream's `launcher`, `game` and `build` layout, and never delete the game directory.
+Take upstream's moved-data uninstall handling and its build-directory ownership guard. The default data-directory ownership check continues to use the fork's complete identity namespace rather than upstream's generic `sunrise-launcher` leaf. The incoming default-path test uses the configured launcher identity so it applies to both builds. Moved locations keep upstream's `launcher`, `game` and `build` layout, and never delete the game directory.
 
 ## Developer tools and documentation
 
@@ -22,11 +22,11 @@ Merge port-ledger rows by Java method key: unchanged upstream rows retain the fo
 
 ## Engine, item and server integration
 
-Audited all 22 assigned paths and the additional random.rs correction. Two relocated destinations are also changed: crates/horizon-server/src/lib.rs and crates/horizon-server-launch/src/config.rs. Total: 25 paths audited, 23 changed, 2 deliberately unchanged. No unresolved textual cases or requested rulings.
+Audited all 22 assigned paths and the additional random.rs correction. Two relocated destinations are also changed: crates/sunrise-server/src/lib.rs and crates/sunrise-server-launch/src/config.rs. Total: 25 paths audited, 23 changed, 2 deliberately unchanged. No unresolved textual cases or requested rulings.
 
 - Item model tests retain both the registered mod node test and upstream linear/binary threshold coverage.
-- The three language files retain fork keys and take upstream added/changed translations, including Horizon UI text.
-- NBT: upstream changed its old horizon-world/src/nbt.rs, now relocated to horizon-core. Ported Cursor/Key and entry/list header primitives there, preserving fork heap quotas, bounded reads, strict duplicate handling, split recursive frames, and list_fits validation. Cursor and Key must be public because structure template decoding is now in a separate crate. No obsolete world NBT file restored.
+- The three language files retain fork keys and take upstream added/changed translations, including Sunrise UI text.
+- NBT: upstream changed its old sunrise-world/src/nbt.rs, now relocated to sunrise-core. Ported Cursor/Key and entry/list header primitives there, preserving fork heap quotas, bounded reads, strict duplicate handling, split recursive frames, and list_fits validation. Cursor and Key must be public because structure template decoding is now in a separate crate. No obsolete world NBT file restored.
 - Items retain explicit DAMAGE presence and include_damage gating. Upstream prototype-aware removal of equal DAMAGE 0 is integrated at serialization. Upstream custom durability/mining modules, tag replacement, weapon blocking, and consume parsing integrate with existing fork modules. The duplicate Items attribute_modifiers implementation is not introduced: the fork's ItemStack::default_attribute_modifiers already owns that behavior and incoming tests already call it.
 - Protocol registry.rs remains unchanged from the fork base: fork registry count limits and registry-scoped tag replacement retained; upstream conflicting tag changes are documentation/parameter naming, not a missing behavior.
 - Server files expose both durable and incoming chat_guard.
@@ -34,7 +34,7 @@ Audited all 22 assigned paths and the additional random.rs correction. Two reloc
 - Server engine retains server-launch command construction; upstream parallel_tick is forwarded by environment without duplicating launcher logic. Control line-break rejection and its incoming regression test integrated. Parallel execution remains disabled at the single fork gate.
 - Server main.rs remains the thin library wrapper. Incoming signals::stopped cleanup is applied in relocated server/lib.rs instead. Supervisor retains launch helpers and takes upstream queued restore/update handling before every start.
 - Piston events keep note_override and take upstream queue/pop deduplication routing. Existing upstream level redstone and brightness tests included.
-- Structure changes take upstream streaming template decoding and saved legacy piece reads/tests. Imports use relocated horizon-core NBT/BoundingBox and retain fork block entity transform module. Saved-template int/flag use the new shared saved_legacy helpers rather than duplicate implementations.
+- Structure changes take upstream streaming template decoding and saved legacy piece reads/tests. Imports use relocated sunrise-core NBT/BoundingBox and retain fork block entity transform module. Saved-template int/flag use the new shared saved_legacy helpers rather than duplicate implementations.
 - LegacyRandom state/gaussian conversion initializes gate to None, matching independent clone/from_state behavior. No Mob RNG API types changed here.
 
 ## Clean-merge correction and module placement
@@ -60,7 +60,7 @@ Diverges from upstream (performance only). The fork retains serial dispatch whil
 
 ### Renderer
 
-- Cargo.toml: retain mod dependencies; take removal of Horizon cosmetics dependency from the engine layer.
+- Cargo.toml: retain mod dependencies; take removal of Sunrise cosmetics dependency from the engine layer.
 - block_entities.rs: merge sign editor tracking with attachment generations and observers.
 - gfx.rs: external pipeline/frame policy/linear light integration; keep prepared model and render hooks; shared entity factory accepts linear-light mode; preserve primitive reserve and census helpers.
 - gfx/inter_stage_tests.rs: new ray-unpack coverage, no deleted world warp tests.
@@ -79,15 +79,15 @@ Diverges from upstream (performance only). The fork retains serial dispatch whil
 - entities.rs: obstacle/water-splash behavior and entity data changes, preserving context-bearing fluid updates and before-velocity splash input.
 - entity_nbt.rs: upstream byte/short codec behavior, horse variants and regression tests; preserve full typed equipment and attachment/join initialization. Keep inline fork armor stand/orb/rocket implementations rather than duplicate imports. Use tame restore_sitting.
 - entity_nbt/hanging.rs: loaded pitch and byte-wrapped facing; retained item-frame implementation in parent uses those helpers.
-- entity_nbt/projectile_fields.rs: projectile-kind codec behavior with fork horizon_core NBT import.
-- entry.rs: install upstream chat filter; retain fork horizon_look path.
+- entity_nbt/projectile_fields.rs: projectile-kind codec behavior with fork sunrise_core NBT import.
+- entry.rs: install upstream chat filter; retain fork sunrise_look path.
 - game.rs: baseline dimension type/environment/render changes and tick spans; preserve typed harvest/critical/sweep/orb hooks. Includes relocated gameplay behavior without restoring deleted root modules.
 - health.rs and hunger.rs: blocking_item_used propagation, typed damage retained.
 - health/equipment.rs: stays deleted; its field propagation is in active health.rs.
 - item_sync.rs: consumable codecs and imports, retaining fork attribute/kinetic modules and NBT layer.
 - item_tooltip.rs: upstream item display behavior with typed attribute search context retained.
 - lan/hub.rs: upstream chat guard interface, air-state table checks, duplicate teleport refusal, teleport-id invalidation, far-ring scan cursor and missing-column retries; preserve JoinList updates, watch notifications, snapshots and typed effect particles. sync_data accessor added.
-- lan/hub/chat_filter.rs: import server-files guard contract and Place; no direct engine-owned Horizon filter guard.
+- lan/hub/chat_filter.rs: import server-files guard contract and Place; no direct engine-owned Sunrise filter guard.
 - lan/hub_tests.rs: stays deleted. New cave-air/far tests are wired into active inline hub tests; duplicate-accept regression moved there.
 - lan/io_pool.rs: memory-connection cap exemption; obsolete fork-removed packet-tally tests not restored.
 - menu.rs and menu/place.rs: quick-move take helper and placement behavior combined with fork typed inventory inputs.
@@ -114,47 +114,47 @@ Diverges from upstream (performance only). The fork retains serial dispatch whil
 
 | Assigned path | Resolution |
 | --- | --- |
-| `crates/horizon-client/src/game/entities/armor_stands.rs` | Upstream special-hit admission/tail and dimension-type lighting; victim identity remains typed. |
-| `crates/horizon-client/src/game/entities/boats/below_world.rs` | Created at assigned relocated destination; validated JoinList removals and below-world parity regressions. |
-| `crates/horizon-client/src/game/entities/boats/mod.rs` | Float-exact paddle/escape vectors, freeze counter, last-Y movement and below-world behavior; typed held-out mutation retained. |
-| `crates/horizon-client/src/game/entities/entity.rs` | Kept fork loop-context block-effects implementation instead of upstream hookless ItemTables move/settle extraction; added item air fixture field. |
-| `crates/horizon-client/src/game/entities/explosion.rs` | Explicit explosion source/credit behavior merged through DamageLevel; upstream regression uses typed LevelRef explosion boundary. |
-| `crates/horizon-client/src/game/entities/frames.rs` | Projectile frame hits, creative-owner drops and dimension lighting; typed hook rotation remains normalized. |
-| `crates/horizon-client/src/game/entities/minecarts.rs` | Freeze state, below-world removal, exact control yaw; moved typed attack into special_attacks; kept live ownership and NBT freeze persistence. |
-| `crates/horizon-client/src/game/entities/pvp.rs` | Takes upstream PvP behavior in the existing entities area, not a duplicate extras module. |
-| `crates/horizon-client/src/game/creatures/mob_group.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
-| `crates/horizon-client/src/game/creatures/mob_islands.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
-| `crates/horizon-client/src/game/mobs/creatures/mod.rs` | Kept JoinList lift/restore + BorrowedMobTick, ported observable event/ignition/projectile/UUID behavior and caller RNG signature. Source-retention declarations isolate incompatible parallel extraction. |
-| `crates/horizon-client/src/game/creatures/prep.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
-| `crates/horizon-client/src/game/mobs/creatures/projectile_targets.rs` | Created relocated active pickable/projectile-target implementation, including primed TNT and item frames; retained separate fork vehicle targets for typed callers. |
-| `crates/horizon-client/src/game/mobs/creatures/projectile_world.rs` | Kept fork context-owned block-contact path; ported projectile world floor query. |
-| `crates/horizon-client/src/game/mobs/dragon.rs` | Cloud velocity and target computation updated; moved typed special attack to items/special_attacks. |
-| `crates/horizon-client/src/game/mobs/enderman.rs` | Placement survival and non-mob occupancy integrated around existing typed leave-block decision/apply transaction. |
-| `crates/horizon-client/src/game/mobs/hoglin_repeat_attack_tests.rs` | Retained typed target proposal contract and appended two upstream broadcast distance regressions with source-player connection adaptation. |
-| `crates/horizon-client/src/game/mobs/mounts.rs` | Upstream public escape vector; Mob RNG remains LegacyRandom by client ruling. |
-| `crates/horizon-client/src/game/mobs/ominous_item_spawner/mod.rs` | Loaded rotation normalization uses fork core NBT types and mutable owned input. |
-| `crates/horizon-client/src/game/mobs/raids/mod.rs` | World owner RNG swaps wrap LegacyRandom in LevelRandom; scoped patrol draws preserve stream. |
-| `crates/horizon-client/src/game/mobs/spawner.rs` | World owner RNG swaps use LevelRandom::for_level; no extra draw. |
-| `crates/horizon-client/src/game/network/lan/mob_states.rs` | Active relocated serial fill_mob_state adapter reads typed live attributes. Upstream parallel Later/AttrSources requires Sync Mob and is not used. |
-| `crates/horizon-client/src/game/network/lan/mod.rs` | Metadata uses upstream sitting pose while preserving typed effect-particle modifications and live attributes; serial state helper extracted; broken stat added. |
-| `crates/horizon-client/src/game/network/lan_actions/tests/guest_body.rs` | Upstream extraction relocated to production lan_actions/guest_body.rs, not obsolete tests location. Constructor failure still refuses turn before state loan; writes through Guest JoinList::update. |
-| `crates/horizon-client/src/game/network/lan_actions/tests/guest_body/tests.rs` | Upstream saved-body/distinct-stream regression retained at production helper test destination. |
-| `crates/horizon-client/src/game/network/lan_attributes.rs` | Fork live-map metadata kept as source of truth; upstream equipment-derived parallel AttrSources would duplicate components and does not compile against !Sync Mob. |
-| `crates/horizon-client/src/game/network/lan_mobs.rs` | Preserved fork typed hoglin target transaction; ported Ignite/ZombieIgnite routing. |
-| `crates/horizon-client/src/game/network/lan_vehicles.rs` | Preserved Guest JoinList::update validation and typed host-borrow contract; no obsolete mutable guest indexing. |
-| `crates/horizon-client/src/game/network/remote/mod.rs` | Kept typed tag notices/residency; ported item-use/abilities/gameplay tag extraction, source sound and respawn attributes; removed duplicate UpdateTags dispatch. |
-| `crates/horizon-client/src/game/network/remote_mob_data.rs` | Sitting pose metadata integrated. Existing typed villager receive already owns Enderman stare sound, so no second scratch-state implementation. |
-| `crates/horizon-client/src/game/network/remote_vehicles.rs` | Client-side horse damage marker integrated with fork LentLevel tick. |
-| `crates/horizon-client/src/game/world/end.rs` | Gateway delay phases use existing typed dimension_changing_delay instead of removed contextless entity helper; dimension-type environment/lighting kept. |
-| `crates/horizon-client/src/game/world/integrated.rs` | Catch/save integrated tick failure merged while retaining crashed flag and typed close lifecycle. New regression uses fork test factory. |
-| `crates/horizon-client/src/game/world/levels.rs` | Upstream per-level spans retained around typed enter_level and hook LevelRef bodies, draining pending inside-block events before post. |
-| `crates/horizon-client/src/game/world/packs/mod.rs` | Upstream drop/import UI integrated with mod-discovered additional packs and caller update. |
-| `crates/horizon-client/src/game/world/persist.rs` | Retained fork transferred-object initialization, passenger admission and typed object-tree persistence. Ported crystal fire cleanup, no-save leash knots, portal cooldown saves and camel reload regression; destination object_memory gains own projectile UUID and boat freeze state. |
+| `crates/sunrise-client/src/game/entities/armor_stands.rs` | Upstream special-hit admission/tail and dimension-type lighting; victim identity remains typed. |
+| `crates/sunrise-client/src/game/entities/boats/below_world.rs` | Created at assigned relocated destination; validated JoinList removals and below-world parity regressions. |
+| `crates/sunrise-client/src/game/entities/boats/mod.rs` | Float-exact paddle/escape vectors, freeze counter, last-Y movement and below-world behavior; typed held-out mutation retained. |
+| `crates/sunrise-client/src/game/entities/entity.rs` | Kept fork loop-context block-effects implementation instead of upstream hookless ItemTables move/settle extraction; added item air fixture field. |
+| `crates/sunrise-client/src/game/entities/explosion.rs` | Explicit explosion source/credit behavior merged through DamageLevel; upstream regression uses typed LevelRef explosion boundary. |
+| `crates/sunrise-client/src/game/entities/frames.rs` | Projectile frame hits, creative-owner drops and dimension lighting; typed hook rotation remains normalized. |
+| `crates/sunrise-client/src/game/entities/minecarts.rs` | Freeze state, below-world removal, exact control yaw; moved typed attack into special_attacks; kept live ownership and NBT freeze persistence. |
+| `crates/sunrise-client/src/game/entities/pvp.rs` | Takes upstream PvP behavior in the existing entities area, not a duplicate extras module. |
+| `crates/sunrise-client/src/game/creatures/mob_group.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
+| `crates/sunrise-client/src/game/creatures/mob_islands.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
+| `crates/sunrise-client/src/game/mobs/creatures/mod.rs` | Kept JoinList lift/restore + BorrowedMobTick, ported observable event/ignition/projectile/UUID behavior and caller RNG signature. Source-retention declarations isolate incompatible parallel extraction. |
+| `crates/sunrise-client/src/game/creatures/prep.rs` | Byte-identical upstream source retained at original upstream path behind nondefault source-retention feature; not compiled. |
+| `crates/sunrise-client/src/game/mobs/creatures/projectile_targets.rs` | Created relocated active pickable/projectile-target implementation, including primed TNT and item frames; retained separate fork vehicle targets for typed callers. |
+| `crates/sunrise-client/src/game/mobs/creatures/projectile_world.rs` | Kept fork context-owned block-contact path; ported projectile world floor query. |
+| `crates/sunrise-client/src/game/mobs/dragon.rs` | Cloud velocity and target computation updated; moved typed special attack to items/special_attacks. |
+| `crates/sunrise-client/src/game/mobs/enderman.rs` | Placement survival and non-mob occupancy integrated around existing typed leave-block decision/apply transaction. |
+| `crates/sunrise-client/src/game/mobs/hoglin_repeat_attack_tests.rs` | Retained typed target proposal contract and appended two upstream broadcast distance regressions with source-player connection adaptation. |
+| `crates/sunrise-client/src/game/mobs/mounts.rs` | Upstream public escape vector; Mob RNG remains LegacyRandom by client ruling. |
+| `crates/sunrise-client/src/game/mobs/ominous_item_spawner/mod.rs` | Loaded rotation normalization uses fork core NBT types and mutable owned input. |
+| `crates/sunrise-client/src/game/mobs/raids/mod.rs` | World owner RNG swaps wrap LegacyRandom in LevelRandom; scoped patrol draws preserve stream. |
+| `crates/sunrise-client/src/game/mobs/spawner.rs` | World owner RNG swaps use LevelRandom::for_level; no extra draw. |
+| `crates/sunrise-client/src/game/network/lan/mob_states.rs` | Active relocated serial fill_mob_state adapter reads typed live attributes. Upstream parallel Later/AttrSources requires Sync Mob and is not used. |
+| `crates/sunrise-client/src/game/network/lan/mod.rs` | Metadata uses upstream sitting pose while preserving typed effect-particle modifications and live attributes; serial state helper extracted; broken stat added. |
+| `crates/sunrise-client/src/game/network/lan_actions/tests/guest_body.rs` | Upstream extraction relocated to production lan_actions/guest_body.rs, not obsolete tests location. Constructor failure still refuses turn before state loan; writes through Guest JoinList::update. |
+| `crates/sunrise-client/src/game/network/lan_actions/tests/guest_body/tests.rs` | Upstream saved-body/distinct-stream regression retained at production helper test destination. |
+| `crates/sunrise-client/src/game/network/lan_attributes.rs` | Fork live-map metadata kept as source of truth; upstream equipment-derived parallel AttrSources would duplicate components and does not compile against !Sync Mob. |
+| `crates/sunrise-client/src/game/network/lan_mobs.rs` | Preserved fork typed hoglin target transaction; ported Ignite/ZombieIgnite routing. |
+| `crates/sunrise-client/src/game/network/lan_vehicles.rs` | Preserved Guest JoinList::update validation and typed host-borrow contract; no obsolete mutable guest indexing. |
+| `crates/sunrise-client/src/game/network/remote/mod.rs` | Kept typed tag notices/residency; ported item-use/abilities/gameplay tag extraction, source sound and respawn attributes; removed duplicate UpdateTags dispatch. |
+| `crates/sunrise-client/src/game/network/remote_mob_data.rs` | Sitting pose metadata integrated. Existing typed villager receive already owns Enderman stare sound, so no second scratch-state implementation. |
+| `crates/sunrise-client/src/game/network/remote_vehicles.rs` | Client-side horse damage marker integrated with fork LentLevel tick. |
+| `crates/sunrise-client/src/game/world/end.rs` | Gateway delay phases use existing typed dimension_changing_delay instead of removed contextless entity helper; dimension-type environment/lighting kept. |
+| `crates/sunrise-client/src/game/world/integrated.rs` | Catch/save integrated tick failure merged while retaining crashed flag and typed close lifecycle. New regression uses fork test factory. |
+| `crates/sunrise-client/src/game/world/levels.rs` | Upstream per-level spans retained around typed enter_level and hook LevelRef bodies, draining pending inside-block events before post. |
+| `crates/sunrise-client/src/game/world/packs/mod.rs` | Upstream drop/import UI integrated with mod-discovered additional packs and caller update. |
+| `crates/sunrise-client/src/game/world/persist.rs` | Retained fork transferred-object initialization, passenger admission and typed object-tree persistence. Ported crystal fire cleanup, no-save leash knots, portal cooldown saves and camel reload regression; destination object_memory gains own projectile UUID and boat freeze state. |
 
 ## Destinations outside original list
 
-- crates/horizon-client/src/motion/player_init.rs: initialize new entity-owned player RNG without duplicating initializer.
-- crates/horizon-client/src/game/runtime/window_handler.rs: upstream frame_autotune invocation at fork relocated frame completion point.
+- crates/sunrise-client/src/motion/player_init.rs: initialize new entity-owned player RNG without duplicating initializer.
+- crates/sunrise-client/src/game/runtime/window_handler.rs: upstream frame_autotune invocation at fork relocated frame completion point.
 
 ## Integration decisions
 
@@ -176,7 +176,7 @@ Diverges from upstream (performance only). The fork retains serial dispatch whil
 
 ## Diverges from upstream (performance only)
 
-Single fork gate: `crates/horizon-client/src/parallel.rs::parallel_tick`, local constant `FORK_PARALLEL_TICK_ENABLED = false`. It disables ALL opt-in parallel server phases, not only mob phases. The upstream pool, par_map and verification machinery otherwise remain in the tree.
+Single fork gate: `crates/sunrise-client/src/parallel.rs::parallel_tick`, local constant `FORK_PARALLEL_TICK_ENABLED = false`. It disables ALL opt-in parallel server phases, not only mob phases. The upstream pool, par_map and verification machinery otherwise remain in the tree.
 
 Exact type blockers: `mobs::Mob.extra.live` is `living_attributes::LivingAttributes`, whose map is `std::cell::OnceCell<Box<Live>>`. `Live = LiveAttributes<Box<dyn Identities>>`; `Identities: FnMut() -> i32` lacks Send and Sync bounds. `LiveAttributes::data` owns that allocator callback. OnceCell -> OnceLock alone therefore cannot make Mob Send + Sync; no unsafe shim or cache refactor was taken. The fork tick additionally owns `JoinList<Mob>` and `health::LentLevel` (LegacyRandom, attachments and syncs), not upstream plain Vec tick ownership. Smallest active adapters remain `BorrowedMobTick` and extracted serial `fill_mob_state`, reading the existing authoritative live attribute map.
 
@@ -210,7 +210,7 @@ The incoming native_hooks.rs change dereferences the new level RNG wrapper insid
 
 ## Compile integration corrections
 
-Incoming structure, item and entity code uses the fork's relocated `horizon_core::nbt` boundary, including its SNBT parser. New item-table fixtures load installation-scoped ItemDefaults explicitly. The accidentally restored lever veto test was already removed on the fork base with its contextless redstone callback; that obsolete test is not restored, and no replacement capability is claimed.
+Incoming structure, item and entity code uses the fork's relocated `sunrise_core::nbt` boundary, including its SNBT parser. New item-table fixtures load installation-scoped ItemDefaults explicitly. The accidentally restored lever veto test was already removed on the fork base with its contextless redstone callback; that obsolete test is not restored, and no replacement capability is claimed.
 
 The forced-ring ranking helper reads the single authoritative combined `Streaming::forced` set, which includes command and mod tickets, rather than restoring the removed separate mod-forced set. Ranking and queue invalidation use that same combined set. Incoming forced-ring assertions are retained.
 
@@ -241,7 +241,7 @@ The upstream first-tick armor-stand movement-speed persistence correction is pre
 
 Twelve of the thirteen requested upstream regressions are carried: shield use statistics, client-copy fall immunity, lectern removal events, four waypoint icon persistence cases, armor-stand pitch, wrapped hanging facing, cloned held attack items, merchant packet snapshots and resource-pack drops. Test bodies are copied from the pinned upstream head with typed names and scoped resource fixtures adapted. Their upstream resource-dependent ignore annotations remain.
 
-Not carried: `parallel_tick_reaches_the_game_only_when_it_is_on`. Upstream's test reads the environment from its command-construction seam, which accepts a parallel flag. The fork's `horizon_server_launch::command` has no parallel flag; `engine::spawn` adds the environment and immediately spawns the process. Adapting the test would require a new production seam or subprocess fixture rather than typed-name substitutions. Environment forwarding remains present. The two incompatible parallel-mob state-path tests remain intentionally uncompiled as already recorded.
+Not carried: `parallel_tick_reaches_the_game_only_when_it_is_on`. Upstream's test reads the environment from its command-construction seam, which accepts a parallel flag. The fork's `sunrise_server_launch::command` has no parallel flag; `engine::spawn` adds the environment and immediately spawns the process. Adapting the test would require a new production seam or subprocess fixture rather than typed-name substitutions. Environment forwarding remains present. The two incompatible parallel-mob state-path tests remain intentionally uncompiled as already recorded.
 
 ## Delta carry: air, stroll scoring and extraction tests
 
@@ -259,7 +259,7 @@ Read current-head lint and verify-static logs before repair. Remove the redundan
 
 ## Frozen-main payload and platform integration
 
-Merge frozen main `a51728c35f8` once, retaining #3087 raw custom play-payload transport, #3038's registrar/tables vocabulary placement under mod-api/src/parts, and #3504's engine-owned platform socket filled by horizon-mod-host. The four conflicts are narrow: retain both LAN module declarations and both hub test groups; decode inbound play through the negotiated payload codecs; keep upstream's single frame-header parse while delegating that parse to main's memory-aware `header` implementation. No raw payload or socket implementation is removed.
+Merge frozen main `a51728c35f8` once, retaining #3087 raw custom play-payload transport, #3038's registrar/tables vocabulary placement under mod-api/src/parts, and #3504's engine-owned platform socket filled by sunrise-mod-host. The four conflicts are narrow: retain both LAN module declarations and both hub test groups; decode inbound play through the negotiated payload codecs; keep upstream's single frame-header parse while delegating that parse to main's memory-aware `header` implementation. No raw payload or socket implementation is removed.
 
 ## CI verify and remaining gameplay lint repairs
 
@@ -279,6 +279,6 @@ The conversion sweep found one deliberate divergence from upstream: retain vanil
 
 The Allay healing regression still used the former `extra.ints[3]` pickup-cooldown storage. Its fixture now uses `set_pickup_cooldown`/`pickup_cooldown`, retaining healing, age, duplication, note-block cooldown and NoAI assertions. The typed optional memory deliberately distinguishes absent from present zero. Gameplay is unchanged.
 
-The villager witness regression is an oracle-harness step, not a standalone slow-shard test: it requires `HORIZON_REPUTATION_ORACLE`. Register it with the existing `harness` convention using the verified driver `tools/test_villager_witness_parity.py`, which generates and supplies the oracle. The Rust test still requires that oracle; no skip-if-missing behavior is added.
+The villager witness regression is an oracle-harness step, not a standalone slow-shard test: it requires `SUNRISE_REPUTATION_ORACLE`. Register it with the existing `harness` convention using the verified driver `tools/test_villager_witness_parity.py`, which generates and supplies the oracle. The Rust test still requires that oracle; no skip-if-missing behavior is added.
 
 The HDR near-black dither failure remains unresolved statically. Its test, shader and active GPU gating match upstream; no fork behavior difference or justified software-renderer exclusion was found. Preserve tolerance, shader and gating, and add the measured mean, expected range, target PQ code and input grey to the assertion message so a recurrence supplies the missing evidence. This is diagnostic-only, not a claimed HDR fix.

@@ -13,7 +13,7 @@ pub type Mod = (String, String, Option<String>);
 /// Whether an installed file (`installed::Entry::file`) is a native mod.
 pub fn is_native_file(file: &str) -> bool {
     file.strip_prefix(native_mods::INSTALLED)
-        .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".hmod"))
+        .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".smod"))
 }
 
 /// Where an instance's native mods stand.
@@ -31,7 +31,7 @@ pub enum State {
 
 /// The state for the mods turned on, `enabled`, and those of the version played, `built` (None
 /// when it is no native build). Order doesn't matter; a mod at another version, or with other
-/// files at the same version (a reinstalled local `.hmod`), needs a build.
+/// files at the same version (a reinstalled local `.smod`), needs a build.
 pub fn state(enabled: &[Mod], built: Option<&[Mod]>) -> State {
     if enabled.is_empty() {
         return State::NoMods;
@@ -63,9 +63,9 @@ pub fn state(enabled: &[Mod], built: Option<&[Mod]>) -> State {
 pub struct Build {
     /// The release or Nightly it was built on (`native_mods::About::base`).
     pub base: String,
-    /// The Horizon commit it compiled.
-    pub horizon: String,
-    /// The mods whose pin made it compile `horizon` rather than `base`'s own commit.
+    /// The Sunrise commit it compiled.
+    pub sunrise: String,
+    /// The mods whose pin made it compile `sunrise` rather than `base`'s own commit.
     pub pinned_by: Vec<String>,
     /// It compiled another commit than its Nightly's, with no record of why: built before the
     /// launcher kept which mods pinned it ([`pinning`] reads them from the instance's mods).
@@ -82,24 +82,24 @@ impl Build {
 
     /// What build record `about` says.
     fn of(about: native_mods::About) -> Build {
-        // The fork's manifest pins the exact Horizon commit, so a build is never on a commit
+        // The fork's manifest pins the exact Sunrise commit, so a build is never on a commit
         // its mods did not name: nothing is unknown and no pin list is recorded.
         Build {
             pinned_unknown: false,
             base: about.base,
-            horizon: about.horizon,
+            sunrise: about.sunrise,
             pinned_by: Vec::new(),
             left_out: about.left_out,
         }
     }
 
-    /// The Horizon it was built on, as a player reads it (`horizon_label`).
-    pub fn horizon(&self) -> String {
-        horizon_label(&self.base)
+    /// The Sunrise it was built on, as a player reads it (`sunrise_label`).
+    pub fn sunrise(&self) -> String {
+        sunrise_label(&self.base)
     }
 
     /// The same, short enough for the instance list: `Nightly 10-28`.
-    pub fn horizon_short(&self) -> String {
+    pub fn sunrise_short(&self) -> String {
         match crate::nightly::date_of(&self.base) {
             Some(date) => format!("Nightly {}", &date[5..]),
             None => crate::nightly::short_commit(&self.base),
@@ -107,9 +107,9 @@ impl Build {
     }
 }
 
-/// A release or Nightly as a player reads it beside "Horizon": `v0.2.93` as it is,
+/// A release or Nightly as a player reads it beside "Sunrise": `v0.2.93` as it is,
 /// `nightly-2026-10-29-4baa571` as `Nightly 2026-10-29`.
-pub fn horizon_label(version: &str) -> String {
+pub fn sunrise_label(version: &str) -> String {
     match crate::nightly::date_of(version) {
         Some(date) => format!("Nightly {date}"),
         None => crate::nightly::short_commit(version),
@@ -117,14 +117,14 @@ pub fn horizon_label(version: &str) -> String {
 }
 
 /// Enabled wasm packages that need the patchable engine, never native compilation.
-pub fn wasm_points(home: &Path) -> Vec<horizon_mod_package::index::native::Bundle> {
+pub fn wasm_points(home: &Path) -> Vec<sunrise_mod_package::index::native::Bundle> {
     use std::io::Read;
     wasm_hmods(home)
         .into_iter()
         .filter_map(|path| {
             let file = fs::File::open(&path).ok()?;
             let mut zip = zip::ZipArchive::new(file).ok()?;
-            let package = horizon_mod_package::Package::read_zip(&mut zip).ok()?;
+            let package = sunrise_mod_package::Package::read_zip(&mut zip).ok()?;
             if package.manifest.wasm.is_none()
                 || package.manifest.inject.is_empty()
                 || !java::is_enabled(home, &package.manifest.id)
@@ -142,7 +142,7 @@ pub fn wasm_points(home: &Path) -> Vec<horizon_mod_package::index::native::Bundl
                 entry.read_to_end(&mut bytes).ok()?;
                 files.insert(name, bytes);
             }
-            Some(horizon_mod_package::index::native::Bundle {
+            Some(sunrise_mod_package::index::native::Bundle {
                 manifest: package.manifest,
                 files,
             })
@@ -150,13 +150,13 @@ pub fn wasm_points(home: &Path) -> Vec<horizon_mod_package::index::native::Bundl
         .collect()
 }
 
-/// The native mods turned on in game folder `home`, read from their `.hmod`s. One that can't be
+/// The native mods turned on in game folder `home`, read from their `.smod`s. One that can't be
 /// read always counts, with its file name and no version, so it needs a build (which says why):
 /// the on/off list is keyed by the manifest id, which an unreadable file can't give.
 pub fn enabled(home: &Path) -> Vec<Mod> {
     let mut out = Vec::new();
     for path in hmods(home) {
-        match horizon_mod_package::index::native::Bundle::read(&path) {
+        match sunrise_mod_package::index::native::Bundle::read(&path) {
             Ok(b) => {
                 if java::is_enabled(home, &b.manifest.id) {
                     let digest = native_mods::digest(
@@ -175,26 +175,26 @@ pub fn enabled(home: &Path) -> Vec<Mod> {
     out
 }
 
-/// The native mods turned on in game folder `home` that pin Horizon commit `revision`.
+/// The native mods turned on in game folder `home` that pin Sunrise commit `revision`.
 pub fn pinning(home: &Path, revision: &str) -> Vec<String> {
     bundles_on(home)
         .into_iter()
-        .filter(|b| b.manifest.native.as_ref().expect("native bundle").horizon == revision)
+        .filter(|b| b.manifest.native.as_ref().expect("native bundle").sunrise == revision)
         .map(|b| b.manifest.id)
         .collect()
 }
 
 /// The readable native mods turned on in game folder `home`.
-pub fn bundles_on(home: &Path) -> Vec<horizon_mod_package::index::native::Bundle> {
+pub fn bundles_on(home: &Path) -> Vec<sunrise_mod_package::index::native::Bundle> {
     hmods(home)
         .into_iter()
-        .filter_map(|path| horizon_mod_package::index::native::Bundle::read(&path).ok())
+        .filter_map(|path| sunrise_mod_package::index::native::Bundle::read(&path).ok())
         .filter(|b| java::is_enabled(home, &b.manifest.id))
         .collect()
 }
 
 /// Paths declared by a code package, in manifest order.
-pub fn declared_internals(manifest: &horizon_mod_package::Manifest) -> Vec<String> {
+pub fn declared_internals(manifest: &sunrise_mod_package::Manifest) -> Vec<String> {
     manifest
         .internals
         .iter()
@@ -211,7 +211,7 @@ pub struct Installed {
     pub internals: Vec<String>,
     pub origin: Option<crate::github_mods::Origin>,
     /// The validated package icon, or the package error (the file remains removable).
-    pub icon: Result<Option<Arc<horizon_mod_package::icon::Icon>>, String>,
+    pub icon: Result<Option<Arc<sunrise_mod_package::icon::Icon>>, String>,
 }
 
 /// Discover the actual files, not just GitHub sidecars. Registry files already have a row.
@@ -224,7 +224,7 @@ pub fn untracked(home: &Path) -> Vec<Installed> {
             if !path.is_file() || tracked.entries.iter().any(|e| e.file == file) {
                 return None;
             }
-            let package = horizon_mod_package::manifest::Package::read(&path);
+            let package = sunrise_mod_package::manifest::Package::read(&path);
             let (id, version) = package
                 .as_ref()
                 .map(|p| (p.manifest.id.clone(), p.manifest.version.clone()))
@@ -302,11 +302,11 @@ fn parse_built(about: &serde_json::Value) -> Vec<Mod> {
 }
 
 /// What [`state`] depends on, cheap to read on every frame: the folder, the version, the on/off
-/// list and each `.hmod`'s size and time. The Mods page reads the mods again when it changes.
+/// list and each `.smod`'s size and time. The Mods page reads the mods again when it changes.
 pub fn fingerprint(home: &Path, version: Option<&str>) -> String {
     let mut out = format!("{}\n{version:?}\n", home.display());
     // The on/off list (`browser::java::is_enabled`).
-    out += &fs::read_to_string(home.join("horizon-mods.txt")).unwrap_or_default();
+    out += &fs::read_to_string(home.join("sunrise-mods.txt")).unwrap_or_default();
     for path in hmods(home)
         .into_iter()
         .chain(wasm_hmods(home))
@@ -321,12 +321,12 @@ pub fn fingerprint(home: &Path, version: Option<&str>) -> String {
 }
 
 fn wasm_hmods(home: &Path) -> Vec<std::path::PathBuf> {
-    let mut paths: Vec<_> = fs::read_dir(home.join(horizon_mod_package::mod_list::DIR))
+    let mut paths: Vec<_> = fs::read_dir(home.join(sunrise_mod_package::mod_list::DIR))
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "hmod"))
+        .filter(|p| p.extension().is_some_and(|e| e == "smod"))
         .collect();
     paths.sort();
     paths
@@ -336,7 +336,7 @@ fn hmods(home: &Path) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(home.join(native_mods::INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hmod"));
+    paths.retain(|p| p.extension().is_some_and(|e| e == "smod"));
     paths.sort();
     paths
 }
@@ -364,14 +364,14 @@ mod tests {
         let header = "id='owner'\nname='Owner'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\ninternals=[{path='Game',hash='game'},{path='Game::world',kind='field',hash='world'}]\n";
         for target in [
             format!(
-                "[native]\ngame='26.3'\nhorizon='{}'\nmixins='{}'\n",
+                "[native]\ngame='26.3'\nsunrise='{}'\nmixins='{}'\n",
                 "a".repeat(40),
                 "b".repeat(40)
             ),
             format!("[wasm]\nsha512='{}'\ntoolchain='1.99.1'\n", "0".repeat(128)),
         ] {
             let manifest =
-                horizon_mod_package::Manifest::parse(&format!("{header}{target}")).unwrap();
+                sunrise_mod_package::Manifest::parse(&format!("{header}{target}")).unwrap();
             assert_eq!(declared_internals(&manifest), ["Game", "Game::world"]);
         }
     }
@@ -379,10 +379,10 @@ mod tests {
     #[test]
     fn wasm_package_changes_invalidate_the_build_view_cache() {
         let home = std::env::temp_dir().join(format!("wasm-build-view-{}", std::process::id()));
-        fs::create_dir_all(home.join(horizon_mod_package::mod_list::DIR)).unwrap();
+        fs::create_dir_all(home.join(sunrise_mod_package::mod_list::DIR)).unwrap();
         let package = home
-            .join(horizon_mod_package::mod_list::DIR)
-            .join("example.hmod");
+            .join(sunrise_mod_package::mod_list::DIR)
+            .join("example.smod");
         fs::write(&package, b"a").unwrap();
         let before = fingerprint(&home, None);
         fs::write(&package, b"ab").unwrap();
@@ -394,7 +394,7 @@ mod tests {
         );
         let native = home.join(native_mods::INSTALLED);
         fs::create_dir_all(&native).unwrap();
-        fs::write(native.join("example.hmod"), b"a").unwrap();
+        fs::write(native.join("example.smod"), b"a").unwrap();
         assert_ne!(
             before,
             fingerprint(&home, None),
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn wasm_listeners_select_patchable_build_without_native_compilation() {
         let home = tempfile::tempdir().unwrap();
-        let folder = home.path().join(horizon_mod_package::mod_list::DIR);
+        let folder = home.path().join(sunrise_mod_package::mod_list::DIR);
         fs::create_dir_all(&folder).unwrap();
         // A shared wasm member with the required three exports.
         let mut module = b"\0asm\x01\0\0\0".to_vec();
@@ -418,7 +418,7 @@ mod tests {
         section(1, &[1, 0x60, 0, 0]);
         section(3, &[1, 0]);
         let mut exports = vec![3];
-        for name in ["horizon_layout", "horizon_in", "horizon_hook"] {
+        for name in ["sunrise_layout", "sunrise_in", "sunrise_hook"] {
             exports.push(name.len() as u8);
             exports.extend(name.as_bytes());
             exports.extend([0, 0]);
@@ -427,15 +427,15 @@ mod tests {
         section(10, &[1, 2, 0, 0x0b]);
         for inject in [false, true] {
             let rows = if inject {
-                "[[inject]]\nid='count'\nat=\"horizon_client::game::Game<'_>::tick\"\nkind='head'\nwith='tick'\n"
+                "[[inject]]\nid='count'\nat=\"sunrise_client::game::Game<'_>::tick\"\nkind='head'\nwith='tick'\n"
             } else {
                 ""
             };
-            let manifest = format!("id='wasm_test'\nname='Wasm test'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\n{rows}[wasm]\nsha512='{}'\ntoolchain='1.99.1'\nbuilt_with='selection fixture'\n", horizon_mod_package::manifest::sha512_of(&module));
+            let manifest = format!("id='wasm_test'\nname='Wasm test'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\n{rows}[wasm]\nsha512='{}'\ntoolchain='1.99.1'\nbuilt_with='selection fixture'\n", sunrise_mod_package::manifest::sha512_of(&module));
             let bytes =
-                horizon_mod_package::Package::write_files(&manifest, &[("mod.wasm", &module)])
+                sunrise_mod_package::Package::write_files(&manifest, &[("mod.wasm", &module)])
                     .unwrap();
-            fs::write(folder.join("test.hmod"), bytes).unwrap();
+            fs::write(folder.join("test.smod"), bytes).unwrap();
             java::set_enabled(home.path(), "wasm_test", true).unwrap();
             assert_eq!(enabled(home.path()).len(), usize::from(inject));
             if inject {
@@ -466,13 +466,13 @@ mod tests {
         ] {
             let path = home
                 .join(native_mods::INSTALLED)
-                .join(format!("{file}.hmod"));
+                .join(format!("{file}.smod"));
             let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
             let manifest = format!(
-                "id = '{id}'\nname = '{id}'\nversion = '1.2'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nhorizon = '{pin}'\nmixins = '{pin}'\n"
+                "id = '{id}'\nname = '{id}'\nversion = '1.2'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nsunrise = '{pin}'\nmixins = '{pin}'\n"
             );
             for (name, bytes) in [
-                ("horizon-mod.toml", manifest.as_str()),
+                ("sunrise-mod.toml", manifest.as_str()),
                 (
                     "Cargo.toml",
                     "[package]\nname = 'unrelated'\nversion = '9'\n",
@@ -502,14 +502,14 @@ mod tests {
         .unwrap();
         installed::Installed {
             entries: vec![installed::Entry {
-                source: SourceId::Horizon,
+                source: SourceId::Sunrise,
                 project: "registry".into(),
                 slug: "registry".into(),
                 title: "Registry mod".into(),
                 kind: Kind::Mod,
                 version: "1.2".into(),
                 number: "1.2".into(),
-                file: format!("{}/registry.hmod", native_mods::INSTALLED),
+                file: format!("{}/registry.smod", native_mods::INSTALLED),
                 checksum: String::new(),
                 page: String::new(),
                 dependency: false,
@@ -561,7 +561,7 @@ mod tests {
             "a stale origin is not an installed mod"
         );
         fs::write(
-            home.join(native_mods::INSTALLED).join("broken.hmod"),
+            home.join(native_mods::INSTALLED).join("broken.smod"),
             b"broken",
         )
         .unwrap();
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn native_mods_json_gives_the_built_mods() {
         let about = serde_json::json!({
-            "base": "v0.1.0", "horizon": "abc", "rust": "1.99.1",
+            "base": "v0.1.0", "sunrise": "abc", "rust": "1.99.1",
             "mods": [{"id": "zoom", "version": "2.1"}, {"id": "x"}, {"id": "y", "version": "1", "sha256": "ab"}],
         });
         assert_eq!(parse_built(&about), [m("zoom", "2.1"), d("y", "1", "ab")]);
@@ -653,33 +653,33 @@ mod tests {
     }
 
     #[test]
-    fn builds_name_the_horizon_they_were_built_on() {
-        assert_eq!(horizon_label("v0.2.93"), "v0.2.93");
+    fn builds_name_the_sunrise_they_were_built_on() {
+        assert_eq!(sunrise_label("v0.2.93"), "v0.2.93");
         assert_eq!(
-            horizon_label("nightly-2026-10-29-4baa571"),
+            sunrise_label("nightly-2026-10-29-4baa571"),
             "Nightly 2026-10-29"
         );
-        assert_eq!(horizon_label("nightly-2026-10-29"), "Nightly 2026-10-29");
+        assert_eq!(sunrise_label("nightly-2026-10-29"), "Nightly 2026-10-29");
         let build = Build {
             base: "nightly-2026-10-28-0c02067".into(),
             ..Build::default()
         };
-        assert_eq!(build.horizon(), "Nightly 2026-10-28");
-        assert_eq!(build.horizon_short(), "Nightly 10-28");
+        assert_eq!(build.sunrise(), "Nightly 2026-10-28");
+        assert_eq!(build.sunrise_short(), "Nightly 10-28");
         let release = Build {
             base: "v0.2.93".into(),
             ..Build::default()
         };
-        assert_eq!(release.horizon_short(), "v0.2.93");
+        assert_eq!(release.sunrise_short(), "v0.2.93");
         assert_eq!(Build::read("v0.1.0"), None, "not a native build");
     }
 
     /// A build from before pins were recorded that compiled another commit than its Nightly's
     #[test]
     fn only_hmods_in_the_native_folder_are_native() {
-        assert!(is_native_file("horizon-native-mods/veinminer.hmod"));
-        assert!(!is_native_file("horizon-native-mods-old/x.hmod"));
-        assert!(!is_native_file("horizon-mods/zoom.hmod"));
+        assert!(is_native_file("sunrise-native-mods/veinminer.smod"));
+        assert!(!is_native_file("sunrise-native-mods-old/x.smod"));
+        assert!(!is_native_file("sunrise-mods/zoom.smod"));
         assert!(!is_native_file("resourcepacks/x.zip"));
     }
 

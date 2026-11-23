@@ -20,16 +20,16 @@ def check(binary):
     imports = {name.lower() for name in pe_imports(binary.read_bytes())}
     if not imports.intersection(("version.dll", "winmm.dll")):
         raise RuntimeError("launcher imports neither bait DLL; update the DLL loading fixture")
-    with tempfile.TemporaryDirectory(prefix="horizon-dll-search-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="sunrise-dll-search-") as scratch:
         root = Path(scratch)
         exe_dir, cwd = root / "bin", root / "cwd"
         exe_dir.mkdir()
         cwd.mkdir()
         homes = {key: root / key for key in (
-            "HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
-            "HORIZON_LAUNCHER_TRASH", "HORIZON_LAUNCHER_CLIPBOARD", "HORIZON_LAUNCHER_DESKTOP",
+            "SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+            "SUNRISE_LAUNCHER_TRASH", "SUNRISE_LAUNCHER_CLIPBOARD", "SUNRISE_LAUNCHER_DESKTOP",
         )}
-        env = lab.game_env(**homes, HORIZON_TELEMETRY_URL="off")
+        env = lab.game_env(**homes, SUNRISE_TELEMETRY_URL="off")
 
         def version(exe):
             result = subprocess.run([str(exe), "--version"], cwd=cwd, env=env,

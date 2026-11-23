@@ -2,7 +2,7 @@
 #[derive(Default)]
 struct Mod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl mod_api::Hooks for Mod {}
 
 /// Called by a helper; formats with the mod's own registry dependency.

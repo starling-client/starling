@@ -33,16 +33,16 @@ def changed_pixels(first, second):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game", type=Path, default=ROOT / "target/fast/horizon-client")
-    parser.add_argument("--ctl", type=Path, default=ROOT / "target/fast/horizon-ctl")
-    parser.add_argument("--resources", type=Path, default=ROOT / ".local/horizon-client/26.3")
+    parser.add_argument("--game", type=Path, default=ROOT / "target/fast/sunrise-client")
+    parser.add_argument("--ctl", type=Path, default=ROOT / "target/fast/sunrise-ctl")
+    parser.add_argument("--resources", type=Path, default=ROOT / ".local/sunrise-client/26.3")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     output = (args.output or Path(tempfile.mkdtemp(prefix="spawner-display-"))).resolve()
     output.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="game-", dir=output))
     homes = {}
-    for key in ("HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+    for key in ("SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         homes[key] = work / key
         homes[key].mkdir()
     env = lab.game_env(**homes)

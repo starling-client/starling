@@ -8,18 +8,18 @@ It does not touch the typed Parts generator or the injection generators.
 
 ## Ownership
 
-- `horizon-mod-runtime` depends only on `horizon-core`. It owns attachment storage,
+- `sunrise-mod-runtime` depends only on `sunrise-core`. It owns attachment storage,
   serialization, synchronization queues, publication/lifetime/observer primitives,
   the generic query index, registration requests, numeric name tables, dimension
   numbering and generic effect/block-entity registry resolution.
 - API key newtypes, per-thread engine block mappings, typed Parts and dispatch stay
-  in `horizon-mod-api`. Its public attachment names are re-exported from the runtime.
+  in `sunrise-mod-api`. Its public attachment names are re-exported from the runtime.
 - The per-dimension index alias, handle construction, observers and Game tests stay
   in the game: they name `Game` or API handles. The reusable binding implementation
   becomes `AttachmentLifetime::bind<H>`; callers supply a resolved holder.
 - World exports no compatibility attachment module. World, client, client-lib,
   render, protocol and mod-api have direct runtime dependencies. Client-lib builds
-  the sources physically stored under horizon-client.
+  the sources physically stored under sunrise-client.
 
 ## Declared seam
 

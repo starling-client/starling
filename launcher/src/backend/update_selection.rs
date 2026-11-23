@@ -13,8 +13,8 @@ pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) 
         Some(s)
             if crate::build_import::is_imported(s)
                 || crate::developer_install::uses_developer(s)
-                || horizon_release_sign::Channel::of(s)
-                    == Some(horizon_release_sign::Channel::Snapshot) =>
+                || sunrise_release_sign::Channel::of(s)
+                    == Some(sunrise_release_sign::Channel::Snapshot) =>
         {
             false
         }

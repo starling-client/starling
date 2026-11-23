@@ -4,7 +4,7 @@ from tools import test_feature_sort_parity as sort
 
 class FeatureSortCorpusTests(unittest.TestCase):
     def test_identity_duplicates_step_gaps_and_resource_orderings(self):
-        resources = {'a': [[], ['horizon:a', 'horizon:b']], 'b': [['horizon:c'], ['horizon:a']]}
+        resources = {'a': [[], ['sunrise:a', 'sunrise:b']], 'b': [['sunrise:c'], ['sunrise:a']]}
         fixtures = list(sort.corpus(resources))
         self.assertEqual(fixtures, list(sort.corpus(resources)))
         self.assertTrue(any(f['biomes'] == [[[0, 1]], [[1, 0]]] for f in fixtures))

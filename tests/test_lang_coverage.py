@@ -244,10 +244,10 @@ class ReviewTests(unittest.TestCase):
     def test_a_crates_own_folder_is_reported_and_its_reviews_kept_apart(self):
         with tempfile.TemporaryDirectory() as tmp:
             game, crates, review = Path(tmp) / "game", Path(tmp) / "crates", Path(tmp) / "review"
-            friends = crates / "horizon-friends" / "assets" / "lang"
+            friends = crates / "sunrise-friends" / "assets" / "lang"
             game.mkdir()
             friends.mkdir(parents=True)
-            (crates / "horizon-plain" / "src").mkdir(parents=True)  # no lang folder: not reported
+            (crates / "sunrise-plain" / "src").mkdir(parents=True)  # no lang folder: not reported
             write(game, "en_us.json", '{\n  "a": "Apple"\n}\n')
             write(game, "xx_yy.json", '{\n  "a": "Manzana"\n}\n')
             write(friends, "en_us.json", '{\n  "f.one": "One",\n  "f.two": "Two"\n}\n')
@@ -257,8 +257,8 @@ class ReviewTests(unittest.TestCase):
             code, out, _ = run(*common, "--summary")
             self.assertEqual(code, 0)
             self.assertIn("GAME xx_yy 1/1 keys, missing 0", out)
-            self.assertIn("GAME horizon-friends xx_yy 1/2 keys, missing 1", out)
-            self.assertNotIn("horizon-plain", out)
+            self.assertIn("GAME sunrise-friends xx_yy 1/2 keys, missing 1", out)
+            self.assertNotIn("sunrise-plain", out)
             code, _, err = run(*common, "--fail-under", "90")
             self.assertEqual(code, 1)
             self.assertIn("xx_yy: 50.0%", err)
@@ -267,18 +267,18 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(code, 0, out)
             self.assertEqual(json.loads((review / "game" / "xx_yy.json").read_text(encoding="utf-8")),
                              {"a": "Manzana"})
-            self.assertEqual(json.loads((review / "horizon-friends" / "xx_yy.json").read_text(encoding="utf-8")),
+            self.assertEqual(json.loads((review / "sunrise-friends" / "xx_yy.json").read_text(encoding="utf-8")),
                              {"f.one": "Uno"})
             # Marking the game's folder again keeps the crate's record.
             code, _, _ = run(*common, "--lang", "xx_yy", "--mark-reviewed", "a")
             self.assertEqual(code, 0)
-            self.assertTrue((review / "horizon-friends" / "xx_yy.json").exists())
+            self.assertTrue((review / "sunrise-friends" / "xx_yy.json").exists())
             code, _, err = run(*common, "--lang", "xx_yy", "--mark-reviewed", "nosuch")
             self.assertEqual(code, 1)
             self.assertIn("no key 'nosuch'", err)
             # A scratch --game-dir alone leaves the repository's crates out.
             code, out, _ = run("--game-dir", str(game), "--review-dir", str(review), "--game-only", "--summary")
-            self.assertNotIn("horizon-friends", out)
+            self.assertNotIn("sunrise-friends", out)
 
     def test_every_repository_record_belongs_to_a_lang_file_and_reads(self):
         folders = [("game", lang_coverage.GAME), ("launcher", lang_coverage.LAUNCHER),

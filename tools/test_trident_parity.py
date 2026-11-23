@@ -12,7 +12,7 @@ beside the block.
 The vanilla side is `VanillaArrowOracle`: the block phase it ticks is
 `AbstractArrow`'s, shared verbatim with `ThrownTrident` (the trident only adds
 the `inGroundTime > 4`/Loyalty pre-step before `super.tick()`), so we do not
-duplicate the oracle for the trident entity. Horizon's side is
+duplicate the oracle for the trident entity. Sunrise's side is
 `examples/probe/trident_probe.rs`, which calls `arrows::clip_block_stop`, the
 same function the game's trident tick calls.
 
@@ -101,15 +101,15 @@ def main():
     libraries = baking.client_libraries()
     build = lab.LOCAL / 'trident-parity'
     build.mkdir(parents=True, exist_ok=True)
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
-    oracle = ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaArrowOracle.java'
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
+    oracle = ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaArrowOracle.java'
     sources = [Path(__file__), ROOT / 'tools/oracle_harness.py', ROOT / 'tools/lab.py',
                ROOT / 'tools/test_rust_parity.py', ROOT / 'tools/test_model_baking_parity.py', oracle,
                ROOT / 'Cargo.toml', ROOT / 'Cargo.lock',
-               ROOT / 'crates/horizon-client/examples/probe/trident_probe.rs',
-               ROOT / 'crates/horizon-client/examples/probe/main.rs',
-               ROOT / 'crates/horizon-client/src/arrows.rs',
-               ROOT / 'crates/horizon-client/src/game/items/trident.rs']
+               ROOT / 'crates/sunrise-client/examples/probe/trident_probe.rs',
+               ROOT / 'crates/sunrise-client/examples/probe/main.rs',
+               ROOT / 'crates/sunrise-client/src/arrows.rs',
+               ROOT / 'crates/sunrise-client/src/game/items/trident.rs']
     tested = base.source_hashes(sources)
     cases = fixtures()
     (build / 'inputs.txt').write_text(''.join(json.dumps(row, separators=(',', ':')) + '\n'

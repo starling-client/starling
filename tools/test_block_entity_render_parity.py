@@ -6,10 +6,10 @@ block entity, sets its animation fields, runs the real BlockEntityRenderer's
 extractRenderState and submit, and captures what it submits: model vertices
 after setupAnim and the pose stack (sprite-local UVs, tint, normal, light),
 text calls and items. `examples/probe/block_entity_render_fixture` replays the case
-through Horizon's BlockEntityRenderer. Quads are matched by texture and
-position; colours compare vanilla's tint with Horizon's and world models compare
+through Sunrise's BlockEntityRenderer. Quads are matched by texture and
+position; colours compare vanilla's tint with Sunrise's and world models compare
 their face normal too, since the entity shader (and a shader pack) applies
-`minecraft_mix_light` from it rather than Horizon baking the shade. The loom's
+`minecraft_mix_light` from it rather than Sunrise baking the shade. The loom's
 GUI preview keeps its baked `Lighting.Entry.ITEMS_FLAT` colour.
 
   test_block_entity_render_parity.py [--filter SUBSTRING] [--detail N] [--tolerance EPS]
@@ -28,7 +28,7 @@ try:
 except ImportError:
     import lab, test_rust_parity as base, test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple',
         'blue', 'brown', 'green', 'red', 'black']
 HORIZONTAL = ['north', 'south', 'west', 'east']
@@ -159,7 +159,7 @@ def cases():
 
 
 def light_coords(light):
-    """Horizon light (sky*16 low byte, block*16 next) as vanilla light coords."""
+    """Sunrise light (sky*16 low byte, block*16 next) as vanilla light coords."""
     return ((light & 0xFF) << 16) | ((light >> 8) & 0xFF)
 
 
@@ -198,7 +198,7 @@ def vanilla_quads(submits, lit=(L0, L1), shaded=False):
 
     The world path expects the tint alone and the face normal (the entity shader
     applies `minecraft_mix_light` from it, as a shader pack does); GUI previews
-    (the loom) expect Horizon's baked `Lighting.Entry.ITEMS_FLAT` colour.
+    (the loom) expect Sunrise's baked `Lighting.Entry.ITEMS_FLAT` colour.
     """
     quads, other = [], []
     for s in submits:
@@ -211,7 +211,7 @@ def vanilla_quads(submits, lit=(L0, L1), shaded=False):
             q = verts[i:i + 4]
             tint = q[0][3] & 0xFFFFFFFF
             # Custom geometry (beacon beams) is unlit; GUI models are baked on
-            # the CPU like Horizon's item renderer.
+            # the CPU like Sunrise's item renderer.
             b = mix(q[0][8:11], lit) if (shaded and not custom) else 1.0
             ch = lambda shift: int(((tint >> shift) & 255) * b)
             quads.append({'texture': s['texture'], 'v': [v[:3] + v[4:6] for v in q],
@@ -262,10 +262,10 @@ def compare_case(v, r, tol):
     rq = r.get('quads', [])
     if len(vq) != len(rq):
         tex = lambda qs: sorted({q['texture'] for q in qs})
-        problems.append(f'{len(vq)} vanilla quads {tex(vq)} vs {len(rq)} Horizon quads {tex(rq)}')
+        problems.append(f'{len(vq)} vanilla quads {tex(vq)} vs {len(rq)} Sunrise quads {tex(rq)}')
     pairs, extra = pair(vq, rq)
     for b in extra[:1]:
-        problems.append(f'extra Horizon quad {b["texture"]} {b["v"]}')
+        problems.append(f'extra Sunrise quad {b["texture"]} {b["v"]}')
     for a, b in pairs:
         if b is None:
             problems.append(f'missing {a["texture"]} quad {a["v"]}')
@@ -275,7 +275,7 @@ def compare_case(v, r, tol):
             problems.append(f'{a["texture"]} vertices {a["v"]} != {b["v"]}')
             break
         if a['custom']:
-            # Horizon packs the beam sprite's v range into the light bytes (its shader wraps v).
+            # Sunrise packs the beam sprite's v range into the light bytes (its shader wraps v).
             got = b['color']
             if [got & 255, (got >> 8) & 255, (got >> 16) & 255, got >> 24] != a['rgb'] + [a['alpha']]:
                 problems.append(f'{a["texture"]} colour {a["rgb"]}/{a["alpha"]} != {got:#x}')
@@ -285,7 +285,7 @@ def compare_case(v, r, tol):
             problems.append(f'overlay {a["overlay"]}')
         got = b['color']
         rgb = [got & 255, (got >> 8) & 255, (got >> 16) & 255]
-        # A zero-area quad shows nothing: vanilla shades it by its face normal, Horizon cannot derive one.
+        # A zero-area quad shows nothing: vanilla shades it by its face normal, Sunrise cannot derive one.
         if area(a['v']) > 1e-9 and (any(abs(x - y) > 1 for x, y in zip(a['rgb'], rgb)) or (got >> 24) != a['alpha']):
             problems.append(f'{a["texture"]} colour {a["rgb"]}/{a["alpha"]} != {rgb}/{got >> 24} at {a["v"]}')
             break
@@ -306,7 +306,7 @@ def compare_case(v, r, tol):
     vg = [dict(g, outline=t['outline']) for t in vt for g in t['glyphs']]
     rg = [dict(g, outline=t['outline']) for t in rt for g in t['glyphs']]
     if len(vg) != len(rg):
-        problems.append(f'{len(vg)} vanilla text glyphs vs {len(rg)} Horizon text glyphs')
+        problems.append(f'{len(vg)} vanilla text glyphs vs {len(rg)} Sunrise text glyphs')
     for a, b in zip(vg, rg):
         for k in ('text', 'x', 'y', 'color', 'outline', 'style', 'light', 'matrix'):
             av, bv = a[k], b[k]
@@ -332,7 +332,7 @@ def compare_case(v, r, tol):
         a = sorted((tuple(p) for t in va for p in t.get('textVertices', [])), key=key)
         b = sorted((tuple(p) for t in ra for p in t['textVertices']), key=key)
         if len(a) != len(b) or any(any(abs(x - y) > 1e-4 for x, y in zip(p[:3], q[:3])) or p[3] != q[3] for p, q in zip(a, b)):
-            problems.append(f'text geometry differs ({len(a)} vanilla vs {len(b)} Horizon vertices)')
+            problems.append(f'text geometry differs ({len(a)} vanilla vs {len(b)} Sunrise vertices)')
     return problems
 
 
@@ -358,12 +358,12 @@ def main():
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaTextDisplayRenderOracle', 'VanillaBlockEntityRenderOracle'))], 'compile-java')
-    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaBlockEntityRenderOracle',
+    run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaBlockEntityRenderOracle',
          inputs, build / 'vanilla.jsonl'], 'vanilla')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     textures = sorted({s['texture'] for v in vanilla for s in v.get('submits', []) if 'texture' in s})
     (build / 'textures.txt').write_text(''.join(t + '\n' for t in textures))
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'block_entity_render_fixture', resources, inputs, build / 'textures.txt', build / 'rust.jsonl'], 'rust')
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]
     assert len(vanilla) == len(rust), (len(vanilla), len(rust))
@@ -384,7 +384,7 @@ def main():
         else:
             passed += 1
     for reason, blocks in sorted(skipped.items()):
-        print(f'NOT RENDERED by Horizon ({reason}): {", ".join(sorted(blocks))}')
+        print(f'NOT RENDERED by Sunrise ({reason}): {", ".join(sorted(blocks))}')
     for block, error in sorted(errors.items()):
         print(f'ORACLE ERROR {block}: {error}')
     for block, items in sorted(groups.items()):

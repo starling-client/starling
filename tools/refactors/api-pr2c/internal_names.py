@@ -41,7 +41,7 @@ if __name__ == "__main__":
     import sys
     only = sys.argv[2] if len(sys.argv) == 3 and sys.argv[1] == '--only' else None
     parsed = subprocess.check_output(
-        ["cargo", "run", "--quiet", "-p", "horizon-mod-api-gen", "--example", "audit_game_methods"], text=True,
+        ["cargo", "run", "--quiet", "-p", "sunrise-mod-api-gen", "--example", "audit_game_methods"], text=True,
     )
     definitions = [line.split("\t") for line in parsed.splitlines()]
     table = Path(__file__).with_name("internal-renames.tsv")

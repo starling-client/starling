@@ -2,7 +2,7 @@
 
 ## cap-std / cap-fs-ext
 
-`horizon-client` directly uses `cap-std` and `cap-fs-ext` 3.4.6 from
+`sunrise-client` directly uses `cap-std` and `cap-fs-ext` 3.4.6 from
 [the cap-std project](https://github.com/bytecodealliance/cap-std) for confined mod file access.
 Copyrights are retained by their contributors. Both crates offer Apache-2.0 WITH LLVM-exception,
 Apache-2.0 or MIT; the MIT option is reproduced here:
@@ -33,35 +33,35 @@ DEALINGS IN THE SOFTWARE.
 
 ## horizon-mixins
 
-The raw injection schema in `crates/horizon-mod-package/src/manifest.rs` is adapted from
+The raw injection schema in `crates/sunrise-mod-package/src/manifest.rs` is adapted from
 [horizon-mixins](https://github.com/horizon-rust/horizon-mixins/tree/ddd9700b21997c95d95ac6ee5ecafe3830cf622a),
 Copyright (c) 2026 levzzz, under the MIT license
-(`crates/horizon-mod-package/HORIZON_MIXINS_LICENSE`).
+(`crates/sunrise-mod-package/HORIZON_MIXINS_LICENSE`).
 
 ## Code removed for its license
 
-Horizon once shipped three pieces of code under MIT that came from projects whose licenses don't allow that. All
+Sunrise once shipped three pieces of code under MIT that came from projects whose licenses don't allow that. All
 three are gone from main. They are listed here for anyone who holds an older commit, tag or release: in those
 versions, that code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original
 license.
 
-- **Shader packs written from Iris's source.** `crates/horizon-shaderpack` and the render stages that used it were
+- **Shader packs written from Iris's source.** `crates/sunrise-shaderpack` and the render stages that used it were
   written from the source of [Iris](https://github.com/IrisShaders/Iris) (LGPL-3.0, copyright the Iris contributors).
   They were added from 15 October 2026 (`b22583d057`), shipped in the game releases `v2026.10.16.02` to `v0.2.46`,
   and were removed on 24 October 2026 ([#1561](https://github.com/horizon-rust/horizon/pull/1561)) after a developer
-  of Iris showed us. Shader packs came back in `crates/horizon-shaders`, first written from a description of the
+  of Iris showed us. Shader packs came back in `crates/sunrise-shaders`, first written from a description of the
   pack format.
-- **Math functions translated from OpenJDK.** In `crates/horizon-core/src/jmath.rs`, `fdlibm::{log, log10, cbrt,
+- **Math functions translated from OpenJDK.** In `crates/sunrise-core/src/jmath.rs`, `fdlibm::{log, log10, cbrt,
   hypot}` were translated from OpenJDK's `java/lang/FdLibm.java` and `round_f32` from its `java/lang/Math.java`
   (GPL-2.0 with the Classpath Exception), and `aarch64::{sin, cos}` from HotSpot's `macroAssembler_aarch64_trig.cpp`
   (GPL-2.0); copyright Oracle and/or its affiliates, and Cavium for that file. The `fdlibm` and `aarch64` functions
   were added on 13 October 2026 (`558d140fca`, first released in `v2026.10.13`). `round_f32` was added on 14 October
-  2026 as `java_round` in `crates/horizon-client/src/mipmap.rs` (`95db0fce9d`) and moved into `jmath.rs` on 3
+  2026 as `java_round` in `crates/sunrise-client/src/mipmap.rs` (`95db0fce9d`) and moved into `jmath.rs` on 3
   November ([#7770](https://github.com/horizon-rust/horizon/pull/7770)). All of them were replaced in
   [#11944](https://github.com/horizon-rust/horizon/pull/11944) by code written without OpenJDK's sources, from Sun's
   fdlibm C sources, the Java SE API documentation and a description of the behaviour, and checked against a JVM
   ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
-- **Java's `HashMap` translated from OpenJDK.** `crates/horizon-world/src/java_hash_map.rs`, which reproduces the
+- **Java's `HashMap` translated from OpenJDK.** `crates/sunrise-world/src/java_hash_map.rs`, which reproduces the
   iteration order of `java.util.HashMap`, was translated from OpenJDK's `java/util/HashMap.java` (GPL-2.0 with the
   Classpath Exception; copyright Oracle and/or its affiliates). It was added on 7 October 2026 (`118e93ea51` and
   `194db0dbb4`, first released in `v2026.10.12`). It was replaced in
@@ -71,11 +71,11 @@ license.
 
 ## Catnip / Ponder
 
-`crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
+`crates/sunrise-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
 UV rules of Catnip's `FluidRenderHelper` from Ponder 1.0.82 for Minecraft 1.21.1
 (`net.createmod.ponder:ponder-neoforge:1.0.82+mc1.21.1`). Copyright (c) 2022 The Create Team,
 licensed under MIT (`LICENSE_Ponder` in that artifact); the full license heads the Rust file.
-The native renderer uses Horizon's own block-sprite arrays, pose and light packing. The
+The native renderer uses Sunrise's own block-sprite arrays, pose and light packing. The
 development-only oracle calls the unchanged helper from the player's local artifact. No
 original classes, game shaders, textures or prepared resources are distributed here.
 
@@ -97,7 +97,7 @@ Apache-2.0; both licenses are in that folder
 `third_party/android-activity` is [android-activity](https://github.com/rust-mobile/android-activity)
 0.6.1 by the rust-mobile developers, without its `android-games-sdk` folder (GameActivity's, which
 Starling does not build). On 64-bit Android its NativeActivity thread, the game's, is started with
-the wasm guest stack (`horizon-guest-stack`). It is licensed under MIT or Apache-2.0; both licenses
+the wasm guest stack (`sunrise-guest-stack`). It is licensed under MIT or Apache-2.0; both licenses
 are in that folder (`LICENSE-MIT`, `LICENSE-APACHE`).
 
 ## naga
@@ -125,7 +125,7 @@ The Windows x64 game folder holds `dxcompiler.dll`, Microsoft's DirectX Shader C
 `ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1`, DLL SHA-256
 `0689e2fee0a1c9df8662a59680469f24e2a3ad7ce6bbbcc9284f7a83172bfc59`, 22,274,872 bytes). The release build downloads
 it and checks both checksums (`tools/ci/fetch_dxc.py`); it is not in this repository. DirectX 12 loads it only on
-integrated GPUs (`crates/horizon-client-render/src/gfx/dx12_compiler.rs`,
+integrated GPUs (`crates/sunrise-client-render/src/gfx/dx12_compiler.rs`,
 [#8513](https://github.com/horizon-rust/horizon/issues/8513)); every other GPU compiles with FXC, part of Windows.
 
 Copyright (c) Microsoft Corporation. It is not covered by Horizon's MIT license. It is distributed under the
@@ -137,7 +137,7 @@ files ship beside the DLL as `DXC-LICENSE-MS.txt` and `DXC-LICENSE-LLVM.txt`, wi
 
 - Only x64: the Windows SDK's list of distributable files
   ([REDIST.TXT lists](https://learn.microsoft.com/en-us/legal/windows-sdk/redist), updated 2024-10-21) names
-  `Redist\D3D\x64\dxcompiler.dll` and `dxil.dll` and their x86 copies, for classic Windows applications (Horizon is
+  `Redist\D3D\x64\dxcompiler.dll` and `dxil.dll` and their x86 copies, for classic Windows applications (Sunrise is
   one), and no ARM64 copy. The release zip's own `LICENSE-MS.txt` refers to a list of distributable files that the zip
   doesn't contain, so the SDK's list is the one followed. The Windows ARM64 build ships no DXC and compiles with FXC.
 - No `dxil.dll`: since DXC 1.8.2505 the compiler signs shaders with its own validator and no longer loads it, and
@@ -165,7 +165,7 @@ change: `mi_popcount` in `include/mimalloc/bits.h` uses mimalloc's portable bit 
 x86/x64 instead of the POPCNT instruction, which CPUs before Nehalem lack (#7264).
 ## Create
 
-`crates/horizon-client/src/game/kinetic_machines.rs` ports
+`crates/sunrise-client/src/game/kinetic_machines.rs` ports
 [Create](https://github.com/Creators-of-Create/Create) 6.0.10's mechanical drill and crushing
 wheels (BlockBreakingKineticBlockEntity, DrillBlockEntity, CrushingWheelBlock and
 CrushingWheelControllerBlockEntity) and the recipes Create makes as the game loads
@@ -178,7 +178,7 @@ BlazeBurnerBlockEntity, AirCurrent, FanProcessing, BeltInventory, BeltConnectorI
 SawBlockEntity, TreeCutter, FunnelBlock, FunnelBlockEntity, BeltFunnelBlock,
 BeltFunnelInteractionHandler, ChuteBlockEntity, MechanicalBearingBlockEntity,
 WindmillBearingBlockEntity, BearingContraption, BlockMovementChecks, ArmBlockEntity,
-ArmInteractionPoint, ArmAngleTarget and their renderers), with `horizon_client::kinetics`'s water wheel
+ArmInteractionPoint, ArmAngleTarget and their renderers), with `sunrise_client::kinetics`'s water wheel
 (WaterWheelBlockEntity) and stress (KineticNetwork), by The Create Team, whose code is under the MIT license
 (`licenses/create-MIT.txt`). Create's assets are All Rights Reserved; none are in this
 repository: a shared port fetches them from Modrinth on the player's device.
@@ -186,36 +186,36 @@ repository: a shared port fetches them from Modrinth on the player's device.
 ## Iris Features
 
 The shape of the horizon a shader pack's sky draws (`gfx/pack_sky.rs`) comes from
-[Iris Features](https://github.com/FatulDev/Horizon-Iris-Compatibility-Mod), a native mod for
+[Iris Features](https://github.com/FatulDev/Sunrise-Iris-Compatibility-Mod), a native mod for
 Horizon, Copyright (c) 2026 Riley-Neeb, under the MIT license (`licenses/iris-features-MIT.txt`).
 
 ## Pixelify Sans
 
-`crates/horizon-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)
+`crates/sunrise-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)
 by The Pixelify Sans Project Authors, licensed under the SIL Open Font License 1.1
-(`crates/horizon-theme/fonts/OFL-PixelifySans.txt`).
+(`crates/sunrise-theme/fonts/OFL-PixelifySans.txt`).
 
 ## Pixelarticons
 
-`crates/horizon-theme/icons/pixel/*.svg` are icons from
+`crates/sunrise-theme/icons/pixel/*.svg` are icons from
 [Pixelarticons](https://github.com/halfmage/pixelarticons) by Gerrit Halfmann, under the MIT
-license (`crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt`). `star.svg` is Horizon's own, drawn on
+license (`crates/sunrise-theme/icons/pixel/LICENSE-pixelarticons.txt`). `star.svg` is Sunrise's own, drawn on
 the same grid.
 
 ## Hugeicons
 
-`crates/horizon-theme/icons/glass/*.svg` are icons from the free set of
+`crates/sunrise-theme/icons/glass/*.svg` are icons from the free set of
 [Hugeicons](https://github.com/hugeicons/hugeicons) (`@hugeicons/core-free-icons` 4.4.0), under
-the MIT license (`crates/horizon-theme/icons/glass/LICENSE-hugeicons.txt`), exported with a 1.6
+the MIT license (`crates/sunrise-theme/icons/glass/LICENSE-hugeicons.txt`), exported with a 1.6
 stroke in `currentColor`.
 
-`crates/horizon-theme/icons/glass/discord.svg` is Discord's logo as drawn by
+`crates/sunrise-theme/icons/glass/discord.svg` is Discord's logo as drawn by
 [Simple Icons](https://github.com/simple-icons/simple-icons) 13.21.0 (CC0 1.0). The logo is Discord's
-trademark, used only on the button that opens Horizon's Discord server.
+trademark, used only on the button that opens Sunrise's Discord server.
 
 ## AMD FidelityFX SDK (FSR 3.1 frame generation)
 
-`crates/horizon-client-render/src/gfx/frame_gen/optical_flow.wgsl` and `interpolation.wgsl` are
+`crates/sunrise-client-render/src/gfx/frame_gen/optical_flow.wgsl` and `interpolation.wgsl` are
 ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`, at commit
@@ -224,7 +224,7 @@ and `optical_flow.rs` and `interpolation.rs` follow the SDK's
 `sdk/src/components/{opticalflow/ffx_opticalflow.cpp,frameinterpolation/ffx_frameinterpolation.cpp}`
 (their passes, their order and their dispatch sizes). Copyright (C) 2024 Advanced Micro Devices,
 Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
-trademarks; Horizon is not affiliated with AMD.
+trademarks; Sunrise is not affiliated with AMD.
 
 ## Mod loader logos
 
@@ -232,7 +232,7 @@ The launcher shows the logo of the mod loader an instance plays with, and offers
 instance icons.
 
 - `launcher/assets/logos/{fabric,quilt,neoforge,forge}.png` are the loaders' logos as the launcher
-  mockup on [playhorizon.dev/launcher](https://playhorizon.dev/launcher) shows them (horizon-site
+  mockup on [playsunrise.net/launcher](https://playsunrise.net/launcher) shows them (sunrise-site
   `public/media/launcher/*.webp`, converted to PNG), each its project's own mark:
   [Fabric](https://fabricmc.net/), [Quilt](https://quiltmc.org/) (its art is
   [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)),
@@ -241,7 +241,7 @@ instance icons.
   [Minecraft Forge](https://minecraftforge.net/). They name the loader an instance runs.
 
 Each logo belongs to its project. Showing it says which loader an instance runs; it does not mean
-the project endorses Horizon.
+the project endorses Sunrise.
 
 ## Sign in with Microsoft
 
@@ -250,11 +250,11 @@ with Microsoft accounts
 ([Sign in with Microsoft branding](https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-branding-in-apps)).
 The four-square Microsoft symbol in `launcher/src/microsoft.rs` reproduces the squares, positions and
 colours of Microsoft's official `ms-symbollockup_mssymbol_19.svg` from that page, unmodified. Microsoft
-and its logo are trademarks of the Microsoft group of companies; Horizon is not endorsed by Microsoft.
+and its logo are trademarks of the Microsoft group of companies; Sunrise is not endorsed by Microsoft.
 
 ## CIT Resewn
 
-`crates/horizon-optifine/src/cit.rs` and `crates/horizon-client-render/src/cit.rs` follow the
+`crates/sunrise-optifine/src/cit.rs` and `crates/sunrise-client-render/src/cit.rs` follow the
 condition semantics of [CIT Resewn Continuation](https://github.com/EthanVisagie/CIT-Resewn-Continuation-1.21.11)
 (at `b792f9a`), a continuation of [CIT Resewn](https://github.com/SHsuperCM/CITResewn) by SHsuperCM: the
 1.21 component paths, enchantment levels, percent damage, text matching and rule ordering. It is
@@ -279,7 +279,7 @@ licensed under the MIT license:
 
 ## FusionExamples
 
-The tile tables in `crates/horizon-optifine/src/fusion/layout.rs` were read off the connecting
+The tile tables in `crates/sunrise-optifine/src/fusion/layout.rs` were read off the connecting
 texture templates (`templates/template <layout>.png`) of
 [FusionExamples](https://github.com/SuperMartijn642/FusionExamples) (at `8c9c56e`), which is
 licensed under the MIT license:
@@ -303,7 +303,7 @@ licensed under the MIT license:
 
 ## BlueMap
 
-`crates/horizon-client-render/src/bluemap.rs` reads the lowres tiles of a server's
+`crates/sunrise-client-render/src/bluemap.rs` reads the lowres tiles of a server's
 [BlueMap](https://github.com/BlueMap-Minecraft/BlueMap) web map. It follows three of BlueMap's files:
 `core/src/main/java/de/bluecolored/bluemap/core/map/lowres/LowresLayer.java` (`saveTile`) for the
 tiles' pixel layout, `common/webapp/src/js/util/Utils.js` (`pathFromCoords`) for their paths, and
@@ -352,17 +352,17 @@ no JDK source is copied into Starling. Starling's launcher for it
 
 The touch controls wear Minecraft: Bedrock Edition's own buttons, which Starling downloads on the
 phone from Mojang's [bedrock-samples](https://github.com/Mojang/bedrock-samples) repository (the
-revision and each file's git blob SHA-1 in `crates/horizon-client/assets/bedrock-touch.json`, which
+revision and each file's git blob SHA-1 in `crates/sunrise-client/assets/bedrock-touch.json`, which
 `tools/bedrock_touch_manifest.py` writes) into the player's resources, Mojang's `LICENSE.md` beside
 them. They are © Mojang AB, under the Minecraft End User License Agreement the download is subject
 to; Starling carries none of them. Where they are missing, Starling's own buttons
-(`crates/horizon-client/assets/touch`, drawn by `packaging/touch/make.py`) are MIT.
+(`crates/sunrise-client/assets/touch`, drawn by `packaging/touch/make.py`) are MIT.
 
-## Horizon Android legacy GLES compatibility
+## Sunrise Android legacy GLES compatibility
 
 The GLES-only terrain texture selection, RGSS unrolling, varying packing,
 emissive lookup and entity overlay lowering, and HDR texture selection are
-adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/horizon-client-render/src/gfx).
+adapted from [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/sunrise-client-render/src/gfx).
 The source is MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors;
 the repository LICENSE retains its license text.
 
@@ -375,11 +375,11 @@ The adaptation preserves Starling's RGSS tiled-face argument, HDR scene varying
 and all 128 emissive entries. The emissive search uses flat early returns to keep
 shader parser/validator stack depth bounded. Vulkan terrain WGSL remains unchanged.
 
-## Horizon Android diagnostics
+## Sunrise Android diagnostics
 
 The diagnostic session/export, Android exit history, native tombstone summary and
-performance recording code is adapted from [Vasysik/horizon-android at
-fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/horizon-client/src/android),
+performance recording code is adapted from [Vasysik/sunrise-android at
+fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/sunrise-client/src/android),
 under the MIT license (the same [LICENSE](LICENSE) as this repository).
 Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 The port uses Starling's existing logger, crash hook and GPU timers and exposes
@@ -388,8 +388,8 @@ with a renderer-independent recovery window for interrupted startup.
 
 ## JOML
 
-`crates/horizon-client-render/src/camera.rs` (`joml::Mat4::rotation`, `invert_orthonormal`) and
-`crates/horizon-client-render/src/gfx/pack_uniforms.rs` (`invert_generic`, `invert_affine`, the
+`crates/sunrise-client-render/src/camera.rs` (`joml::Mat4::rotation`, `invert_orthonormal`) and
+`crates/sunrise-client-render/src/gfx/pack_uniforms.rs` (`invert_generic`, `invert_affine`, the
 formulas of `pack_projection` and `shadow_ortho`) adapt the float arithmetic of
 `Matrix4f.rotation(Quaternionfc)`, `invertOrthonormal`, `invertGenericNonThis`, `invertAffine`,
 `setPerspective` and `setOrtho` from
@@ -430,7 +430,7 @@ THE SOFTWARE.
 
 ## Just Enough Items
 
-The Recipes GUI sprites and settings icon under `crates/horizon-client-render/src/jei_recipes` are from
+The Recipes GUI sprites and settings icon under `crates/sunrise-client-render/src/jei_recipes` are from
 [Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems/tree/0371fa6fafa14635a356019e4604f5580b26a34f)
 by mezz and contributors, under the MIT license in that directory (`LICENSE.txt`).
 
@@ -464,14 +464,14 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## fdlibm
 
-`crates/horizon-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
-`fdlibm_atan2` functions in `crates/horizon-core/src/geometry/trig.rs` are Rust ports of
+`crates/sunrise-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
+`fdlibm_atan2` functions in `crates/sunrise-core/src/geometry/trig.rs` are Rust ports of
 [fdlibm](https://www.netlib.org/fdlibm/) 5.3, Sun's freely distributable math library, whose
 results the Java SE API specifies for `StrictMath`. `fdlibm.rs` ports `e_log.c`, `e_log10.c`,
 `s_cbrt.c` and `e_hypot.c`, and, with fused multiply-adds, `s_sin.c`, `s_cos.c`, `k_sin.c`,
 `k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `e_asin.c`, `s_atan.c` and `e_atan2.c`.
 
-The strict additions in `crates/horizon-core/src/jmath/fdlibm/strict_exp_pow.rs`
+The strict additions in `crates/sunrise-core/src/jmath/fdlibm/strict_exp_pow.rs`
 adapt netlib's original `e_exp.c` 1.6 (2004-04-22), `e_pow.c` 1.5
 (2004-04-22) and `s_scalbn.c` 1.3 (1995-01-18), preserving their ordered
 double arithmetic and Sun permission notices. Their public-JDK reference
@@ -498,17 +498,17 @@ is preserved.
 
 ## Starling
 
-`crates/horizon-client-render/src/touch/layout.rs` and `crates/horizon-client-render/src/touch/aim.rs`
+`crates/sunrise-client-render/src/touch/layout.rs` and `crates/sunrise-client-render/src/touch/aim.rs`
 are adapted from the touch layout and touch helpers of
-[Starling](https://github.com/starling-client/starling), an Android port of Horizon, at commit
+[Starling](https://github.com/starling-client/starling), an Android port of Sunrise, at commit
 [150a414b09a1](https://github.com/starling-client/starling/tree/150a414b09a18c900489d9462a7fc035dae744b7)
 (`android` branch), written mostly by Vasysik. Starling is licensed under the same MIT license as
 Horizon (Copyright (c) 2026 Ludovic Marie and the Horizon contributors).
 
-## Horizon Android renderer paths
+## Sunrise Android renderer paths
 
 What only Adreno on Android's Vulkan takes here is adapted from
-[Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/horizon-client-render/src),
+[Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/sunrise-client-render/src),
 under the MIT license (the same [LICENSE](LICENSE) as this repository).
 Copyright (c) 2026 Ludovic Marie and the Horizon contributors. That covers `gfx/adreno.rs`, the sky
 after solid terrain (`gfx/late_sky.rs` and the far-plane vertex entries in `terrain.wgsl`,
@@ -529,26 +529,26 @@ Drawing each section with a call of its own on Android, rather than with indirec
 (`indirect_draws_wanted` in `gfx.rs`), follows the same revision's commit 77b9e17f76, which turned
 indirect multi-draws off on every Android GPU.
 
-## Horizon Android documents provider
+## Sunrise Android documents provider
 
 The game folder's place in Android's Files app (`packaging/android/java/io/github/juanluci/starling/GameFolderProvider.java`
-and `GameFolder.java`) is adapted from the documents provider in [Vasysik/horizon-android at
-fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/packaging/android/java/dev/horizon/android)
-and its `crates/horizon-client/src/android/document_store.rs`, under the MIT license (the same
+and `GameFolder.java`) is adapted from the documents provider in [Vasysik/sunrise-android at
+fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/packaging/android/java/dev/sunrise/android)
+and its `crates/sunrise-client/src/android/document_store.rs`, under the MIT license (the same
 [LICENSE](LICENSE) as this repository). Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 The port is plain Java over Starling's one game folder, in place of the fork's Rust store of
 profiles and fixed folders that its launcher screens share.
 
-## Horizon Android control system and editor
+## Sunrise Android control system and editor
 
 The Android control engine, MCPE/GoyControl layouts and presets, visual editor,
 control hub, virtual pointer and auxiliary keyboard are adapted from
-[Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606),
+[Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606),
 MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors (see [LICENSE](LICENSE)).
-Source: `crates/horizon-client-render/src/touch.rs`, `touch/{layout,editor,custom}.rs`,
-`crates/horizon-client/src/{touch_ui,ui_theme,osk,ui_text}.rs`, and Android input
+Source: `crates/sunrise-client-render/src/touch.rs`, `touch/{layout,editor,custom}.rs`,
+`crates/sunrise-client/src/{touch_ui,ui_theme,osk,ui_text}.rs`, and Android input
 integration in `game/android_input.rs`, `game/pad.rs` and `game.rs`. The
-physical D-pad/keypad profile is from `horizon-client-render/src/keypad.rs`
+physical D-pad/keypad profile is from `sunrise-client-render/src/keypad.rs`
 and its editable bindings in `options_ui.rs`.
 
 The port uses Starling's input, IME, inventory, controller and renderer interfaces.
@@ -556,33 +556,33 @@ Its UI rasterization shares Starling's existing runtime atlas allocator; it does
 not add a second font texture. Starling's chat shortcuts and slot gestures are
 retained. No Minecraft textures or prepared resources are included by this port.
 
-## Horizon Android account profiles and Ely.by
+## Sunrise Android account profiles and Ely.by
 
-Provider-aware profile selection and Ely.by authentication, refresh, 2FA and session routing are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/account.rs`, `launcher/src/account/ely.rs`, `crates/horizon-client/src/android/login.rs` (behavior reference) and `crates/horizon-client-render/src/auth.rs`. MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. The integration preserves Starling's Microsoft public client and sealed secret store, adds provider-separated keys and offline profile metadata, and uses Starling's existing title widgets rather than the Android launcher's panel.
-## Horizon Android wardrobe
+Provider-aware profile selection and Ely.by authentication, refresh, 2FA and session routing are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/account.rs`, `launcher/src/account/ely.rs`, `crates/sunrise-client/src/android/login.rs` (behavior reference) and `crates/sunrise-client-render/src/auth.rs`. MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. The integration preserves Starling's Microsoft public client and sealed secret store, adds provider-separated keys and offline profile metadata, and uses Starling's existing title widgets rather than the Android launcher's panel.
+## Sunrise Android wardrobe
 
-Per-account skin selection and the Microsoft profile skin upload are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/skins.rs`, `launcher/src/skins/library.rs`, `launcher/src/skins/cloud.rs` and `crates/horizon-client/src/android/wardrobe.rs` (behavior reference). MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. Starling keeps its `skins/` folder and Skin Customization page in place of the wardrobe's image store and launcher panel, keys each choice by the profile, uploads through its own sealed session, and sends Ely.by accounts to ely.by as Horizon Android does.
+Per-account skin selection and the Microsoft profile skin upload are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/skins.rs`, `launcher/src/skins/library.rs`, `launcher/src/skins/cloud.rs` and `crates/sunrise-client/src/android/wardrobe.rs` (behavior reference). MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. Starling keeps its `skins/` folder and Skin Customization page in place of the wardrobe's image store and launcher panel, keys each choice by the profile, uploads through its own sealed session, and sends Ely.by accounts to ely.by as Horizon Android does.
 
-The mobile attack gauge side and offhand spacing in `crates/horizon-client-render/src/hud_layout.rs` are adapted from the same Horizon Android commit fa548eb7abe91c194d3780e4580b9746323cd606 under MIT.
-`crates/horizon-client-render/src/keypad.rs` is adapted from Starling's keypad profile
-(`crates/horizon-client-render/src/keypad.rs`) at the same commit.
+The mobile attack gauge side and offhand spacing in `crates/sunrise-client-render/src/hud_layout.rs` are adapted from the same Sunrise Android commit fa548eb7abe91c194d3780e4580b9746323cd606 under MIT.
+`crates/sunrise-client-render/src/keypad.rs` is adapted from Starling's keypad profile
+(`crates/sunrise-client-render/src/keypad.rs`) at the same commit.
 
-`crates/horizon-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
-(`crates/horizon-client-render/src/android_gamepad.rs`) and the input-mode part of its
+`crates/sunrise-client-render/src/android_gamepad.rs` is adapted from Starling's controller decoder
+(`crates/sunrise-client-render/src/android_gamepad.rs`) and the input-mode part of its
 `android_runtime.rs`, at the same commit.
 
-`crates/horizon-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
-state of Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+`crates/sunrise-client-render/src/touch.rs` and `touch/tests/` are adapted from the touch input
+state of Starling's `crates/sunrise-client-render/src/touch.rs` at the same commit.
 
-`crates/horizon-client-render/src/touch/draw.rs` is adapted from the touch control drawing in
-Starling's `crates/horizon-client-render/src/touch.rs` at the same commit.
+`crates/sunrise-client-render/src/touch/draw.rs` is adapted from the touch control drawing in
+Starling's `crates/sunrise-client-render/src/touch.rs` at the same commit.
 
-`crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
-input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.
+`crates/sunrise-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
+input part of Starling's `crates/sunrise-client-render/src/android_runtime.rs` at the same commit.
 
 ## PCG3D hash
 
-`hash3` in `crates/horizon-client-render/src/hdr.wgsl`, the noise HDR10 output's dither is made from, is the
+`hash3` in `crates/sunrise-client-render/src/hdr.wgsl`, the noise HDR10 output's dither is made from, is the
 `pcg3d` hash of Mark Jarzynski and Marc Olano ("Hash Functions for GPU Rendering", Journal of Computer Graphics
 Techniques 9(3), 2020), from <https://github.com/markjarzynski/PCG3D>. Copyright 2020 Mark Jarzynski & Marc Olano,
 licensed under MIT:
@@ -606,9 +606,9 @@ OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## Horizon Android performance work
+## Sunrise Android performance work
 
-Adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
+Adapted from [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
 under the MIT license (the same [LICENSE](LICENSE) as this repository).
 Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 

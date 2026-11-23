@@ -7,7 +7,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = Path("crates/horizon-mod-vocab/src")
+SRC = Path("crates/sunrise-mod-vocab/src")
 INCLUDE = 'include!(concat!(env!("OUT_DIR"), "/mod_api_exports_{}.rs"));\n'
 
 

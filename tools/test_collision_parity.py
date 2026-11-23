@@ -17,7 +17,7 @@ except ImportError:
 
 
 def counts(output):
-    marker = "HORIZON_COLLISION_RESULT "
+    marker = "SUNRISE_COLLISION_RESULT "
     found = [json.loads(line.split(marker, 1)[1]) for line in output.splitlines() if marker in line]
     if len(found) != 1:
         raise AssertionError(f"Missing collision counts: {found}")
@@ -41,20 +41,20 @@ def main():
     for earlier in directory.glob("run-*"):  # one run per run used to stay behind: 5 GB here after a few weeks
         shutil.rmtree(earlier, ignore_errors=True)
     base = Path(tempfile.mkdtemp(prefix="run-", dir=directory))
-    oracle = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCollisionOracle.java"
-    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/horizon-core/Cargo.toml", lab.ROOT / "crates/horizon-world/Cargo.toml", *sorted((lab.ROOT / "crates/horizon-core/src").rglob("*.rs")), *sorted((lab.ROOT / "crates/horizon-world/src").rglob("*.rs")), lab.ROOT / "crates/horizon-world/examples/probe/collision_fixture.rs"]
+    oracle = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCollisionOracle.java"
+    sources = [oracle, Path(__file__).resolve(), lab.ROOT / "tools/test_rust_parity.py", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock", lab.ROOT / "crates/sunrise-core/Cargo.toml", lab.ROOT / "crates/sunrise-world/Cargo.toml", *sorted((lab.ROOT / "crates/sunrise-core/src").rglob("*.rs")), *sorted((lab.ROOT / "crates/sunrise-world/src").rglob("*.rs")), lab.ROOT / "crates/sunrise-world/examples/probe/collision_fixture.rs"]
     tested_sources = test_rust_parity.source_hashes(sources)
     classes = base / "classes"
     classes.mkdir()
     dependency_path = os.pathsep.join(map(str, libraries))
     test_rust_parity.run(["javac", "--release", "25", "-proc:none", "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(oracle)])
     def java(side, mode):
-        result = subprocess.run(["java", "-Xmx1G", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]), "dev.horizonlab.parity.VanillaCollisionOracle", mode, str(base)], cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(["java", "-Xmx1G", "-cp", os.pathsep.join([str(classes), str(jars[side]), dependency_path]), "dev.sunriselab.parity.VanillaCollisionOracle", mode, str(base)], cwd=lab.ROOT, capture_output=True, text=True, timeout=300)
         (base / f"{side}-{mode}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
         result.check_returncode()
         return result.stdout
     expected = counts(java("server", "generate"))
-    test_rust_parity.run(["cargo", "build", "--release", "-p", "horizon-world", "--example", "world_probe"])
+    test_rust_parity.run(["cargo", "build", "--release", "-p", "sunrise-world", "--example", "world_probe"])
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
     binary = Path(metadata["target_directory"]) / "release/examples" / ("world_probe.exe" if os.name=="nt" else "world_probe")
     actual = counts(subprocess.check_output([str(binary), "collision_fixture", str(base)], cwd=lab.ROOT, text=True))

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-src = root / 'crates/horizon-client/src'
+src = root / 'crates/sunrise-client/src'
 old = src / 'game/modding/api_values/text_boundary.rs'
 style = old.with_name('text_style_capture.rs')
 text = old.read_text()
@@ -65,24 +65,24 @@ text = text.replace('mod text_style_capture;', 'mod text_style_capture;\npub use
 old.write_text('''#[path = "text_style_capture.rs"]
 mod text_style_capture;
 use super::{TryIntoApi, TryIntoEngine};
-use horizon_client_core::text as engine;
+use sunrise_client_core::text as engine;
 use mod_api::text::{Text, TextFormError};
 
-pub(super) use horizon_client_lib::api_text::captured_text;
-pub(in crate::game) use horizon_client_lib::api_text::style_hover;
+pub(super) use sunrise_client_lib::api_text::captured_text;
+pub(in crate::game) use sunrise_client_lib::api_text::style_hover;
 
 impl TryIntoApi for engine::Text {
     type Api = Text;
     type Error = TextFormError;
     fn try_into_api(&self) -> Result<Text, TextFormError> {
-        horizon_client_lib::api_text::to_api(self)
+        sunrise_client_lib::api_text::to_api(self)
     }
 }
 impl<C: ?Sized> TryIntoEngine<C> for Text {
     type Engine = engine::Text;
     type Error = TextFormError;
     fn try_into_engine(&self, _: &C) -> Result<engine::Text, TextFormError> {
-        horizon_client_lib::api_text::to_engine(self)
+        sunrise_client_lib::api_text::to_engine(self)
     }
 }
 ''')
@@ -92,7 +92,7 @@ impl TryIntoApi for engine::Style {
     type Api = mod_api::text::TextStyle;
     type Error = TextFormError;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        horizon_client_lib::api_text::style_to_api(self)
+        sunrise_client_lib::api_text::style_to_api(self)
     }
 }
 ''')

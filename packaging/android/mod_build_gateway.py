@@ -72,7 +72,7 @@ STORE_BYTES = int(os.environ.get("STORE_BYTES", str(10 << 30)))
 # This machine has other work to do: results never bring its free space below this.
 MIN_FREE_BYTES = 6 << 30
 JOB = re.compile(r"[0-9a-f]{24}")
-LIBRARY = "libhorizon_android.so"
+LIBRARY = "libsunrise_android.so"
 CHUNK = 256 * 1024
 GITHUB_API = os.environ.get("GITHUB_API", "https://api.github.com")
 GITHUB_REPO = os.environ.get("GITHUB_BUILDS_REPO", "starling-client/mod-builds")

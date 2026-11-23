@@ -60,7 +60,7 @@ def cases():
 def build_test_binary(log_path):
     """Build the gameplay fixture for the parity runner's argument-free invocation."""
     with log_path.open('w', encoding='utf-8') as log:
-        subprocess.run(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib', '--no-run',
+        subprocess.run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run',
                         '--message-format=json'], cwd=lab.ROOT, stdout=log,
                        stderr=subprocess.STDOUT, check=True, timeout=900)
     binaries = []
@@ -71,7 +71,7 @@ def build_test_binary(log_path):
             continue
         if (message.get('reason') == 'compiler-artifact' and message.get('executable')
                 and message.get('profile', {}).get('test')
-                and message.get('target', {}).get('name') == 'horizon_client'
+                and message.get('target', {}).get('name') == 'sunrise_client'
                 and message.get('target', {}).get('kind') == ['lib']):
             binaries.append(Path(message['executable']).resolve())
     if len(binaries) != 1:
@@ -82,23 +82,23 @@ def build_test_binary(log_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resources', type=Path,
-                        default=Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)))
+                        default=Path(os.environ.get('SUNRISE_TEST_RESOURCES', lab.RESOURCES)))
     parser.add_argument('--test-binary', type=Path,
-                        help='Previously built horizon-client --lib test artifact; otherwise built automatically')
+                        help='Previously built sunrise-client --lib test artifact; otherwise built automatically')
     parser.add_argument('--work', type=Path, default=lab.LOCAL / 'special-attack-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     source_paths = [lab.ROOT / path for path in (
-        'crates/horizon-client/src/game.rs',
-        'crates/horizon-client/src/game/melee.rs',
-        'crates/horizon-client/src/game/special_attacks.rs',
-        'crates/horizon-client/src/game/armor_stands.rs',
-        'crates/horizon-client/src/game/boats.rs',
-        'crates/horizon-client/src/game/minecarts.rs',
-        'crates/horizon-client/src/game/dragon.rs',
-        'crates/horizon-client/src/game/special_attack_fixture.rs',
-        'crates/horizon-client/src/game/dispense_fixture.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDispenserOracle.java',
+        'crates/sunrise-client/src/game.rs',
+        'crates/sunrise-client/src/game/melee.rs',
+        'crates/sunrise-client/src/game/special_attacks.rs',
+        'crates/sunrise-client/src/game/armor_stands.rs',
+        'crates/sunrise-client/src/game/boats.rs',
+        'crates/sunrise-client/src/game/minecarts.rs',
+        'crates/sunrise-client/src/game/dragon.rs',
+        'crates/sunrise-client/src/game/special_attack_fixture.rs',
+        'crates/sunrise-client/src/game/dispense_fixture.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaDispenserOracle.java',
         'tools/test_special_attack_parity.py')]
     source_hashes = base.source_hashes(source_paths)
     work = args.work.resolve()
@@ -116,21 +116,21 @@ def main():
     input_path.write_text(''.join(json.dumps(case) + '\n' for case in fixtures), encoding='utf-8')
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
-    sources = lab.ROOT / 'mods/horizon/src/test/java'
+    sources = lab.ROOT / 'mods/sunrise/src/test/java'
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     with tempfile.TemporaryDirectory(prefix='special-attack-') as scratch:
         subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn',
                         '-sourcepath', str(sources), '-cp', dependencies, '-d', str(classes),
-                        str(sources / 'dev/horizonlab/parity/VanillaDispenserOracle.java')],
+                        str(sources / 'dev/sunriselab/parity/VanillaDispenserOracle.java')],
                        cwd=scratch, check=True)
         subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                        'dev.horizonlab.parity.VanillaDispenserOracle', str(args.resources.resolve()),
+                        'dev.sunriselab.parity.VanillaDispenserOracle', str(args.resources.resolve()),
                         str(input_path), str(work / 'native.txt')], cwd=scratch, check=True)
         subprocess.run(
             [str(binary), 'game::special_attack_fixture::tests::special_attack_cases_without_world_startup',
              '--exact', '--ignored', '--test-threads=1'], cwd=scratch,
-            env=lab.game_env(HORIZON_TEST_RESOURCES=str(args.resources.resolve()),
-                             HORIZON_SPECIAL_ATTACK_CASES=f'{input_path},{work / "rust.txt"}'),
+            env=lab.game_env(SUNRISE_TEST_RESOURCES=str(args.resources.resolve()),
+                             SUNRISE_SPECIAL_ATTACK_CASES=f'{input_path},{work / "rust.txt"}'),
             check=True, timeout=180)
     def scoped(path):
         rows = path.read_text(encoding='utf-8').splitlines()

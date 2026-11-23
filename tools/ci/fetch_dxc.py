@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Put Microsoft's DXC (`dxcompiler.dll`) and its licence files into a Windows x64 game folder.
 
-    python tools/ci/fetch_dxc.py dist/horizon-windows-x64
+    python tools/ci/fetch_dxc.py dist/sunrise-windows-x64
 
-DirectX 12 compiles shaders with DXC on integrated GPUs (crates/horizon-client-render/src/gfx/dx12_compiler.rs,
+DirectX 12 compiles shaders with DXC on integrated GPUs (crates/sunrise-client-render/src/gfx/dx12_compiler.rs,
 #8513). The DLL comes from Microsoft's DirectX Shader Compiler release pinned below, checked against its
 SHA-256 before and after unpacking; nothing is committed to the repository. Its licence (LICENSE-MS.txt, the
 Windows SDK's Distributable Code terms) and the LLVM licence of its open-source part go beside it, with

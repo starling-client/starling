@@ -1,8 +1,8 @@
 //! Data collection in the window: the question asked once (and again when what is collected
-//! changes), and its section in Settings. Everything goes through `horizon_launcher::telemetry`.
+//! changes), and its section in Settings. Everything goes through `sunrise_launcher::telemetry`.
 use super::*;
-use horizon_launcher::telemetry;
-use horizon_telemetry::{Choices, Consent, Kind as DataKind};
+use sunrise_launcher::telemetry;
+use sunrise_telemetry::{Choices, Consent, Kind as DataKind};
 
 /// What the window keeps about data collection.
 pub(crate) struct Collection {
@@ -188,10 +188,10 @@ impl Launcher {
             .child(
                 text(theme::HEADING)
                     .text_color(t.ink)
-                    .child(tr("Help make Horizon faster and steadier?")),
+                    .child(tr("Help make Sunrise faster and steadier?")),
             )
             .child(text(theme::UI).text_color(t.muted).child(tr(
-                "Horizon can send a few things to its developers. Each switch is off until you turn it on, and Settings can change it any time.",
+                "Sunrise can send a few things to its developers. Each switch is off until you turn it on, and Settings can change it any time.",
             )))
             .child(
                 div()
@@ -302,7 +302,7 @@ impl Launcher {
             Some(always_on(&t).into_any_element()),
             &t,
         ));
-        let waiting = horizon_telemetry::outbox::pending(&telemetry::home()).len();
+        let waiting = sunrise_telemetry::outbox::pending(&telemetry::home()).len();
         let id = match consent.install_id.as_str() {
             "" => tr("No install ID: nothing has been collected").to_string(),
             id => trf(
@@ -310,13 +310,13 @@ impl Launcher {
                 &[("prefix", &id[..4]), ("suffix", &id[id.len() - 4..])],
             ),
         };
-        let server = if horizon_telemetry::endpoint().is_some() {
+        let server = if sunrise_telemetry::endpoint().is_some() {
             trf(
                 "{count} waiting to be sent",
                 &[("count", &waiting.to_string())],
             )
         } else {
-            tr("Sending is turned off here (HORIZON_TELEMETRY_URL=off)").into()
+            tr("Sending is turned off here (SUNRISE_TELEMETRY_URL=off)").into()
         };
         let confirm = self.collection.confirm_delete;
         let actions = div()
@@ -388,7 +388,7 @@ impl Launcher {
                     .max_w(px(600.))
                     .text_color(t.muted)
                     .child(tr(
-                        "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.",
+                        "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playsunrise.net says how long it is kept.",
                     )),
             )
             .child(list)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Armor stands standing on turtle eggs through real vanilla and Horizon servers.
+"""Armor stands standing on turtle eggs through real vanilla and Sunrise servers.
 
 An armor stand is a LivingEntity, so `TurtleEggBlock.stepOn` cracks an egg
 under it one tick in 100 while mob griefing is on (`canDestroyEgg`). After

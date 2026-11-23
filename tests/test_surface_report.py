@@ -62,21 +62,21 @@ class GateTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("bash"), "needs bash for the stub tool")
 class ReportTests(unittest.TestCase):
-    """report() against a stub horizon-stage whose behaviour each test sets."""
+    """report() against a stub sunrise-stage whose behaviour each test sets."""
 
     def run_report(self, base_export=0, diff_exit=0, gate_on=False, head_export=0, diff_err=""):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
-            tool = work / "horizon-stage"
+            tool = work / "sunrise-stage"
             tool.write_text(f"""#!/bin/bash
 echo "$@" >> {work}/calls
 if [ "$1" = surface ]; then
-  case "$2" in *base) [ {base_export} = 0 ] || {{ echo 'unclassified: x' >&2; echo 'horizon-stage surface: unknown key `access`' >&2; exit 1; }};; esac
-  case "$2" in *head) [ {head_export} = 0 ] || {{ echo 'horizon-stage surface: a.rs: parse error' >&2; exit 1; }};; esac
+  case "$2" in *base) [ {base_export} = 0 ] || {{ echo 'unclassified: x' >&2; echo 'sunrise-stage surface: unknown key `access`' >&2; exit 1; }};; esac
+  case "$2" in *head) [ {head_export} = 0 ] || {{ echo 'sunrise-stage surface: a.rs: parse error' >&2; exit 1; }};; esac
   echo '{{}}' > "$3"; exit 0
 fi
 echo "Surface: report"; [ -z "{diff_err}" ] && [ {diff_exit} != 0 ] && echo "breaking change without a change note: fn:a" >&2
-[ -n "{diff_err}" ] && echo "horizon-stage: $2: {diff_err}" >&2
+[ -n "{diff_err}" ] && echo "sunrise-stage: $2: {diff_err}" >&2
 exit {diff_exit}
 """)
             tool.chmod(0o755)
@@ -87,21 +87,21 @@ exit {diff_exit}
     def test_a_base_the_head_tool_cannot_read_passes_with_one_line(self):
         code, text, calls = self.run_report(base_export=1)
         self.assertEqual(code, 0)
-        self.assertEqual(text, "No surface report: the head's horizon-stage cannot read the base tree "
-                               "(horizon-stage surface: unknown key `access`).\n")
+        self.assertEqual(text, "No surface report: the head's sunrise-stage cannot read the base tree "
+                               "(sunrise-stage surface: unknown key `access`).\n")
         self.assertNotIn("surface-diff", calls)
 
     def test_a_base_surface_of_another_schema_passes_with_one_line(self):
         code, text, _ = self.run_report(diff_exit=2, diff_err="surface schema 1, this tool reads 2")
         self.assertEqual(code, 0)
-        self.assertTrue(text.startswith("No surface report: the head's horizon-stage cannot read the base surface "), text)
+        self.assertTrue(text.startswith("No surface report: the head's sunrise-stage cannot read the base surface "), text)
         self.assertIn("surface schema 1, this tool reads 2", text)
 
     def test_this_tree_failing_to_export_fails_the_step(self):
         for base_export in (0, 1):
             code, text, calls = self.run_report(head_export=1, base_export=base_export)
             self.assertEqual(code, 1)
-            self.assertEqual(text, "The surface export of this tree failed: horizon-stage surface: a.rs: parse error.\n")
+            self.assertEqual(text, "The surface export of this tree failed: sunrise-stage surface: a.rs: parse error.\n")
             self.assertNotIn("surface-diff", calls)
 
     def test_the_diff_decides_and_the_gate_is_passed_on(self):
@@ -151,7 +151,7 @@ class MainTests(unittest.TestCase):
     def run_main(self, event="pull_request", pr="", **patches):
         with tempfile.TemporaryDirectory() as directory:
             summary_file = Path(directory) / "summary.md"
-            env = {"HORIZON_STAGE_TOOL": "/no/tool", "EVENT": event, "PR": pr,
+            env = {"SUNRISE_STAGE_TOOL": "/no/tool", "EVENT": event, "PR": pr,
                    "GITHUB_STEP_SUMMARY": str(summary_file), "RUNNER_TEMP": directory}
             with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()) as out, \
                     contextlib.ExitStack() as stack:

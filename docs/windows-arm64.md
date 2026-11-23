@@ -1,6 +1,6 @@
 # Windows ARM64
 
-Horizon builds the game and launcher as native Windows ARM64 executables for
+Sunrise builds the game and launcher as native Windows ARM64 executables for
 `aarch64-pc-windows-msvc`. GitHub Actions builds and checks them on a Windows ARM64 runner.
 
 ## Build from source
@@ -11,14 +11,14 @@ with ARM64 libraries. Install LLVM/Clang and put `clang.exe` on `PATH`; the `rin
 Clang to compile its ARM64 code. The MSVC target also needs the Visual C++ linker and Windows import
 libraries.
 
-To run `horizon-prepare compile-exporters`, install JDK 25 and Python 3.11+; that command compiles
+To run `sunrise-prepare compile-exporters`, install JDK 25 and Python 3.11+; that command compiles
 the Java exporters used by the game.
 
 ```powershell
 rustup target add aarch64-pc-windows-msvc
 cargo build --release --locked --target aarch64-pc-windows-msvc `
-  -p horizon-game -p horizon-client-lib --bin horizon-client --bin horizon-ctl `
-  -p horizon-prepare --bin horizon-prepare -p horizon-server --bin horizon-server
+  -p sunrise-game -p sunrise-client-lib --bin sunrise-client --bin sunrise-ctl `
+  -p sunrise-prepare --bin sunrise-prepare -p sunrise-server --bin sunrise-server
 ```
 
 The launcher has a separate workspace:
@@ -31,9 +31,9 @@ cargo build --release --locked --target aarch64-pc-windows-msvc
 
 ## Releases and limitations
 
-The game archive, `horizon-windows-arm64.zip`, is attached to the [Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly)
-and listed in its signed `SHA256SUMS`. The launcher archive, `horizon-launcher-windows-arm64.zip`,
-and `horizon-launcher-setup-arm64.exe` are attached to the [launcher releases](https://github.com/horizon-rust/horizon/releases)
+The game archive, `sunrise-windows-arm64.zip`, is attached to the [Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly)
+and listed in its signed `SHA256SUMS`. The launcher archive, `sunrise-launcher-windows-arm64.zip`,
+and `sunrise-launcher-setup-arm64.exe` are attached to the [launcher releases](https://github.com/horizon-rust/horizon/releases)
 and listed in their signed `SHA256SUMS`.
 
 Launcher updates always follow the launcher's own process architecture. Game architecture is a

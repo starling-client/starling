@@ -28,57 +28,57 @@ class ApiBoundaryCheckTests(unittest.TestCase):
                     self.assertFalse(boundary.negative_control())
 
     def test_private_type_alias_is_not_a_loophole(self):
-        self.assert_rule("type X = horizon_world::fluid::FluidState; pub fn f() -> X {}")
+        self.assert_rule("type X = sunrise_world::fluid::FluidState; pub fn f() -> X {}")
 
     def test_aliased_export(self):
-        self.assert_rule("pub use horizon_items::items::ItemStack as Stack;")
+        self.assert_rule("pub use sunrise_items::items::ItemStack as Stack;")
 
     def test_nested_aliased_export(self):
-        self.assert_rule("pub use horizon_world::{fluid::{FluidState as Fluid}};")
+        self.assert_rule("pub use sunrise_world::{fluid::{FluidState as Fluid}};")
 
     def test_glob_export(self):
-        self.assert_rule("pub use horizon_client_core::text::*;")
+        self.assert_rule("pub use sunrise_client_core::text::*;")
 
     def test_private_import_alias_in_public_signature(self):
-        self.assert_rule("use horizon_world::fluid::FluidState as X; pub fn f() -> X { todo!() }")
+        self.assert_rule("use sunrise_world::fluid::FluidState as X; pub fn f() -> X { todo!() }")
 
     def test_module_alias_in_public_signature(self):
-        self.assert_rule("use horizon_world as engine; pub fn f(x: engine::fluid::FluidState) {}")
+        self.assert_rule("use sunrise_world as engine; pub fn f(x: engine::fluid::FluidState) {}")
 
     def test_private_alias_chain(self):
-        self.assert_rule("use horizon_world as engine; use engine::fluid::FluidState as X; pub fn f(x: X) {}")
+        self.assert_rule("use sunrise_world as engine; use engine::fluid::FluidState as X; pub fn f(x: X) {}")
 
     def test_child_scope_cannot_mask_an_engine_import(self):
-        self.assert_rule('''use horizon_core::density::DensityFunction as X;
+        self.assert_rule('''use sunrise_core::density::DensityFunction as X;
             #[cfg(test)] mod tests { use crate::X; }
             pub fn leak() -> X {}''')
-        self.assert_rule('''mod child { use horizon_world as engine;
+        self.assert_rule('''mod child { use sunrise_world as engine;
             pub fn leak() -> engine::fluid::FluidState {} }''')
 
     def test_fields_and_enum_payloads(self):
-        self.assert_rule("pub struct S { pub x: horizon_items::items::ItemStack }")
-        self.assert_rule("pub enum E { X(horizon_items::items::ItemStack) }")
+        self.assert_rule("pub struct S { pub x: sunrise_items::items::ItemStack }")
+        self.assert_rule("pub enum E { X(sunrise_items::items::ItemStack) }")
 
     def test_tuple_struct_and_type_alias(self):
-        self.assert_rule("pub struct S(pub horizon_items::items::ItemStack);")
-        self.assert_rule("pub type S = horizon_items::items::ItemStack;")
+        self.assert_rule("pub struct S(pub sunrise_items::items::ItemStack);")
+        self.assert_rule("pub type S = sunrise_items::items::ItemStack;")
 
     def test_trait_method_not_explicitly_pub(self):
-        self.assert_rule("pub trait T { fn f(&self) -> horizon_world::fluid::FluidState; }")
+        self.assert_rule("pub trait T { fn f(&self) -> sunrise_world::fluid::FluidState; }")
 
     def test_export_fragments_and_nonprivate_hidden(self):
-        self.assert_rule("#[doc(hidden)] pub use horizon_world::fluid::FluidState;", path="src/exports/area.rs")
-        self.assert_rule("pub mod game { pub use horizon_world::fluid::*; }", path="src/exports/area.rs")
+        self.assert_rule("#[doc(hidden)] pub use sunrise_world::fluid::FluidState;", path="src/exports/area.rs")
+        self.assert_rule("pub mod game { pub use sunrise_world::fluid::*; }", path="src/exports/area.rs")
 
     def test_private_scope_is_the_only_escape_hatch(self):
-        self.assertEqual(self.findings("pub mod __private { pub use horizon_world::fluid::*; }"), [])
-        self.assertEqual(self.findings("pub use horizon_world::fluid::*;", "src/__private.rs"), [])
-        self.assert_rule("pub mod __private { pub use horizon_world::fluid::*; } pub use horizon_items::*;")
+        self.assertEqual(self.findings("pub mod __private { pub use sunrise_world::fluid::*; }"), [])
+        self.assertEqual(self.findings("pub use sunrise_world::fluid::*;", "src/__private.rs"), [])
+        self.assert_rule("pub mod __private { pub use sunrise_world::fluid::*; } pub use sunrise_items::*;")
 
     def test_private_reexports_cannot_be_laundered_through_aliases(self):
         self.assert_rule('pub use crate::__private::FluidState as Fluid;', "private-export")
         self.assert_rule('use crate::__private as hidden; pub use hidden::FluidState as Fluid;', "private-export")
-        self.assert_rule('pub use horizon_world::*;', path="src/exports/__private.rs")
+        self.assert_rule('pub use sunrise_world::*;', path="src/exports/__private.rs")
 
     def test_json_signature_and_alias(self):
         self.assert_rule("pub fn f() -> serde_json::Value {}", "json-signature")
@@ -99,39 +99,39 @@ class ApiBoundaryCheckTests(unittest.TestCase):
         self.assert_rule('pub struct Other { pub json: serde_json::Value }', "json-signature", path)
 
     def test_core_allowlist_is_leaf_exact(self):
-        self.assertEqual(self.findings("pub use horizon_core::nbt::{Tag, Compound};"), [])
-        self.assert_rule("pub use horizon_core::*;")
-        self.assert_rule("pub use horizon_core::nbt::*;")
-        self.assert_rule("pub use horizon_core::density::DensityFunction;")
+        self.assertEqual(self.findings("pub use sunrise_core::nbt::{Tag, Compound};"), [])
+        self.assert_rule("pub use sunrise_core::*;")
+        self.assert_rule("pub use sunrise_core::nbt::*;")
+        self.assert_rule("pub use sunrise_core::density::DensityFunction;")
 
     def test_strings_comments_and_implementation_are_not_signatures(self):
         source = '''
-        // pub use horizon_world::fluid::*;
-        /* nested /* comment */ pub use horizon_world::*; */
-        pub fn f() { let _ = horizon_world::fluid::FluidState::default(); }
-        const TEXT: &str = r###"pub use horizon_world::*;"###;
+        // pub use sunrise_world::fluid::*;
+        /* nested /* comment */ pub use sunrise_world::*; */
+        pub fn f() { let _ = sunrise_world::fluid::FluidState::default(); }
+        const TEXT: &str = r###"pub use sunrise_world::*;"###;
         '''
         self.assertEqual(self.findings(source), [])
 
     def test_test_only_module_is_not_surface(self):
-        self.assertEqual(self.findings("#[cfg(test)] mod tests { pub use horizon_world::*; }"), [])
-        self.assert_rule("#[cfg(feature = \"bad\")] pub mod x { pub use horizon_world::*; }")
+        self.assertEqual(self.findings("#[cfg(test)] mod tests { pub use sunrise_world::*; }"), [])
+        self.assert_rule("#[cfg(feature = \"bad\")] pub mod x { pub use sunrise_world::*; }")
 
     def test_generated_placeholder_types_are_checked(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             self.assertEqual(boundary.generated_findings(target)[0].rule, "missing-generated")
-            out = target / "debug/build/horizon-mod-vocab-abcdef/out"
+            out = target / "debug/build/sunrise-mod-vocab-abcdef/out"
             out.mkdir(parents=True)
-            (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<horizon_mod_package::content::Block> }')
+            (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<sunrise_mod_package::content::Block> }')
             (out / "mod_api_generated_host.rs").write_text('pub trait Host { fn leak() -> serde_json::Value; }')
             found = boundary.generated_findings(target)
             self.assertEqual({f.rule for f in found}, {"engine-type", "json-signature"})
             (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<crate::BlockDeclaration> }')
             (out / "mod_api_generated_host.rs").write_text('pub trait Host {}')
-            fixture = target / "debug/build/horizon-mod-api-gen-tests-fedcba/out"
+            fixture = target / "debug/build/sunrise-mod-api-gen-tests-fedcba/out"
             fixture.mkdir(parents=True)
-            (fixture / "mod_api_generated.rs").write_text('pub use horizon_world::*;')
+            (fixture / "mod_api_generated.rs").write_text('pub use sunrise_world::*;')
             self.assertEqual(boundary.generated_findings(target), [])
             (out / "mod_api_generated_host.rs").unlink()
             missing = boundary.generated_findings(target)
@@ -142,13 +142,13 @@ class ApiBoundaryCheckTests(unittest.TestCase):
         # `build/<package>/<hash>/out`, as `cargo +stable` writes it; another package's stays out.
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
-            other = target / "debug/build/horizon-mod-api-gen-tests/fedcba/out"
+            other = target / "debug/build/sunrise-mod-api-gen-tests/fedcba/out"
             other.mkdir(parents=True)
-            (other / "mod_api_generated.rs").write_text('pub use horizon_world::*;')
+            (other / "mod_api_generated.rs").write_text('pub use sunrise_world::*;')
             self.assertEqual(boundary.generated_findings(target)[0].rule, "missing-generated")
-            out = target / "debug/build/horizon-mod-vocab/abcdef0123/out"
+            out = target / "debug/build/sunrise-mod-vocab/abcdef0123/out"
             out.mkdir(parents=True)
-            (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<horizon_mod_package::content::Block> }')
+            (out / "mod_api_generated.rs").write_text('pub struct BlocksEvent { pub blocks: Vec<sunrise_mod_package::content::Block> }')
             (out / "mod_api_generated_host.rs").write_text('pub trait Host {}')
             self.assertEqual({f.rule for f in boundary.generated_findings(target)}, {"engine-type"})
 
@@ -158,14 +158,14 @@ class ApiBoundaryCheckTests(unittest.TestCase):
             (crate / "src").mkdir()
             (crate / "Cargo.toml").write_text('''
             [dependencies]
-            horizon-core = "1"
+            sunrise-core = "1"
             [target.'cfg(unix)'.dependencies]
-            innocent = { package = "horizon-world", version = "1" }
+            innocent = { package = "sunrise-world", version = "1" }
             [dev-dependencies]
-            horizon-items = "1"
+            sunrise-items = "1"
             ''')
             found = boundary.check(crate)
-            self.assertEqual({f.detail for f in found}, {"horizon-world", "horizon-items"})
+            self.assertEqual({f.detail for f in found}, {"sunrise-world", "sunrise-items"})
             self.assertTrue(all(f.rule == "engine-dependency" for f in found))
 
 

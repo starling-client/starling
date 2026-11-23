@@ -4,18 +4,18 @@ A WebAssembly mod is the same Rust you write for a native mod, built to `mod.was
 sandbox, with limits on time and memory, so a player needs no compiler and no trust prompt for native code. In
 this page you build the greeter from [Your first native mod](first-mod.md) as a WebAssembly mod.
 
-You need `cargo horizon-mod` ([installed as in the content mod tutorial](first-content-mod.md#1-install-the-mod-tool))
+You need `cargo sunrise-mod` ([installed as in the content mod tutorial](first-content-mod.md#1-install-the-mod-tool))
 and [rustup](https://rustup.rs): the first build installs the pinned Rust toolchain with `rust-src`.
 
 ## 1. Start from the native project
 
 Make the project from the wasm template. It is the native project without the `[native]` table: a mod carries
 native code or WebAssembly, never both, and the build writes its own `[wasm]` table. The SDK build the mod is
-made for is pinned in `Cargo.toml` instead, under `[package.metadata.horizon] sdk`
+made for is pinned in `Cargo.toml` instead, under `[package.metadata.sunrise] sdk`
 ([the pin](../reference/sdk/03-in-a-project.md#the-pin)).
 
 ```sh
-cargo horizon-mod new greeter --template wasm
+cargo sunrise-mod new greeter --template wasm
 cd greeter
 ```
 
@@ -28,11 +28,11 @@ Keep the code in `src/lib.rs` as it is:
 ## 2. Build
 
 ```sh
-cargo horizon-mod build --wasm
+cargo sunrise-mod build --wasm
 ```
 
-The tool compiles the crate with the pinned toolchain, writes `mod.wasm` beside `horizon-mod.toml`, records it in a
-`[wasm]` table, and packs `target/horizon-mod/greeter.hmod`:
+The tool compiles the crate with the pinned toolchain, writes `mod.wasm` beside `sunrise-mod.toml`, records it in a
+`[wasm]` table, and packs `target/sunrise-mod/greeter.smod`:
 
 ```toml
 [wasm]
@@ -44,8 +44,8 @@ Never write `[wasm]` by hand; rebuild instead.
 
 ## 3. Play
 
-Copy `greeter.hmod` into the game folder's `horizon-mods/` (in the launcher: **Open folder** in the instance's ⋮
-menu), and turn it on with a line `mod.greeter:true` in `horizon-mods.txt` beside `options.txt`. The game loads it at start-up; join a world and the greeting appears.
+Copy `greeter.smod` into the game folder's `sunrise-mods/` (in the launcher: **Open folder** in the instance's ⋮
+menu), and turn it on with a line `mod.greeter:true` in `sunrise-mods.txt` beside `options.txt`. The game loads it at start-up; join a world and the greeting appears.
 If the game refuses the mod (a wrong layout, a missing dependency, a limit), the Mods screen shows why in red.
 
 ## What differs from native

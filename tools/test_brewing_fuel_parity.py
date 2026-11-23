@@ -36,15 +36,15 @@ def main():
     inputs.write_text("".join(json.dumps(case) + "\n" for case in fixtures), encoding="utf-8")
     classes = build / "classes"
     classes.mkdir(exist_ok=True)
-    sources = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity"
+    sources = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity"
     tested_paths = [Path(__file__), sources / "ParityData.java", sources / "VanillaBrewingFuelOracle.java",
-                    lab.ROOT / "crates/horizon-client-render/examples/brewing_fuel_probe.rs",
-                    lab.ROOT / "crates/horizon-client-render/src/brewing.rs",
-                    lab.ROOT / "crates/horizon-client-render/src/providers.rs",
-                    lab.ROOT / "crates/horizon-items/src/items.rs",
-                    lab.ROOT / "crates/horizon-client/src/menu.rs",
-                    lab.ROOT / "crates/horizon-client/src/game/machines.rs",
-                    lab.ROOT / "crates/horizon-items/src/item_data.rs", lab.ROOT / "Cargo.lock"]
+                    lab.ROOT / "crates/sunrise-client-render/examples/brewing_fuel_probe.rs",
+                    lab.ROOT / "crates/sunrise-client-render/src/brewing.rs",
+                    lab.ROOT / "crates/sunrise-client-render/src/providers.rs",
+                    lab.ROOT / "crates/sunrise-items/src/items.rs",
+                    lab.ROOT / "crates/sunrise-client/src/menu.rs",
+                    lab.ROOT / "crates/sunrise-client/src/game/machines.rs",
+                    lab.ROOT / "crates/sunrise-items/src/item_data.rs", lab.ROOT / "Cargo.lock"]
     tested_sources = base.source_hashes(tested_paths)
     tested_fixtures = base.source_hashes([inputs])
     dependency_path = os.pathsep.join(map(str, libraries))
@@ -56,7 +56,7 @@ def main():
     run(["javac", "--release", lock["minecraft"]["java_major"], "-proc:none", "-cp",
          str(jars["server"]) + os.pathsep + dependency_path, "-d", classes,
          sources / "ParityData.java", sources / "VanillaBrewingFuelOracle.java"], "compile-java")
-    run(["cargo", "build", "--profile", args.profile, "-p", "horizon-client-render",
+    run(["cargo", "build", "--profile", args.profile, "-p", "sunrise-client-render",
          "--example", "brewing_fuel_probe"], "compile-rust")
     target = lab.cargo_target() / ("debug" if args.profile == "dev" else "release")
     binary = target / "examples" / ("brewing_fuel_probe.exe" if os.name == "nt" else "brewing_fuel_probe")
@@ -65,7 +65,7 @@ def main():
     for side, jar in jars.items():
         reference = build / (side + ".txt")
         run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]),
-             "dev.horizonlab.parity.VanillaBrewingFuelOracle", inputs, reference], side)
+             "dev.sunriselab.parity.VanillaBrewingFuelOracle", inputs, reference], side)
         matched = base.compare(reference, build / "rust.txt")
         references.append({"side": side, "jar_sha256": lab.digest(jar, "sha256"), "matched_lines": matched})
         print(f"{side}: {matched} brewing-fuel output lines match Rust", flush=True)

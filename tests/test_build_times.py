@@ -81,12 +81,12 @@ class TimingsTests(unittest.TestCase):
         self.assertEqual([p["unit"] for p in bt.critical_path(units)], ["fast_meta", "user"])
 
     def test_a_binary_named_like_its_package_is_labelled_by_its_kind(self):
-        self.assertEqual(bt.unit_label(unit(0, "horizon-client", 0, 1, target=' horizon-client "bin"')), "horizon-client (bin)")
-        self.assertEqual(bt.unit_label(unit(0, "horizon-client", 0, 1, target=' lan_bot "test"')), "horizon-client (test lan_bot)")
-        self.assertEqual(bt.unit_label(unit(0, "horizon-client", 0, 1)), "horizon-client")
+        self.assertEqual(bt.unit_label(unit(0, "sunrise-client", 0, 1, target=' sunrise-client "bin"')), "sunrise-client (bin)")
+        self.assertEqual(bt.unit_label(unit(0, "sunrise-client", 0, 1, target=' lan_bot "test"')), "sunrise-client (test lan_bot)")
+        self.assertEqual(bt.unit_label(unit(0, "sunrise-client", 0, 1)), "sunrise-client")
         # cargo before 1.99 puts the kind first
-        self.assertEqual(bt.unit_label(unit(0, "horizon-client", 0, 1, target=' bin "horizon-client"')), "horizon-client (bin)")
-        self.assertEqual(bt.unit_label(unit(0, "horizon-client", 0, 1, target=' bin "horizon-ctl"')), "horizon-client (bin horizon-ctl)")
+        self.assertEqual(bt.unit_label(unit(0, "sunrise-client", 0, 1, target=' bin "sunrise-client"')), "sunrise-client (bin)")
+        self.assertEqual(bt.unit_label(unit(0, "sunrise-client", 0, 1, target=' bin "sunrise-ctl"')), "sunrise-client (bin sunrise-ctl)")
 
     def test_pages_of_older_cargo_give_the_same_critical_path(self):
         # Up to 1.92 cargo writes unlocked_units / unlocked_rmeta_units, and rmeta_time instead of sections.
@@ -202,13 +202,13 @@ class RunTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name, "repo").resolve()
-        self.files = {"horizon-items": "crates/horizon-items/src/items.rs",
-                      "horizon-world": "crates/horizon-world/src/level/mod.rs"}
+        self.files = {"sunrise-items": "crates/sunrise-items/src/items.rs",
+                      "sunrise-world": "crates/sunrise-world/src/level/mod.rs"}
         for relative in self.files.values():
             path = self.root / relative
             path.parent.mkdir(parents=True)
             path.write_bytes(b"use a;\n\npub fn one() {}\n\npub fn two() {}\n\npub fn three() {}\n")
-        (self.root / "crates/horizon-items/src/lib.rs").write_text("pub mod items;\n")
+        (self.root / "crates/sunrise-items/src/lib.rs").write_text("pub mod items;\n")
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "first")
@@ -222,10 +222,10 @@ class RunTests(unittest.TestCase):
         self.state = {
             "calls": str(self.calls), "watch": [str(self.root / r) for r in self.files.values()],
             "metadata": {"packages": [
-                {"name": "horizon-items", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/horizon-items/src/lib.rs")}]},
-                {"name": "horizon-world", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/horizon-world/src/lib.rs")}]}]},
+                {"name": "sunrise-items", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/sunrise-items/src/lib.rs")}]},
+                {"name": "sunrise-world", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/sunrise-world/src/lib.rs")}]}]},
             "cold_units": REAL_UNITS,
-            "edit_units": [unit(0, "horizon-items", 0, 1.5, unblocks=[1]), unit(1, "horizon-client", 1.5, 2.0, target=' x "bin"')],
+            "edit_units": [unit(0, "sunrise-items", 0, 1.5, unblocks=[1]), unit(1, "sunrise-client", 1.5, 2.0, target=' x "bin"')],
         }
         self.write_state()
         patches = [mock.patch.dict(os.environ, {"FAKE_CARGO_STATE": str(self.state_path)}),
@@ -257,10 +257,10 @@ class RunTests(unittest.TestCase):
         return [json.loads(l) for l in self.calls.read_text().splitlines() if json.loads(l)["args"][0] == "build"]
 
     def test_report_has_what_two_machines_need_to_be_compared(self):
-        code, report, out, _ = self.report("--profiles", "dev", "--crates", "horizon-items,horizon-world", "--jobs", "6")
+        code, report, out, _ = self.report("--profiles", "dev", "--crates", "sunrise-items,sunrise-world", "--jobs", "6")
         self.assertEqual(code, 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, capture_output=True, text=True).stdout.strip()
-        self.assertEqual(report["format"], "horizon-build-times")
+        self.assertEqual(report["format"], "sunrise-build-times")
         self.assertEqual(report["commit"]["sha"], head)
         self.assertFalse(report["commit"]["dirty"])
         self.assertEqual(report["machine"]["cpu"], "Test CPU")
@@ -274,18 +274,18 @@ class RunTests(unittest.TestCase):
         self.assertEqual([p["unit"] for p in cold["timings"]["critical_path"]][-1], "c (bin)")
         self.assertTrue(report["noop"]["dev"]["ok"])
         inc = report["incremental"]["dev"]
-        self.assertEqual(set(inc), {"horizon-items", "horizon-world"})
-        self.assertEqual(inc["horizon-items"]["file"], "crates/horizon-items/src/items.rs")
-        self.assertEqual(inc["horizon-items"]["rebuilt_crates"], ["horizon-client", "horizon-items"])
-        self.assertEqual(inc["horizon-items"]["rebuilt_units"], 2)
-        self.assertIn("| dev | horizon-items |", out)
+        self.assertEqual(set(inc), {"sunrise-items", "sunrise-world"})
+        self.assertEqual(inc["sunrise-items"]["file"], "crates/sunrise-items/src/items.rs")
+        self.assertEqual(inc["sunrise-items"]["rebuilt_crates"], ["sunrise-client", "sunrise-items"])
+        self.assertEqual(inc["sunrise-items"]["rebuilt_units"], 2)
+        self.assertIn("| dev | sunrise-items |", out)
         self.assertTrue(Path(self.tmp.name, "out", "report.md").is_file())
 
     def test_cargo_is_told_the_same_command_in_every_build(self):
-        self.report("--profiles", "dev,fast", "--crates", "horizon-items", "--jobs", "3")
+        self.report("--profiles", "dev,fast", "--crates", "sunrise-items", "--jobs", "3")
         for call in self.builds():
             args = call["args"]
-            self.assertEqual(args[:5], ["build", "--locked", "-p", "horizon-game", "--profile"])
+            self.assertEqual(args[:5], ["build", "--locked", "-p", "sunrise-game", "--profile"])
             self.assertIn(args[5], ["dev", "fast"])
             self.assertIn("--timings", args)
             self.assertEqual(args[args.index("--jobs") + 1], "3")
@@ -301,11 +301,11 @@ class RunTests(unittest.TestCase):
         self.assertNotIn("--jobs", self.builds()[0]["args"])
 
     def test_the_edited_file_is_what_cargo_sees_and_is_put_back_exactly(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         before = path.read_bytes()
         os.utime(path, ns=(1_500_000_000_000_000_000, 1_500_000_000_000_000_000))
         mtime = path.stat().st_mtime_ns
-        self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
+        self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(path.stat().st_mtime_ns, mtime)
         seen = [c["seen_probe"][0] for c in self.builds()]
@@ -315,16 +315,16 @@ class RunTests(unittest.TestCase):
                                         text=True).stdout, "")
 
     def test_a_failing_build_leaves_the_file_as_found(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         before = path.read_bytes()
         os.utime(path, ns=(1_500_000_000_000_000_000,) * 2)
         self.state["fail_on_probe"] = True
         self.write_state()
-        code, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
+        code, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
         self.assertEqual(code, 1)
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(path.stat().st_mtime_ns, 1_500_000_000_000_000_000)
-        entry = report["incremental"]["dev"]["horizon-items"]
+        entry = report["incremental"]["dev"]["sunrise-items"]
         self.assertFalse(entry["ok"])
         self.assertIn("refuses the edit", entry["runs"][0]["error"])
         self.assertIn("FAILED", out)
@@ -334,14 +334,14 @@ class RunTests(unittest.TestCase):
         # else the next measurement also pays for recompiling the crate that failed
         self.state["fail_on_probe"] = True
         self.write_state()
-        self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items,horizon-world")
+        self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items,sunrise-world")
         seen = [c["seen_probe"] for c in self.builds()]
         # warm, no-op, items edited (fails), items built back, world edited (fails), world built back
         self.assertEqual(seen, [[False, False], [False, False], [True, False], [False, False], [False, True],
                                 [False, False]])
 
     def test_an_interrupt_during_the_build_leaves_the_file_as_found(self):
-        path = self.root / self.files["horizon-world"]
+        path = self.root / self.files["sunrise-world"]
         before = path.read_bytes()
         os.utime(path, ns=(1_500_000_000_000_000_000,) * 2)
         real = bt.Builder.build
@@ -353,14 +353,14 @@ class RunTests(unittest.TestCase):
             return real(builder, profile, label)
 
         with mock.patch.object(bt.Builder, "build", interrupted), self.assertRaises(KeyboardInterrupt):
-            self.call("run", "--profiles", "dev", "--only", "incremental", "--crates", "horizon-world",
+            self.call("run", "--profiles", "dev", "--only", "incremental", "--crates", "sunrise-world",
                       "--output", str(Path(self.tmp.name, "out", "r.json")))
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(path.stat().st_mtime_ns, 1_500_000_000_000_000_000)
         self.assertEqual(list((self.root / ".local/build-times").glob("pending-*.json")), [])
 
     def test_a_file_someone_else_writes_during_the_run_is_not_put_back(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         os.utime(path, ns=(1_500_000_000_000_000_000,) * 2)
         mine = b"use a;\n\npub fn my_new_work() {}\n"
         real = bt.Builder.build
@@ -372,7 +372,7 @@ class RunTests(unittest.TestCase):
             return result
 
         with mock.patch.object(bt.Builder, "build", editor_saves):
-            code, _, err = self.call("run", "--profiles", "dev", "--only", "incremental", "--crates", "horizon-items",
+            code, _, err = self.call("run", "--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items",
                                      "--output", str(Path(self.tmp.name, "out", "r.json")))
         self.assertEqual(code, 2)
         self.assertIn("changed by something else", err)
@@ -381,7 +381,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(list((self.root / ".local/build-times").glob("pending-*.json")), [])
 
     def test_a_killed_run_is_undone_by_the_next_one(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         before = path.read_bytes()
         os.utime(path, ns=(1_500_000_000_000_000_000,) * 2)
         probe = bt.Probe(path, self.root)
@@ -395,7 +395,7 @@ class RunTests(unittest.TestCase):
         self.assertFalse(report["commit"]["dirty"])
 
     def test_a_run_killed_while_writing_the_file_is_undone_too(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         before = path.read_bytes()
         bt.Probe(path, self.root).apply("top", "cut")
         path.write_bytes(path.read_bytes()[:10])  # the write was cut short
@@ -404,7 +404,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
     def test_work_done_after_a_killed_run_is_never_overwritten(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         bt.Probe(path, self.root).apply("middle", "left-behind")
         mine = b"use a;\n\npub fn my_new_work() {}\n"  # the developer took the line out and went on working
         path.write_bytes(mine)
@@ -415,7 +415,7 @@ class RunTests(unittest.TestCase):
         self.assertFalse(self.calls.exists())  # not one cargo call
 
     def test_refuses_a_dirty_tree_unless_allowed(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         path.write_bytes(path.read_bytes() + b"// mine\n")
         code, out, err = self.call("run", "--profiles", "dev", "--only", "cold")
         self.assertEqual(code, 2)
@@ -428,21 +428,21 @@ class RunTests(unittest.TestCase):
         self.assertTrue(report["commit"]["dirty"])
 
     def test_an_edit_in_a_dirty_file_still_restores_the_dirty_content(self):
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         path.write_bytes(path.read_bytes() + b"// mine\n")
         mine = path.read_bytes()
-        self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items", "--allow-dirty")
+        self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items", "--allow-dirty")
         self.assertEqual(path.read_bytes(), mine)
 
     def test_a_crate_that_does_not_exist_is_refused_with_the_list(self):
-        code, _, err = self.call("run", "--crates", "horizon-nope", "--profiles", "dev")
+        code, _, err = self.call("run", "--crates", "sunrise-nope", "--profiles", "dev")
         self.assertEqual(code, 2)
-        self.assertIn("no crate named horizon-nope", err)
-        self.assertIn("horizon-items", err)
+        self.assertIn("no crate named sunrise-nope", err)
+        self.assertIn("sunrise-items", err)
         self.assertNotIn("Traceback", err)
 
     def test_a_file_that_does_not_exist_is_refused(self):
-        code, _, err = self.call("run", "--crates", "horizon-items", "--file", "horizon-items=crates/none.rs")
+        code, _, err = self.call("run", "--crates", "sunrise-items", "--file", "sunrise-items=crates/none.rs")
         self.assertEqual(code, 2)
         self.assertIn("does not exist", err)
 
@@ -451,7 +451,7 @@ class RunTests(unittest.TestCase):
         outside.write_bytes(b"fn a() {}\n")
         for given in (str(outside), "../elsewhere.rs"):
             with self.subTest(given=given):
-                code, _, err = self.call("run", "--crates", "horizon-items", "--file", f"horizon-items={given}")
+                code, _, err = self.call("run", "--crates", "sunrise-items", "--file", f"sunrise-items={given}")
                 self.assertEqual(code, 2)
                 self.assertIn("outside the repository", err)
                 self.assertNotIn("Traceback", err)
@@ -459,10 +459,10 @@ class RunTests(unittest.TestCase):
 
     def test_a_crate_without_a_listed_file_gets_its_lib_rs(self):
         self.state["metadata"]["packages"].append(
-            {"name": "horizon-extra", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/horizon-items/src/lib.rs")}]})
+            {"name": "sunrise-extra", "targets": [{"kind": ["lib"], "src_path": str(self.root / "crates/sunrise-items/src/lib.rs")}]})
         self.write_state()
-        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-extra")
-        self.assertEqual(report["incremental"]["dev"]["horizon-extra"]["file"], "crates/horizon-items/src/lib.rs")
+        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-extra")
+        self.assertEqual(report["incremental"]["dev"]["sunrise-extra"]["file"], "crates/sunrise-items/src/lib.rs")
 
     def test_the_users_cargo_target_dir_is_not_used_or_touched(self):
         mine = Path(self.tmp.name, "my-target")
@@ -519,39 +519,39 @@ class RunTests(unittest.TestCase):
     def test_missing_timings_still_give_the_seconds_and_a_warning(self):
         self.state["no_timings"] = True
         self.write_state()
-        code, report, _, _ = self.report("--profiles", "dev", "--crates", "horizon-items")
+        code, report, _, _ = self.report("--profiles", "dev", "--crates", "sunrise-items")
         self.assertEqual(code, 0)
         self.assertIsNone(report["cold"]["dev"]["timings"])
         self.assertGreater(report["cold"]["dev"]["seconds"], 0)
-        self.assertIsNone(report["incremental"]["dev"]["horizon-items"]["rebuilt_crates"])
+        self.assertIsNone(report["incremental"]["dev"]["sunrise-items"]["rebuilt_crates"])
         self.assertTrue(any(w.startswith("cold dev: cargo wrote no timings page") for w in report["warnings"]))
         self.assertIn("Cold builds", bt.render_markdown(report))
 
     def test_an_edit_that_recompiles_nothing_is_called_out(self):
         self.state["edit_units"] = []
         self.write_state()
-        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
+        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
         self.assertTrue(any("recompiled nothing" in w for w in report["warnings"]))
 
     def test_a_middle_edit_says_where_it_went_and_when_it_had_to_go_to_the_top(self):
-        _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
+        _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
         # 7 lines, items after a blank line on lines 3, 5 and 7; the middle (line 4) is as near 3 as 5: the first wins
-        self.assertEqual(report["incremental"]["dev"]["horizon-items"]["line"], 3)
-        self.assertIn("`crates/horizon-items/src/items.rs:3`", out)
+        self.assertEqual(report["incremental"]["dev"]["sunrise-items"]["line"], 3)
+        self.assertIn("`crates/sunrise-items/src/items.rs:3`", out)
         self.assertEqual([w for w in report["warnings"] if "line 1" in w], [])
-        path = self.root / self.files["horizon-items"]
+        path = self.root / self.files["sunrise-items"]
         path.write_bytes(b"/// Docs.\npub fn one() {}\n/// More.\npub fn two() {}\n")  # no item after a blank line
         git(self.root, "commit", "-qam", "no spot")
-        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
-        self.assertEqual(report["incremental"]["dev"]["horizon-items"]["line"], 1)
+        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
+        self.assertEqual(report["incremental"]["dev"]["sunrise-items"]["line"], 1)
         self.assertTrue(any("items.rs has no top-level item after a blank line, so the comment went on line 1" in w
                             for w in report["warnings"]))
 
     def test_an_edit_that_misses_its_own_crate_is_called_out(self):
-        self.state["edit_units"] = [unit(0, "horizon-client", 0, 1)]
+        self.state["edit_units"] = [unit(0, "sunrise-client", 0, 1)]
         self.write_state()
-        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
-        self.assertTrue(any("did not recompile horizon-items itself" in w for w in report["warnings"]))
+        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
+        self.assertTrue(any("did not recompile sunrise-items itself" in w for w in report["warnings"]))
 
     def test_other_cargo_processes_are_recorded_as_skew(self):
         with mock.patch.object(bt, "other_build_processes", return_value=["cargo", "rustc"]):
@@ -561,13 +561,13 @@ class RunTests(unittest.TestCase):
         self.assertIn("warning: cold dev: other build programs", out)
 
     def test_a_busy_machine_is_warned_about_and_the_figure_kept_with_the_number(self):
-        _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
+        _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
         self.assertEqual(report["noop"]["dev"]["cpu_busy_before_pct"], 1.0)
         self.assertEqual([w for w in report["warnings"] if "busy" in w], [])
         with mock.patch.object(bt, "cpu_busy_percent", return_value=62.5), mock.patch.object(bt.time, "sleep"):
-            _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items")
-        self.assertEqual(report["incremental"]["dev"]["horizon-items"]["runs"][0]["cpu_busy_before_pct"], 62.5)
-        self.assertTrue(any("incremental dev horizon-items: the machine was 62.5% busy" in w for w in report["warnings"]))
+            _, report, out, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items")
+        self.assertEqual(report["incremental"]["dev"]["sunrise-items"]["runs"][0]["cpu_busy_before_pct"], 62.5)
+        self.assertTrue(any("incremental dev sunrise-items: the machine was 62.5% busy" in w for w in report["warnings"]))
         self.assertIn("warning: no-op dev: the machine was 62.5% busy", out)
 
     def test_a_busy_cpu_that_calms_down_is_waited_for_not_warned_about(self):
@@ -580,9 +580,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual(slept.call_count, 2)
 
     def test_repeats_run_the_edit_again_and_report_the_median(self):
-        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "horizon-items",
+        _, report, _, _ = self.report("--profiles", "dev", "--only", "incremental", "--crates", "sunrise-items",
                                       "--repeats", "3")
-        entry = report["incremental"]["dev"]["horizon-items"]
+        entry = report["incremental"]["dev"]["sunrise-items"]
         self.assertEqual(len(entry["runs"]), 3)
         self.assertEqual(entry["seconds"], sorted(r["seconds"] for r in entry["runs"])[1])
         # each repeat edits with its own text, so rustc never sees the state of an earlier edit
@@ -600,7 +600,7 @@ class RunTests(unittest.TestCase):
     def test_a_failed_cold_build_is_reported_and_stops_the_profile(self):
         with mock.patch.object(bt.Builder, "build", return_value={"ok": False, "seconds": 3.0, "log": str(self.root / "x.log"),
                                                                    "code": 101, "units": None, "timings": None}):
-            code, report, out, _ = self.report("--profiles", "dev", "--crates", "horizon-items")
+            code, report, out, _ = self.report("--profiles", "dev", "--crates", "sunrise-items")
         self.assertEqual(code, 1)
         self.assertFalse(report["cold"]["dev"]["ok"])
         self.assertEqual(report["incremental"], {})
@@ -608,18 +608,18 @@ class RunTests(unittest.TestCase):
 
 
 def sample(seconds, cpu="Test CPU", jobs=8, commit="aaaaaaaaa"):
-    return {"format": "horizon-build-times", "version": 1, "created": "2026-11-01T10:00:00Z", "label": None,
+    return {"format": "sunrise-build-times", "version": 1, "created": "2026-11-01T10:00:00Z", "label": None,
             "commit": {"short": commit, "sha": commit, "branch": "main", "subject": "s", "dirty": False},
             "machine": {"os": "linux", "cpu": cpu, "cpu_threads": 8, "ram_mb": 16384},
             "toolchain": {"rustc": "rustc 1.99.1", "cargo": "cargo 1.99.1", "host": "x"}, "jobs": {"jobs": jobs, "source": "default"},
-            "options": {"edit": "middle", "repeats": 1, "files": {"horizon-items": "crates/horizon-items/src/items.rs"}},
+            "options": {"edit": "middle", "repeats": 1, "files": {"sunrise-items": "crates/sunrise-items/src/items.rs"}},
             "warnings": [], "environment": {}, "command": "cargo build",
             "cold": {"dev": {"ok": True, "seconds": seconds["cold"], "timings": {
                 "units": 3, "total_s": seconds["cold"],
-                "top": [{"crate": "horizon-world", "seconds": seconds["world"], "units": 1}],
-                "critical_path": [{"unit": "horizon-world", "start_s": 0, "end_s": seconds["world"], "seconds": seconds["world"]}]}}},
+                "top": [{"crate": "sunrise-world", "seconds": seconds["world"], "units": 1}],
+                "critical_path": [{"unit": "sunrise-world", "start_s": 0, "end_s": seconds["world"], "seconds": seconds["world"]}]}}},
             "noop": {"dev": {"ok": True, "seconds": seconds["noop"]}},
-            "incremental": {"dev": {"horizon-items": {"ok": True, "seconds": seconds["items"], "file": "x"}}}}
+            "incremental": {"dev": {"sunrise-items": {"ok": True, "seconds": seconds["items"], "file": "x"}}}}
 
 
 class CompareTests(unittest.TestCase):
@@ -628,9 +628,9 @@ class CompareTests(unittest.TestCase):
         b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0}, commit="bbbbbbbbb")
         text = bt.compare(a, b)
         self.assertIn("| dev | 200.0 | 150.0 | -50.0 | -25% |", text)
-        self.assertIn("| dev | horizon-items | 20.0 | 25.0 | +5.0 | +25% |", text)
+        self.assertIn("| dev | sunrise-items | 20.0 | 25.0 | +5.0 | +25% |", text)
         self.assertIn("| dev | 1.0 | 1.0 | +0.0 | +0% |", text)
-        self.assertIn("| horizon-world | 80.0 | 40.0 | -40.0 | -50% |", text)
+        self.assertIn("| sunrise-world | 80.0 | 40.0 | -40.0 | -50% |", text)
         self.assertIn("`aaaaaaaaa`", text)
         self.assertIn("`bbbbbbbbb`", text)
         self.assertNotIn("Read with care", text)
@@ -656,17 +656,17 @@ class CompareTests(unittest.TestCase):
         a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
         b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0})
         b["incremental"]["dev"] = {"error": "the first build failed:\nerror[E0000]"}
-        self.assertIn("| dev | horizon-items | 20.0 | - | - | - |", bt.compare(a, b))
-        self.assertIn("| dev | horizon-items | - | 20.0 | - | - |", bt.compare(b, a))
+        self.assertIn("| dev | sunrise-items | 20.0 | - | - | - |", bt.compare(a, b))
+        self.assertIn("| dev | sunrise-items | - | 20.0 | - | - |", bt.compare(b, a))
 
     def test_crates_and_profiles_on_one_side_only_get_a_dash(self):
         a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
         b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0})
         b["cold"]["fast"] = dict(b["cold"]["dev"])
-        b["incremental"]["dev"]["horizon-new"] = {"ok": True, "seconds": 3.0, "file": "y"}
+        b["incremental"]["dev"]["sunrise-new"] = {"ok": True, "seconds": 3.0, "file": "y"}
         text = bt.compare(a, b)
         self.assertIn("| fast | - | 150.0 | - | - |", text)
-        self.assertIn("| dev | horizon-new | - | 3.0 | - | - |", text)
+        self.assertIn("| dev | sunrise-new | - | 3.0 | - | - |", text)
 
     def test_command_line_compare_reads_files_and_rejects_other_json(self):
         with tempfile.TemporaryDirectory() as tmp:

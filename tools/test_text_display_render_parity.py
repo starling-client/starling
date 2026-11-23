@@ -7,8 +7,8 @@ TextDisplayRenderer.submitInner (line split, alignment, default background from 
 options) and turns its submits into vertices as TextFeatureRenderer does, with glyphs
 baked from the real font providers. `examples/probe/text_display_render_fixture`
 decodes the same entity data from vanilla's wire bytes and lays the text out with
-`horizon_client::text_display`. Each case's pose must agree, and its quads
-[x, y, z, ARGB] in text units as multisets (Horizon draws all shadows first): the
+`sunrise_client::text_display`. Each case's pose must agree, and its quads
+[x, y, z, ARGB] in text units as multisets (Sunrise draws all shadows first): the
 depths keep the background behind the shadow, behind the glyph and its bold copy.
 
   test_text_display_render_parity.py [--count N] [--detail N]
@@ -26,7 +26,7 @@ except ImportError:
     import oracle_harness as harness
     import test_model_baking_parity as baking
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 # Glyphs of the `default` include (ascii, accented, nonlatin_european); no Unihex.
 CHARS = ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
          ' .,:;!?\'"()[]{}<>-_+=*/\\|@#$%^&~`' 'äöüßéèêñçÅØæ' 'АБВГДабвгдΩλπ')
@@ -113,8 +113,8 @@ def main():
     (build / 'report.json').unlink(missing_ok=True)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    sources = [PARITY / 'VanillaTextDisplayRenderOracle.java', lab.ROOT / 'crates/horizon-client/src/text_display.rs',
-               lab.ROOT / 'crates/horizon-client-render/src/hud.rs', lab.ROOT / 'crates/horizon-client-render/src/font.rs']
+    sources = [PARITY / 'VanillaTextDisplayRenderOracle.java', lab.ROOT / 'crates/sunrise-client/src/text_display.rs',
+               lab.ROOT / 'crates/sunrise-client-render/src/hud.rs', lab.ROOT / 'crates/sunrise-client-render/src/font.rs']
     tested = base.source_hashes(sources)
     chosen = cases(args.count)
     inputs = build / 'cases.jsonl'
@@ -124,7 +124,7 @@ def main():
                         '-d', classes, *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaTextDisplayRenderOracle'))],
                        build, 'compile-java')
     harness.run_logged(['java', '-Xmx1G', '-Djava.awt.headless=true', '-cp', str(classes) + os.pathsep + dependencies,
-                        'dev.horizonlab.parity.VanillaTextDisplayRenderOracle', inputs, build / 'vanilla.jsonl'], build, 'vanilla')
+                        'dev.sunriselab.parity.VanillaTextDisplayRenderOracle', inputs, build / 'vanilla.jsonl'], build, 'vanilla')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text(encoding='utf-8').splitlines()]
     errors = [(c, v['error']) for c, v in zip(chosen, vanilla) if 'error' in v]
     for c, e in errors[:3]:
@@ -148,11 +148,11 @@ def main():
     for c, v, r, pose in bad[:args.detail]:
         print('MISMATCH', json.dumps(c, ensure_ascii=False))
         if not pose:
-            print('   pose vanilla', v['pose'], '\n   pose horizon', r['pose'])
+            print('   pose vanilla', v['pose'], '\n   pose sunrise', r['pose'])
         a, b = canonical(v['quads']), canonical(r['quads'])
         only_v = [q for q in a if q not in b][:3]
         only_r = [q for q in b if q not in a][:3]
-        print(f'   {len(a)} vanilla quads, {len(b)} Horizon; only vanilla {only_v}; only Horizon {only_r}')
+        print(f'   {len(a)} vanilla quads, {len(b)} Sunrise; only vanilla {only_v}; only Sunrise {only_r}')
     print(f'{len(chosen) - len(bad) - len(errors)}/{len(chosen)} text display cases match ({quads} quads); '
           f'{len(errors)} oracle errors')
     if bad or errors:

@@ -39,7 +39,7 @@ def _in_impl_of(text, at, owner):
 def rust_fn(name, under="crates", owner=None):
     """The one function `name` defined under `under`, from its `fn` to its closing brace.
 
-    `owner` narrows the search: a crate folder name (`horizon-client`) searches only that
+    `owner` narrows the search: a crate folder name (`sunrise-client`) searches only that
     crate, any other name (`Game`) only methods of a top-level `impl` of that type. Only the
     visibility is dropped (`pub(in crate::game) fn x(` comes back as `fn x(`), so a fixture
     can paste it into its own `impl`. Any second definition is refused, as is a missing one.

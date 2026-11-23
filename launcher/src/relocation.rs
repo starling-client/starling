@@ -141,7 +141,7 @@ fn ensure_idle(source: &Roots) -> Result<(), String> {
         let managed = roots.iter().any(|root| command.contains(root));
         if matches!(
             name,
-            "horizon-client" | "horizon-server" | "horizon-prepare"
+            "sunrise-client" | "sunrise-server" | "sunrise-prepare"
         ) || (managed
             && matches!(
                 name,
@@ -198,14 +198,14 @@ pub fn run_worker() -> Option<i32> {
     if restart {
         let mut command = process::command(backend::exe_path());
         command
-            .env_remove("HORIZON_RELOCATION_ERROR")
-            .env_remove("HORIZON_RELOCATION_BACKUP");
+            .env_remove("SUNRISE_RELOCATION_ERROR")
+            .env_remove("SUNRISE_RELOCATION_BACKUP");
         match &result {
             Ok(backup) => {
-                command.env("HORIZON_RELOCATION_BACKUP", backup);
+                command.env("SUNRISE_RELOCATION_BACKUP", backup);
             }
             Err(error) => {
-                command.env("HORIZON_RELOCATION_ERROR", error);
+                command.env("SUNRISE_RELOCATION_ERROR", error);
             }
         }
         if let Err(e) = command.spawn() {

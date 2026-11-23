@@ -34,7 +34,7 @@ def corpus(facts, placement):
     for fail, reject in itertools.product([-1, 0, 9, 101], [0, 3]):
         placed = {'feature': {'type': 'freeze_top_layer'}, 'placement': [{'type': 'count', 'count': 2}]}
         yield case(definition=json.dumps(placed), mode='placed', fail=fail, reject=reject)
-        yield case(definition=json.dumps({'type': 'overlay', 'features': [placed, {'feature': 'horizon:moss', 'placement': []}]}), fail=fail, reject=reject)
+        yield case(definition=json.dumps({'type': 'overlay', 'features': [placed, {'feature': 'sunrise:moss', 'placement': []}]}), fail=fail, reject=reject)
 
 
 if __name__ == '__main__':

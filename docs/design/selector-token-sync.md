@@ -1,7 +1,7 @@
 # Selector-token synchronization
 
-Horizon sends `horizon:selector_tokens` immediately before each play command tree to a
-Horizon peer. Vanilla command-tree bytes are unchanged. The channel is reserved for the
+Sunrise sends `sunrise:selector_tokens` immediately before each play command tree to a
+Sunrise peer. Vanilla command-tree bytes are unchanged. The channel is reserved for the
 engine; a mod cannot declare it as a raw payload. The snapshot contains parsing and
 completion metadata, never the server's callable selector implementation.
 
@@ -27,7 +27,7 @@ using the protocol string limit. No trailing bytes are accepted.
 
 ## Bounds and publication
 
-The **256 KiB total encoded metadata limit is Horizon's bound**, not a vanilla selector
+The **256 KiB total encoded metadata limit is Sunrise's bound**, not a vanilla selector
 limit. It includes the revision, count prefix, every string prefix and byte, flags, limits
 and sort bytes. Registration accounts for the exact revision 1 encoding before insertion.
 The token that would exceed the total is refused with its name and the limit; earlier

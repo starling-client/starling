@@ -1,16 +1,16 @@
 # Pregeneration: `/pregen`
 
 `/pregen` generates every chunk of a square or a circle ahead of the players, lights it and saves it, as
-Chunky does on a Java server. It is Horizon's own command (vanilla has none), available in single player
+Chunky does on a Java server. It is Sunrise's own command (vanilla has none), available in single player
 with cheats on and to operators (level 2) on a server, from the chat or the server console
-(`horizon-server cmd pregen start 2500`).
+(`sunrise-server cmd pregen start 2500`).
 
 It is off until you turn it on, so `/help` and the command tree stay vanilla's:
 
-- a server: `horizon-pregen = true` under `[properties]` in `server.toml` (or `horizon-pregen=true` in a
+- a server: `sunrise-pregen = true` under `[properties]` in `server.toml` (or `sunrise-pregen=true` in a
   vanilla folder's `server.properties`), then restart it;
-- single player and LAN: turn on **Options → Horizon Settings... → Extras... → Chunk pregeneration**.
-  The choice is saved in `horizon-extras.txt` and applies immediately, including in an open world.
+- single player and LAN: turn on **Options → Sunrise Settings... → Extras... → Chunk pregeneration**.
+  The choice is saved in `sunrise-extras.txt` and applies immediately, including in an open world.
   Cheats must still be enabled. `--pregen` also works and keeps the command enabled for that run,
   even when the saved switch is off.
 
@@ -38,7 +38,7 @@ players see the pregenerated chunks past `view_distance` as well: that ring only
 
 ## How it works
 
-- `horizon_client::pregen::Pregen` cuts the area into strips at most 256 chunks wide and sweeps each
+- `sunrise_client::pregen::Pregen` cuts the area into strips at most 256 chunks wide and sweeps each
   north to south with a band of rows (`streaming::Band`) holding about a thousand chunks.
 - Streaming treats the band like a player's area: it generates its chunks and the rings around them that
   decoration and light need, and lights its own chunks. Once every chunk of the band's first row is lit

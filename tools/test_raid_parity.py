@@ -6,7 +6,7 @@ Raids.CODEC on a stand-in ServerLevel built from each case: boxes of blocks and
 light, one biome, village sections (the point of interest distance tracker),
 village points of interest, unloaded and non-ticking chunks, the overworld
 clock, local difficulty inputs and at most one player. Rust (raid_fixture) runs
-horizon_client::patrol and horizon_client::raid on the same world. Modes:
+sunrise_client::patrol and sunrise_client::raid on the same world. Modes:
 
 - patrol: PatrolSpawner.tick over many ticks (countdown, daylight, the one in
   five draw, the player, village distance, chunk and environment attribute
@@ -315,9 +315,9 @@ def main():
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
     resources = lab.RESOURCES
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaRaidOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client/examples/probe/raid_fixture.rs',
-               lab.ROOT / 'crates/horizon-client/src/raid.rs', lab.ROOT / 'crates/horizon-client/src/patrol.rs']
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaRaidOracle.java'
+    sources = [oracle, Path(__file__), lab.ROOT / 'crates/sunrise-client/examples/probe/raid_fixture.rs',
+               lab.ROOT / 'crates/sunrise-client/src/raid.rs', lab.ROOT / 'crates/sunrise-client/src/patrol.rs']
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     cases = corpus()
@@ -331,11 +331,11 @@ def main():
     def run(command, name):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
             base.run(list(map(str, command)), stdout=log, stderr=subprocess.STDOUT)
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', str(lab.ROOT / 'mods/horizon/src/test/java'),
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', str(lab.ROOT / 'mods/sunrise/src/test/java'),
          '-cp', str(jars['server']) + os.pathsep + deps, '-d', classes, oracle], 'compile-java')
     run(['java', '-Xmx3G', '-cp', os.pathsep.join([str(classes), str(jars['server']), deps]),
-         'dev.horizonlab.parity.VanillaRaidOracle', inputs, build / 'server.txt'], 'server')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+         'dev.sunriselab.parity.VanillaRaidOracle', inputs, build / 'server.txt'], 'server')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast/examples/client_probe'
     run([binary, 'raid_fixture', resources, inputs, build / 'rust.txt'], 'rust')

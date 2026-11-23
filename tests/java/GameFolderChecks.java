@@ -152,7 +152,7 @@ public final class GameFolderChecks {
                 "shared storage is all the player's");
         check(new GameFolder(root, true).idOf(new File(root, "accounts")) == null,
                 "the app's own sign-ins are not shown");
-        check(new GameFolder(root, true).idOf(new File(root, "horizon-native-mods")) == null,
+        check(new GameFolder(root, true).idOf(new File(root, "sunrise-native-mods")) == null,
                 "nor its native mods' folder: the game offers the Starling folder for it");
     }
 
@@ -161,12 +161,12 @@ public final class GameFolderChecks {
         final GameFolder folder = new GameFolder(root, true);
         write(new File(root, "accounts/account.json"), "token");
         write(new File(root, "native/game.so"), "code");
-        write(new File(root, "horizon-control.json"), "secret");
+        write(new File(root, "sunrise-control.json"), "secret");
         write(new File(root, "options.txt"), "options");
         write(new File(root, "saves/World/level.dat"), "world");
         for (final String id : new String[] {
             "starling/accounts", "starling/accounts/account.json", "starling/native/game.so",
-            "starling/horizon-control.json", "starling/moved-to-shared", "starling/.horizon-cache",
+            "starling/sunrise-control.json", "starling/moved-to-shared", "starling/.sunrise-cache",
         }) {
             refused(id + " is private", new Action() {
                 @Override
@@ -177,11 +177,11 @@ public final class GameFolderChecks {
         }
         List<String> top = folder.children("starling");
         check(top.contains("starling/options.txt") && top.contains("starling/saves"), "listed");
-        for (String made : new String[] {"resourcepacks", "shaderpacks", "horizon-mods"}) {
+        for (String made : new String[] {"resourcepacks", "shaderpacks", "sunrise-mods"}) {
             check(top.contains("starling/" + made), made + " is made to copy into");
         }
         check(!top.contains("starling/accounts") && !top.contains("starling/native")
-                && !top.contains("starling/horizon-control.json"), "the private ones are not listed");
+                && !top.contains("starling/sunrise-control.json"), "the private ones are not listed");
         check(!new File(root, "logs").exists() && !new File(root, "crash-reports").exists(),
                 "the game makes its own logs folders");
         write(new File(root, "logs/latest.log"), "log");

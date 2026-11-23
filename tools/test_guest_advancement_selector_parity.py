@@ -130,7 +130,7 @@ def run(label, command, client_command, build, world, ops, packet=True, java_sid
     port=net.server_dir(directory,world)
     if model and clock_file:
         path=directory/'ops.json';entries=json.loads(path.read_text());path.write_text(json.dumps([entry for entry in entries if entry['name']==A],indent=2))
-    audit='HORIZON_DEV_ADVANCEMENT_SELECTOR_AUDIT'
+    audit='SUNRISE_DEV_ADVANCEMENT_SELECTOR_AUDIT'
     previous=os.environ.get(audit)
     if model and not java_side:os.environ[audit]='1'
     try:server=net.Server(command,directory,label)

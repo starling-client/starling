@@ -71,7 +71,7 @@ links = ["#1"]
 '''
 
 
-def pull(state, merged_at=None, paths=("crates/horizon-client/src/game.rs",)):
+def pull(state, merged_at=None, paths=("crates/sunrise-client/src/game.rs",)):
     return {"kind": "PullRequest", "state": state, "merged_at": merged_at, "merge_commit": "abc" if merged_at else None,
             "paths": list(paths)}
 
@@ -123,7 +123,7 @@ class Rules(unittest.TestCase):
                                                                            shipped_in="soon")))
 
     def test_links_are_issues_urls_or_repository_paths(self):
-        self.assertEqual(self.problems(links=["#4", "https://playhorizon.dev", "docs/benchmark.md"]), [])
+        self.assertEqual(self.problems(links=["#4", "https://playsunrise.net", "docs/benchmark.md"]), [])
         self.assertTrue(any("link" in p for p in self.problems(links=["docs/nothing-here.md"])))
         self.assertTrue(any("link" in p for p in self.problems(links=["http://example.com"])))
 

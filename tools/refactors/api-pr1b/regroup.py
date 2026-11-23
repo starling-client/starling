@@ -30,8 +30,8 @@ DESCRIPTION = ast.literal_eval(next(node.value for node in ast.parse(
     if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'DESCRIPTION' for t in node.targets)))
 from split_doubles import camel, split_items, depth_delta  # noqa: E402
 
-API = ROOT / 'crates/horizon-mod-api/src/host'
-GAME = ROOT / 'crates/horizon-client/src/game/host'
+API = ROOT / 'crates/sunrise-mod-api/src/host'
+GAME = ROOT / 'crates/sunrise-client/src/game/host'
 TIERS = ('Host', 'ServerHost', 'ClientHost', 'Backend', 'ClientBackend', 'BackendMut', 'ClientBackendMut')
 MACROS = {'host': 'Host', 'server_host': 'ServerHost', 'client_host': 'ClientHost',
           'backend': 'Backend', 'backend_mut': 'BackendMut', 'client_backend_mut': 'ClientBackendMut'}
@@ -135,7 +135,7 @@ def area_sources(directory, table, assignments):
             head = f'//! The `{dest}` area: host methods the game implements (`game/host/{dest}.rs`).\n#![allow(unused_variables)]\n'
             uses.add('use crate::*;\n')
         else:
-            head = f"//! The game's side of the `{dest}` area (`horizon-mod-api/src/host/{dest}.rs`).\n"
+            head = f"//! The game's side of the `{dest}` area (`sunrise-mod-api/src/host/{dest}.rs`).\n"
             uses.add('use crate::game::Game;\n')
             if dest in tails:
                 uses.add('use mod_api::{prelude::*, *};\n')
@@ -252,7 +252,7 @@ def main():
             if dests and dests != [old]:
                 new = new.replace(f'host/{old}.rs', ', '.join(f'host/{d}.rs' for d in dests))
         # The curated table moves every base method; no empty base module remains.
-        if name == 'crates/horizon-mod-api-gen/src/host.rs':
+        if name == 'crates/sunrise-mod-api-gen/src/host.rs':
             new = new.replace('area.stem == "base"', 'area.stem == "config"')
         if new != text:
             output[path] = new

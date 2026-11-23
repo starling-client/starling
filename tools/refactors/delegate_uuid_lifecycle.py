@@ -4,7 +4,7 @@ from pathlib import Path
 import hashlib
 import sys
 
-root = Path(__file__).resolve().parents[2] / 'crates/horizon-client/src/game'
+root = Path(__file__).resolve().parents[2] / 'crates/sunrise-client/src/game'
 mode = sys.argv[1]
 if mode in ('boat', 'cart-command'):
     a, b = root/'administration/commands/mod.rs', root/'entities/passengers.rs'

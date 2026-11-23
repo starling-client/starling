@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A minecart through a Nether portal on Horizon's dedicated server, tick by tick against vanilla's numbers.
+"""A minecart through a Nether portal on Sunrise's dedicated server, tick by tick against vanilla's numbers.
 
     python3 tools/cart_portal_e2e.py --bin-dir target/fast
 
@@ -41,7 +41,7 @@ NETHER = 'execute in minecraft:the_nether run '
 RAIL = 'minecraft:powered_rail[powered=true,shape=east_west]'
 TOL = 1e-5
 # Per lane: tick -> (cart x, y, speed along x, pig x, pig y or None). The numbers vanilla 26.3 printed. The pig's y
-# is left out on the tick it arrives unticked in the Overworld (vanilla 100.0, Horizon puts it 0.1875 above the
+# is left out on the tick it arrives unticked in the Overworld (vanilla 100.0, Sunrise puts it 0.1875 above the
 # cart): it is the one value the rider's first, unticked sample does not match.
 LANES = {
     'overworld_to_nether_with_pig': {
@@ -89,7 +89,7 @@ class Console:
         self.server, self.n = server, 0
 
     def __call__(self, command, timeout=60):
-        # Horizon keeps the level an `execute in` named for the next plain command: name the Overworld.
+        # Sunrise keeps the level an `execute in` named for the next plain command: name the Overworld.
         if command.split()[0] in ('forceload', 'fill', 'setblock', 'summon'):
             command = 'execute in minecraft:overworld run ' + command
         self.n += 1
@@ -194,7 +194,7 @@ def run_lane(bins, name, lane, out):
     (folder / 'eula.txt').write_text('eula=true\n')
     props = dict(PROPERTIES, **{'server-port': str(lab.free_port()), 'server-ip': '127.0.0.1'})
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
-    command = [bins / 'horizon-client', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / 'sunrise-client', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / f'{name}.log')
     failed = []
     try:

@@ -4,10 +4,10 @@ from pathlib import Path
 import re
 
 paths = [
-    "crates/horizon-mod-package/src/dependencies.rs",
-    "crates/horizon-mod-wasm/src/lib.rs",
-    "crates/horizon-mod-host/src/loading.rs",
-    "crates/horizon-client/src/game/modding/mods/mod.rs",
+    "crates/sunrise-mod-package/src/dependencies.rs",
+    "crates/sunrise-mod-wasm/src/lib.rs",
+    "crates/sunrise-mod-host/src/loading.rs",
+    "crates/sunrise-client/src/game/modding/mods/mod.rs",
     "launcher/src/native_mods.rs",
     "launcher/src/native_mods/internals_sync.rs",
     "launcher/src/native_mods/registry_compile.rs",

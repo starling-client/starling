@@ -1,5 +1,5 @@
 # take_upstream_game_moves.py manifest, sync 36 (upstream 441f49d57e3). Order = commit order.
-# fork_path is under crates/horizon-client/src/; a new destination goes in the fork's topic folder.
+# fork_path is under crates/sunrise-client/src/; a new destination goes in the fork's topic folder.
 upstream_path	fork_path	functions	items	fork_copies
 game/player_equip.rs	game/entities/player_equip.rs	apply_equipment		
 game/saving.rs	game/world/saving.rs	save_level		

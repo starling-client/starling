@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME = Path("crates/horizon-client/src/game")
+GAME = Path("crates/sunrise-client/src/game")
 MOVES = {
     "extinguish.rs": "entities/extinguish.rs",
     "extinguish_tests.rs": "entities/extinguish_tests.rs",

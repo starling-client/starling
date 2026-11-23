@@ -7,12 +7,12 @@ of appending to a shared import/export list. Run once from the repository root.
 from pathlib import Path
 
 for name in ["calls.rs", "host.rs"]:
-    path = Path("crates/horizon-mod-api-gen/src/wire") / name
+    path = Path("crates/sunrise-mod-api-gen/src/wire") / name
     source = path.read_text()
     assert "super::IMPORTS" in source
     path.write_text(source.replace("super::IMPORTS", "super::imports()"))
 
-path = Path("crates/horizon-mod-api-gen/src/wire/mod.rs")
+path = Path("crates/sunrise-mod-api-gen/src/wire/mod.rs")
 source = path.read_text()
 source = source.replace("mod ty;", "mod ty;\nmod trait_roles;")
 old = "pub(super) fn exports() -> &'static [&'static str] {\n    EXPORTED.get().map_or(EXPORTS, Vec::as_slice)\n}"

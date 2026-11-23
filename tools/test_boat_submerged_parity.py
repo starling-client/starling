@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Submerged boats eject their player on real vanilla and Horizon servers.
+"""Submerged boats eject their player on real vanilla and Sunrise servers.
 
 A vanilla-codec client deliberately sends no vehicle movement: the server must
 count immersion even for a boat whose player normally moves it. Surface water

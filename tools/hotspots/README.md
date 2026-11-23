@@ -9,7 +9,7 @@ out, and carry old-style PRs across a switch. Standard library Python and git on
 | `measure.py` | Ranks files by distinct PRs that changed them and by merges git could not replay (`git merge-tree`, git 2.38 or newer), on rollups, syncs and PR branches. `--days N` or `--since DATE` for a window; the fork's start comes from `--bound` or `--upstream`. `--markdown` (default), `--json`, `--report`. Its docstring defines every count. |
 | `open_prs.py` | Lists the open PRs whose own diff touches a path. Run it before a switch PR; the list goes in that PR's body. |
 | `carry.py` | Writes an old-style PR's addition to a switched list in the new form, into the working tree. |
-| `check_lists.py` | `verify-static`: a `pub use` brace list under `crates/horizon-mod-vocab/src/exports/` names at most 12 items; the longer ones in its table may not grow past their entry (shortening needs no edit). A fragment a switch removed (`part_table.rs`) may not come back. |
+| `check_lists.py` | `verify-static`: a `pub use` brace list under `crates/sunrise-mod-vocab/src/exports/` names at most 12 items; the longer ones in its table may not grow past their entry (shortening needs no edit). A fragment a switch removed (`part_table.rs`) may not come back. |
 | `check_stand_ins.py` | `verify-static`: the dispatch tests' stand-ins are one file each (`fixtures/stubs/<Name>.rs`, `fixtures/api/<Name>.rs`, a name in one folder only, none back in `shared.rs`); every type a hook signature names has one; the wire loopback's hand-written impls of vocabulary traits have every required method, and of `CapabilityProviders` every member trait. Its docstring lists what it cannot see (names the generator adds, derives, stub methods). |
 
 The nightly schedule of `dyna-checks` runs `measure.py --days 3 --report` and rewrites the issue
@@ -22,14 +22,14 @@ git fetch origin '+refs/pull/*/head:refs/pull/*/head'      # PR numbers for roll
 git fetch https://github.com/horizon-rust/horizon.git main:refs/remotes/upstream/main
 python3 tools/hotspots/measure.py --days 3                  # last 3 days
 python3 tools/hotspots/measure.py --open-rollup origin/fork-review-rollup-68 --json > raw.json   # since the fork began
-python3 tools/hotspots/open_prs.py --from-gh crates/horizon-mod-vocab/src/exports/part_table.rs
+python3 tools/hotspots/open_prs.py --from-gh crates/sunrise-mod-vocab/src/exports/part_table.rs
 ```
 
 ## In a rollup, after a switch
 
 A member PR written against a switched list conflicts on the old file.
 
-The vocabulary's type lists in `crates/horizon-mod-vocab/src/exports/domains.rs` are one glob per domain
+The vocabulary's type lists in `crates/sunrise-mod-vocab/src/exports/domains.rs` are one glob per domain
 (`pub use <domain>::types::*;`): every `pub` item of a `<domain>/types.rs` is API by its keyword. A member PR that
 added a name to one of the removed lists conflicts in that list: take main's side of the list after checking that the
 PR's diff defines the name as a `pub` item in that `types.rs`. No carry script is needed. Any other hunk of the PR in
@@ -47,7 +47,7 @@ git add <the files it names> && git commit -m "Carry for #<N>: <what moved>"
 
 It writes nothing and prints the hunk when it cannot place one: carry that hunk by hand. `shared.rs` itself stays
 for `dispatch-stub`: take main's side only of its hunks inside the old `mod stubs` and `mod api`. `part-table`
-writes each name the PR added to the old `crates/horizon-mod-vocab/src/exports/part_table.rs` into
+writes each name the PR added to the old `crates/sunrise-mod-vocab/src/exports/part_table.rs` into
 `exports/parts_<file>.rs`, the fragment of the parts file that defines it on the PR's head, in the same scope and
 `#[cfg]`; run `rustfmt --edition 2024` on the files it names. Taking main's side alone would drop the export, so a
 forgotten carry fails to compile.

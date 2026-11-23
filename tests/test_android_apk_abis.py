@@ -19,15 +19,15 @@ class ApkAbis(unittest.TestCase):
                 base, output = root / "base.apk", root / "output.apk"
                 with zipfile.ZipFile(base, "w") as archive:
                     archive.writestr("AndroidManifest.xml", b"manifest")
-                library, dex = root / "libhorizon_android.so", root / "classes.dex"
+                library, dex = root / "libsunrise_android.so", root / "classes.dex"
                 library.write_bytes(b"native library")
                 dex.write_bytes(b"dex bytecode")
                 apk.add_code(base, {library.name: library}, dex, output, abi)
                 with zipfile.ZipFile(output) as archive:
                     self.assertEqual(set(archive.namelist()), {
-                        "AndroidManifest.xml", "classes.dex", f"lib/{abi}/libhorizon_android.so",
+                        "AndroidManifest.xml", "classes.dex", f"lib/{abi}/libsunrise_android.so",
                     })
-                    self.assertEqual(archive.read(f"lib/{abi}/libhorizon_android.so"), b"native library")
+                    self.assertEqual(archive.read(f"lib/{abi}/libsunrise_android.so"), b"native library")
                     self.assertEqual(archive.read("AndroidManifest.xml"), b"manifest")
 
 

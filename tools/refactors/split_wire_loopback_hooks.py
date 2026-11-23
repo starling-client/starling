@@ -15,7 +15,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-FOLDER = ROOT / "crates/horizon-mod-wasm/wire-loopback/tests/wire_loopback"
+FOLDER = ROOT / "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback"
 OLD = FOLDER / "interaction_fixture.rs"
 
 # method -> file stem. A stem that has a file already gets the impl appended; another is created.

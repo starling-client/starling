@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let mut build = cc::Build::new();
 
-    // Horizon vendors only mimalloc v3 (THIRD_PARTY_NOTICES.md).
+    // Sunrise vendors only mimalloc v3 (THIRD_PARTY_NOTICES.md).
     assert!(
         env::var("CARGO_FEATURE_V2").is_err(),
         "third_party/libmimalloc-sys holds only mimalloc v3: the v2 feature is not available"

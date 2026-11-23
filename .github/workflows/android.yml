@@ -10,7 +10,7 @@ name: android
 # branch and v* tags reach (a ruleset lets only admins push those tags); JuanLuci/starling held it before. Every other
 # build, and every build elsewhere, is Starling Preview (io.github.juanluci.starling.preview, build_apk.py --preview),
 # installed beside the release and signed with the repository's own test key in STARLING_DEBUG_KEYSTORE_BASE64 (alias
-# horizon-debug, password android); a tag elsewhere publishes nothing.
+# sunrise-debug, password android); a tag elsewhere publishes nothing.
 on:
   push:
     branches: [android, starling, integration]
@@ -74,7 +74,7 @@ jobs:
             "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
       - name: Install Rust for Android and cargo-ndk
         run: |
-          # The Rust Horizon pins (tools/ci/rust-version), as its CI and the launcher's native mods build with.
+          # The Rust Sunrise pins (tools/ci/rust-version), as its CI and the launcher's native mods build with.
           # rust-src: build_apk.py builds the std with the game (its TLS_FLAGS).
           bash tools/ci/rustup_install.sh --profile minimal --component rust-src --target ${{ matrix.target }}
           cargo install cargo-ndk --version 3.5.4 --locked
@@ -89,7 +89,7 @@ jobs:
         run: |
           test -n "$KEYSTORE" || { echo "STARLING_KEYSTORE_BASE64 is not set"; exit 1; }
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/starling-release.jks"
-          echo "HORIZON_ANDROID_KEYSTORE=$RUNNER_TEMP/starling-release.jks" >> "$GITHUB_ENV"
+          echo "SUNRISE_ANDROID_KEYSTORE=$RUNNER_TEMP/starling-release.jks" >> "$GITHUB_ENV"
       # The fast profile's 16 codegen units of the game's crate took more than the runner's 16 GB, and the runner
       # went: swap, on the large temporary disk where there is one, and three units at a time instead of four.
       - name: Make room for the release build
@@ -105,7 +105,7 @@ jobs:
           sudo swapon "$where/release.swap"
           free -h
           echo "CARGO_BUILD_JOBS=3" >> "$GITHUB_ENV"
-      # Where build_apk.py keeps its debug key (alias horizon-debug, password android).
+      # Where build_apk.py keeps its debug key (alias sunrise-debug, password android).
       - name: Unpack the debug key
         if: env.RELEASE_BUILD != 'true'
         env:
@@ -124,9 +124,9 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.abi == 'arm64-v8a' && !inputs.native_mods && '-C prefer-dynamic' || '' }}
           ABI: ${{ matrix.abi }}
-          HORIZON_ANDROID_KEY_ALIAS: ${{ env.RELEASE_BUILD == 'true' && secrets.STARLING_KEY_ALIAS || 'horizon-debug' }}
-          HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
-          HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
+          SUNRISE_ANDROID_KEY_ALIAS: ${{ env.RELEASE_BUILD == 'true' && secrets.STARLING_KEY_ALIAS || 'sunrise-debug' }}
+          SUNRISE_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
+          SUNRISE_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
           MODS: ${{ inputs.native_mods }}
           PROFILE: ${{ env.RELEASE_BUILD == 'true' && 'fast' || 'quick' }}
           VARIANT: ${{ env.PREVIEW == 'true' && '--preview' || '' }}
@@ -164,16 +164,16 @@ jobs:
           path: target/android/lib*-symbols.so
           if-no-files-found: ignore
           retention-days: 90
-      # With the cargo-horizon-mod and the Rust build_apk.py built the wasm std with (build_apk.py `wasm_std`).
+      # With the cargo-sunrise-mod and the Rust build_apk.py built the wasm std with (build_apk.py `wasm_std`).
       - name: Build the wasm probe mod
         if: inputs.wasm_probe && matrix.abi == 'arm64-v8a'
         working-directory: packaging/android/wasm-probe
-        run: ../../../target/debug/cargo-horizon-mod horizon-mod build --wasm
+        run: ../../../target/debug/cargo-sunrise-mod sunrise-mod build --wasm
       - uses: actions/upload-artifact@v4
         if: inputs.wasm_probe && matrix.abi == 'arm64-v8a'
         with:
           name: starling-wasm-probe
-          path: packaging/android/wasm-probe/target/horizon-mod/*.hmod
+          path: packaging/android/wasm-probe/target/sunrise-mod/*.smod
           if-no-files-found: error
 
   release:

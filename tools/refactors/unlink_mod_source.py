@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Move what `cargo-horizon-mod` reads of a mod's own source out of the generator.
+"""Move what `cargo-sunrise-mod` reads of a mod's own source out of the generator.
 
-`horizon-mod-api-gen` builds the game's API; the mod tool used it for two things only: the mod
+`sunrise-mod-api-gen` builds the game's API; the mod tool used it for two things only: the mod
 folder reader (`mod_uses`) and the scan of a mod's public Wire types (`wire_types`), which walks
 a crate's module files. This script moves, unchanged apart from paths and visibility:
 
-- `src/mod_uses.rs` and `src/wire_types.rs` to the new crate `horizon-mod-source` (lib
+- `src/mod_uses.rs` and `src/wire_types.rs` to the new crate `sunrise-mod-source` (lib
   `mod_source`);
 - the module walk of `src/source.rs` (`GameFile`, renamed `ModuleFile`, `conditions`,
   `test_only`, `gated`, `walk_module_files`, `children`) to `mod_source::modules`; the walk
@@ -20,9 +20,9 @@ from pathlib import Path
 import re
 
 root = Path(__file__).resolve().parents[2]
-gen = root / 'crates/horizon-mod-api-gen'
-new = root / 'crates/horizon-mod-source'
-tool = root / 'crates/cargo-horizon-mod'
+gen = root / 'crates/sunrise-mod-api-gen'
+new = root / 'crates/sunrise-mod-source'
+tool = root / 'crates/cargo-sunrise-mod'
 
 
 def edit(path, *pairs):
@@ -43,7 +43,7 @@ def cut(text, start, end):
 # The new crate.
 (new / 'src').mkdir(parents=True, exist_ok=True)
 (new / 'Cargo.toml').write_text('''[package]
-name = "horizon-mod-source"
+name = "sunrise-mod-source"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -54,7 +54,7 @@ description = "A mod's own source as the mod tools read it: the mod folder, its 
 name = "mod_source"
 
 [dependencies]
-horizon-mod-surface = { path = "../horizon-mod-surface" }
+sunrise-mod-surface = { path = "../sunrise-mod-surface" }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full"] }
@@ -81,7 +81,7 @@ for name in ['mod_uses.rs', 'wire_types.rs']:
 source = gen / 'src/source.rs'
 text = source.read_text()
 head, text = cut(text, '/// A source file of the game\'s crates', '/// The files of the module `module`')
-walk, text = cut(text, 'fn walk_module_files(', '/// The files of `horizon_client::game`')
+walk, text = cut(text, 'fn walk_module_files(', '/// The files of `sunrise_client::game`')
 gated, text = cut(text, '/// Whether `attrs` hold a `cfg` (or `cfg_attr`)', '/// `r#type` as `type`.')
 moved = head + 'pub ' + walk + gated
 moved = moved.replace('pub(crate) ', 'pub ')
@@ -128,25 +128,25 @@ for path in list(gen.rglob('*.rs')) + list((new / 'src').glob('*.rs')):
     changed = re.sub(r'use crate::source::\{([^}]*)\};', split_use, changed)
     changed = re.sub(r'(?<![\w:])(?:crate::)?source::(ModuleFile|conditions|test_only|gated)\b',
                      r'mod_source::modules::\1', changed)
-    changed = changed.replace('use horizon_mod_api_gen::mod_uses;', 'use mod_source::mod_uses;')
+    changed = changed.replace('use sunrise_mod_api_gen::mod_uses;', 'use mod_source::mod_uses;')
     if changed != text:
         path.write_text(changed)
 edit(gen / 'src/lib.rs', ('pub mod mod_uses;\n', ''), ('pub mod wire_types;\n', ''))
 edit(gen / 'Cargo.toml', (
-    'horizon-mod-surface = { path = "../horizon-mod-surface" }\n',
-    'horizon-mod-surface = { path = "../horizon-mod-surface" }\n'
-    'horizon-mod-source = { path = "../horizon-mod-source" }\n',
+    'sunrise-mod-surface = { path = "../sunrise-mod-surface" }\n',
+    'sunrise-mod-surface = { path = "../sunrise-mod-surface" }\n'
+    'sunrise-mod-source = { path = "../sunrise-mod-source" }\n',
 ))
 for path in (tool / 'src').rglob('*.rs'):
     text = path.read_text()
-    changed = text.replace('horizon_mod_api_gen::', 'mod_source::')
+    changed = text.replace('sunrise_mod_api_gen::', 'mod_source::')
     if changed != text:
         path.write_text(changed)
 edit(tool / 'Cargo.toml', (
-    'horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }\n',
-    'horizon-mod-source = { path = "../horizon-mod-source" }\n',
+    'sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }\n',
+    'sunrise-mod-source = { path = "../sunrise-mod-source" }\n',
 ))
 edit(root / 'Cargo.toml', (
-    '    "crates/horizon-mod-surface",\n',
-    '    "crates/horizon-mod-source",\n    "crates/horizon-mod-surface",\n',
+    '    "crates/sunrise-mod-surface",\n',
+    '    "crates/sunrise-mod-source",\n    "crates/sunrise-mod-surface",\n',
 ))

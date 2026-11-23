@@ -205,7 +205,7 @@ fn prices_read_as_the_website_writes_them() {
 fn only_a_paddle_transaction_id_goes_into_the_pay_link() {
     assert_eq!(
         pay_url("txn_01k9abc").as_deref(),
-        Some("https://playhorizon.dev/shop/pay?_ptxn=txn_01k9abc")
+        Some("https://playsunrise.net/shop/pay?_ptxn=txn_01k9abc")
     );
     assert_eq!(pay_url("txn_"), None);
     assert_eq!(pay_url("txn_01&next=evil"), None);

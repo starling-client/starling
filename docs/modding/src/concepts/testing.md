@@ -1,6 +1,6 @@
 # Testing a mod
 
-Enable the `testing` feature on your `horizon-mod-api` test dependency. Then
+Enable the `testing` feature on your `sunrise-mod-api` test dependency. Then
 `testing::with_mods` takes an owned `Mods` list and runs a closure with it installed on the current thread.
 It restores the previous list even if the closure panics. The test allocation is retained because dispatch exposes
 a static slice. Call `dispatch_<hook>(&mut host, args…)` inside the closure to build the event as the game does.

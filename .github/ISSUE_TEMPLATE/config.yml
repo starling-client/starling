@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Horizon (the game Starling is built on)
-    url: https://github.com/ludovic111/horizon
-    about: Bugs that happen on the desktop too belong to Horizon.
+  - name: Sunrise (the game Starling is built on)
+    url: https://github.com/ludovic111/sunrise
+    about: Bugs that happen on the desktop too belong to Sunrise.

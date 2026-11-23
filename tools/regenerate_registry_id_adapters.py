@@ -3,7 +3,7 @@
 
 Each VERSION directory needs jars/client.jar and datagen/reports/{registries,
 blocks}.json from the same official release (docs/native-client.md). --versions
-defaults to version_port.py's HORIZON_VERSIONS store; --new accepts a separately
+defaults to version_port.py's SUNRISE_VERSIONS store; --new accepts a separately
 prepared pin. Without --new the pin comes from the repository's .local/.
 Nothing is downloaded. --check compares rustfmt output without changing the tree.
 """
@@ -20,7 +20,7 @@ except ImportError:
     import version_port
 
 ROOT = Path(__file__).resolve().parents[1]
-ADAPTER = Path("crates/horizon-protocol/src/adapter")
+ADAPTER = Path("crates/sunrise-protocol/src/adapter")
 RENAMES = [
     "block:minecraft:chain=minecraft:iron_chain",
     "item:minecraft:chain=minecraft:iron_chain",
@@ -124,7 +124,7 @@ def main(argv=None):
                              "see registry mapping inputs in docs/native-client.md")
     common = ["--new", str(args.new)] if args.new else []
     generator = [sys.executable, str(ROOT / "tools/generate_registry_id_adapter.py")]
-    with tempfile.TemporaryDirectory(prefix="horizon-registry-adapters-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="sunrise-registry-adapters-") as temporary:
         output = Path(temporary)
         generated = []
         for version in versions:

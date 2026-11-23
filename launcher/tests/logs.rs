@@ -1,12 +1,12 @@
-//! `horizon-launcher logs`: the end of the game's latest.log, and its newest crash report.
+//! `sunrise-launcher logs`: the end of the game's latest.log, and its newest crash report.
 use std::path::Path;
 use std::process::Command;
 
 fn logs(home: &Path, args: &[&str]) -> (bool, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_horizon-launcher"))
+    let out = Command::new(env!("CARGO_BIN_EXE_sunrise-launcher"))
         .arg("logs")
         .args(args)
-        .env("HORIZON_HOME", home)
+        .env("SUNRISE_HOME", home)
         .output()
         .unwrap();
     (
@@ -18,7 +18,7 @@ fn logs(home: &Path, args: &[&str]) -> (bool, String, String) {
 
 #[test]
 fn logs_prints_the_log_tail_and_the_newest_crash_report() {
-    let home = std::env::temp_dir().join(format!("horizon-launcher-logs-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("sunrise-launcher-logs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
 
     let (ok, _, err) = logs(&home, &[]);

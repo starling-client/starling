@@ -4,7 +4,7 @@
 Compares, over every changed .rs file, the multiset of lines of the old tree against the new
 tree after dropping `use` statements (whole, even when rustfmt wraps them) and comments-only
 whitespace. Lines that only differ by the declared path rewrites are normalised first:
-`horizon_world::`/`crate::`/`super::` prefixes of the moved items become `horizon_core::`.
+`sunrise_world::`/`crate::`/`super::` prefixes of the moved items become `sunrise_core::`.
 What is left over is printed: it must be the script's declared edits and nothing else.
 """
 import collections, re, subprocess, sys
@@ -14,13 +14,13 @@ git = lambda *a: subprocess.run(['git', *a], capture_output=True, text=True).std
 files = git('diff', '--cached', '--name-only', '-M', '--no-renames', base).split()
 USE = re.compile(r'^[ \t]*(?:#\[[^\n]*\]\s*)*(?:pub(?:\([a-z]+\))? )?use [^;]*;', re.M | re.S)
 MOD = re.compile(r'^[ \t]*(?:pub(?:\([a-z]+\))? )?mod \w+;\n', re.M)
-PATHS = re.compile(r'\b(?:horizon_world|crate|super|self)::(?:\w+::)*?(nbt|identifier|java_hash_map|dimension|equipment_slot|use_animation|connection_kind|neighbour_update|bounding_box)\b')
+PATHS = re.compile(r'\b(?:sunrise_world|crate|super|self)::(?:\w+::)*?(nbt|identifier|java_hash_map|dimension|equipment_slot|use_animation|connection_kind|neighbour_update|bounding_box)\b')
 
 
 def lines(text):
     text = USE.sub('', text)
     text = MOD.sub('', text)
-    text = re.sub(r'\b(?:horizon_world|horizon_core)::', 'ROOT::', text)
+    text = re.sub(r'\b(?:sunrise_world|sunrise_core)::', 'ROOT::', text)
     text = re.sub(r'\b(?:crate|super)::(?=(?:nbt|identifier|java_hash_map|level::(?:Dimension|ConnectionKind|NeighbourUpdate)|worldgen::structure::BoundingBox|player_inventory::EquipmentSlot|consumable::UseAnimation))', 'ROOT::', text)
     text = re.sub(r'ROOT::(?:level|worldgen::structure|player_inventory|consumable)::', 'ROOT::', text)
     text = re.sub(r'ROOT::(?:dimension|equipment_slot|use_animation|connection_kind|neighbour_update|bounding_box)::', 'ROOT::', text)

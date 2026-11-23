@@ -31,7 +31,7 @@ pub(super) enum ModKind {
 }
 
 impl ModKind {
-    pub(super) fn of(manifest: &horizon_mod_package::manifest::Manifest) -> Self {
+    pub(super) fn of(manifest: &sunrise_mod_package::manifest::Manifest) -> Self {
         if manifest.native.is_some() {
             Self::Native
         } else if manifest.wasm.is_some() {
@@ -306,7 +306,7 @@ impl Launcher {
             .gap(px(12.))
             .p(px(16.))
             .when(t.glass, |d| {
-                d.rounded(px(horizon_theme::glass::radius::LARGE))
+                d.rounded(px(sunrise_theme::glass::radius::LARGE))
                     .bg(ui::white(0.04))
             })
             .when(!t.glass, |d| {
@@ -496,7 +496,7 @@ impl Launcher {
                     .children(glyph.map(|g| ui::icon(g, 12., color)))
                     .child(text_in(12., color).child(s.label()))
             }));
-        let radius = horizon_theme::glass::radius::CONTROL;
+        let radius = sunrise_theme::glass::radius::CONTROL;
         let icons = div()
             .flex()
             .items_center()
@@ -669,7 +669,7 @@ impl Launcher {
                     "flash",
                     pal.accent,
                     tr("Needs no build by itself").into(),
-                    tr("This mod uses the game as it ships, so Horizon can start without building when every enabled mod is like this.").to_string(),
+                    tr("This mod uses the game as it ships, so Sunrise can start without building when every enabled mod is like this.").to_string(),
                 ),
                 // Made for another build: it fits this one, and the build compiles it as usual.
                 Route::Fits { line } => ("tick-02", pal.success, tr("Fits this game").into(), line.clone()),
@@ -739,7 +739,7 @@ impl Launcher {
                         return;
                     }
                     this.mods.message =
-                        horizon_launcher::browser::java::set_enabled(&home, &id, false)
+                        sunrise_launcher::browser::java::set_enabled(&home, &id, false)
                             .err()
                             .map(Err);
                     this.mods.route_open = None;
@@ -921,7 +921,7 @@ impl Render for NoteTooltip {
 /// Text at `size` px in `color`, in the look's face.
 fn text_in(size: f32, color: Hsla) -> Div {
     div()
-        .font_family(horizon_theme::glass::FONT)
+        .font_family(sunrise_theme::glass::FONT)
         .text_size(px(size))
         .line_height(px((size * 1.4).round()))
         .text_color(color)

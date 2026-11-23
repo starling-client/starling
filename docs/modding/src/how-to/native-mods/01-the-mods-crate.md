@@ -1,6 +1,6 @@
 # The mod's crate
 
-The root `Cargo.toml` and `src/` form the mod's crate. It depends on `horizon-mod-api` (lib
+The root `Cargo.toml` and `src/` form the mod's crate. It depends on `sunrise-mod-api` (lib
 `mod_api`), never directly on the game. The launcher supplies the pinned SDK and declared
 [mod dependencies](../../concepts/dependencies.md).
 
@@ -13,14 +13,14 @@ changes the native build's cache identity.
 Generate it explicitly after choosing your registry dependencies:
 
 ```sh
-horizon-launcher native-lock path/to/mod
+sunrise-launcher native-lock path/to/mod
 # To deliberately resolve fresh pins and replace an existing lock:
-horizon-launcher native-lock path/to/mod --update-lock
+sunrise-launcher native-lock path/to/mod --update-lock
 ```
 
 The launcher consumes this **registry dependency lock** during staging. Ordinary Cargo may not
 resolve the original pinned SDK declaration offline. The command creates an inert copy
-of the manifests, removes only SDK dependencies naming the exact pinned Horizon repository and
+of the manifests, removes only SDK dependencies naming the exact pinned Sunrise repository and
 revision, and resolves registry metadata. It does not copy or execute mod sources, build scripts
 or proc macros. It does not modify the original manifests or Cargo configuration. Existing pins
 are not replaced without `--update-lock`; a refused input leaves the existing lock untouched.

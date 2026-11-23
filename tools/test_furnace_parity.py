@@ -56,7 +56,7 @@ def recipes(resources):
 
 
 def make_cases(build):
-    resources = lab.LOCAL / 'horizon-client' / '26.3'
+    resources = lab.LOCAL / 'sunrise-client' / '26.3'
     catalog = json.loads((resources / 'items.json').read_text())
     all_recipes = recipes(resources)
     fuels = sorted(item for item, data in catalog.items()
@@ -128,6 +128,6 @@ if __name__ == '__main__':
         'Furnace block entity tick: burn table for every cooking_fuel item, 200/100/100 '
         'cook times, fuel stack and LIT state, RecipesUsed experience, full output and '
         'timer decay, and input changed mid-cook. --no-change leaves out the change family.',
-        sources=[lab.ROOT / 'crates/horizon-client-render/src/chunk/block_entity.rs',
-                 lab.ROOT / 'crates/horizon-client/src/furnace.rs',
-                 lab.ROOT / 'crates/horizon-client/src/crafting.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-client-render/src/chunk/block_entity.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/furnace.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/crafting.rs'])

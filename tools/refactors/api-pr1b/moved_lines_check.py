@@ -24,7 +24,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 BASE = 'ba916ffc30d3b67eafb7124ebad78308d3f6bb91'
-FOLDERS = ('crates/horizon-mod-api/src/host/', 'crates/horizon-client/src/game/host/')
+FOLDERS = ('crates/sunrise-mod-api/src/host/', 'crates/sunrise-client/src/game/host/')
 TIERS = 'ClientBackendMut|ClientBackend|BackendMut|Backend|ServerHost|ClientHost|Host'
 
 
@@ -40,7 +40,7 @@ def files(ref):
 def lines(sources):
     result = Counter()
     for path, text in sources.items():
-        if path == 'crates/horizon-mod-api-gen/src/host.rs':
+        if path == 'crates/sunrise-mod-api-gen/src/host.rs':
             continue
         text = re.sub(rf'\b\w+?({TIERS})\b', r'Area\1', text)
         if not path.startswith(FOLDERS):
@@ -59,7 +59,7 @@ def lines(sources):
             if stripped in ('#[doc(hidden)]', '#[cfg(test)]'):
                 continue
             line = re.sub(rf'\b\w+?({TIERS})\b', r'Area\1', line)
-            if path == 'crates/horizon-mod-api-gen/src/host.rs':
+            if path == 'crates/sunrise-mod-api-gen/src/host.rs':
                 line = line.replace('area.stem == "base"', 'area.stem == "config"')
             result[line] += 1
     return result

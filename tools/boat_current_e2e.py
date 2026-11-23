@@ -88,22 +88,22 @@ def build_trench(ctl_path, socket, cwd, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--bin-dir', default='target/fast', help='folder with horizon-client and horizon-ctl')
+    parser.add_argument('--bin-dir', default='target/fast', help='folder with sunrise-client and sunrise-ctl')
     parser.add_argument('--resources', default=str(lab.RESOURCES), help='the prepared resources (default: .local)')
     parser.add_argument('--keep', action='store_true', help='keep the scratch game home')
     args = parser.parse_args()
     bindir = Path(args.bin_dir).resolve()
-    client, ctl_path = bindir / 'horizon-client', bindir / 'horizon-ctl'
+    client, ctl_path = bindir / 'sunrise-client', bindir / 'sunrise-ctl'
     for binary in (client, ctl_path):
         if not binary.exists():
-            raise Failed(f'{binary} is missing; build it (cargo build --profile fast -p horizon-game '
-                         '-p horizon-client-lib --bins) or pass --bin-dir')
+            raise Failed(f'{binary} is missing; build it (cargo build --profile fast -p sunrise-game '
+                         '-p sunrise-client-lib --bins) or pass --bin-dir')
     resources = Path(args.resources).resolve()
     if not resources.exists():
         raise Failed(f'{resources} is missing; run tools/lab.py prepare')
     work = Path(tempfile.mkdtemp(prefix='hz-boat-current-'))
-    (work / '.local/horizon-client').mkdir(parents=True)
-    lab.link_dir(resources, work / '.local/horizon-client' / lab.VERSION)
+    (work / '.local/sunrise-client').mkdir(parents=True)
+    lab.link_dir(resources, work / '.local/sunrise-client' / lab.VERSION)
     (work / 'options.txt').write_text('onboardAccessibility:false\n')
     env = lab.game_env(home=work)
     socket = work / 'c.sock'

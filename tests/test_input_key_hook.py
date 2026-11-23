@@ -54,7 +54,7 @@ fn panel_receives_only_named_nonrepeat_presses() {
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_original_event_after_handling_and_source_gates(self):
-        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/sunrise-client/src" / path).read_text(encoding="utf-8")
                          for path in ("game/runtime/window_handler.rs", "game.rs"))
         actual = method(source, "window_event")
         fixture = r"""
@@ -66,7 +66,7 @@ mod input_trace {
     #[derive(Clone, Copy)]
     pub enum InputOrigin { User, Agent, Game }
 }
-mod horizon_client {
+mod sunrise_client {
     pub mod keybinds {
         pub fn key_name(code: i32) -> Option<&'static str> { (code == 1).then_some("key.keyboard.a") }
         pub fn layout_key_name(_: super::super::PhysicalKey, layout: &&'static str) -> Option<&'static str> {

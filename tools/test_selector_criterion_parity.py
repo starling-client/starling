@@ -24,7 +24,7 @@ if __name__=='__main__':
     with zipfile.ZipFile(driver.lab.LOCAL/'minecraft/26.3/jars/server-game.jar') as jar:
         definition=json.loads(jar.read('data/minecraft/advancement/story/root.json'))
     assert set(definition['criteria'])=={'crafting_table'} and MISSING not in definition['criteria']
-    path=driver.lab.LOCAL/'horizon-client/26.3/data/minecraft/advancement/story/root.json'
+    path=driver.lab.LOCAL/'sunrise-client/26.3/data/minecraft/advancement/story/root.json'
     prepared=json.loads(path.read_text())
     assert prepared['criteria']==definition['criteria'] and prepared['requirements']==definition['requirements']
     (build/'definition-witness.json').write_text(json.dumps({'id':ROOT,'criteria':list(prepared['criteria']),'requirements':prepared['requirements'],'prepared_sha256':hashlib.sha256(path.read_bytes()).hexdigest()},indent=2)+'\n')

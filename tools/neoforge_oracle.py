@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Dev-only NeoForge oracle for Horizon's mod-port harnesses (docs/modpacks.md).
+"""Dev-only NeoForge oracle for Sunrise's mod-port harnesses (docs/modpacks.md).
 
     neoforge_oracle.py export --jars DIR [--deps DIR] [--namespaces a,b] --out FACTS.json
 
 installs a NeoForge server under .local/neoforge-oracle (once), builds the exporter mod in
-mods/horizon/src/neoforge-oracle, starts the server headless with the given mod jars, and writes every
+mods/sunrise/src/neoforge-oracle, starts the server headless with the given mod jars, and writes every
 block, item, recipe and tag of the mods' namespaces (and the vanilla blocks, for templates) to
 FACTS.json. The jars are the user's own; nothing here is shipped or committed.
 """
@@ -21,9 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / '.local' / 'neoforge-oracle'
-SOURCE = ROOT / 'mods' / 'horizon' / 'src' / 'neoforge-oracle'
+SOURCE = ROOT / 'mods' / 'sunrise' / 'src' / 'neoforge-oracle'
 # ATM10 8.x: Minecraft 1.21.1 on NeoForge 21.1.259 (docs/modpacks.md).
-NEOFORGE = os.environ.get('HORIZON_NEOFORGE', '21.1.259')
+NEOFORGE = os.environ.get('SUNRISE_NEOFORGE', '21.1.259')
 MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge'
 WINDOWS = os.name == 'nt'
 
@@ -112,7 +112,7 @@ def client_command(java, heap, game_dir, natives, assets, jvm=(), game=()):
     import lab
     values = {'library_directory': str(home / 'libraries'), 'classpath_separator': os.pathsep,
               'version_name': f'neoforge-{NEOFORGE}', 'natives_directory': str(natives),
-              'launcher_name': 'horizon-bench', 'launcher_version': '1'}
+              'launcher_name': 'sunrise-bench', 'launcher_version': '1'}
     expand = lambda s: s.replace('${', '{').format(**values)
     command = [str(java), f'-Xmx{heap}']
     for argument in base['arguments']['jvm']:
@@ -134,8 +134,8 @@ def client_command(java, heap, game_dir, natives, assets, jvm=(), game=()):
 
 
 def build_bench(home):
-    """The NeoForge benchmark driver (mods/horizon/src/neoforge-bench), against the client."""
-    return build(home, ROOT / 'mods/horizon/src/neoforge-bench', 'horizon-bench-neoforge.jar', client_classpath(home))
+    """The NeoForge benchmark driver (mods/sunrise/src/neoforge-bench), against the client."""
+    return build(home, ROOT / 'mods/sunrise/src/neoforge-bench', 'sunrise-bench-neoforge.jar', client_classpath(home))
 
 
 def client_classpath(home):
@@ -156,7 +156,7 @@ def classpath(home):
     return os.pathsep.join(map(str, first + rest))
 
 
-def build(home, source=SOURCE, name='horizon-oracle.jar', cp=None):
+def build(home, source=SOURCE, name='sunrise-oracle.jar', cp=None):
     """A dev-only mod jar (by default the exporter), rebuilt when its sources change."""
     out = LOCAL / 'build'
     jar = out / name
@@ -240,7 +240,7 @@ def export(args):
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
-    seconds, log = start(home, run, {'horizon.oracle.out': out, 'horizon.oracle.namespaces': namespaces})
+    seconds, log = start(home, run, {'sunrise.oracle.out': out, 'sunrise.oracle.namespaces': namespaces})
     if not out.exists():
         tail = '\n'.join(log.splitlines()[-40:])
         sys.exit(f'the oracle wrote nothing; the end of {run / "server.log"}:\n{tail}')

@@ -9,7 +9,7 @@ mob's two selectors beside the species' own, with the same priorities, flag lock
 
 ```rust,ignore
 struct ZombieGoals;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl EntityPart for ZombieGoals {
     fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
         // goals.mob().id() is "minecraft:zombie": branch as per-species code does.

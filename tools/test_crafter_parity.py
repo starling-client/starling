@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare vanilla's crafter with Horizon's, one redstone-triggered craft per case.
+"""Compare vanilla's crafter with Sunrise's, one redstone-triggered craft per case.
 
 A crafter at the origin, in one of its twelve orientations, holds a grid
 filled from a random vanilla crafting recipe (any recipe of the datapack, the
@@ -9,8 +9,8 @@ hopper, barrel, dropper, furnace, shulker box, another crafter with its own
 grid and disabled slots, sometimes nearly full), a solid block, water or air.
 Vanilla `CrafterBlock.dispenseFrom` runs over the headless level of the block
 update oracle (`VanillaDispenserOracle`), followed by a few
-`CrafterBlockEntity.serverTick`s; Horizon runs its game glue in a headless
-game (`HORIZON_DISPENSE_FIXTURE`). Both print block changes (the crafting
+`CrafterBlockEntity.serverTick`s; Sunrise runs its game glue in a headless
+game (`SUNRISE_DISPENSE_FIXTURE`). Both print block changes (the crafting
 flag set and cleared), every container's contents, each crafter's animation
 ticks, triggered flag, comparator signal and disabled slots, the items shot
 out with their motion, level events, sounds and the level random.
@@ -231,7 +231,7 @@ def main():
         args.count = 4000
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     items = json.loads((resources / 'items.json').read_text())
     recipes = Recipes(resources)
     work = lab.LOCAL / 'crafter-parity'
@@ -241,15 +241,15 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     d.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaDispenserOracle.java')])
-    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaDispenserOracle',
+           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaDispenserOracle.java')])
+    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaDispenserOracle',
            str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
           env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    d.run([str(lab.cargo_target() / 'fast/horizon-client'), '--resources', str(resources)], cwd=work,
-          env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+    d.run([str(lab.cargo_target() / 'fast/sunrise-client'), '--resources', str(resources)], cwd=work,
+          env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)

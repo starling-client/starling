@@ -11,7 +11,7 @@ its implementation is a prerequisite, not presumed landed.
 
 ## Vanilla and NeoForge 26.3
 
-Verified using `/workspace/horizon`: `python3 tools/rea_vanilla.py method
+Verified using `/workspace/sunrise`: `python3 tools/rea_vanilla.py method
 net.minecraft.client.renderer.entity.EntityRenderer extractRenderState`.
 Vanilla copies type, interpolated position, invisibility, age, dimensions,
 name/leash data, fire, outline and packed light into state. The corresponding
@@ -26,7 +26,7 @@ The issue requests `RegisterRenderStateModifiersEvent`. The public
 was inaccessible. Exact registration types, callback order, threading, field
 coverage and limits are **unverified**. Obtain public documentation before
 adopting the final counterpart contract. No NeoForge source, patches or other
-project renderer source was read. The limits below are Horizon proposals.
+project renderer source was read. The limits below are Sunrise proposals.
 
 ## Verified routes and preparation boundary
 
@@ -35,12 +35,12 @@ points, not existing extracted-state implementations.
 
 | Route | File:line owner | Required treatment |
 | --- | --- | --- |
-| Mob library rendering | `crates/horizon-client/src/mobs/render.rs:1487`, `:1503` | Split extraction from render/render_with; consume prepared values only |
-| Gameplay mob and remote-player geometry | `crates/horizon-client/src/game/mobs/creatures/mod.rs:8016`, `:8134`, `:8215` | Prepare before replacement hooks, body, layers and outlines; never fire separately per layer |
-| Own-player geometry | `crates/horizon-client/src/game/interface/perspective.rs:786` | Use the same operation before player replacement and built-in posing |
-| Existing replacement adapters | `crates/horizon-client/src/game/modding/native_mob_draw.rs:53`, `:71` | Read the prepared snapshot; do not redispatch modifiers |
-| Frame preparation and consumer | `crates/horizon-client/src/game.rs:15048`, `:15720`, `:15040` | Collect prepared records into the existing frame packet before freeze and consumption |
-| Frame owner | `crates/horizon-client-render/src/gfx.rs:1104` | Extend #2357 ownership and leases, not a parallel store |
+| Mob library rendering | `crates/sunrise-client/src/mobs/render.rs:1487`, `:1503` | Split extraction from render/render_with; consume prepared values only |
+| Gameplay mob and remote-player geometry | `crates/sunrise-client/src/game/mobs/creatures/mod.rs:8016`, `:8134`, `:8215` | Prepare before replacement hooks, body, layers and outlines; never fire separately per layer |
+| Own-player geometry | `crates/sunrise-client/src/game/interface/perspective.rs:786` | Use the same operation before player replacement and built-in posing |
+| Existing replacement adapters | `crates/sunrise-client/src/game/modding/native_mob_draw.rs:53`, `:71` | Read the prepared snapshot; do not redispatch modifiers |
+| Frame preparation and consumer | `crates/sunrise-client/src/game.rs:15048`, `:15720`, `:15040` | Collect prepared records into the existing frame packet before freeze and consumption |
+| Frame owner | `crates/sunrise-client-render/src/gfx.rs:1104` | Extend #2357 ownership and leases, not a parallel store |
 
 First decide the view and candidate using existing visibility policy. Capture a
 complete API-owned base plus supported specialized record; fire the matching
@@ -144,7 +144,7 @@ Future implementation expectations, not results of runtime tests in this note.
 
 ## Proposed stages (file none)
 
-1. Approve this boundary and verify public counterpart semantics; finish the vanilla and Horizon world/UI caller census.
+1. Approve this boundary and verify public counterpart semantics; finish the vanilla and Sunrise world/UI caller census.
 2. Implement #2357's shared frame store and snapshot-only draw boundary; add entity records within it and split all accepted routes into extraction and consumption.
 3. Add the registrar, catalog and generated native/wasm adapters together, then demonstrate a type-specific visible modification and run the matrix plus unused-path allocation measurements.
 

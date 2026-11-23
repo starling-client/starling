@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check that each crate depends only on the layers its own layer may use (docs/layers.md).
 
-tools/layers.json's `may_depend` says which: engine on engine; platform on engine and platform; horizon on
-platform and horizon only, so the Horizon layer builds against the platform's public API and can live in its own
+tools/layers.json's `may_depend` says which: engine on engine; platform on engine and platform; sunrise on
+platform and sunrise only, so the Sunrise layer builds against the platform's public API and can live in its own
 repository. `tool` crates (dev tools) may use anything and nothing shipped uses them. `crates` gives every crate its
 layer and `allowed` lists today's exceptions. `optional` lists exceptions that hold only while the dependency is
 optional (behind a feature), for the layer and the portable check alike. The check fails on:
@@ -32,7 +32,7 @@ CONFIG_PATH = "tools/layers.json"
 TOOL = "tool"
 DOC = "docs/layers.md"
 # The section of docs/layers.md that says what a layer may depend on.
-SECTION = {"engine": "#engine", "platform": "#platform", "horizon": "#horizon", TOOL: "#tools"}
+SECTION = {"engine": "#engine", "platform": "#platform", "sunrise": "#sunrise", TOOL: "#tools"}
 WHERE = "#where-a-new-feature-goes"
 
 

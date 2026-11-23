@@ -12,12 +12,12 @@ class SyncAreaTests(unittest.TestCase):
     def test_areas(self):
         cases = {
             'launcher/lang/fr.json': 'translations',
-            'crates/horizon-client/assets/horizon/lang/fr_fr.json': 'translations',
-            'crates/horizon-client/src/game/entities/entity.rs': 'game',
-            'crates/horizon-client/src/game.rs': 'clientroot',
-            'crates/horizon-client-render/src/gfx.rs': 'renderlauncher',
+            'crates/sunrise-client/assets/sunrise/lang/fr_fr.json': 'translations',
+            'crates/sunrise-client/src/game/entities/entity.rs': 'game',
+            'crates/sunrise-client/src/game.rs': 'clientroot',
+            'crates/sunrise-client-render/src/gfx.rs': 'renderlauncher',
             'launcher/src/main.rs': 'renderlauncher',
-            'crates/horizon-world/src/lib.rs': 'crates',
+            'crates/sunrise-world/src/lib.rs': 'crates',
             'docs/api.md': 'toolsdocs',
         }
         for path, expected in cases.items():

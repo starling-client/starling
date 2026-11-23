@@ -20,10 +20,10 @@ fn wait_for(path: &Path) {
 
 #[test]
 fn inherited_exclusion_exact_handles_arguments_and_failure_release() {
-    if std::env::var_os("HORIZON_WINDOWS_PRIVATE_TEST").is_none() {
+    if std::env::var_os("SUNRISE_WINDOWS_PRIVATE_TEST").is_none() {
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "process::leases::tests::windows_tests::inherited_exclusion_exact_handles_arguments_and_failure_release", "--nocapture"])
-            .env("HORIZON_WINDOWS_PRIVATE_TEST", "1").status().unwrap();
+            .env("SUNRISE_WINDOWS_PRIVATE_TEST", "1").status().unwrap();
         assert!(status.success());
         return;
     }
@@ -67,12 +67,12 @@ fn inherited_exclusion_exact_handles_arguments_and_failure_release() {
     .collect();
     let mut environment: Vec<_> = std::env::vars_os().collect();
     environment.extend([
-        ("HORIZON_WINDOWS_LEASE_ACTOR".into(), "1".into()),
-        ("HORIZON_WINDOWS_READY".into(), ready.as_os_str().to_owned()),
-        ("HORIZON_WINDOWS_STOP".into(), stop.as_os_str().to_owned()),
-        ("HORIZON_WINDOWS_VALUE".into(), "☃ = value\nline".into()),
-        ("horizon_runtime_lease_handles".into(), "bogus".into()),
-        ("horizon_runtime_data_root".into(), "bogus".into()),
+        ("SUNRISE_WINDOWS_LEASE_ACTOR".into(), "1".into()),
+        ("SUNRISE_WINDOWS_READY".into(), ready.as_os_str().to_owned()),
+        ("SUNRISE_WINDOWS_STOP".into(), stop.as_os_str().to_owned()),
+        ("SUNRISE_WINDOWS_VALUE".into(), "☃ = value\nline".into()),
+        ("sunrise_runtime_lease_handles".into(), "bogus".into()),
+        ("sunrise_runtime_data_root".into(), "bogus".into()),
     ]);
     let program = std::env::current_exe().unwrap();
     let child = ChildLeases::acquire(&data, &trees)
@@ -158,10 +158,10 @@ fn inherited_exclusion_exact_handles_arguments_and_failure_release() {
 
 #[test]
 fn actor() {
-    if std::env::var_os("HORIZON_WINDOWS_LEASE_ACTOR").is_none() {
+    if std::env::var_os("SUNRISE_WINDOWS_LEASE_ACTOR").is_none() {
         return;
     }
-    let numbers = std::env::var("HORIZON_RUNTIME_LEASE_HANDLES").unwrap();
+    let numbers = std::env::var("SUNRISE_RUNTIME_LEASE_HANDLES").unwrap();
     assert!(!numbers.is_empty());
     for number in numbers.split(',') {
         let handle = number.parse::<usize>().unwrap() as *mut std::ffi::c_void;
@@ -170,20 +170,20 @@ fn actor() {
         assert_ne!(unsafe { GetHandleInformation(handle, &mut flags) }, 0);
         assert_ne!(flags & HANDLE_FLAG_INHERIT, 0);
     }
-    assert_ne!(std::env::var("HORIZON_RUNTIME_DATA_ROOT").unwrap(), "bogus");
+    assert_ne!(std::env::var("SUNRISE_RUNTIME_DATA_ROOT").unwrap(), "bogus");
     assert_eq!(
-        std::env::var("HORIZON_WINDOWS_VALUE").unwrap(),
+        std::env::var("SUNRISE_WINDOWS_VALUE").unwrap(),
         "☃ = value\nline"
     );
     let values: Vec<Vec<u16>> = std::env::args_os()
         .map(|s| s.encode_wide().collect())
         .collect();
-    let ready = std::path::PathBuf::from(std::env::var_os("HORIZON_WINDOWS_READY").unwrap());
+    let ready = std::path::PathBuf::from(std::env::var_os("SUNRISE_WINDOWS_READY").unwrap());
     let staging = ready.with_extension("staging");
     std::fs::write(&staging, serde_json::to_vec(&values).unwrap()).unwrap();
     std::fs::rename(staging, ready).unwrap();
     wait_for(Path::new(
-        &std::env::var_os("HORIZON_WINDOWS_STOP").unwrap(),
+        &std::env::var_os("SUNRISE_WINDOWS_STOP").unwrap(),
     ));
     std::process::exit(37);
 }

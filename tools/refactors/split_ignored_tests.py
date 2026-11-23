@@ -5,7 +5,7 @@ Many independent pull requests inserted rows into the one list and conflicted on
 to a file by the old file's section heading (and, in the section of harness inputs, by its variable):
 
   Parity harness steps.                         -> parity-harness.txt
-  Tests that read an input only ... (needs)     -> wasm-fixture.txt for HORIZON_WASM_FIXTURE, else harness-inputs.txt
+  Tests that read an input only ... (needs)     -> wasm-fixture.txt for SUNRISE_WASM_FIXTURE, else harness-inputs.txt
   Disabled by the owner's decision ...          -> old-world.txt
   Tests that need a graphics adapter ...        -> gpu.txt
   Known failures on main.                       -> flaky.txt (every row there is `flaky`)
@@ -42,7 +42,7 @@ harness's own step: its harness runs it with the environment it needs, and the j
 that needs a graphics adapter: it runs, and must pass, only where the runner has a Vulkan driver. `needs` marks a
 test that reads an input only its harness provides: refused by name when the variable is unset, run and required
 to pass when it is set. `ignored_tests.py --needs VARIABLE --one-process-each` runs one variable's tests, each
-alone in its own process (`wasm-mods.yml` does this for `HORIZON_WASM_FIXTURE`).
+alone in its own process (`wasm-mods.yml` does this for `SUNRISE_WASM_FIXTURE`).
 """
 
 HEADERS = {
@@ -53,7 +53,7 @@ HEADERS = {
                       "# Not known failures.\n",
     "wasm-fixture": "# Tests that load the compiled wasm fixture mod (REFERENCE is the variable). The slow shards refuse\n"
                     "# them by name; wasm-mods.yml builds the fixture and runs each alone in its own process with\n"
-                    "# `ignored_tests.py --needs HORIZON_WASM_FIXTURE --one-process-each`.\n",
+                    "# `ignored_tests.py --needs SUNRISE_WASM_FIXTURE --one-process-each`.\n",
     "old-world": "# Disabled by the owner's decision until H077_OLD_WORLD is wired into CI.\n"
                  "# needs the private old-world fixture: see followups\n",
     "gpu": "# Tests that need a graphics adapter (REFERENCE is the ignore reason's word).\n",
@@ -69,7 +69,7 @@ def topic(heading, row):
         return "parity-harness"
     if heading.startswith("# Tests that read an input only their parity harness provides"):
         assert mark == ["needs"], row
-        return "wasm-fixture" if reference == "HORIZON_WASM_FIXTURE" else "harness-inputs"
+        return "wasm-fixture" if reference == "SUNRISE_WASM_FIXTURE" else "harness-inputs"
     if heading.startswith("# Disabled by the owner's decision until H077_OLD_WORLD"):
         return "old-world"
     if heading.startswith("# Tests that need a graphics adapter"):

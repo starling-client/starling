@@ -1,0 +1,107 @@
+[
+    {
+        "DisplayName": "Accept the Minecraft EULA",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked accepts the Minecraft EULA for this server. The first start fails until it is ticked.",
+        "Keywords": "sunrise,eula",
+        "FieldName": "SunriseEula",
+        "InputType": "checkbox",
+        "ParamFieldName": "SunriseEula",
+        "DefaultValue": "false",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    },
+    {
+        "DisplayName": "Sunrise release",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The GitHub release tag to install: nightly (the current Nightly) or an exact tag. Read at install and reinstall only.",
+        "Keywords": "sunrise,version",
+        "FieldName": "SunriseVersion",
+        "InputType": "text",
+        "ParamFieldName": "SunriseVersion",
+        "DefaultValue": "nightly",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "World name",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The world's folder name. Read on the first start only.",
+        "Keywords": "sunrise,world",
+        "FieldName": "SunriseWorld",
+        "InputType": "text",
+        "ParamFieldName": "SunriseWorld",
+        "DefaultValue": "world",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "World seed",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "The world's seed; empty picks a random one. Read on the first start only.",
+        "Keywords": "sunrise,seed",
+        "FieldName": "SunriseSeed",
+        "InputType": "text",
+        "ParamFieldName": "SunriseSeed",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Whitelist",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked turns the whitelist on, as in vanilla. Read on the first start only.",
+        "Keywords": "sunrise,whitelist",
+        "FieldName": "SunriseWhitelist",
+        "InputType": "checkbox",
+        "ParamFieldName": "SunriseWhitelist",
+        "DefaultValue": "true",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    },
+    {
+        "DisplayName": "Whitelisted players",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Names separated by commas, added to the whitelist. Read on the first start only.",
+        "Keywords": "sunrise,players",
+        "FieldName": "SunrisePlayers",
+        "InputType": "text",
+        "ParamFieldName": "SunrisePlayers",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Operator",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "A player to make an operator. Read on the first start only.",
+        "Keywords": "sunrise,op",
+        "FieldName": "SunriseOp",
+        "InputType": "text",
+        "ParamFieldName": "SunriseOp",
+        "DefaultValue": "",
+        "EnumValues": {}
+    },
+    {
+        "DisplayName": "Online mode",
+        "Category": "Sunrise:public",
+        "Subcategory": "Server:dns:1",
+        "Description": "Ticked checks players' Minecraft accounts, as vanilla's online mode does (docs/hosting.md). Read on the first start only.",
+        "Keywords": "sunrise,online",
+        "FieldName": "SunriseOnline",
+        "InputType": "checkbox",
+        "ParamFieldName": "SunriseOnline",
+        "DefaultValue": "true",
+        "EnumValues": {
+            "False": "false",
+            "True": "true"
+        }
+    }
+]

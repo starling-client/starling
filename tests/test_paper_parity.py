@@ -31,21 +31,21 @@ class PaperParityTests(unittest.TestCase):
             def write(side, rows):
                 (out / f'{side}.jsonl').write_text('\n'.join(map(json.dumps, rows)))
             paper = row('ChunkLoadEvent', dict(world='minecraft:overworld', x=-2, z=4, new=True))
-            horizon = row('chunk_load', dict(dimension='minecraft:overworld', chunk=[-2, 4], new=True))
+            sunrise = row('chunk_load', dict(dimension='minecraft:overworld', chunk=[-2, 4], new=True))
             before = row('ChunkLoadEvent', dict(world='minecraft:overworld', x=99, z=99, new=True))
             warmup = row('chunk_load', dict(dimension='minecraft:overworld', chunk=[99, 99], new=True))
             after = row('ChunkLoadEvent', dict(world='minecraft:overworld', x=100, z=100, new=True))
             write('paper', [before, row('_join'), paper, paper, row('_quit'), after])
-            write('horizon', [row('_join'), warmup, horizon, row('_quit')])
+            write('sunrise', [row('_join'), warmup, sunrise, row('_quit')])
             parity.lab.write_json(out / 'run.json', dict(complete=True, scenario={'hooks': ['chunk_load']}))
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(parity.report(out), 0)
-                horizon['fields']['new'] = False
-                write('horizon', [row('_join'), warmup, horizon, row('_quit')])
+                sunrise['fields']['new'] = False
+                write('sunrise', [row('_join'), warmup, sunrise, row('_quit')])
                 self.assertEqual(parity.report(out), 1)
-                write('horizon', [row('_join'), row('_quit')])
+                write('sunrise', [row('_join'), row('_quit')])
                 self.assertEqual(parity.report(out), 1)
-                write('horizon', [horizon])
+                write('sunrise', [sunrise])
                 self.assertEqual(parity.report(out), 1)
 
     def contract_fixture(self, tmp, hook, cancel=False):
@@ -55,11 +55,11 @@ class PaperParityTests(unittest.TestCase):
                         final_checks={side: ['minecraft:dirt', 'minecraft:grass_block',
                                       'minecraft:farmland[moisture=7]' if cancel else 'minecraft:dirt',
                                       'minecraft:farmland[moisture=7]', 'minecraft:farmland[moisture=7]']
-                                      for side in ('paper', 'horizon')})
+                                      for side in ('paper', 'sunrise')})
         def row(name, fields=None, tick=100, cancelled=False):
             return dict(name=name, fields=fields or {}, tick=tick, cancelled=cancelled)
         sides = {}
-        for side in ('paper', 'horizon'):
+        for side in ('paper', 'sunrise'):
             rows = [row('_join')]
             if hook.startswith('player_'):
                 changes = [(0, 3, 140, False), (3, 7, 160, cancel)]
@@ -68,7 +68,7 @@ class PaperParityTests(unittest.TestCase):
                 for old, new, tick, denied in changes:
                     fields = dict(old=old, new=new) if side == 'paper' else dict(old_slot=old, new_slot=new)
                     rows.append(row('PlayerItemHeldEvent' if side == 'paper' else hook, fields, tick, denied))
-                    if side == 'horizon' and not denied:
+                    if side == 'sunrise' and not denied:
                         rows.append(row('player_switch_hotbar_slot_post', fields, tick))
                     rows.append(row('_slot', {'slot': old if denied else new}, tick+1))
             else:
@@ -102,11 +102,11 @@ class PaperParityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'tolerance'): compare()
                 held[1]['tick'] -= 2
                 if cancel:
-                    sides['horizon'].insert(-1, dict(name='player_switch_hotbar_slot_post', tick=160,
+                    sides['sunrise'].insert(-1, dict(name='player_switch_hotbar_slot_post', tick=160,
                                                     fields={'old_slot':3, 'new_slot':7}, cancelled=False))
                     with self.assertRaisesRegex(ValueError, 'post'): compare()
-                    sides['horizon'].pop(-2)
-                next(r for r in sides['horizon'] if r['name'] == '_slot')['fields']['slot'] = 7
+                    sides['sunrise'].pop(-2)
+                next(r for r in sides['sunrise'] if r['name'] == '_slot')['fields']['slot'] = 7
                 with self.assertRaisesRegex(ValueError, 'slot'): compare()
 
     def test_moisture_ignores_repeated_attempts_but_requires_transitions_and_final_state(self):
@@ -117,7 +117,7 @@ class PaperParityTests(unittest.TestCase):
                 manifest['final_checks']['paper'][0] = 'minecraft:farmland[moisture=0]'
                 with self.assertRaisesRegex(ValueError, r'paper: final block.*expected.*dirt.*got.*moisture=0'): compare()
                 manifest['final_checks']['paper'][0] = 'minecraft:dirt'
-                next(r for r in sides['horizon'] if r['name'] == 'moisture_change')['fields']['to'] = 4
+                next(r for r in sides['sunrise'] if r['name'] == 'moisture_change')['fields']['to'] = 4
                 with self.assertRaisesRegex(ValueError, 'transitions'): compare()
 
     def test_saved_palette_final_states_and_missing_hotbar_row(self):
@@ -135,8 +135,8 @@ class PaperParityTests(unittest.TestCase):
                 self.assertEqual(parity.final_blocks(out, 'paper', [[0, -64, 0], [1, -64, 0]]),
                                  ['minecraft:grass_block', 'minecraft:farmland[moisture=7]'])
             _, sides, compare = self.contract_fixture(tmp, 'player_switch_hotbar_slot_pre')
-            sides['horizon'] = [r for r in sides['horizon'] if r['tick'] != 180]
-            with self.assertRaisesRegex(ValueError, r'horizon: hotbar.*row 3: expected.*7, 3.*got.*missing'):
+            sides['sunrise'] = [r for r in sides['sunrise'] if r['tick'] != 180]
+            with self.assertRaisesRegex(ValueError, r'sunrise: hotbar.*row 3: expected.*7, 3.*got.*missing'):
                 compare()
 
     def test_combined_report_keeps_every_case_and_propagates_failure(self):
@@ -158,5 +158,5 @@ class PaperParityTests(unittest.TestCase):
                 self.assertEqual(parity.report(out), 0)
                 for name in runs:
                     self.assertIn(name, output.getvalue())
-                (out / runs[-1] / 'horizon.jsonl').write_text('')
+                (out / runs[-1] / 'sunrise.jsonl').write_text('')
                 self.assertEqual(parity.report(out), 1)

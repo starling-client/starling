@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare where vanilla's nether portals send an entity with Horizon's.
+"""Compare where vanilla's nether portals send an entity with Sunrise's.
 
 Every case has an entity (an item, a mob, a minecart, an arrow) standing in a
 nether portal of one level (the overworld or the Nether), a random destination
@@ -9,7 +9,7 @@ a world border, sometimes tight enough to clamp the exit. Vanilla runs
 update oracle (`VanillaPortalOracle`): `PortalForcer.findClosestPortalPosition`
 over the destination's portal points of interest, `createPortal` when there is
 none, `BlockUtil.getLargestRectangleAround`, `PortalShape.getRelativePosition`
-and `findCollisionFreePosition`. Horizon runs `horizon_world::level::portal_travel`
+and `findCollisionFreePosition`. Sunrise runs `sunrise_world::level::portal_travel`
 (`portal_travel_fixture`). Both print the entity's size, the blocks the
 destination changed, and the arrival position (bits) and yaw.
 
@@ -32,7 +32,7 @@ except ImportError:
     import test_dispenser_parity as d
     import test_rust_parity as base
 
-PARITY_RUST_SCOPE = ['crates/horizon-world/', 'crates/horizon-core/']
+PARITY_RUST_SCOPE = ['crates/sunrise-world/', 'crates/sunrise-core/']
 
 # EntityType dimensions (width, height) of the travellers.
 ENTITIES = {'minecraft:item': (0.25, 0.25), 'minecraft:zombie': (0.6, 1.95), 'minecraft:skeleton': (0.6, 1.99),
@@ -266,7 +266,7 @@ def main():
         args.count = 1500
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'nether-portal-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = list(cases(facts, args.count, args.seed))
@@ -277,12 +277,12 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     h.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaPortalOracle.java')])
-    h.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaPortalOracle',
+           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaPortalOracle.java')])
+    h.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaPortalOracle',
            str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    h.run(['cargo', 'run', '-q', '--release', '-p', 'horizon-world', '--example', 'world_probe', '--',
+    h.run(['cargo', 'run', '-q', '--release', '-p', 'sunrise-world', '--example', 'world_probe', '--',
            'portal_travel_fixture', str(resources), str(work / 'cases.jsonl'), str(work / 'rust.txt')], cwd=lab.ROOT)
     native = h.split_cases((work / 'native.txt').read_text(), ())
     rust = h.split_cases((work / 'rust.txt').read_text(), ())

@@ -1,6 +1,6 @@
-"""The old mod messages keep every link they need (crates/horizon-client/src/game/starling/old_mod_net.rs).
+"""The old mod messages keep every link they need (crates/sunrise-client/src/game/starling/old_mod_net.rs).
 
-The fork replaced Horizon's `horizon:mod_net` channel with declared payloads, which the website's mods made
+The fork replaced Sunrise's `sunrise:mod_net` channel with declared payloads, which the website's mods made
 for the old API never declare (ayynoxs_map_pack and elytratrails send and hear their messages with
 `native_net_send_to_*` and the `net_from_*` hooks). Sync 7 dropped them until Starling brought them back:
 the server's announcement, the client's flag, both ends' receiving, the host's queue and its flushes, and the
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "crates/horizon-client/src"
+SRC = ROOT / "crates/sunrise-client/src"
 
 
 def read(path: str) -> str:
@@ -20,15 +20,15 @@ def read(path: str) -> str:
 
 class OldModNet(unittest.TestCase):
     def test_the_protocol_module_is_there(self):
-        lib = (ROOT / "crates/horizon-protocol/src/lib.rs").read_text(encoding="utf-8")
+        lib = (ROOT / "crates/sunrise-protocol/src/lib.rs").read_text(encoding="utf-8")
         self.assertIn("pub mod mod_net;", lib)
-        self.assertIn('pub const CHANNEL: &str = "horizon:mod_net";',
-                      (ROOT / "crates/horizon-protocol/src/mod_net.rs").read_text(encoding="utf-8"))
+        self.assertIn('pub const CHANNEL: &str = "sunrise:mod_net";',
+                      (ROOT / "crates/sunrise-protocol/src/mod_net.rs").read_text(encoding="utf-8"))
 
     def test_the_server_announces_it_and_the_client_hears_it(self):
-        self.assertIn("channel: horizon_protocol::mod_net::CHANNEL.into()", read("lan/conn.rs"))
+        self.assertIn("channel: sunrise_protocol::mod_net::CHANNEL.into()", read("lan/conn.rs"))
         net = read("net.rs")
-        self.assertIn("payload.channel == horizon_protocol::mod_net::CHANNEL", net)
+        self.assertIn("payload.channel == sunrise_protocol::mod_net::CHANNEL", net)
         self.assertIn("Event::ModNet", net)
         remote = read("game/network/remote/mod.rs")
         self.assertIn("remote.mod_net = true;", remote)

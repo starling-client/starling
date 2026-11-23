@@ -17,12 +17,12 @@ class SpecialAttackInvocationTests(unittest.TestCase):
 
     def test_selects_gameplay_library_test_not_other_cargo_artifacts(self):
         artifact = dict(reason='compiler-artifact', executable='/scratch/game-tests',
-                        profile=dict(test=True), target=dict(name='horizon_client', kind=['lib']))
+                        profile=dict(test=True), target=dict(name='sunrise_client', kind=['lib']))
         messages = [
             'Compiling dependencies',
-            json.dumps({**artifact, 'target': dict(name='horizon_client', kind=['bin'])}),
+            json.dumps({**artifact, 'target': dict(name='sunrise_client', kind=['bin'])}),
             json.dumps({**artifact, 'profile': dict(test=False)}),
-            json.dumps({**artifact, 'target': dict(name='horizon_client_lib', kind=['lib'])}),
+            json.dumps({**artifact, 'target': dict(name='sunrise_client_lib', kind=['lib'])}),
             json.dumps(artifact),
             json.dumps(dict(reason='build-finished', success=True)),
         ]

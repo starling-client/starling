@@ -55,7 +55,7 @@ To emit a vibration-producing game event, use `level.game_event(host, event, at,
 its own crate:
 
 ```rust,ignore
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Protection {
     // Runs before mods at the default priority, 0; higher runs first.
     #[listener(priority = 100)]
@@ -64,7 +64,7 @@ impl Hooks for Protection {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Override {
     // Receives cancelled events and may clear cancellation.
     #[listener(priority = -100, receive_cancelled)]
@@ -174,7 +174,7 @@ the tick queue; mods do not pass it back to these helpers.
 
 Frame drawing through `DrawContext`, `BlockEntityDrawContext` and `WorldDrawContext` stays
 in `mod_api`. Raw GPU access is native-only, unstable and outside that API, in
-`mod_render::render` (`horizon-mod-render`). Replace its frame functions with native HEAD mixins compiled against the prebuilt game.
+`mod_render::render` (`sunrise-mod-render`). Replace its frame functions with native HEAD mixins compiled against the prebuilt game.
 `render_needs` collects requests; `world_drawn` runs before the hand and HUD, and
 `hand_drawn` runs after the hand, on the render thread. Use API draw contexts for API-typed drawing.
 

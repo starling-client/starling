@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Play with friends end to end, without the internet.
 
-(a) The code alone: a host Horizon opens a world and shares it (`friends
-host`) with no relay anywhere; a guest Horizon joins with the full invite
+(a) The code alone: a host Sunrise opens a world and shares it (`friends
+host`) with no relay anywhere; a guest Sunrise joins with the full invite
 code (`connect friend:CODE`) by dialling the endpoints in it. (b) A
-self-hosted relay run locally (`horizon-relay`): the host also gets a short
-code from it, and a guest started with HORIZON_FRIENDS_PATH=relay joins with
+self-hosted relay run locally (`sunrise-relay`): the host also gets a short
+code from it, and a guest started with SUNRISE_FRIENDS_PATH=relay joins with
 the short code through it. Each time both sides must see the other's chat
 line, the other moving, a block the host places and the block the guest
 breaks; then the host stops sharing and a guest with the old code is told
 why it can't join. `--baseline` first runs the same checks over plain LAN.
-The router is never asked to open a port (HORIZON_FRIENDS_UPNP=0) and STUN
+The router is never asked to open a port (SUNRISE_FRIENDS_UPNP=0) and STUN
 is off: nothing leaves the machine.
 
-    python3 tools/test_friends.py --client target/fast/horizon-official --relay target/fast/horizon-relay
+    python3 tools/test_friends.py --client target/fast/sunrise-official --relay target/fast/sunrise-relay
 
 The host runs on its integrated server thread (the window is a client of it).
 
@@ -80,7 +80,7 @@ def health(relay_url):
 
 
 class Game:
-    """A Horizon client with a control socket in its own home."""
+    """A Sunrise client with a control socket in its own home."""
 
     # Extra words before and after the client (`--xvfb`, `--offscreen`).
     prefix = []
@@ -95,7 +95,7 @@ class Game:
             str(client), '--resources', str(resources), '--render-distance', '2', '--test-terrain',
             '--control-socket', str(self.endpoint), '--timeout-seconds', '600',
         ] + Game.extra, cwd=self.home,
-            env={**game_environment({**os.environ, **env}, self.home), 'HORIZON_HOME': str(self.home)},
+            env={**game_environment({**os.environ, **env}, self.home), 'SUNRISE_HOME': str(self.home)},
             stdout=self.log, stderr=subprocess.STDOUT)
         wait_for(self.endpoint, 'screen', lambda v: v['screen'] == 'title', 120, f'{name} title')
 
@@ -235,8 +235,8 @@ def start_relay(args, work):
 
 
 def set_relay(game, url):
-    """What typing the relay on Join a friend saves (horizon.txt)."""
-    path = game.home / 'horizon.txt'
+    """What typing the relay on Join a friend saves (sunrise.txt)."""
+    path = game.home / 'sunrise.txt'
     lines = [l for l in (path.read_text().splitlines() if path.exists() else []) if not l.startswith('friendsRelay:')]
     path.write_text('\n'.join(lines + [f'friendsRelay:{url}']) + '\n')
 
@@ -246,7 +246,7 @@ def full(args, work):
     # this machine, so the code also holds 127.0.0.1 (a firewall such as
     # macOS's may hold back connections to the LAN address from an unsigned
     # binary started over SSH, which can't show its prompt).
-    env = {'HORIZON_FRIENDS_UPNP': '0', 'HORIZON_STUN_SERVERS': 'none', 'HORIZON_FRIENDS_LOOPBACK': '1'}
+    env = {'SUNRISE_FRIENDS_UPNP': '0', 'SUNRISE_STUN_SERVERS': 'none', 'SUNRISE_FRIENDS_LOOPBACK': '1'}
     host = Game(args.client, args.resources, work, 'host', env)
     games = [host]
     relay = None
@@ -296,7 +296,7 @@ def full(args, work):
         host('friends host')
         status = host.wait('friends status', lambda v: v['short'], 30, 'the short code')
         short = status['short']
-        guest = Game(args.client, args.resources, work, 'guest-relay', dict(env, HORIZON_FRIENDS_PATH='relay'))
+        guest = Game(args.client, args.resources, work, 'guest-relay', dict(env, SUNRISE_FRIENDS_PATH='relay'))
         games.append(guest)
         set_relay(guest, relay_url)
         before = health(relay_url)['relayed_bytes']
@@ -336,11 +336,11 @@ def full(args, work):
 
 
 def one_side(args, work):
-    env = {'HORIZON_FRIENDS_UPNP': '0', 'HORIZON_STUN_SERVERS': 'none'}
+    env = {'SUNRISE_FRIENDS_UPNP': '0', 'SUNRISE_STUN_SERVERS': 'none'}
     if args.relay_url:
-        env['HORIZON_RELAY_URL'] = args.relay_url
+        env['SUNRISE_RELAY_URL'] = args.relay_url
     if args.path:
-        env['HORIZON_FRIENDS_PATH'] = args.path
+        env['SUNRISE_FRIENDS_PATH'] = args.path
     game = Game(args.client, args.resources, work, args.role, env)
     try:
         if args.role == 'host':
@@ -367,7 +367,7 @@ def one_side(args, work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--client', type=Path, required=True)
-    parser.add_argument('--relay', type=Path, help='horizon-relay binary (started on a free local port)')
+    parser.add_argument('--relay', type=Path, help='sunrise-relay binary (started on a free local port)')
     parser.add_argument('--relay-url', help='--role: a relay already running elsewhere, HOST:PORT')
     parser.add_argument('--resources', type=Path, default=lab.RESOURCES)
     parser.add_argument('--role', choices=['host', 'guest'])

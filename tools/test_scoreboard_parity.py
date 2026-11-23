@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Horizon's scoreboard model and scoreboard.dat with vanilla's Scoreboard.
+"""Compare Sunrise's scoreboard model and scoreboard.dat with vanilla's Scoreboard.
 
 The Java oracle (VanillaScoreboardOracle) runs vanilla's own Scoreboard class
 (what ServerScoreboard extends) on scripted cases: objectives with every kind of
@@ -14,8 +14,8 @@ playerScores as fastutil open hash maps, teamsByName, each team's HashSet of
 players), and the ScoreboardSaveData.Packed codec output that
 data/minecraft/scoreboard.dat holds, before and after loading it back.
 `examples/probe/scoreboard_fixture` runs the same cases on
-`horizon_client::scoreboard`, reloads vanilla's NBT, and vanilla reloads
-Horizon's NBT; all must agree. The one order vanilla leaves to identity hash
+`sunrise_client::scoreboard`, reloads vanilla's NBT, and vanilla reloads
+Sunrise's NBT; all must agree. The one order vanilla leaves to identity hash
 codes (each holder's scores within PlayerScores) is compared as a set.
 
   test_scoreboard_parity.py [--count N] [--detail N]
@@ -34,7 +34,7 @@ except ImportError:
     import lab
     import test_rust_parity as base
 
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 COLORS = ['black', 'dark_blue', 'dark_green', 'dark_aqua', 'dark_red', 'dark_purple', 'gold', 'gray', 'dark_gray',
           'blue', 'green', 'aqua', 'red', 'light_purple', 'yellow', 'white']
 CUSTOM = ['dummy', 'trigger', 'deathCount', 'playerKillCount', 'totalKillCount', 'health', 'food', 'air', 'armor',
@@ -241,7 +241,7 @@ def main():
             print((build / (name + '.log')).read_text()[-4000:])
             sys.exit(f'{name} failed')
 
-    oracle = ['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaScoreboardOracle']
+    oracle = ['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaScoreboardOracle']
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          PARITY / 'VanillaScoreboardOracle.java'], 'compile-java')
     run([*oracle, 'export', build], 'export')
@@ -250,15 +250,15 @@ def main():
     inputs = build / 'inputs.jsonl'
     inputs.write_text(''.join(json.dumps(c, ensure_ascii=False) + '\n' for c in chosen), encoding='utf-8')
     run([*oracle, 'run', inputs, build / 'vanilla.jsonl'], 'vanilla')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast/examples' / ('client_probe.exe' if os.name=='nt' else 'client_probe')
     run([binary, 'scoreboard_fixture',build / 'registries.json', inputs, build / 'rust.jsonl', build / 'vanilla.jsonl'], 'rust')
     read = lambda p: [json.loads(l) for l in p.read_text(encoding='utf-8').splitlines()]
     vanilla, rust = read(build / 'vanilla.jsonl'), read(build / 'rust.jsonl')
     assert len(vanilla) == len(rust)
-    (build / 'horizon-nbt.jsonl').write_text(''.join(json.dumps({'case': r['case'], 'nbt': r['nbt']}) + '\n' for r in rust))
-    run([*oracle, 'reload', build / 'horizon-nbt.jsonl', build / 'vanilla-reload.jsonl'], 'vanilla-reload')
+    (build / 'sunrise-nbt.jsonl').write_text(''.join(json.dumps({'case': r['case'], 'nbt': r['nbt']}) + '\n' for r in rust))
+    run([*oracle, 'reload', build / 'sunrise-nbt.jsonl', build / 'vanilla-reload.jsonl'], 'vanilla-reload')
     reloads = {r['case']: r for r in read(build / 'vanilla-reload.jsonl')}
     bad, errors, ops = [], [], 0
     for v, r in zip(vanilla, rust):
@@ -269,8 +269,8 @@ def main():
         checks = [('results', v['out'], r['out']), ('pack', normalize(v['pack']), normalize(r['pack'])),
                   ('reload', normalize(v['reload']), normalize(r['reload'])), ('reload_dump', v['reload_dump'], r['reload_dump']),
                   # Loading inserts in the saved order, so the maps may iterate differently than before saving.
-                  ('horizon loads vanilla NBT', normalize(v['reload']), normalize(r.get('vreload'))),
-                  ('vanilla loads horizon NBT', normalize(v['reload']), normalize(reloads.get(v['case'], {}).get('pack')))]
+                  ('sunrise loads vanilla NBT', normalize(v['reload']), normalize(r.get('vreload'))),
+                  ('vanilla loads sunrise NBT', normalize(v['reload']), normalize(reloads.get(v['case'], {}).get('pack')))]
         for what, a, b in checks:
             d = first_difference(a, b)
             if d:
@@ -285,7 +285,7 @@ def main():
             i = int(path[1:path.index(']')])
             print('   op', json.dumps(ops_of[case][i], ensure_ascii=False)[:400])
         print('   vanilla', json.dumps(a, ensure_ascii=False)[:600])
-        print('   horizon', json.dumps(b, ensure_ascii=False)[:600])
+        print('   sunrise', json.dumps(b, ensure_ascii=False)[:600])
     print(f'{len(vanilla) - len(bad) - len(errors)}/{len(vanilla)} scoreboard cases match ({ops} operations); '
           f'{len(errors)} oracle errors')
     if bad or errors:

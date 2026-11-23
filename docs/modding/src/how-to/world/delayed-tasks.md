@@ -8,7 +8,7 @@ a `u64` token and `Hooks::scheduled_task` hands it back.
 ```rust,ignore
 const REMINDER: u64 = 1;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn player_logged_in(&self, host: &mut dyn ServerHost, _: &mut PlayerLoggedInEvent<'_>) {
         // 20 server ticks later: one second at the normal rate.

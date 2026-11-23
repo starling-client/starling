@@ -3,10 +3,10 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/game/mobs/creatures/mod.rs"
+source = root / "crates/sunrise-client/src/game/mobs/creatures/mod.rs"
 target = source.with_name("mob_query_hooks.rs")
 text = source.read_text()
-marker = "impl horizon_client::mobs::MobHooks for Game<'_> {"
+marker = "impl sunrise_client::mobs::MobHooks for Game<'_> {"
 assert text.count(marker) == 1, "expected one unextracted MobHooks implementation"
 assert not target.exists(), "refuse to overwrite an existing extraction"
 start = text.index(marker)

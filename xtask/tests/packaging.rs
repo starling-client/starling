@@ -22,8 +22,8 @@ fn client_and_server_layouts_require_and_ship_std() {
     for name in [
         "xtask/Cargo.toml",
         "tools/fixture",
-        "mods/horizon/src/test/java/fixture",
-        "crates/horizon-prepare/fixture",
+        "mods/sunrise/src/test/java/fixture",
+        "crates/sunrise-prepare/fixture",
         "research-lock.json",
         "LICENSE",
         "packaging/PLAY.txt",
@@ -65,10 +65,10 @@ fn client_and_server_layouts_require_and_ship_std() {
             ""
         };
         for name in [
-            "horizon-client",
-            "horizon-ctl",
-            "horizon-prepare",
-            "horizon-server",
+            "sunrise-client",
+            "sunrise-ctl",
+            "sunrise-prepare",
+            "sunrise-server",
         ] {
             fs::write(source.join(format!("{name}{suffix}")), b"program").unwrap();
         }
@@ -77,7 +77,7 @@ fn client_and_server_layouts_require_and_ship_std() {
             let run = || {
                 Command::new(env!("CARGO_BIN_EXE_xtask"))
                     .arg(task)
-                    .arg(source.join(format!("horizon-client{suffix}")))
+                    .arg(source.join(format!("sunrise-client{suffix}")))
                     .arg(&out)
                     .current_dir(&root)
                     .output()
@@ -85,8 +85,8 @@ fn client_and_server_layouts_require_and_ship_std() {
             };
             let missing = run();
             assert!(!missing.status.success());
-            assert!(String::from_utf8_lossy(&missing.stderr).contains("horizon-wasm-std.wasm"));
-            fs::write(source.join("horizon-wasm-std.wasm"), b"wasm-member").unwrap();
+            assert!(String::from_utf8_lossy(&missing.stderr).contains("sunrise-wasm-std.wasm"));
+            fs::write(source.join("sunrise-wasm-std.wasm"), b"wasm-member").unwrap();
             let packed = run();
             assert!(
                 packed.status.success(),
@@ -94,20 +94,20 @@ fn client_and_server_layouts_require_and_ship_std() {
                 String::from_utf8_lossy(&packed.stderr)
             );
             assert_eq!(
-                fs::read(out.join("horizon-wasm-std.wasm")).unwrap(),
+                fs::read(out.join("sunrise-wasm-std.wasm")).unwrap(),
                 b"wasm-member"
             );
             let engine = if task == "package" {
-                "horizon-client"
+                "sunrise-client"
             } else {
-                "horizon-engine"
+                "sunrise-engine"
             };
             assert_eq!(
                 fs::read(out.join(format!("{engine}{suffix}"))).unwrap(),
                 b"program"
             );
             assert!(out.join("exporters/manifest.json").is_file());
-            fs::remove_file(source.join("horizon-wasm-std.wasm")).unwrap();
+            fs::remove_file(source.join("sunrise-wasm-std.wasm")).unwrap();
         }
     }
     fs::remove_dir_all(root).unwrap();

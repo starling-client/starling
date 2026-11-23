@@ -93,10 +93,10 @@ orbs, and only the first keeps the attachments. Player UUIDs cover online guests
 the acting player. Mutable level
 hosts can access their level, loaded chunks and block entities; read-only level hosts
 cannot access attachments. Unserialized values disappear on unload or restart. A saved
-value is stored under `horizon:attachments`, then the mod namespace and attachment name,
+value is stored under `sunrise:attachments`, then the mod namespace and attachment name,
 as `{value: <compound>, copy_on_death: 1b, sync: 1b}` (a flag is omitted when false).
 Unknown mods' saved entries survive load and save without being decoded. Level
-attachments use the dimension's `data/horizon/attachments.dat` SavedData
+attachments use the dimension's `data/sunrise/attachments.dat` SavedData
 file, not `level.dat`.
 
 ## Synchronization
@@ -106,7 +106,7 @@ recipient predicate or partial synchronization updates. The default is `fn() -> 
 copying uses the declared policy, and synchronization uses the disk codec rather
 than a separate wire codec.
 
-A type with `sync: true` sends its value to Horizon clients when `get` creates the
+A type with `sync: true` sends its value to Sunrise clients when `get` creates the
 default, on `set` and `remove`, and on demand with `AttachmentType::sync_data(host,
 holder)`; changes made in one tick are sent once, at its end. The recipients are the
 players who track the holder: guests who were sent a chunk for a chunk or block entity,
@@ -116,7 +116,7 @@ when it starts seeing it: a chunk sent (with its block entities), a level joined
 re-entered, an entity tracked, and its own player. The wire form is the codec's compound, so `sync` requires
 a codec.
 
-Only Horizon clients are sent values. A message with a namespace or name over 256
+Only Sunrise clients are sent values. A message with a namespace or name over 256
 UTF-16 code units, a value that cannot be written or a payload past 1 MiB is not sent.
 
 On a client, `Host::attachments` returns a copy of what the server synced, which `get`

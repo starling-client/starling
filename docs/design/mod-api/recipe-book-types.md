@@ -2,7 +2,7 @@
 
 Design for [#1023](https://github.com/arismoko/horizon/issues/1023).
 Storage, registration, player settings handles and negotiated synchronization
-are implemented. This is a Horizon design; vanilla 26.3 is the reference for the
+are implemented. This is a Sunrise design; vanilla 26.3 is the reference for the
 four existing books. No other project's implementation is a reference.
 
 ## Player settings operations
@@ -48,7 +48,7 @@ handle; it cannot directly mutate server state. Do not add player-id helpers to
 `Host`. Registration uses its existing registration receiver.
 
 Book identities are separate from `RecipeBookCategory` in
-`crates/horizon-mod-vocab/src/item/recipe_book.rs`. Categories group recipes and provide
+`crates/sunrise-mod-vocab/src/item/recipe_book.rs`. Categories group recipes and provide
 icons; a book owns two flags. A screen associates categories with a registered
 book explicitly through `Screen.recipe_book`. Neither category registration nor
 recipe-type registration implicitly registers a book. Recipe unlocking and
@@ -74,11 +74,11 @@ implemented on the typed player handle.
 
 Keep `Settings.open` and `Settings.filtering` as `[bool; 4]`. Add a custom map
 from validated key to a value `{ open: bool, filtering: bool }` alongside them in
-`crates/horizon-client/src/recipe_book.rs`. Missing keys read as `(false,false)`.
+`crates/sunrise-client/src/recipe_book.rs`. Missing keys read as `(false,false)`.
 There is no fifth vanilla index. Use one shared map implementation for local,
 host and guest players, persistence and payload application.
 
-Persist the map inside `recipeBook` under `horizon:book_settings`, a compound
+Persist the map inside `recipeBook` under `sunrise:book_settings`, a compound
 whose keys are book ids and whose values contain byte booleans `open` and
 `filtering`. Write both flags, including zero, and sort keys for stable output.
 Missing extension means an empty map. Preserve well-formed entries even when
@@ -170,7 +170,7 @@ Use these independent expectations in implementation tests:
 ## Current routes to update
 
 References below are verified against this worktree at `84e57e6a79`; paths are
-relative to `crates/horizon-client/src/`. Implementation must keep each route
+relative to `crates/sunrise-client/src/`. Implementation must keep each route
 on the shared settings operations rather than duplicate custom-map handling.
 
 | Route | Current file:line | Required handling |
@@ -189,7 +189,7 @@ on the shared settings operations rather than duplicate custom-map handling.
 The vanilla reference queries are `rea_vanilla.py method
 net.minecraft.stats.RecipeBookSettings replaceFrom` and `rea_vanilla.py method
 net.minecraft.stats.ServerRecipeBook sendInitialRecipeBook`. Custom registration,
-retention and negotiation are Horizon decisions, not claims about vanilla.
+retention and negotiation are Sunrise decisions, not claims about vanilla.
 
 ## Recipe displays and category membership (#828)
 
@@ -267,7 +267,7 @@ the frozen registry. No vanilla book ordinal or packet meaning changes.
 
 ## Transport and cost
 
-The dedicated `horizon:recipe_book_settings` channel is used only after the
+The dedicated `sunrise:recipe_book_settings` channel is used only after the
 server announces mod transport and the client offers its frozen registered
 keys. The server intersects those keys with its own registry before replying
 with the initial snapshot. Vanilla clients never send the offer and receive no
@@ -388,4 +388,4 @@ screen's native slot geometry, never built-in slot coordinates.
 Displays are pictures, not ingredient predicates; declaring a result ghost never
 grants a real stack. NeoForge 26.3 public documentation names no registration
 counterpart for vanilla's internal `GhostSlots.setInput` and `setResult`; these
-declaration names are Horizon's.
+declaration names are Sunrise's.

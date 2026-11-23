@@ -4,7 +4,7 @@
 Checks extension/retraction in two directions and an unfreeze control. Each
 frozen snapshot waits 20 client ticks: a piston must remain a moving block
 until the server's third step, rather than finishing between server steps.
-Requires prepared resources and built horizon-client/horizon-ctl binaries.
+Requires prepared resources and built sunrise-client/sunrise-ctl binaries.
 """
 import argparse
 import json
@@ -26,9 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--game', type=Path, default=ROOT / 'target/fast/horizon-client')
-    parser.add_argument('--ctl', type=Path, default=ROOT / 'target/fast/horizon-ctl')
-    parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
+    parser.add_argument('--game', type=Path, default=ROOT / 'target/fast/sunrise-client')
+    parser.add_argument('--ctl', type=Path, default=ROOT / 'target/fast/sunrise-ctl')
+    parser.add_argument('--resources', type=Path, default=ROOT / '.local/sunrise-client/26.3')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     output = (args.output or Path(tempfile.mkdtemp(prefix='piston-step-'))).resolve()
@@ -40,7 +40,7 @@ def main():
     port = server_dir(output / 'server')
     server = Server(command, output / 'server', 'vanilla')
     env = game_environment(os.environ, output)
-    for key in ('HORIZON_LAUNCHER_TRASH', 'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP'):
+    for key in ('SUNRISE_LAUNCHER_TRASH', 'SUNRISE_LAUNCHER_CLIPBOARD', 'SUNRISE_LAUNCHER_DESKTOP'):
         env[key] = str(output / key)
     results = []
     # Keep AF_UNIX paths short even in nested worktrees.

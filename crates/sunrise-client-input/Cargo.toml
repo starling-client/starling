@@ -1,0 +1,31 @@
+[package]
+name = "sunrise-client-input"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The client's input layer: key bindings and their names, mouse, controllers, clipboard and window options"
+
+[dependencies]
+sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
+sunrise-engine-slots = { path = "../sunrise-engine-slots" }
+sunrise-client-core = { path = "../sunrise-client-core" }
+winit = "0.30.13"
+log = "0.4"
+png = "0.18"
+# The DualSense's trigger effects (the `controllers` feature).
+sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
+
+[dev-dependencies]
+# The window icon test decodes Sunrise's icon.
+sunrise-theme = { path = "../sunrise-theme" }
+
+# No Android backend: the platform's clipboard stands in there (clipboard.rs).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+
+[features]
+controllers = []
+
+[lints]
+workspace = true

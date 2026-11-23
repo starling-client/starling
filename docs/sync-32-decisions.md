@@ -26,7 +26,7 @@ Both new test declarations are retained, with all upstream assertions and numeri
 
 | Test | Canonical location | Resource boundary |
 | --- | --- | --- |
-| `chest_boat_automation_does_not_award_player_loot` | `game/blocks/machines/mod.rs::hopper_cart_transfer_tests` | Existing ignored `HORIZON_TEST_RESOURCES` gate; use the fork's real `native_entity_refs::tests::with_game` fixture instead of the absent upstream `native_machines::tests::server_game`. |
+| `chest_boat_automation_does_not_award_player_loot` | `game/blocks/machines/mod.rs::hopper_cart_transfer_tests` | Existing ignored `SUNRISE_TEST_RESOURCES` gate; use the fork's real `native_entity_refs::tests::with_game` fixture instead of the absent upstream `native_machines::tests::server_game`. |
 | `chest_boat_slot_access_fills_only_empty_slots_once` | Same module | Same prepared-resource gate and real fixture; retains authoritative open-menu, exact seed-73 loot, occupied-slot, spent-table and no-reroll assertions. |
 
 The incoming advancement overlay fixture uses the existing `PackOverlay::NONE` remainder pattern to supply typed vanilla load conditions for its unconditional overlay files. The fixture opens the actual typed world lifecycle and uses real resource loading and container paths. No stub inventory, fabricated production result or extra skip is introduced. These ignored assertions have not been run locally; compile-only checking and a green ordinary PR gate do not prove them.

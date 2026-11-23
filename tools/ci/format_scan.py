@@ -15,11 +15,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every `.rs` file under these folders, checked one file at a time (no child modules followed).
-TREES = ("crates/horizon-mod-api/src", "crates/horizon-mod-vocab/src", "crates/horizon-client/src/game")
+TREES = ("crates/sunrise-mod-api/src", "crates/sunrise-mod-vocab/src", "crates/sunrise-client/src/game")
 # Files no `mod` line reaches.
-DISCOVERED = ("crates/horizon-mod-api-gen/dispatch-tests/src/fixtures/*.rs",
-              "crates/horizon-mod-api-gen/dispatch-tests/src/fixtures/*/*.rs",
-              "crates/horizon-mod-wasm/wire-loopback/tests/wire_loopback/*.rs")
+DISCOVERED = ("crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*.rs",
+              "crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*/*.rs",
+              "crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback/*.rs")
 RUSTFMT = ["rustfmt", "--edition", "2024", "--check", "--config", "skip_children=true"]
 # Windows limits a command line to 32,767 characters; a chunk of paths stays well under it.
 CHUNK = 200

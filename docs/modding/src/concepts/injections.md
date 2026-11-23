@@ -14,7 +14,7 @@ takes [the native route](native-route.md): [`[[native.mixin]]`](native-route/2-m
 ```toml
 [[inject]]
 id = "count"
-at = "horizon_client::game::Game<'_>::tick"
+at = "sunrise_client::game::Game<'_>::tick"
 kind = "head"
 with = "count"
 priority = 0
@@ -51,7 +51,7 @@ A library mod publishes its own hooks and functions for other mods to use.
 | `E_INJECT_INVALID` | A field is malformed or unsupported; the field is named. `access = "internals"` points to `[[native.mixin]]`; `access = "api"` says to remove the line. |
 | `E_INJECT_NO_SLOT` | A source-level kind (`before_call`, `after_call`, `modify_value`, `wrap_call`, `wrap_if` and the other source-level kinds): the message names the `[[native.mixin]]` form to use. Also a function whose record the API cannot carry. |
 | `E_INJECT_MISSING` | `at` names no function the pinned game lists. |
-| `E_INJECT_CHANGED` | The pinned `hash` does not match the function's signature; run `cargo horizon-mod inject update`. |
+| `E_INJECT_CHANGED` | The pinned `hash` does not match the function's signature; run `cargo sunrise-mod inject update`. |
 | "no API listener at …" | The function is listed but takes no API listener. The reason follows: a parameter with no API type, named; or "the function has no point site: it takes no replacement (…)" for a generic function, a function in a generic impl, or one taking `impl Trait`. |
 | "no replace listener at …" | A `replace` at a function whose return value has no API form. |
 | "this build has no point sites; start the game through the launcher's mod build" | The game was not built as the SDK. |

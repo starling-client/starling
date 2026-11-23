@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """A dedicated server saves connected players on save-all/stop/SIGTERM and keeps safe data after a panic.
 
-`MinecraftServer.runServer` catches what the tick throws and still stops the server. Horizon's
+`MinecraftServer.runServer` catches what the tick throws and still stops the server. Sunrise's
 `stop_after_crash` does the same, but a panic can interrupt a guest's turn (the game holds that
-player's state swapped in) or a tick that has the hub out. `HORIZON_CRASH_FIXTURE` makes the tick
-panic at one of those points. Each run below joins a real Horizon client, panics the server, and
+player's state swapped in) or a tick that has the hub out. `SUNRISE_CRASH_FIXTURE` makes the tick
+panic at one of those points. Each run below joins a real Sunrise client, panics the server, and
 checks, from the files the server leaves:
 
 - Connected player: save-all writes five diamonds while the player stays joined;
@@ -41,16 +41,16 @@ PLAYER = 'Tester'
 def binary():
     metadata = subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True)
     import json
-    return Path(json.loads(metadata)['target_directory']) / 'fast' / 'horizon-client'
+    return Path(json.loads(metadata)['target_directory']) / 'fast' / 'sunrise-client'
 
 
 def start(directory, fixture=None):
     if fixture:
-        os.environ['HORIZON_CRASH_FIXTURE'] = fixture
+        os.environ['SUNRISE_CRASH_FIXTURE'] = fixture
     try:
         server = Server([binary(), '--resources', lab.RESOURCES, '--dedicated', '--nogui'], directory, f'server-{fixture or "clean"}')
     finally:
-        os.environ.pop('HORIZON_CRASH_FIXTURE', None)
+        os.environ.pop('SUNRISE_CRASH_FIXTURE', None)
     server.wait_for(r'Done \(', timeout=600)
     return server
 
@@ -63,7 +63,7 @@ def join(port, out):
         try:
             run_game([str(c) for c in [binary(), '--resources', lab.RESOURCES, '--render-distance', 2, '--server',
                                        f'127.0.0.1:{port}', '--name', PLAYER]],
-                     cwd=out, env=lab.game_env(HORIZON_NET_REPORT=report), stdout=subprocess.DEVNULL,
+                     cwd=out, env=lab.game_env(SUNRISE_NET_REPORT=report), stdout=subprocess.DEVNULL,
                      stderr=subprocess.STDOUT, timeout=120)
         except subprocess.TimeoutExpired:
             pass
@@ -126,7 +126,7 @@ def connected_saves(build):
     port = free_port()
     write_server_dir(directory, port)
     server = start(directory)
-    client = lan_e2e.Game('autosave', binary().with_name('horizon-ctl'), lab.RESOURCES)
+    client = lan_e2e.Game('autosave', binary().with_name('sunrise-ctl'), lab.RESOURCES)
     file = directory / 'world' / 'players' / 'data' / f'{offline_uuid(PLAYER)}.dat'
 
     def diamonds():
@@ -170,7 +170,7 @@ def signal_saves(build):
     port = free_port()
     write_server_dir(directory, port)
     server = start(directory)
-    client = lan_e2e.Game('sigterm', binary().with_name('horizon-ctl'), lab.RESOURCES)
+    client = lan_e2e.Game('sigterm', binary().with_name('sunrise-ctl'), lab.RESOURCES)
     file = directory / 'world' / 'players' / 'data' / f'{offline_uuid(PLAYER)}.dat'
     try:
         client.raw('launch', '--headless', '--game', binary())
@@ -202,7 +202,7 @@ def signal_saves(build):
 
 
 def main():
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib', '--bin', 'horizon-client', '--bin', 'horizon-ctl'], cwd=lab.ROOT, check=True)
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib', '--bin', 'sunrise-client', '--bin', 'sunrise-ctl'], cwd=lab.ROOT, check=True)
     build = lab.LOCAL / 'dedicated-crash-save'
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)

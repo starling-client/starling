@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Native mods made before Horizon split its client into crates, pointed at where things went.
+"""Native mods made before Sunrise split its client into crates, pointed at where things went.
 
-A mod names what it hooks by crate and module, and is built by Horizon at the commit it pins. Starling
-builds every mod at its own commit (native_build.sh), and at that commit `horizon_client` holds only the
-game module and a glob of `horizon_client_lib`, which horizon-mixins can't look through. The manifests
+A mod names what it hooks by crate and module, and is built by Sunrise at the commit it pins. Starling
+builds every mod at its own commit (native_build.sh), and at that commit `sunrise_client` holds only the
+game module and a glob of `sunrise_client_lib`, which horizon-mixins can't look through. The manifests
 are pointed at where things went, and the mods' calls to what changed its shape since are brought up to
 date (CALLS, CHANGED). What is left is the compiler's to judge.
 
@@ -15,20 +15,20 @@ import re
 import sys
 
 ROOTS = {
-    "horizon_client_lib": "crates/horizon-client/src/client_lib.rs",
-    "horizon_client_render": "crates/horizon-client-render/src/lib.rs",
-    "horizon_client_core": "crates/horizon-client-core/src/lib.rs",
-    "horizon_client_input": "crates/horizon-client-input/src/lib.rs",
+    "sunrise_client_lib": "crates/sunrise-client/src/client_lib.rs",
+    "sunrise_client_render": "crates/sunrise-client-render/src/lib.rs",
+    "sunrise_client_core": "crates/sunrise-client-core/src/lib.rs",
+    "sunrise_client_input": "crates/sunrise-client-input/src/lib.rs",
 }
-FOLDERS = ("crates/horizon-client-render/src/", "crates/horizon-client-core/src/", "crates/horizon-client-input/src/")
-OLD_FOLDER = "crates/horizon-client/src/"
+FOLDERS = ("crates/sunrise-client-render/src/", "crates/sunrise-client-core/src/", "crates/sunrise-client-input/src/")
+OLD_FOLDER = "crates/sunrise-client/src/"
 OLD_ROOT = OLD_FOLDER + "lib.rs"
-# What Horizon renamed since, and takes the same arguments.
+# What Sunrise renamed since, and takes the same arguments.
 RENAMED = {
-    "horizon_client::game::titles::Game<'_>::draw_titles": "horizon_client::game::titles::Game<'_>::draw_title",
-    # The packet decoded, which Horizon's hook gives and the split's (an id and a payload) doesn't.
-    "horizon_client::game::native_hooks::Game<'_>::native_client_packet": (
-        "horizon_client::game::native_hooks::Game<'_>::native_client_packet_old"
+    "sunrise_client::game::titles::Game<'_>::draw_titles": "sunrise_client::game::titles::Game<'_>::draw_title",
+    # The packet decoded, which Sunrise's hook gives and the split's (an id and a payload) doesn't.
+    "sunrise_client::game::native_hooks::Game<'_>::native_client_packet": (
+        "sunrise_client::game::native_hooks::Game<'_>::native_client_packet_old"
     ),
 }
 MODULE = re.compile(r"^\s*(?:pub(?:\(crate\))? )?mod (\w+)\s*(?:;|\{)", re.M)
@@ -58,7 +58,7 @@ CHANGED = (
     (r"Some\(\((\w+),\s*(\w+)\)\)(\s*=\s*[\w.]+\.mob_hit\(\))", r"Some((\1, \2, _))\3"),
     # A player reference keeps its UUID behind a method.
     (r"(\.native_acting_player\(\)\s*\.map\(\|(\w+)\|\s*\2\.uuid)(?!\()", r"\1()"),
-    (r"\bhorizon_world::player_inventory::EquipmentSlot\b", "horizon_core::equipment_slot::EquipmentSlot"),
+    (r"\bsunrise_world::player_inventory::EquipmentSlot\b", "sunrise_core::equipment_slot::EquipmentSlot"),
     # An item's hover name reads the names themselves, not a lookup closure.
     (
         r"let names = \|id: &str\| ([\w.]+)\.pack\.names\.display_item\(id\);",
@@ -88,7 +88,7 @@ CHANGED = (
     (r"extra: &\[\(&Part, \[f32; 4\], u32, u32\)\]", "extra: &[(&Part, [f32; 4], u32, u32, bool)]"),
     (r"crate::game::Game::tooltip_box\(batch, atlas, ", "game.tooltip_box(batch, None, "),
     (r"= self\.guest_hit\(\) \{", "= None::<(u32, _)> {"),
-    # The players as the old helper listed them (Horizon's gives handles now).
+    # The players as the old helper listed them (Sunrise's gives handles now).
     (r"\.native_server_players\(\)", ".native_server_players_old()"),
     # The camera type is the mod API's now, and asks `is_first_person`.
     (r"\bcrate::game::perspective::CameraType\b", "::mod_api::CameraType"),
@@ -102,39 +102,39 @@ CHANGED = (
         r" solid: from.solid.clone(),\2",
     ),
     # An item's custom name is its NBT text now.
-    (r"\.custom_name = Some\(([\w:]+)\.to_owned\(\)\);", r".custom_name = Some(horizon_core::nbt::Tag::String(\1.into()));"),
+    (r"\.custom_name = Some\(([\w:]+)\.to_owned\(\)\);", r".custom_name = Some(sunrise_core::nbt::Tag::String(\1.into()));"),
     (
         r"\.and_then\(\|(\w+)\| \1\.custom_name\.as_deref\(\)\)\s*==\s*Some\(([\w:]+)\)",
-        r".and_then(|\1| \1.custom_name.as_ref()) == Some(&horizon_core::nbt::Tag::String(\2.into()))",
+        r".and_then(|\1| \1.custom_name.as_ref()) == Some(&sunrise_core::nbt::Tag::String(\2.into()))",
     ),
     # A mob's gear is one `Equipment` (stacks by `EquipmentSlot` ordinal), and what is stuck in
     # it is `stuck`.
     (r"(\.extra)\.arrow_count\b", r"\1.stuck.arrows"),
     (r"(\.extra)\.stinger_count\b", r"\1.stuck.stingers"),
     (r"(\.extra)\.saddled\b(?!\s*\()", r"\1.saddled()"),
-    (r"(\.extra)\.saddle_stack\b", r"\1.equipment[horizon_items::equipment::SADDLE]"),
-    (r"(\.extra)\.armor\[(\d)\]", r"\1.equipment[horizon_items::equipment::ARMOR[\2]]"),
+    (r"(\.extra)\.saddle_stack\b", r"\1.equipment[sunrise_items::equipment::SADDLE]"),
+    (r"(\.extra)\.armor\[(\d)\]", r"\1.equipment[sunrise_items::equipment::ARMOR[\2]]"),
     (
         r"(\.extra)\.(main_hand|off_hand|head|chest|legs|feet|body)\b(?!\s*(?:=(?!=)|\())",
-        lambda m: f"{m[1]}.equipment.get(horizon_items::equipment::{EQUIPMENT_SLOTS[m[2]]}).map(|s| &*s.item)",
+        lambda m: f"{m[1]}.equipment.get(sunrise_items::equipment::{EQUIPMENT_SLOTS[m[2]]}).map(|s| &*s.item)",
     ),
     (r"let \[(\w+), (\w+), \.\.\] = &([\w.]+)\.equipment;", r"let (\1, \2) = (&\3.equipment[0], &\3.equipment[1]);"),
     # The dragon's fireballs are projectiles of their kind.
     (
         r"\bgame\.dragon_fireballs\.iter\(\)",
         "game.creatures.projectiles.iter()"
-        ".filter(|p| p.kind == horizon_client::projectiles::ProjectileKind::DragonFireball)",
+        ".filter(|p| p.kind == sunrise_client::projectiles::ProjectileKind::DragonFireball)",
     ),
     # A system toast goes through the toast hook with its title and message.
     (
         r"(SystemToast::new\()(\w+), Some\((\w+)\)\)",
-        r"\1horizon_client::text::Text::literal(\2), Some(horizon_client::text::Text::literal(\3)))",
+        r"\1sunrise_client::text::Text::literal(\2), Some(sunrise_client::text::Text::literal(\3)))",
     ),
     (
         r"if game\.toast_allowed\(\"system\", \"\w+\"\) \{\s*game\.server_packs\.load_fail = Some\(new\);\s*\}",
         "if let Some(new) = game.add_system_toast(new) { game.server_packs.load_fail = Some(new); }",
     ),
-    # Horizon's HUD kept the status rows' heights until 26.3's (`Hud.leftHeight`, `rightHeight`).
+    # Sunrise's HUD kept the status rows' heights until 26.3's (`Hud.leftHeight`, `rightHeight`).
     (
         r"game\s*\.health_hud\s*\.left_height\s*\.max\(\s*game\s*\.health_hud\s*\.right_height\s*,?\s*\)",
         "game.status_rows_height_old()",
@@ -155,7 +155,7 @@ CHANGED = (
     # A map slot always, as the old claim gave one.
     (r"let \((\w+), (\w+)\) = ([\w.]+\.slots)\.claim\(", r"let (\1, \2) = \3.claim_old("),
     # A mob's layers with `render_with`'s parameters (the split's also hands back posed parts).
-    (r"\bhorizon_client::mobs::render::render_layers\b(?!\s*\()", "horizon_client::starling_mod_api::render_layers_old"),
+    (r"\bsunrise_client::mobs::render::render_layers\b(?!\s*\()", "sunrise_client::starling_mod_api::render_layers_old"),
     # A text keeps its spans to itself now: built with `Span::new` and `Text::from_spans`, joined with
     # `push`, coloured underneath with `with_color` (each span's own colour stays).
     (
@@ -265,15 +265,15 @@ def old_shapes(text):
 
 
 def old_api(text):
-    """The client's old `mod_api` module, which Horizon made the `mod_api` crate: Starling keeps it
+    """The client's old `mod_api` module, which Sunrise made the `mod_api` crate: Starling keeps it
     with its old names as `starling_mod_api` (a module named `mod_api` would be ambiguous with the
-    crate). NBT moved from horizon-world to horizon-core."""
-    text = re.sub(r"\buse (horizon_client|crate)::mod_api;", r"use \1::starling_mod_api as mod_api;", text)
-    text = re.sub(r"\bhorizon_world::nbt\b", "horizon_core::nbt", text)
-    # The mods crate is horizon-mod-package now, with the same modules.
-    text = re.sub(r"\bhorizon_mods(?=::)", "horizon_mod_package", text)
-    text = text.replace("crates/horizon-mods/", "crates/horizon-mod-package/")
-    return re.sub(r"\b(horizon_client|crate)::mod_api\b", r"\1::starling_mod_api", text)
+    crate). NBT moved from sunrise-world to sunrise-core."""
+    text = re.sub(r"\buse (sunrise_client|crate)::mod_api;", r"use \1::starling_mod_api as mod_api;", text)
+    text = re.sub(r"\bsunrise_world::nbt\b", "sunrise_core::nbt", text)
+    # The mods crate is sunrise-mod-package now, with the same modules.
+    text = re.sub(r"\bsunrise_mods(?=::)", "sunrise_mod_package", text)
+    text = text.replace("crates/sunrise-mods/", "crates/sunrise-mod-package/")
+    return re.sub(r"\b(sunrise_client|crate)::mod_api\b", r"\1::starling_mod_api", text)
 
 
 def modded_fluids(text):
@@ -324,7 +324,7 @@ def old_panel(text):
     text = re.sub(r"\.native_panel_recipes\(", ".native_panel_recipes_old(", text)
     return re.sub(
         r"(\bstack:\s*)(stack_of|stack)\((\w+)\)",
-        r"\1\2(&horizon_client::starling_mod_api::native_stack_old(\3))",
+        r"\1\2(&sunrise_client::starling_mod_api::native_stack_old(\3))",
         text,
     )
 
@@ -352,7 +352,7 @@ def adapt(text, source, modules):
         for old, new in RENAMED.items():
             path = re.sub(re.escape(old) + r"\b", new, path)
         path = re.sub(
-            r"\bhorizon_client::(\w+)",
+            r"\bsunrise_client::(\w+)",
             lambda m: f"{modules[m[1]]}::{m[1]}" if m[1] in modules else m[0],
             path,
         )
@@ -361,7 +361,7 @@ def adapt(text, source, modules):
     def file(match):
         path = match[2]
         if path == OLD_ROOT:
-            path = ROOTS["horizon_client_lib"]
+            path = ROOTS["sunrise_client_lib"]
         elif path.startswith(OLD_FOLDER) and not (source / path).exists():
             moved = (folder + path[len(OLD_FOLDER) :] for folder in FOLDERS)
             path = next((p for p in moved if (source / p).exists()), path)
@@ -382,8 +382,8 @@ def adapt(text, source, modules):
 
 # Where a module's items are found, from the source as rustfmt leaves it: impl blocks and items start
 # at the line's start, methods four spaces in. Generated module lists must be written out first
-# (horizon-materialize, native_build.sh).
-CRATES = {"horizon_client": "crates/horizon-client/src/lib.rs", **ROOTS}
+# (sunrise-materialize, native_build.sh).
+CRATES = {"sunrise_client": "crates/sunrise-client/src/lib.rs", **ROOTS}
 ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 DECLARED = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?mod (\w+);")
 IMPL = re.compile(r"impl(?:<.*?>)?\s+(?:(.+?)\s+for\s+)?(?:[\w:]+::)?(\w+)")
@@ -462,7 +462,7 @@ def module_items(text):
 
 
 def module_tree(source):
-    """Every module of the crates in CRATES, by its path (`horizon_client::game::native_hooks`)."""
+    """Every module of the crates in CRATES, by its path (`sunrise_client::game::native_hooks`)."""
     tree = {}
 
     def walk(file, path, owns_folder):
@@ -547,14 +547,14 @@ def relocate(target, tree):
 # Game files the fork split under another module name, by what a mod's `[[module]]` inside them reaches: the
 # inventory tweaks' sort buttons (`SORT_BUTTON`, `draw_sort_buttons`) are in extras/sorting.rs since 2026-11.
 MOVED_FILES = {
-    "crates/horizon-client/src/game/tweaks.rs": "crates/horizon-client/src/game/interface/extras/sorting.rs",
-    "crates/horizon-client/src/game/interface/tweaks.rs": "crates/horizon-client/src/game/interface/extras/sorting.rs",
+    "crates/sunrise-client/src/game/tweaks.rs": "crates/sunrise-client/src/game/interface/extras/sorting.rs",
+    "crates/sunrise-client/src/game/interface/tweaks.rs": "crates/sunrise-client/src/game/interface/extras/sorting.rs",
 }
 
 
 def relocate_file(path, tree, source):
     """A `[[module]]`'s destination file when it moved: the file the module its old path names is in
-    now (Horizon moved the game's files into area folders, keeping their module paths)."""
+    now (Sunrise moved the game's files into area folders, keeping their module paths)."""
     if (source / path).exists() or not path.endswith(".rs"):
         return path
     if path in MOVED_FILES and (source / MOVED_FILES[path]).exists():
@@ -577,7 +577,7 @@ OLD_CATALOG = pathlib.Path(__file__).with_name("native-hooks-0.8.json")
 
 
 def complete_catalog(source, tree):
-    """The old catalog's hooks added to the one horizon-materialize wrote, where they are not in it;
+    """The old catalog's hooks added to the one sunrise-materialize wrote, where they are not in it;
     the catalog's targets by (name, version)."""
     catalog_file = source / "native-hooks.json"
     if not catalog_file.is_file() or not OLD_CATALOG.is_file():
@@ -603,13 +603,13 @@ def complete_catalog(source, tree):
     return {(hook["name"], hook["version"]): hook["target"] for hook in catalog["hooks"]}
 
 
-# Parameters Horizon renamed in its hooks, which a binding's value names: `batch` is `draw` in all its
+# Parameters Sunrise renamed in its hooks, which a binding's value names: `batch` is `draw` in all its
 # drawing hooks.
 RENAMED_PARAMETERS = {"batch": "draw"}
 
 
 def rebind(text, tree, hooks):
-    """Each injection's binding values naming a parameter Horizon renamed in its target (by `target`,
+    """Each injection's binding values naming a parameter Sunrise renamed in its target (by `target`,
     or by `hook` through the catalog) name the new one."""
     blocks = re.split(r"(?=^\[\[injection\]\])", text, flags=re.M)
     for i, block in enumerate(blocks):
@@ -654,23 +654,23 @@ def rebind(text, tree, hooks):
     return "".join(blocks)
 
 
-# Parameters Horizon folded into a tuple with another, by target: the old parameter's name, the
+# Parameters Sunrise folded into a tuple with another, by target: the old parameter's name, the
 # tuple's, the tuple's type and the old one's. A binding to the old parameter binds the tuple with
 # the tuple's type, and the helper takes the tuple where it took the old one: the calls it made with
 # it want the tuple now. The fork reads the frame's linear light beside the shading API there
-# (`line: (api, linear)`); horizon_physics hands `api` on to `shader_source`.
+# (`line: (api, linear)`); sunrise_physics hands `api` on to `shader_source`.
 FOLDED_PARAMETERS = {
-    "horizon_client_render::gfx::native_material::module": (
+    "sunrise_client_render::gfx::native_material::module": (
         "api",
         "line",
-        "(horizon_shader_api::Api, bool)",
-        "horizon_shader_api::Api",
+        "(sunrise_shader_api::Api, bool)",
+        "sunrise_shader_api::Api",
     ),
 }
 
 
 def fold(text, mod_dir):
-    """Each injection's bindings to a parameter Horizon folded into a tuple (FOLDED_PARAMETERS) bind
+    """Each injection's bindings to a parameter Sunrise folded into a tuple (FOLDED_PARAMETERS) bind
     the tuple, and its helper (in `mod_dir`) takes the tuple; the manifest's new text."""
     blocks = re.split(r"(?=^\[\[injection\]\])", text, flags=re.M)
     for i, block in enumerate(blocks):
@@ -715,12 +715,12 @@ INCLUDE = re.compile(r'^include!\("([\w/]+\.rs)"\);\n', re.M)
 def inline_includes(source):
     """A game file's `include!("shared.rs")` of a file beside it, replaced by that file: the same
     items in the same module, which horizon-mixins can then reach (it does not look into an
-    `include!`). Horizon moved most of the old native_hooks.rs into one of those (helpers mods
+    `include!`). Sunrise moved most of the old native_hooks.rs into one of those (helpers mods
     hook); the included files have no inner attributes, and their `#[path]`s are from the same
     folder."""
-    # Only the hooks' folder: Horizon's generator wants the `Game` methods of another folder's
+    # Only the hooks' folder: Sunrise's generator wants the `Game` methods of another folder's
     # shared.rs (lan_actions) where they are.
-    for path in list((source / "crates/horizon-client/src/game/native_hooks").glob("*.rs")):
+    for path in list((source / "crates/sunrise-client/src/game/native_hooks").glob("*.rs")):
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
@@ -737,7 +737,7 @@ def inline_includes(source):
         new = INCLUDE.sub(inlined, text)
         if new != text:
             path.write_text(new, encoding="utf-8")
-            # Horizon's generator reads the hook files one by one: the same items twice are refused.
+            # Sunrise's generator reads the hook files one by one: the same items twice are refused.
             for file in written:
                 file.unlink()
 
@@ -776,7 +776,7 @@ def embedded_content(text, mod_dir):
         code = path.read_text(encoding="utf-8")
         new = CONTENT_ROOT_HELPER.sub(
             r"\1\n    sources: &ModsState,\n) -> core::ops::ControlFlow<"
-            r"horizon_client::Result<horizon_assets::resource_source::ResourceRoot>> {",
+            r"sunrise_client::Result<sunrise_assets::resource_source::ResourceRoot>> {",
             code,
         )
         new = new.replace("if dev.contains(&file)", "if sources.dev.contains(&file)")

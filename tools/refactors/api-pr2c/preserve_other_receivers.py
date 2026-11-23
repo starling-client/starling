@@ -13,7 +13,7 @@ from pathlib import Path
 BASE = 'cb01ae304c7136f1598f97650c63ccfc1da47b90'
 ROOT = Path(__file__).resolve().parents[3]
 OVERLAPS = {'native_living_heal', 'native_set_block_property', 'native_set_block_property_with', 'native_level_random'}
-parsed = subprocess.check_output(['cargo', 'run', '--quiet', '-p', 'horizon-mod-api-gen', '--example', 'audit_game_methods'], text=True)
+parsed = subprocess.check_output(['cargo', 'run', '--quiet', '-p', 'sunrise-mod-api-gen', '--example', 'audit_game_methods'], text=True)
 keep = set()
 for row in parsed.splitlines():
     name, path, line, kind = row.split('\t')
@@ -26,7 +26,7 @@ for name in paths:
         continue
     old = subprocess.check_output(['git', 'show', BASE + ':' + name], text=True)
     new = path.read_text()
-    if name.startswith('crates/horizon-mod-api/src/hooks/'):
+    if name.startswith('crates/sunrise-mod-api/src/hooks/'):
         path.write_text(old)  # No hook catalog change is part of 2c.
         continue
     a, b = list(re.finditer(r'\w+|[^\w\s]', old)), list(re.finditer(r'\w+|[^\w\s]', new))
@@ -44,7 +44,7 @@ for name in paths:
                 edits.append((after.start(), after.end(), before[0]))
     for start, end, replacement in reversed(edits):
         new = new[:start] + replacement + new[end:]
-    if name.startswith('crates/horizon-mod-api/src/host/'):
+    if name.startswith('crates/sunrise-mod-api/src/host/'):
         docs = iter(re.findall(r'(?m)^\s*///.*$', old))
         new = re.sub(r'(?m)^\s*///.*$', lambda _: next(docs), new)
     path.write_text(new)

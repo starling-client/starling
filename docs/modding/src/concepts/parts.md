@@ -14,7 +14,7 @@ use mod_api::{
 struct MyMod;
 struct Gauge;
 
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl BlockPart for Gauge {
     fn has_analog_output(&self, _: &dyn LevelHost, event: &mut HasAnalogOutputEvent) {
         event.output = true;
@@ -24,7 +24,7 @@ impl BlockPart for Gauge {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         let stone = r.block_key("minecraft:stone");
@@ -44,7 +44,7 @@ impl Hooks for MyMod {
 | `FluidPart` | A mod world fluid type |
 | `EntityPart` | An entity type, your own or vanilla's; registered through `Registrar::entity_part` on native builds |
 
-- Annotate each part trait implementation with `#[mod_api::horizon_part]`. For scoped hooks, the
+- Annotate each part trait implementation with `#[mod_api::sunrise_part]`. For scoped hooks, the
   attribute subscribes the part only to the methods you implement.
 - `BlockEntityPart` extends `BlockPart`: provide a separate `BlockPart` implementation and annotate
   both implementations.

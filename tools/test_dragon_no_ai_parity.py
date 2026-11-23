@@ -2,7 +2,7 @@
 """An ender dragon with NoAI, against vanilla's dedicated server.
 
 EnderDragon.aiStep returns right after the flap and checkCrystals when isNoAi() (flapTime = 0.5): no flight
-history, phase, steering or parts, so the dragon stays where it is. A vanilla dedicated server and Horizon's each
+history, phase, steering or parts, so the dragon stays where it is. A vanilla dedicated server and Sunrise's each
 serve a fresh flat world; the console summons a NoAI dragon in a force-loaded chunk of the overworld, steps 100
 ticks, and reads its position and its NoAI back; then saves, restarts and reads them again; then a vanilla-codec
 client (VanillaProtocolClient, entities mode) joins and records the entity data the dragon is paired with. All
@@ -125,31 +125,31 @@ def run_side(label, command, client_command, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'dragon-no-ai-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
     classes = out / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-sourcepath', source, '-cp', cp, '-d', classes,
-                    source / 'dev/horizonlab/parity/VanillaProtocolClient.java'], check=True)
-    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaProtocolClient']
+                    source / 'dev/sunriselab/parity/VanillaProtocolClient.java'], check=True)
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + cp, 'dev.sunriselab.parity.VanillaProtocolClient']
     results = {label: run_side(label, command, client, out) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     for label, result in results.items():
@@ -157,7 +157,7 @@ def main():
     # The spec as read from EnderDragon.aiStep: a NoAI dragon stays where it was summoned, and keeps NoAI.
     still = {'Pos': '[8.5d, 100.0d, 8.5d]', 'NoAI': '1b'}
     assert results['vanilla'] == {'stepped': still, 'restarted': still, 'client_flags': '1'}, results['vanilla']
-    assert results['horizon'] == results['vanilla'], f'a NoAI dragon differs from vanilla; see {out}'
+    assert results['sunrise'] == results['vanilla'], f'a NoAI dragon differs from vanilla; see {out}'
     print('dragon with NoAI: matches vanilla', flush=True)
 
 

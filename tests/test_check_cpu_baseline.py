@@ -4,7 +4,7 @@ from tools import check_cpu_baseline as baseline
 
 # llvm-objdump -d --no-show-raw-insn output: a stripped Windows program (only section labels) and an ELF one.
 DISASSEMBLY = """
-/tmp/horizon-client.exe:\tfile format coff-x86-64
+/tmp/sunrise-client.exe:\tfile format coff-x86-64
 
 Disassembly of section .text:
 

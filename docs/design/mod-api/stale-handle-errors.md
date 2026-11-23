@@ -4,7 +4,7 @@ Provisional answer to [#1644](https://github.com/arismoko/horizon/issues/1644): 
 
 ## Proposed contract
 
-Reuse the [decide, fire, apply](decide-fire-apply.md) outcome vocabulary and [Part instance state](part-instance-state.md) identity rules. Ordinary reads return owned values or a typed refusal; writes return their operation-specific success or typed refusal. Do not expose decision tokens or apply outcomes as a second transaction API. Replace covered Option/bool methods and their ID helpers together, updating catalog, generated adapters, callers and horizon-machine-sample without compatibility aliases. A valid domain absence remains an optional success value where the operation actually permits absence.
+Reuse the [decide, fire, apply](decide-fire-apply.md) outcome vocabulary and [Part instance state](part-instance-state.md) identity rules. Ordinary reads return owned values or a typed refusal; writes return their operation-specific success or typed refusal. Do not expose decision tokens or apply outcomes as a second transaction API. Replace covered Option/bool methods and their ID helpers together, updating catalog, generated adapters, callers and sunrise-machine-sample without compatibility aliases. A valid domain absence remains an optional success value where the operation actually permits absence.
 
 Resolve identity through the existing lifecycle holder and authoritative table: server-wide epoch plus id for entities, no dimension and no second generation. `Missing` means `Stale(reason)`; `Taken` at admission means `Busy(reason)`. `Found` still requires authoritative residency/visibility validation. Recommend temporary inaccessible live state as admission `Busy(Unavailable)` (reason spelling provisional), never Stale or fabricated defaults. Reads must not load, pin, swap parked state or retry. During apply, a newly Taken or invalidated prerequisite is `Stale(reason)`, following the accepted action note. Transfer preserves entity identity and resolves its current level. World close invalidates old handles permanently; reload needs fresh handles, as the Part note requires.
 
@@ -18,13 +18,13 @@ Current owners below were inspected; they establish entry points, not complete m
 
 | Route | Verified file:line owner |
 | --- | --- |
-| Entity position / level | `crates/horizon-mod-vocab/src/host/entities.rs:123,143`; `crates/horizon-client/src/game/modding/native_entity_refs.rs:675,735` |
-| Entity clear_fire | `crates/horizon-mod-vocab/src/host/entities.rs:744`; `crates/horizon-client/src/game/modding/native_entity_state.rs:232` |
-| Player name / action_bar | `crates/horizon-mod-vocab/src/host/players.rs:54,302`; `crates/horizon-client/src/game/modding/native_server.rs:1152,1196` |
-| Level block reads | `crates/horizon-mod-vocab/src/host/levels.rs:190,211,217`; `crates/horizon-client/src/game/modding/native_level_refs.rs:433,518,530` |
-| Lifecycle lookup | `crates/horizon-client/src/join_seq/residency/table.rs:24` defines Found, Taken, Missing |
+| Entity position / level | `crates/sunrise-mod-vocab/src/host/entities.rs:123,143`; `crates/sunrise-client/src/game/modding/native_entity_refs.rs:675,735` |
+| Entity clear_fire | `crates/sunrise-mod-vocab/src/host/entities.rs:744`; `crates/sunrise-client/src/game/modding/native_entity_state.rs:232` |
+| Player name / action_bar | `crates/sunrise-mod-vocab/src/host/players.rs:54,302`; `crates/sunrise-client/src/game/modding/native_server.rs:1152,1196` |
+| Level block reads | `crates/sunrise-mod-vocab/src/host/levels.rs:190,211,217`; `crates/sunrise-client/src/game/modding/native_level_refs.rs:433,518,530` |
+| Lifecycle lookup | `crates/sunrise-client/src/join_seq/residency/table.rs:24` defines Found, Taken, Missing |
 
-Vanilla 26.3 inspection via `/workspace/horizon/tools/rea_vanilla.py method net.minecraft.world.entity.Entity isRemoved` shows removal is tested by a non-null removal reason. It does not define Rust retained-handle errors or verify all read/write routes. This proposal changes Horizon lifetime reporting, not vanilla gameplay. The issue asserts no NeoForge counterpart. The public [26.3 Entity Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/minecraft/world/entity/Entity.html) was inaccessible; NeoForge 26.3 lifetime behavior is unverified. Require public documentation before adopting any claimed counterpart; no NeoForge source or patches were consulted.
+Vanilla 26.3 inspection via `/workspace/sunrise/tools/rea_vanilla.py method net.minecraft.world.entity.Entity isRemoved` shows removal is tested by a non-null removal reason. It does not define Rust retained-handle errors or verify all read/write routes. This proposal changes Sunrise lifetime reporting, not vanilla gameplay. The issue asserts no NeoForge counterpart. The public [26.3 Entity Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/minecraft/world/entity/Entity.html) was inaccessible; NeoForge 26.3 lifetime behavior is unverified. Require public documentation before adopting any claimed counterpart; no NeoForge source or patches were consulted.
 
 Generate API-owned Wire values and typed refusals for native and wasm from one definition. Unsupported capabilities must refuse registration/load with the type and capability named, before first access. Treat input handles, discriminants, positions and text as untrusted; validate with existing authoritative scope and Wire/text bounds, checked arithmetic and operation-specific ranges. Preserve vanilla capacity; introduce no arbitrary new numeric cap. No mod-side revalidation protocol. Unused paths add only O(1) holder validation, with zero listener scans, callback dispatch, encoding or per-holder allocations; measure this before runtime closure.
 

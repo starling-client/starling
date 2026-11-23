@@ -13,8 +13,8 @@ fn search_matches_every_word_in_any_case() {
 
 #[test]
 fn the_shared_log_has_no_home_folder_or_names() {
-    let log = "Loading /Users/ludovicmarie/Library/Application Support/horizon/options.txt\n\
-               C:\\Users\\ludovicmarie\\AppData\\horizon too\n\
+    let log = "Loading /Users/ludovicmarie/Library/Application Support/sunrise/options.txt\n\
+               C:\\Users\\ludovicmarie\\AppData\\sunrise too\n\
                Ludo47 joined the game\n\
                <ludo47> hi, Ludo470 is someone else\n\
                user LUDOVICMARIE on ludovicmarie-mac\n";
@@ -22,8 +22,8 @@ fn the_shared_log_has_no_home_folder_or_names() {
     let out = private(log, Some(Path::new("/Users/ludovicmarie")), &names);
     assert_eq!(
         out,
-        "Loading ~/Library/Application Support/horizon/options.txt\n\
-         C:~\\AppData\\horizon too\n\
+        "Loading ~/Library/Application Support/sunrise/options.txt\n\
+         C:~\\AppData\\sunrise too\n\
          <player> joined the game\n\
          <<player>> hi, Ludo470 is someone else\n\
          user <player> on <player>-mac\n"
@@ -88,7 +88,7 @@ fn shares_and_deletes_through_the_paste_api() {
     let request = served.join().unwrap();
     assert!(request.starts_with("POST /log "), "{request}");
     assert!(
-        request.ends_with(r#"{"content":"[main/INFO]: hello\n","source":"Horizon launcher"}"#),
+        request.ends_with(r#"{"content":"[main/INFO]: hello\n","source":"Sunrise launcher"}"#),
         "{request}"
     );
 

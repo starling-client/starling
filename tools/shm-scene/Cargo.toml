@@ -8,12 +8,12 @@ resolver = "2"
 name = "shm_scene_runner"
 path = "main.rs"
 [dependencies]
-horizon-client = { path = "/box/work/arismoko/horizon/crates/horizon-client", default-features = false }
-horizon-mod-host = { path = "../../crates/horizon-mod-host", default-features = false }
-horizon-mod-api = { path = "/box/work/arismoko/horizon/crates/horizon-mod-api" }
-horizon-mod-points = { path = "/box/work/arismoko/horizon/crates/horizon-mod-points" }
-horizon-mod-package = { path = "/box/work/arismoko/horizon/crates/horizon-mod-package" }
-horizon-mod-wasm = { path = "/box/work/arismoko/horizon/crates/horizon-mod-wasm" }
+sunrise-client = { path = "/box/work/arismoko/horizon/crates/sunrise-client", default-features = false }
+sunrise-mod-host = { path = "../../crates/sunrise-mod-host", default-features = false }
+sunrise-mod-api = { path = "/box/work/arismoko/horizon/crates/sunrise-mod-api" }
+sunrise-mod-points = { path = "/box/work/arismoko/horizon/crates/sunrise-mod-points" }
+sunrise-mod-package = { path = "/box/work/arismoko/horizon/crates/sunrise-mod-package" }
+sunrise-mod-wasm = { path = "/box/work/arismoko/horizon/crates/sunrise-mod-wasm" }
 log = "0.4"
 [profile.release]
 lto = "thin"

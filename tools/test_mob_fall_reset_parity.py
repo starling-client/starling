@@ -3,7 +3,7 @@
 
 The Java cow runs through real travel/movement, stopping before inside-block effects.
 Its fluid query is fixed to dry air; active effects are controlled and NoAI is real.
-Horizon runs its complete production mob tick in an empty resource-backed world.
+Sunrise runs its complete production mob tick in an empty resource-backed world.
 Gravity is disabled. No effect, Levitation and Slow Falling are compared for both
 NoAI states and zero/upward/downward movement. Positions, damage and landing are
 outside this scoped comparison.
@@ -21,7 +21,7 @@ except ImportError:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resources', type=Path,
-                        default=Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)))
+                        default=Path(os.environ.get('SUNRISE_TEST_RESOURCES', lab.RESOURCES)))
     args = parser.parse_args()
     resources = args.resources.resolve()
     if not (resources / 'entity-types.json').is_file():
@@ -31,17 +31,17 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
-    oracle = java_root / 'dev/horizonlab/parity/VanillaMobFallResetOracle.java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
+    oracle = java_root / 'dev/sunriselab/parity/VanillaMobFallResetOracle.java'
     sources = [Path(__file__), oracle, lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/test_rust_parity.py',
                lab.ROOT / 'tools/integration_env.py', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/mobs.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/ai.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/living.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/world.rs',
-               java_root / 'dev/horizonlab/parity/ParityData.java',
-               java_root / 'dev/horizonlab/parity/VanillaBlockUpdateOracle.java']
+               lab.ROOT / 'crates/sunrise-client/src/mobs.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/ai.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/living.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/world.rs',
+               java_root / 'dev/sunriselab/parity/ParityData.java',
+               java_root / 'dev/sunriselab/parity/VanillaBlockUpdateOracle.java']
     hashes = base.source_hashes(sources)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
@@ -51,15 +51,15 @@ def main():
                        build, 'compile-java')
     harness.run_logged(['java', '-Xmx512M', '-Djava.awt.headless=true', '-cp',
                         str(classes) + os.pathsep + dependencies,
-                        'dev.horizonlab.parity.VanillaMobFallResetOracle', build / 'server.txt'],
+                        'dev.sunriselab.parity.VanillaMobFallResetOracle', build / 'server.txt'],
                        build, 'server')
-    with tempfile.TemporaryDirectory(prefix='horizon-mob-fall-reset-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-mob-fall-reset-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_TEST_RESOURCES=str(resources),
-                   HORIZON_MOB_FALL_RESET_OUTPUT=str(build / 'rust.txt'))
+        env.update(SUNRISE_TEST_RESOURCES=str(resources),
+                   SUNRISE_MOB_FALL_RESET_OUTPUT=str(build / 'rust.txt'))
         env.setdefault('CARGO_BUILD_JOBS', '1')
         env.setdefault('RUST_TEST_THREADS', '2')
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client-lib', '--lib',
                             'mobs::ai::flight_effect_fall_tests::flight_effects_reset_accumulated_fall_distance_even_without_ai',
                             '--', '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'server.txt', build / 'rust.txt', 18)

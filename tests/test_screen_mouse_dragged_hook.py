@@ -15,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class ScreenMouseDraggedHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_drag_lifecycle_delta_and_cancelled_cursor(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/sunrise-client/src/game.rs").read_text(encoding="utf-8")
         hooks = native_hook_sources()
         hooks = hooks.replace("pub(super) fn", "fn").replace("super::glfw_", "glfw_")
         track = method(hooks, "track_drag_button")
         dispatch = method(hooks, "screen_mouse_dragged")
-        hud_room = (ROOT / "crates/horizon-client/src/game/interface/hud_room.rs").read_text(encoding="utf-8")
+        hud_room = (ROOT / "crates/sunrise-client/src/game/interface/hud_room.rs").read_text(encoding="utf-8")
         interface_point = method(hud_room.replace("pub(in crate::game) fn", "fn"), "interface_point")
         start = source.index("                        let previous = self.cursor;", source.index("WindowEvent::CursorMoved { position"))
         cursor_end = source.index("                        if self.dialog_open()", start)

@@ -165,7 +165,7 @@ mod tests {
             "registry_fixture",
             "compile_error!(\"must never compile\");",
         );
-        fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nhorizon-mod-api={ path='.horizon/sdk/api/crates/horizon-mod-api' }\nitoa='1'\n").unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={ path='.sunrise/sdk/api/crates/sunrise-mod-api' }\nitoa='1'\n").unwrap();
         super::super::bundle_in(root).unwrap().unwrap()
     }
     #[test]
@@ -177,7 +177,7 @@ mod tests {
         let before = fs::read(input.path().join("Cargo.toml")).unwrap();
         stage(&bundle, output.path()).unwrap();
         let generated = fs::read_to_string(output.path().join("Cargo.toml")).unwrap();
-        assert!(!generated.contains("horizon-mod-api"));
+        assert!(!generated.contains("sunrise-mod-api"));
         assert!(generated.contains("itoa"));
         assert!(!output.path().join("build.rs").exists());
         assert!(!output.path().join("src").exists());
@@ -189,20 +189,20 @@ mod tests {
                     "{{ git='https://github.com/arismoko/horizon', rev='{}' }}",
                     "a".repeat(40)
                 ),
-                "E_SDK_SOURCE: horizon-mod-api: the SDK is no longer named by git",
+                "E_SDK_SOURCE: sunrise-mod-api: the SDK is no longer named by git",
             ),
             (
                 "'0.1'".to_owned(),
-                "E_SDK_SOURCE: horizon-mod-api: a version names no source",
+                "E_SDK_SOURCE: sunrise-mod-api: a version names no source",
             ),
             (
-                "{ path='../horizon/crates/horizon-mod-api' }".to_owned(),
-                "E_SDK_SOURCE: horizon-mod-api: the path must be \".horizon/sdk/api/crates/horizon-mod-api\"",
+                "{ path='../sunrise/crates/sunrise-mod-api' }".to_owned(),
+                "E_SDK_SOURCE: sunrise-mod-api: the path must be \".sunrise/sdk/api/crates/sunrise-mod-api\"",
             ),
         ] {
             fs::write(
                 input.path().join("Cargo.toml"),
-                original.replace("{ path='.horizon/sdk/api/crates/horizon-mod-api' }", &form),
+                original.replace("{ path='.sunrise/sdk/api/crates/sunrise-mod-api' }", &form),
             )
             .unwrap();
             let error = stage(&bundle, output.path()).unwrap_err();

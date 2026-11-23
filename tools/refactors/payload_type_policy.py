@@ -1,6 +1,6 @@
 """Apply explicit payload API boundary policies after the running gate ends."""
 from pathlib import Path
-root = Path(__file__).resolve().parents[2] / 'crates/horizon-mod-vocab/src'
+root = Path(__file__).resolve().parents[2] / 'crates/sunrise-mod-vocab/src'
 reasons = {
  'PayloadBytes': 'the single public field is the opaque-byte constructor contract.',
  'PayloadId': 'the single public field is the channel constructor contract; registration owns validation.',

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fishing bobber landing on a target block on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator in survival holding a fishing rod. The floor ahead of her is target
 blocks. LocatorBarClient (a player made of vanilla's protocol code) casts the rod (ServerboundUseItemPacket); the
 bobber comes down on a target's top face. `FishingHook.onHitBlock` calls `Projectile.onHitBlock`, so the block's

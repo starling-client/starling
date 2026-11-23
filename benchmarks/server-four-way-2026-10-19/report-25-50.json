@@ -1,5 +1,5 @@
 {
-  "kind": "horizon-server-benchmark",
+  "kind": "sunrise-server-benchmark",
   "date": "2026-10-19T05:52:44+00:00",
   "machine": {
     "system": "Linux",
@@ -16,7 +16,7 @@
     "lithium": "mc26.3-0.26.2-fabric"
   },
   "settings": {
-    "servers": "horizon,vanilla,paper,fabric",
+    "servers": "sunrise,vanilla,paper,fabric",
     "bots": "25,50",
     "behaviour": "mixed",
     "join_every": 1.0,
@@ -29,7 +29,7 @@
     "out": "/home/ludovic/sh10/out/mixed-equal-25-50.json",
     "nice": 19,
     "bots_via": "ssh macmini",
-    "bots_bin": "/Users/ludovicmarie/code/horizon/.claude/worktrees/sh10-bench/target/release/horizon-bots",
+    "bots_bin": "/Users/ludovicmarie/code/sunrise/.claude/worktrees/sh10-bench/target/release/sunrise-bots",
     "connect": "the ThinkPad's tailnet address",
     "properties": {
       "level-seed": "12345",
@@ -47,7 +47,7 @@
   },
   "runs": [
     {
-      "server": "horizon",
+      "server": "sunrise",
       "bots": 25,
       "behaviour": "mixed",
       "start_seconds": 8.51,
@@ -211,7 +211,7 @@
       "tick_queries": 59
     },
     {
-      "server": "horizon",
+      "server": "sunrise",
       "bots": 50,
       "behaviour": "mixed",
       "start_seconds": 8.31,
@@ -346,7 +346,7 @@
       "behaviour": "mixed",
       "bots": 25,
       "servers": {
-        "horizon": {
+        "sunrise": {
           "chunks_per_second": {
             "value": 155.81,
             "share": 0.981
@@ -397,7 +397,7 @@
       "behaviour": "mixed",
       "bots": 50,
       "servers": {
-        "horizon": {
+        "sunrise": {
           "chunks_per_second": {
             "value": 302.68,
             "share": 0.972

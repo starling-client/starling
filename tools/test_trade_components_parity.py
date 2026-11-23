@@ -56,26 +56,26 @@ def main():
     inputs.write_text(''.join(json.dumps(c) + '\n' for c in cases), encoding='utf-8')
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTradeComponentsOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTradeComponentsOracle.java'
     sources = [Path(__file__), oracle,
-               lab.ROOT / 'crates/horizon-client/examples/probe/trade_components_probe.rs',
-               lab.ROOT / 'crates/horizon-client/src/merchant.rs']
+               lab.ROOT / 'crates/sunrise-client/examples/probe/trade_components_probe.rs',
+               lab.ROOT / 'crates/sunrise-client/src/merchant.rs']
     tested = base.source_hashes(sources)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-cp', cp,
                     '-d', str(classes), str(oracle)], check=True)
-    with tempfile.TemporaryDirectory(prefix='horizon-trade-components-java-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-trade-components-java-') as scratch:
         subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
-                        'dev.horizonlab.parity.VanillaTradeComponentsOracle', str(inputs), str(build / 'java.jsonl')],
+                        'dev.sunriselab.parity.VanillaTradeComponentsOracle', str(inputs), str(build / 'java.jsonl')],
                        check=True, cwd=scratch, env=lab.game_env())
     expected = [json.loads(s) for s in (build / 'java.jsonl').read_text(encoding='utf-8').splitlines()]
     if args.java_only:
         print(f'{len(expected)} headless vanilla cases')
         return
     if not args.no_build:
-        subprocess.run(['cargo', 'build', '--locked', '-p', 'horizon-client-lib', '--example', 'client_probe'], check=True)
+        subprocess.run(['cargo', 'build', '--locked', '-p', 'sunrise-client-lib', '--example', 'client_probe'], check=True)
     binary = lab.cargo_target() / 'debug/examples/client_probe'
-    with tempfile.TemporaryDirectory(prefix='horizon-trade-components-rust-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-trade-components-rust-') as scratch:
         subprocess.run([str(binary), 'trade_components_probe', str(args.resources.resolve()), str(inputs), str(build / 'rust.jsonl')],
                        check=True, cwd=scratch, env=lab.game_env())
     actual = [json.loads(s) for s in (build / 'rust.jsonl').read_text(encoding='utf-8').splitlines()]

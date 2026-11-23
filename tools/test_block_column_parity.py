@@ -29,7 +29,7 @@ def corpus(facts, placement):
                             for fail in [-1,0,2,5,9]:
                                 obstruction=[step[0]*blocked,64+step[1]*blocked,step[2]*blocked,get('stone')]
                                 yield case(feature(selected,direction=direction,allowed={'type':'matching_blocks','blocks':['air']},tip=tip),states=[obstruction],legacy=legacy,seed=seed,fail=fail,reject=3 if seed else 0)
-    providers=[{'type':'random_block','blocks':[]},{'type':'random_block','blocks':['stone','water','pale_moss_carpet']},{'type':'rotated','state':{'id':'oak_log'}},{'type':'weighted','entries':[{'data':'stone','weight':1},{'data':'water','weight':2}]},'horizon:stone',{'type':'rule_based','rules':[]}]
+    providers=[{'type':'random_block','blocks':[]},{'type':'random_block','blocks':['stone','water','pale_moss_carpet']},{'type':'rotated','state':{'id':'oak_log'}},{'type':'weighted','entries':[{'data':'stone','weight':1},{'data':'water','weight':2}]},'sunrise:stone',{'type':'rule_based','rules':[]}]
     for provider,direction,tip in itertools.product(providers,directions,[False,True]):
         for legacy,seed,fail,reject in itertools.product([False,True],[0,-1,0x123456789abcdef],[-1,0,1,4],[0,1,3]):
             yield case(feature([{'type':'uniform','min_inclusive':0,'max_inclusive':3},2,1],[provider],direction=direction,tip=tip),legacy=legacy,seed=seed,fail=fail,reject=reject,repeats=3)
@@ -52,7 +52,7 @@ def corpus(facts, placement):
         placed={'feature':column,'placement':[{'type':'count','count':2},{'type':'offset','x':1,'y':0,'z':-1}]}
         for legacy,seed,fail,reject in itertools.product([False,True],[0,-1],[-1,0,3,8],[0,1,3]):
             yield case(placed,mode='placed',legacy=legacy,seed=seed,fail=fail,reject=reject)
-            yield case({'type':'sequence','features':[placed,{'feature':'horizon:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
+            yield case({'type':'sequence','features':[placed,{'feature':'sunrise:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
 
 
 if __name__=='__main__':

@@ -20,7 +20,7 @@ same-path resource reloads. Repeated queries in one lifetime still share the sam
 Source head `c2fa48e85d6a430c369aaf3889bdf044bc2de52c`, directly based on `3172000e63`:
 
 - The client library test binary built successfully with `CARGO_INCREMENTAL=0 cargo test -p
-  horizon-client --lib --no-run --message-format=json`.
+  sunrise-client --lib --no-run --message-format=json`.
 - All original 49 affected fixtures actually executed and passed, using an immutable binary
   copy, a separate process and scratch homes per test, at most two concurrent processes, and
   a 540-second timeout per test. No fixture was skipped.

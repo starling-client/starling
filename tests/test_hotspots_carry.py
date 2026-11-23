@@ -71,8 +71,8 @@ class IgnoredTestCarryTest(unittest.TestCase):
 
 
 
-PARTS = "crates/horizon-mod-vocab/src/parts"
-EXPORTS = "crates/horizon-mod-vocab/src/exports"
+PARTS = "crates/sunrise-mod-vocab/src/parts"
+EXPORTS = "crates/sunrise-mod-vocab/src/exports"
 TABLE = """mod parts;
 pub use parts::{Attached, BlockProvider};
 mod __private {

@@ -1,22 +1,22 @@
-# Horizon world data
+# Sunrise world data
 
-`crates/horizon-world` holds the storage layer for the pinned Java Edition **26.3**, data version **5023**: NBT,
+`crates/sunrise-world` holds the storage layer for the pinned Java Edition **26.3**, data version **5023**: NBT,
 region files, saved palettes, resident block sections, saved tick lists and the data fixers that upgrade older
 worlds. It also has a small offline tool for inspecting and copying region files.
 
 ## Commands
 
-Build the standalone tools with `cargo build --release -p horizon-world`.
-The binary is `target/release/horizon-world` (`.exe` on Windows).
+Build the standalone tools with `cargo build --release -p sunrise-world`.
+The binary is `target/release/sunrise-world` (`.exe` on Windows).
 
 ```sh
-target/release/horizon-world inspect /path/to/world/region/r.0.0.mca
-target/release/horizon-world get-block /path/to/world/region/r.0.0.mca 0 64 0
-target/release/horizon-world copy-region /path/to/world/region/r.0.0.mca /path/to/export/r.0.0.mca
-target/release/horizon-world copy-region /path/to/world/region/r.0.0.mca /path/to/lz4-export/r.0.0.mca lz4
-target/release/horizon-world edit-block-data /path/to/world/region/r.0.0.mca /path/to/edited/r.0.0.mca 0 64 0 minecraft:oak_log axis=y
-target/release/horizon-world nbt-copy /path/to/level.dat /path/to/level-uncompressed.nbt gzip none
-target/release/horizon-world --help
+target/release/sunrise-world inspect /path/to/world/region/r.0.0.mca
+target/release/sunrise-world get-block /path/to/world/region/r.0.0.mca 0 64 0
+target/release/sunrise-world copy-region /path/to/world/region/r.0.0.mca /path/to/export/r.0.0.mca
+target/release/sunrise-world copy-region /path/to/world/region/r.0.0.mca /path/to/lz4-export/r.0.0.mca lz4
+target/release/sunrise-world edit-block-data /path/to/world/region/r.0.0.mca /path/to/edited/r.0.0.mca 0 64 0 minecraft:oak_log axis=y
+target/release/sunrise-world nbt-copy /path/to/level.dat /path/to/level-uncompressed.nbt gzip none
+target/release/sunrise-world --help
 ```
 
 Use offline input and a separate export directory. Output filenames must retain
@@ -66,7 +66,7 @@ The registry loader checks data version, duplicate states, default IDs and
 block-name coverage. The local oracle exports all 35,723 state identities and
 defaults from vanilla. This imports identities, not block implementations,
 shapes or behavior. Registry exports and game-derived fixtures stay in `.local/`.
-Chunk access requires data version 5023. A world saved by an older version is upgraded when it is opened, as 26.3 does: the file fixes (`FileFixerUpper`) and level.dat, then vanilla's DataFixers over every chunk, entity chunk, POI chunk, player, saved data, advancements and statistics file (`horizon_world::datafix`; vanilla upgrades each file as it reads it, Horizon all of them on opening). `tools/test_datafix_parity.py` compares the result with vanilla's own upgrade over worlds written by older server jars. Every server data fix is ported, from the saves of 1.8 (no DataVersion) on; only the fixes of client files (options, debug profiles) are not. `BlockRegistry::resolve` rejects invalid property descriptors. The separate
+Chunk access requires data version 5023. A world saved by an older version is upgraded when it is opened, as 26.3 does: the file fixes (`FileFixerUpper`) and level.dat, then vanilla's DataFixers over every chunk, entity chunk, POI chunk, player, saved data, advancements and statistics file (`sunrise_world::datafix`; vanilla upgrades each file as it reads it, Sunrise all of them on opening). `tools/test_datafix_parity.py` compares the result with vanilla's own upgrade over worlds written by older server jars. Every server data fix is ported, from the saves of 1.8 (no DataVersion) on; only the fixes of client files (options, debug profiles) are not. `BlockRegistry::resolve` rejects invalid property descriptors. The separate
 block-state JSON codec reproduces vanilla property
 fallback for compact and full JSON forms.
 

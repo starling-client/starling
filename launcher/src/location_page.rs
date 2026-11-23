@@ -8,7 +8,7 @@ fn env_value(key: &str) -> Option<String> {
 }
 
 pub(super) fn startup_error() -> Option<String> {
-    horizon_launcher::data_location::startup_error()
+    sunrise_launcher::data_location::startup_error()
         .map(|error| {
             trf(
                 "Could not open the data folder: {error}",
@@ -16,7 +16,7 @@ pub(super) fn startup_error() -> Option<String> {
             )
         })
         .or_else(|| {
-            env_value("HORIZON_RELOCATION_ERROR")
+            env_value("SUNRISE_RELOCATION_ERROR")
                 .map(|error| trf("Data move failed: {error}", &[("error", &error)]))
         })
 }
@@ -29,7 +29,7 @@ fn open_error(error: &str) -> String {
 }
 
 pub(super) fn startup_note() -> Option<String> {
-    env_value("HORIZON_RELOCATION_BACKUP").map(|paths| {
+    env_value("SUNRISE_RELOCATION_BACKUP").map(|paths| {
         trf(
             "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.",
             &[("paths", &paths)],
@@ -38,7 +38,7 @@ pub(super) fn startup_note() -> Option<String> {
 }
 
 fn environment_blocked() -> bool {
-    ["HORIZON_LAUNCHER_HOME", "HORIZON_HOME"]
+    ["SUNRISE_LAUNCHER_HOME", "SUNRISE_HOME"]
         .iter()
         .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
 }
@@ -69,7 +69,7 @@ impl Launcher {
 
     fn location_blocked(&self) -> Option<String> {
         if environment_blocked() {
-            Some(tr("Data folders are set by HORIZON_LAUNCHER_HOME or HORIZON_HOME. Remove these environment overrides and restart the launcher before moving data here.").into())
+            Some(tr("Data folders are set by SUNRISE_LAUNCHER_HOME or SUNRISE_HOME. Remove these environment overrides and restart the launcher before moving data here.").into())
         } else if self.location_busy() {
             Some(tr("Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.").into())
         } else {
@@ -105,7 +105,7 @@ impl Launcher {
                                 None => this.location_target = Some(path),
                                 Some(Ok(_)) => {
                                     this.location_error = Some(
-                                        tr("Choose an empty folder for Horizon's data.").into(),
+                                        tr("Choose an empty folder for Sunrise's data.").into(),
                                     );
                                 }
                                 Some(Err(error)) => this.location_picker_error(error.to_string()),
@@ -126,7 +126,7 @@ impl Launcher {
     /// Try the configured folder again. A success restarts the launcher, because paths already
     /// resolved to the fallback folders cannot be swapped under a running window.
     fn retry_location(&mut self, cx: &mut Context<Self>) {
-        match horizon_launcher::data_location::retry() {
+        match sunrise_launcher::data_location::retry() {
             Ok(()) => {
                 self.location_error = Some(backend::restart());
             }
@@ -138,7 +138,7 @@ impl Launcher {
     /// Keep the default folders: the pointer is kept beside the old one as `location.json.old`,
     /// and nothing in the moved folders is deleted.
     fn use_default_location(&mut self, cx: &mut Context<Self>) {
-        match horizon_launcher::data_location::use_default_folder() {
+        match sunrise_launcher::data_location::use_default_folder() {
             Ok(()) => {
                 self.location_error = Some(backend::restart());
             }
@@ -168,7 +168,7 @@ impl Launcher {
             return;
         };
         let result = std::env::current_exe().and_then(|exe| {
-            horizon_launcher::process::command(exe)
+            sunrise_launcher::process::command(exe)
                 .arg("--relocate-data")
                 .arg(target)
                 .arg("--restart")
@@ -177,7 +177,7 @@ impl Launcher {
         match result {
             Ok(_) => {
                 // No installer while the worker copies the data folder its stage is in.
-                horizon_launcher::update_handoff::forget();
+                sunrise_launcher::update_handoff::forget();
                 cx.quit()
             }
             Err(error) => {
@@ -236,7 +236,7 @@ impl Launcher {
             .children(self.location_error.as_ref().map(|message| {
                 text(theme::CAPTION).text_color(t.danger).child(message.clone())
             }));
-        if horizon_launcher::data_location::startup_error().is_some() {
+        if sunrise_launcher::data_location::startup_error().is_some() {
             body = body.child(
                 div()
                     .flex()

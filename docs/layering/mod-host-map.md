@@ -28,8 +28,8 @@ The checker's canonical-path membership is case-sensitive by design.
 
 ## Strands and their proposals
 
-**Loading (phase 1): move.** `mod_list.rs`, package reading (`horizon-mod-package`), the wasm start
-(`horizon-mod-wasm`) and the dependency order go to `horizon-mod-host`. `entry::main_with` mixes them with engine
+**Loading (phase 1): move.** `mod_list.rs`, package reading (`sunrise-mod-package`), the wasm start
+(`sunrise-mod-wasm`) and the dependency order go to `sunrise-mod-host`. `entry::main_with` mixes them with engine
 startup and takes `ModEntry`, `NativeSlot` and `BuiltMod`: it splits into an engine start that takes what the host
 loaded through one registration call, and the host's load step that runs before it. The engine keeps one start call.
 
@@ -44,15 +44,15 @@ that stay use them.
 **Slots (phase 3): engine-owned table.** Eight production references: `entry.rs` (`mod_points::register`, `SlotListener`,
 `PointId`), `game.rs` (`seal`), `build.rs` and the `include!`s of generator output. The engine owns the slot table
 and the "anyone listening?" check; module discovery (`game_modules.rs`, `.game-area` markers) moves to a small engine
-crate both trees share, as agreed with upstream on #2534; `horizon-mod-api-gen` calls it.
+crate both trees share, as agreed with upstream on #2534; `sunrise-mod-api-gen` calls it.
 
-**Attachments: stay in the engine (phase 4 dropped).** Attachment storage lives in `horizon-mod-runtime`, which is
-already an engine-layer crate, so moving it buys no layering. `horizon-world`'s dependency on `horizon-mod-runtime`
-had no use in code and is removed in phase 0. `horizon-protocol` uses `attachments::{AttachmentSync, Holder}` in one
+**Attachments: stay in the engine (phase 4 dropped).** Attachment storage lives in `sunrise-mod-runtime`, which is
+already an engine-layer crate, so moving it buys no layering. `sunrise-world`'s dependency on `sunrise-mod-runtime`
+had no use in code and is removed in phase 0. `sunrise-protocol` uses `attachments::{AttachmentSync, Holder}` in one
 file.
 
 **Content and render (phase 5): engine-owned render slots.** The render geometry moves into the engine, and the
-render places move onto the engine-owned slot table; mod-render keeps the adapters. `horizon-client-render` has five mod dependencies
+render places move onto the engine-owned slot table; mod-render keeps the adapters. `sunrise-client-render` has five mod dependencies
 (`-mod-api`, `-mod-api-macros`, `-mod-package`, `-mod-render`, `-mod-runtime`).
 
 **Hooks (phase 6): not built.** The hook bodies under `game/native_hooks/` and most of `game/modding/` are `impl Game`
@@ -69,41 +69,41 @@ vocabulary crate.
 ## The mod API's vocabulary: can it sit below the engine?
 
 The question (#2534): could the engine keep one mod dependency, on a crate that holds only the mod API's vocabulary
-and dispatch table, the way it depends on `horizon-hooks`? The vocabulary table at the end gives the per-file
-answer for `horizon-mod-api` (non-test files). Summary:
+and dispatch table, the way it depends on `sunrise-hooks`? The vocabulary table at the end gives the per-file
+answer for `sunrise-mod-api` (non-test files). Summary:
 
 - **Plain already:** 772 of 944 files (24,619 lines): types, traits and functions with no generator include, no
-  `unsafe`, no process state and no crate path besides `horizon-core`.
-- **Blocker 1, the derive and attribute macros:** 150 files use `horizon-mod-api-macros` (517 `Wire` derives, 86
-  `host_area`, 1 `__subscriptions`). In 137 of them it is the only blocker. Relayering `horizon-mod-api-macros` and
-  its one dependency `horizon-mod-point-shape` to the engine layer clears them.
-- **Blocker 2, the build script:** `build.rs` runs `horizon-mod-api-gen` (platform, depends on
-  `horizon-mod-point-shape`). The generator writes the hook vocabulary itself: `mod_api_generated.rs` (events,
+  `unsafe`, no process state and no crate path besides `sunrise-core`.
+- **Blocker 1, the derive and attribute macros:** 150 files use `sunrise-mod-api-macros` (517 `Wire` derives, 86
+  `host_area`, 1 `__subscriptions`). In 137 of them it is the only blocker. Relayering `sunrise-mod-api-macros` and
+  its one dependency `sunrise-mod-point-shape` to the engine layer clears them.
+- **Blocker 2, the build script:** `build.rs` runs `sunrise-mod-api-gen` (platform, depends on
+  `sunrise-mod-point-shape`). The generator writes the hook vocabulary itself: `mod_api_generated.rs` (events,
   `HookId`, `Hooks`, Parts traits, the dispatch functions; about 680 types, no `unsafe`, no state),
   `mod_api_generated_host.rs` (the `Host` traits), `wire_generated.rs`, the export lists and `parts_modules.rs`.
   `wire_guest_generated.rs` (wasm guest glue, 6 `unsafe`) is not vocabulary. There are two ways: relayer the
   generator to the engine layer (it runs only at build time, but build dependencies count), or commit its output
   with a freshness check. Committing it adds a large generated file that every hook change touches.
-- **Not vocabulary; it stays in `horizon-mod-api` or goes to the host:** `wire/wire_guest.rs` and
+- **Not vocabulary; it stays in `sunrise-mod-api` or goes to the host:** `wire/wire_guest.rs` and
   `wire/wire_resources.rs` (`unsafe`, wasm guest), `profiler.rs` (`unsafe`, state), `content/crash.rs` (panic
   marks), `content/registry_keys.rs`, `world/{phase,reload,server_reload}.rs`, `client/client_reload.rs`,
   `parts/*` (installed Parts tables) and `testing/`. `runtime.rs` is the dispatch table and belongs with the
   vocabulary. Whether the generated dispatch functions also need the Parts tables (`parts/shared.rs`) is open:
   the split's first step settles it by compiling.
-- **Other crates:** `horizon-mod-runtime` (engine layer; attachments, registry keys, subscribers: 63 references in
-  17 files) can stay a dependency of a crate below the engine. `horizon-mod-package` is declared, but nothing in
+- **Other crates:** `sunrise-mod-runtime` (engine layer; attachments, registry keys, subscribers: 63 references in
+  17 files) can stay a dependency of a crate below the engine. `sunrise-mod-package` is declared, but nothing in
   the source uses it: remove it.
-- **Engine types in the surface:** `exports/horizon_core.rs` and `exports/horizon_world.rs` re-export
-  `horizon-core` types (`Identifier`, `Compound`, `Tag`, `LegacyRandom`, `BoundingBox`...) and
-  `horizon-mod-runtime` attachment types. Both crates sit below the engine, so this doesn't block a split. It is
+- **Engine types in the surface:** `exports/sunrise_core.rs` and `exports/sunrise_world.rs` re-export
+  `sunrise-core` types (`Identifier`, `Compound`, `Tag`, `LegacyRandom`, `BoundingBox`...) and
+  `sunrise-mod-runtime` attachment types. Both crates sit below the engine, so this doesn't block a split. It is
   the same exposure as today.
 
-**A clean split is possible** with three relayerings (`horizon-mod-api-macros`, `horizon-mod-point-shape`,
-`horizon-mod-api-gen` to the engine layer, or committed generator output instead of the last), the dead
-`horizon-mod-package` dependency removed, and the state-bearing files above kept out. The edges it needs:
-`horizon-mod-vocab` (engine) → `horizon-core`, `horizon-mod-runtime`, `horizon-mod-api-macros`, and as a build
-dependency `horizon-mod-api-gen`; then `horizon-mod-api` (platform) → `horizon-mod-vocab`, re-exporting it, so mods
-keep the `mod_api::` paths; the engine → `horizon-mod-vocab` replacing `-mod-api`, `-mod-api-macros` and part of
+**A clean split is possible** with three relayerings (`sunrise-mod-api-macros`, `sunrise-mod-point-shape`,
+`sunrise-mod-api-gen` to the engine layer, or committed generator output instead of the last), the dead
+`sunrise-mod-package` dependency removed, and the state-bearing files above kept out. The edges it needs:
+`sunrise-mod-vocab` (engine) → `sunrise-core`, `sunrise-mod-runtime`, `sunrise-mod-api-macros`, and as a build
+dependency `sunrise-mod-api-gen`; then `sunrise-mod-api` (platform) → `sunrise-mod-vocab`, re-exporting it, so mods
+keep the `mod_api::` paths; the engine → `sunrise-mod-vocab` replacing `-mod-api`, `-mod-api-macros` and part of
 `-mod-api-gen`. Whether the engine's uses outside the host stay within the vocabulary is shown in the
 "what they need of `mod_api`" table: the `more` tier (45 files) is what a split must still route through the host.
 

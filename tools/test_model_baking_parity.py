@@ -28,7 +28,7 @@ def corpus():
                    'light_emission': index % 16}
         if rotation is not None: element['rotation'] = rotation
         if index % 3 == 0: element['shade_direction_override'] = directions[index % 6]
-        models[f'horizon:geometry_{index}'] = {'textures': {'all': 'block/stone'}, 'elements': [element]}
+        models[f'sunrise:geometry_{index}'] = {'textures': {'all': 'block/stone'}, 'elements': [element]}
     for bounds in [([0,0,0],[16,16,16]), ([16,16,16],[0,0,0]), ([0,8,0],[16,8,16]),
                    ([0,0,0],[0,0,0]), ([-16,-16,-16],[32,32,32]), ([-0.0,0,0],[16,16,16])]:
         for explicit in [False, True]: add(None, *bounds, explicit)
@@ -49,7 +49,7 @@ def corpus():
         add(rotation, [rng.uniform(-16,32) for _ in range(3)], [rng.uniform(-16,32) for _ in range(3)], bool(rng.randrange(2)))
     row=resolution.bundle(models)
     for token in ['1e100','-1e100','1e-100','-1e-100']:
-        name='horizon:extreme_'+str(len(row['models']))
+        name='sunrise:extreme_'+str(len(row['models']))
         raw=json.dumps({'elements':[{'from':[0,0,0],'to':[16,16,16],'faces':{'up':{'texture':'#all'}},'rotation':{'origin':[8,8,8],'axis':'x','angle':'TOKEN','rescale':True}}]})
         row['models'][name]=raw.replace('"TOKEN"',token); row['roots'].append(name)
     yield row
@@ -74,9 +74,9 @@ def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / 'rust-model-baking-parity'; build.mkdir(parents=True, exist_ok=True)
     report_path = build / 'report.json'; report_path.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaModelBakingOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaModelBakingOracle.java'
     helper = oracle.with_name('VanillaCuboidModelOracle.java')
-    crate = lab.ROOT / 'crates/horizon-assets'
+    crate = lab.ROOT / 'crates/sunrise-assets'
     sources = [oracle, helper, Path(__file__), lab.ROOT / 'tools/test_cuboid_model_parity.py', lab.ROOT / 'tools/test_model_resolution_parity.py',
                lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'Cargo.toml',
                lab.ROOT / 'Cargo.lock', crate / 'Cargo.toml', *sorted(crate.rglob('*.rs'))]
@@ -84,7 +84,7 @@ def main():
     with zipfile.ZipFile(jars['client']) as archive:
         names = sorted(name for name in archive.namelist() if name.startswith('assets/minecraft/models/block/') and name.endswith('.json'))
         models = {'minecraft:' + name.removeprefix('assets/minecraft/models/').removesuffix('.json'): archive.read(name).decode() for name in names}
-    rows = [{'models': models, 'roots': list(models) + ['minecraft:builtin/missing', 'horizon:missing'],
+    rows = [{'models': models, 'roots': list(models) + ['minecraft:builtin/missing', 'sunrise:missing'],
              'queries': ['particle', '#particle', 'all', '#all', 'missingno', 'unknown', '', '#']}, *corpus()]
     inputs = build / 'inputs.jsonl'; inputs.write_text(''.join(json.dumps(row) + '\n' for row in rows)); fixtures = base.source_hashes([inputs])
     classes = build / 'classes'; classes.mkdir(exist_ok=True)
@@ -92,12 +92,12 @@ def main():
         with (build / (name + '.log')).open('w') as log:
             subprocess.run(list(map(str, command)), cwd=lab.ROOT, check=True, timeout=3600, stdout=log, stderr=subprocess.STDOUT)
     dependencies = os.pathsep.join(map(str, [jars['client'], *client_libraries()]))
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'), '-cp', dependencies, '-d', classes, oracle, helper], 'compile-java')
-    run(['cargo', 'build', '--locked', '-p', 'horizon-assets', '--example', 'model_baking_fixture'], 'compile-rust')
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'), '-cp', dependencies, '-d', classes, oracle, helper], 'compile-java')
+    run(['cargo', 'build', '--locked', '-p', 'sunrise-assets', '--example', 'model_baking_fixture'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'], cwd=lab.ROOT))
     binary = Path(metadata['target_directory']) / 'debug/examples' / ('model_baking_fixture.exe' if os.name == 'nt' else 'model_baking_fixture')
     run([binary, inputs, build / 'rust.jsonl'], 'rust')
-    run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaModelBakingOracle', inputs, build / 'client.jsonl'], 'client')
+    run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaModelBakingOracle', inputs, build / 'client.jsonl'], 'client')
     rejected = decoding.canonicalize(build / 'client.jsonl'); decoding.canonicalize(build / 'rust.jsonl')
     matched = base.compare(build / 'client.jsonl', build / 'rust.jsonl')
     base.ensure_sources_unchanged(sources, tested_sources); base.ensure_sources_unchanged([inputs], fixtures)

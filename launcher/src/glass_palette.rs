@@ -9,9 +9,9 @@
 use super::line_edit::{self, Key, LineEdit};
 use super::*;
 use crate::glass_ui::{self as ui, white};
-use horizon_launcher::browser::Project;
-use horizon_launcher::instances::Kind as InstanceKind;
-use horizon_theme::glass::ink;
+use sunrise_launcher::browser::Project;
+use sunrise_launcher::instances::Kind as InstanceKind;
+use sunrise_theme::glass::ink;
 use std::path::PathBuf;
 
 /// Commands listed at most (`slice(0, 8)`).
@@ -73,7 +73,7 @@ impl Launcher {
     fn palette_commands(&self, q: &str) -> Vec<Command> {
         let instance = self
             .selected_instance()
-            .map_or_else(|| "Horizon".to_owned(), |i| i.name.clone());
+            .map_or_else(|| "Sunrise".to_owned(), |i| i.name.clone());
         let mut all = Vec::new();
         for i in &self.instances.list {
             if matches!(i.kind, InstanceKind::Default | InstanceKind::Own) {
@@ -219,7 +219,7 @@ impl Launcher {
             .h(px(48.))
             .px(px(12.))
             .cursor_text()
-            .font_family(horizon_theme::glass::FONT)
+            .font_family(sunrise_theme::glass::FONT)
             .text_size(px(15.))
             .text_color(white(ink::FULL))
             .child(ui::icon("search-01", 20., white(0.55)))

@@ -11,28 +11,28 @@
 <!-- Tick one: it sets the pull request's label (CONTRIBUTING.md "Pull requests"). Start the title with it too:
      `kind(area): what changes`, for example `parity(mobs): ...`. -->
 
-- [ ] parity: Horizon now does what vanilla 26.3 does
+- [ ] parity: Sunrise now does what vanilla 26.3 does
 - [ ] bug: a crash or a breakage
 - [ ] perf: faster, or less memory
 - [ ] feature: something new for players (listed under New in the release notes)
-- [ ] extra: Horizon-only, off by default
+- [ ] extra: Sunrise-only, off by default
 - [ ] tooling: tools, CI, tests, harnesses
 - [ ] docs
 
 ## Layer
 
-<!-- engine, platform or Horizon (docs/layers.md, "Where a new feature goes"). Reviewers check:
+<!-- engine, platform or Sunrise (docs/layers.md, "Where a new feature goes"). Reviewers check:
      - the new code sits in a crate or module of that layer;
-     - no new dependency its layer may not use (CI's layer check): no engine code calling platform or Horizon code,
-       and Horizon code using the platform's public API only, never the engine directly;
-     - Horizon features in the game are behind `horizon-extras`, and platform features that change the vanilla
+     - no new dependency its layer may not use (CI's layer check): no engine code calling platform or Sunrise code,
+       and Sunrise code using the platform's public API only, never the engine directly;
+     - Sunrise features in the game are behind `sunrise-extras`, and platform features that change the vanilla
        look are off by default;
-     - no new built-in server address outside the Horizon layer. -->
+     - no new built-in server address outside the Sunrise layer. -->
 
 ## Vanilla reference
 
 <!-- The vanilla classes and methods this follows (tools/rea_vanilla.py), and the harness that checks it.
-     "Horizon-only" for a feature vanilla doesn't have; "none" for tooling or docs. -->
+     "Sunrise-only" for a feature vanilla doesn't have; "none" for tooling or docs. -->
 
 ## Self-check
 

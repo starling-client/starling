@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entities other than mobs and items, tracked to a vanilla client, against vanilla's dedicated server.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat
 world vanilla generated first, with the same server.properties (offline, view distance 4). A vanilla-codec
 client (VanillaProtocolClient in its entity mode) joins, and once its chunks are in it asks for the scene: the
 console freezes the ticks, builds a wall and a rail and summons, around the spawn, every kind of minecart (one
@@ -9,7 +9,7 @@ set rolling along the rail), boats and a raft (one falling onto the ground), arm
 arms, wearing a helmet, one falling), a chicken jockey, a slime, a pig whose scale `/attribute` sets, item
 frames (one holding a turned diamond), paintings, primed TNT (one falling), a floating falling block, sand
 falling into a cobweb, sand that falls onto a torch and breaks into an item (added after the tick's tracking pass in
-Horizon), an arrow that lands, a burning arrow and an end crystal. The client records for 20 seconds, the ticks
+Sunrise), an arrow that lands, a burning arrow and an end crystal. The client records for 20 seconds, the ticks
 running for 200 more after 3, what ClientPacketListener would make of the packets (EntityTranscript): each
 entity's spawn
 packet (position, rotations, data, motion), the entity data it was paired with and all it was sent since, its
@@ -165,48 +165,48 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaProtocolClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaProtocolClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    # SERVER_ENTITIES_SIDES=vanilla (or horizon) runs one side and reads the other's last transcript.
-    sides = [s for s in os.environ.get('SERVER_ENTITIES_SIDES', 'vanilla,horizon').split(',') if s]
-    if 'horizon' in sides:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    # SERVER_ENTITIES_SIDES=vanilla (or sunrise) runs one side and reads the other's last transcript.
+    sides = [s for s in os.environ.get('SERVER_ENTITIES_SIDES', 'vanilla,sunrise').split(',') if s]
+    if 'sunrise' in sides:
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                        check=True, capture_output=True)
     import json
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-Duser.timezone=UTC', '-cp', str(classes) + os.pathsep + dependencies,
-              'dev.horizonlab.parity.VanillaProtocolClient']
+              'dev.sunriselab.parity.VanillaProtocolClient']
 
     world = generate_world(vanilla_server, build)
     results = {}
-    for label, command in [('vanilla', vanilla_server), ('horizon', horizon_server)]:
+    for label, command in [('vanilla', vanilla_server), ('sunrise', sunrise_server)]:
         if label in sides:
             results[label] = run_side(label, command, client, build, world)
         else:
             results[label] = (build / f'{label}.txt').read_text(encoding='utf-8').splitlines()
-    vanilla, horizon = scene_lines(results['vanilla']), scene_lines(results['horizon'])
-    errors = [l for l in results['vanilla'] + results['horizon'] if l.startswith('error')]
-    if errors or vanilla != horizon:
+    vanilla, sunrise = scene_lines(results['vanilla']), scene_lines(results['sunrise'])
+    errors = [l for l in results['vanilla'] + results['sunrise'] if l.startswith('error')]
+    if errors or vanilla != sunrise:
         import difflib
-        diff = '\n'.join(difflib.unified_diff(vanilla, horizon, 'vanilla', 'horizon', n=0, lineterm=''))
-        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and horizon.txt):\n'
+        diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=0, lineterm=''))
+        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and sunrise.txt):\n'
                              + '\n'.join(errors[:10]) + '\n' + diff[:8000])
     if len(vanilla) < len(SCENE) - 2:
         raise AssertionError(f'only {len(vanilla)} entities tracked: the scene did not run (see {build})')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        entities=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        entities=len(vanilla), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='Minecarts (one rolling), boats (one falling), armor stands, a chicken jockey, a slime, a pig with a '
               'scale, item frames, paintings, primed TNT, falling blocks (one held by a cobweb, one breaking into an '
               'item on a torch), arrows (one burning) and an end crystal '

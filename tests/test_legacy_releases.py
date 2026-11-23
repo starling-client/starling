@@ -27,24 +27,24 @@ class TagKeyTests(unittest.TestCase):
 
 class EntriesTests(unittest.TestCase):
     def test_a_draft_is_left_out(self):
-        lines = legacy.entries([release("v1.0.0", [asset("horizon.tar.gz")], draft=True)])
+        lines = legacy.entries([release("v1.0.0", [asset("sunrise.tar.gz")], draft=True)])
         self.assertEqual(lines, [])
 
     def test_a_signed_release_is_left_out(self):
-        signed = release("v1.0.0", [asset("horizon.tar.gz"), asset("SHA256SUMS.sig")])
+        signed = release("v1.0.0", [asset("sunrise.tar.gz"), asset("SHA256SUMS.sig")])
         self.assertEqual(legacy.entries([signed]), [])
 
     def test_an_unsigned_release_keeps_its_digest(self):
-        lines = legacy.entries([release("v1.0.0", [asset("horizon.tar.gz")])])
-        self.assertEqual(lines, [f"v1.0.0 horizon.tar.gz {'ab' * 32}"])
+        lines = legacy.entries([release("v1.0.0", [asset("sunrise.tar.gz")])])
+        self.assertEqual(lines, [f"v1.0.0 sunrise.tar.gz {'ab' * 32}"])
 
     def test_the_digest_is_written_without_its_prefix(self):
-        lines = legacy.entries([release("v1.0.0", [asset("horizon.tar.gz", "sha256:" + "CD" * 32)])])
-        self.assertEqual(lines, [f"v1.0.0 horizon.tar.gz {'cd' * 32}"])
+        lines = legacy.entries([release("v1.0.0", [asset("sunrise.tar.gz", "sha256:" + "CD" * 32)])])
+        self.assertEqual(lines, [f"v1.0.0 sunrise.tar.gz {'cd' * 32}"])
 
     def test_an_asset_without_a_digest_is_refused(self):
         with self.assertRaises(SystemExit):
-            legacy.entries([release("v1.0.0", [asset("horizon.tar.gz", "")])])
+            legacy.entries([release("v1.0.0", [asset("sunrise.tar.gz", "")])])
 
     def test_the_releases_come_out_in_order(self):
         releases = [release("v0.2.10", [asset("a")]), release("v0.2.9", [asset("b")])]
@@ -58,9 +58,9 @@ class RenderTests(unittest.TestCase):
         self.assertIn("tools/ci/legacy_releases.py", text)
 
     def test_the_header_and_the_lines_are_both_written(self):
-        text = legacy.render([release("v1.0.0", [asset("horizon.tar.gz")])])
+        text = legacy.render([release("v1.0.0", [asset("sunrise.tar.gz")])])
         self.assertTrue(text.startswith(legacy.HEADER))
-        self.assertIn("v1.0.0 horizon.tar.gz", text)
+        self.assertIn("v1.0.0 sunrise.tar.gz", text)
         self.assertTrue(text.endswith("\n"))
 
 

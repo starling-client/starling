@@ -1,35 +1,35 @@
-# Horizon shader packs
+# Sunrise shader packs
 
-Horizon has its own shader packs: WGSL written against stages of Horizon's renderer, checked before they run. This page
+Sunrise has its own shader packs: WGSL written against stages of Sunrise's renderer, checked before they run. This page
 is the guide for pack authors. The design and the pack format are in [api/shaders.md](api/shaders.md); every stage's
 signature, input, resource and limit is in the generated [api/shaders-reference.md](api/shaders-reference.md).
 
 Shader packs in the Iris/OptiFine format are a separate feature with its own loader; this page is only about
-Horizon's own format.
+Sunrise's own format.
 
 | Part | Where | State |
 |---|---|---|
-| Format, stages, check | `crates/horizon-shader-api` | API 0.1, experimental |
-| Authoring tool | `horizon-shader` (same crate) | `new`, `check`, `pack` |
-| Templates | `crates/horizon-shader-api/templates/` | post, sky, material |
-| Example pack | `crates/horizon-shader-api/packs/golden_hour` | a warm sky and two post passes |
+| Format, stages, check | `crates/sunrise-shader-api` | API 0.1, experimental |
+| Authoring tool | `sunrise-shader` (same crate) | `new`, `check`, `pack` |
+| Templates | `crates/sunrise-shader-api/templates/` | post, sky, material |
+| Example pack | `crates/sunrise-shader-api/packs/golden_hour` | a warm sky and two post passes |
 | In the game: every stage | Options > Video Settings > Shaders > Shader Packs | sky, material, post passes, hot reload |
 | The registry and the launcher | `shader` kind ([modding/src/reference/registry-index.md](modding/src/reference/registry-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
 
 ## Quick start
 
 ```sh
-cargo install --path crates/horizon-shader-api      # or: cargo run -p horizon-shader-api --bin horizon-shader -- <command>
-horizon-shader new my_pack --template post          # also: --template sky, --template material; --name "My Pack"
-horizon-shader check my_pack                        # what the game, the launcher and the registry will check
-horizon-shader pack my_pack                         # check, then write my_pack-0.1.0.hshader beside the folder
+cargo install --path crates/sunrise-shader-api      # or: cargo run -p sunrise-shader-api --bin sunrise-shader -- <command>
+sunrise-shader new my_pack --template post          # also: --template sky, --template material; --name "My Pack"
+sunrise-shader check my_pack                        # what the game, the launcher and the registry will check
+sunrise-shader pack my_pack                         # check, then write my_pack-0.1.0.sshader beside the folder
 ```
 
 `check` prints each stage with its cost, and the pack's SHA-256:
 
 ```
 golden_hour 1.0.0 (shader API 0.1): ok
-  sky       Warm horizon                     99 expressions, 0 texture reads
+  sky       Warm sunrise                     99 expressions, 0 texture reads
   post      Glow                            192 expressions, 3 texture reads
   post      Colour grade                    201 expressions, 2 texture reads
   sha256 b5e0d98c...
@@ -46,9 +46,9 @@ my_pack 0.1.0 (shader API 0.1): FAILED
 
 ## Trying a pack in the game
 
-Put the pack folder (or its `.hshader`) in `shaderpacks/` beside `options.txt` (Open Pack Folder opens it) and pick
-it on Options > Video Settings > Shaders > Shader Packs..., which lists Horizon's packs, marked (Horizon), beside packs in the
-`shaders/` format; one runs at a time, and clicking it again turns it off. `HORIZON_SHADER_PACK=<its folder or file
+Put the pack folder (or its `.sshader`) in `shaderpacks/` beside `options.txt` (Open Pack Folder opens it) and pick
+it on Options > Video Settings > Shaders > Shader Packs..., which lists Sunrise's packs, marked (Sunrise), beside packs in the
+`shaders/` format; one runs at a time, and clicking it again turns it off. `SUNRISE_SHADER_PACK=<its folder or file
 name>` runs a pack whatever the page says, for development. The game checks the pack first, and refuses one that
 fails, with its problems in the chat. While it runs, the game looks at the pack twice a second: save a file
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
@@ -60,20 +60,20 @@ there are more than it has room for, they collapse into one `‹ Name ›` row t
 bumpers step through); deeper screens open from their links, and Escape goes back. A click, Enter or Right picks an
 option's next value, a Shift click or Left the one before, and the options the pack lists in
 `sliders` are sliders. Pointing at one shows what the pack says of it (`option.NAME.comment`); the search finds an
-option on any screen. Undo puts back the pick, the Shadow Cache, the Horizon packs' options and the options of the
+option on any screen. Undo puts back the pick, the Shadow Cache, the Sunrise packs' options and the options of the
 `shaders/` pack that was picked when the screen opened; another `shaders/` pack keeps what was saved for it (picking
 away from it saves its changes, as Apply does). A `shaders/` pack's
 options are saved to `shaderpacks/<pack>.txt` (`NAME=value` lines), and the pack loads again with them, with Apply
-(shown while they differ from the saved ones) or on leaving the screen; a Horizon pack's apply at once.
+(shown while they differ from the saved ones) or on leaving the screen; a Sunrise pack's apply at once.
 
 ## Testing a pack frame by frame
 
 A pack that keeps something from frame to frame (`history`, eased values) draws a little differently in every run,
-as frames come when they come. With `HORIZON_STILL=1` and the world frozen the scene holds still
+as frames come when they come. With `SUNRISE_STILL=1` and the world frozen the scene holds still
 ([agent-control.md](agent-control.md#repeatable-screenshots)), and
 
 ```sh
-horizon-ctl screenshot-sequence 64 50 frame64.png
+sunrise-ctl screenshot-sequence 64 50 frame64.png
 ```
 
 starts the pack over as if just loaded (black `history`, eased values from the start) and draws 64 frames 50 ms
@@ -85,7 +85,7 @@ cancel` stops one.
 
 ## A pack
 
-A folder (or the same files zipped as a `.hshader`) with `horizon-shaders.toml` and WGSL files:
+A folder (or the same files zipped as a `.sshader`) with `sunrise-shaders.toml` and WGSL files:
 
 ```toml
 schema = 1
@@ -110,15 +110,15 @@ Every key is in [api/shaders.md](api/shaders.md#the-pack-format-schema-1).
 
 ## Stages
 
-A stage is one function your file defines. Horizon puts its prelude (the structs, `frame`, the stage's resources and
+A stage is one function your file defines. Sunrise puts its prelude (the structs, `frame`, the stage's resources and
 helpers) before your file and calls the function from its own pass, so the world is still culled, batched and meshed
-by Horizon: a pack changes how things look, not how they are drawn.
+by Sunrise: a pack changes how things look, not how they are drawn.
 
 | Stage | Your function | What it does |
 | --- | --- | --- |
 | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` | the sky's colour along each view ray, opaque (alpha is ignored), drawn where vanilla draws its sky dome (the Overworld's sky; not the Nether's or the End's); the sun, moon, stars and clouds are drawn over it |
 | `[material]` | `fn material(input: MaterialInput) -> Surface` | the lit colour of each point of a block's surface, before the alpha test and fog: every terrain section and distant tile, solid, cutout and translucent (not entities, block entities or particles) |
-| `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` | the colour of each point of a rain or snow streak, blended over the world with its alpha; Horizon's light and fog aren't applied, so the pack applies its own |
+| `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` | the colour of each point of a rain or snow streak, blended over the world with its alpha; Sunrise's light and fog aren't applied, so the pack applies its own |
 | `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` | a full-screen pass over the world's picture (up to 8, in order), under the hand and HUD. Return `input.color.a` as your alpha: HDR output reads it to find light sources |
 
 A pack has at least one stage; a stage it leaves out keeps vanilla's look. Each input says what vanilla would draw
@@ -131,7 +131,7 @@ Post passes also read `scene_color`, `scene_depth`, `previous` (the last pass's 
 `depth_at(uv)` and `view_position(uv, depth)`.
 
 Rules the check enforces: your files declare no bindings (`@group`/`@binding`), no entry points and no names starting
-with `horizon_`. Code shared by several stages goes in files listed in `shared`, put before every stage.
+with `sunrise_`. Code shared by several stages goes in files listed in `shared`, put before every stage.
 
 ## Sprite tags
 

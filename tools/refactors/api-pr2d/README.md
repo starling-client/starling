@@ -22,7 +22,7 @@ Proofs: a moved-lines check with declared wrapper/import changes, host manifest 
 WIT gate against the comparison base, focused Parts and generator tests, boundary tests,
 and workspace check including tests and examples.
 
-Run `cargo build -p horizon-mod-api-gen --bin part-table-layout`, then `move.py`
+Run `cargo build -p sunrise-mod-api-gen --bin part-table-layout`, then `move.py`
 on the unsplit base. It copies syn's lossless member ranges into kind-local
 traits/implementations and moves union documentation to `parts/unions.rs.in`.
 `check_move.py BASE` proves all 60 declaration/implementation members have

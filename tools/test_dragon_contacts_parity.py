@@ -40,8 +40,8 @@ def main():
         major = str(lock['minecraft']['java_major'])
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java'
-    oracle = source / 'dev/horizonlab/parity'
+    source = lab.ROOT / 'mods/sunrise/src/test/java'
+    oracle = source / 'dev/sunriselab/parity'
     def run(command, name, **kwargs):
         with (build / (name + '.log')).open('w') as log:
             subprocess.run(list(map(str, command)), stdout=log,
@@ -58,11 +58,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='hz-dragon-contacts-') as scratch:
         env = game_environment(os.environ, scratch)
         run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + cp,
-             'dev.horizonlab.parity.VanillaCommandExecOracle',
+             'dev.sunriselab.parity.VanillaCommandExecOracle',
              Path(scratch) / 'universe', script, expected_path, '1'], 'java', env=env)
-    run(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+    run(['cargo', 'test', '--locked', '-p', 'sunrise-client-lib', '--lib',
          'mobs::dragon_contacts::', '--', '--include-ignored'], 'rust',
-        env=dict(os.environ, HORIZON_DRAGON_CONTACT_OUTPUT=str(actual_path)))
+        env=dict(os.environ, SUNRISE_DRAGON_CONTACT_OUTPUT=str(actual_path)))
     expected = json.loads(expected_path.read_text())
     actual = json.loads(actual_path.read_text())
     assert len(actual) == len(expected) == 7
@@ -94,8 +94,8 @@ def main():
         game_output = build / 'game.jsonl'
         with tempfile.TemporaryDirectory(prefix='hz-dragon-integration-') as scratch:
             env = game_environment(os.environ, scratch)
-            env.update(HORIZON_COMMAND_SCRIPT=str(game_script),
-                       HORIZON_COMMAND_OUTPUT=str(game_output), HORIZON_HARNESS_TIMEOUT='120')
+            env.update(SUNRISE_COMMAND_SCRIPT=str(game_script),
+                       SUNRISE_COMMAND_OUTPUT=str(game_output), SUNRISE_HARNESS_TIMEOUT='120')
             run([args.binary.resolve(), '--resources', args.resources.resolve(),
                  '--world', 'contacts', '--seed', '1', '--radius', '4'], 'game', env=env, cwd=scratch)
         observations = [json.loads(line) for line in game_output.read_text().splitlines()]

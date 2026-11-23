@@ -1324,7 +1324,7 @@ impl PhysicalDeviceProperties {
 
         // Starling: only when asked, while it is being measured.
         if self.device_api_version >= vk::API_VERSION_1_2
-            && std::env::var_os("HORIZON_PACK_VRS").is_some()
+            && std::env::var_os("SUNRISE_PACK_VRS").is_some()
             && self.supports_extension(khr::fragment_shading_rate::NAME)
         {
             extensions.push(khr::fragment_shading_rate::NAME);
@@ -2486,7 +2486,7 @@ impl super::Instance {
             shader_int8: phd_features
                 .shader_float16_int8
                 .is_some_and(|features| features.shader_int8 != 0),
-            pipeline_fragment_shading_rate: std::env::var_os("HORIZON_PACK_VRS").is_some()
+            pipeline_fragment_shading_rate: std::env::var_os("SUNRISE_PACK_VRS").is_some()
                 && phd_capabilities.device_api_version >= vk::API_VERSION_1_2
                 && phd_features
                     .fragment_shading_rate
@@ -2940,7 +2940,7 @@ impl super::Adapter {
                 .map_err(super::map_host_device_oom_err)?
         };
 
-        // Horizon: the pipelines an earlier run compiled, when the application keeps them
+        // Sunrise: the pipelines an earlier run compiled, when the application keeps them
         // (`disk_cache::set_file`). Data the driver turns down starts an empty cache instead.
         let fallback_pipeline_cache = if super::disk_cache::enabled() {
             let seed = super::disk_cache::seed(&self.phd_capabilities.properties);

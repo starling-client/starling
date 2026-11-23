@@ -38,22 +38,22 @@ A desktop explicitly using `STARLING_ACCOUNTS=1` uses the same menu; without a
 platform keystore its sign-in secrets remain in memory for that run. Normal
 launcher-managed desktop sessions keep their existing launch flow.
 
-The provider/profile model and Ely.by protocol are adapted from Horizon Android;
+The provider/profile model and Ely.by protocol are adapted from Sunrise Android;
 see `THIRD_PARTY_NOTICES.md`.
 
 ## Skins per profile
 
 Options > Skin Customization chooses a skin for the profile that plays now: each
-Microsoft, Ely.by and offline profile keeps its own, in `horizon-skins.json`
+Microsoft, Ely.by and offline profile keeps its own, in `sunrise-skins.json`
 beside `options.txt`. A profile that has not chosen one yet wears the skin chosen
-before profiles had their own (`skin:` in `horizon-player.txt`). The skins are
+before profiles had their own (`skin:` in `sunrise-player.txt`). The skins are
 the 64x64 (or legacy 64x32) PNGs of the `skins/` folder; **Choose a File...**
 imports one on a phone. On an account profile, the first choice of the cycle is
 the account's own skin (Mojang's profile for Microsoft, ely.by for Ely.by),
 which the title screen's player also wears.
 
 - **Microsoft**: **Upload to Microsoft profile** sends the chosen skin and its
-  arms (classic or slim) to the account's Minecraft profile, the way Horizon
+  arms (classic or slim) to the account's Minecraft profile, the way Sunrise
   Android's wardrobe does (`POST /minecraft/profile/skins`), so servers show it
   to every player. The PNG is written anew before it leaves the device (no text
   or other chunks of the file go with it). The profile Mojang answers with is

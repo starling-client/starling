@@ -12,7 +12,7 @@
 /* Per-invocation append-only channel, inherited by child processes. A refusal is
  * recorded even if the test handles the error. Never permit a lost diagnostic. */
 static void record(const char *operation) {
-    const char *path = getenv("HORIZON_NETWORK_GUARD_LOG");
+    const char *path = getenv("SUNRISE_NETWORK_GUARD_LOG");
     if (!path) _exit(125);
     int fd = open(path, O_WRONLY | O_APPEND | O_CLOEXEC);
     if (fd < 0) _exit(125);

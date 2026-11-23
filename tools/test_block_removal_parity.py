@@ -12,8 +12,8 @@ mined statistic follow, and in creative, where the block itself never drops (a c
 contents still spill) and no statistic is awarded. Vanilla runs over the headless level of the
 dispenser oracle
 (`VanillaDispenserOracle`, "remove" cases), which replays `LevelChunk.setBlockState`'s
-`BlockEntity.preRemoveSideEffects`; Horizon runs its game glue in a headless game
-(`HORIZON_DISPENSE_FIXTURE`). Both print the block changes, the contents left,
+`BlockEntity.preRemoveSideEffects`; Sunrise runs its game glue in a headless game
+(`SUNRISE_DISPENSE_FIXTURE`). Both print the block changes, the contents left,
 every item entity (position, motion, stack), level events, sounds, game events
 and the level random. Motions from an item's own unseeded random ("~") are
 compared within their spread. Deterministic ore, spawner and sculk mining cases
@@ -60,7 +60,7 @@ HOLDERS = {
     'ender_chest': (0, []), 'enchanting_table': (0, []), 'oak_sign': (0, []), 'white_banner': (0, []), 'beacon': (0, []),
     'bell': (0, []), 'skeleton_skull': (0, []), 'daylight_detector': (0, []), 'comparator': (0, []), 'spawner': (0, []),
 }
-# Blocks whose block entity Horizon models with its slots, which vanilla lists
+# Blocks whose block entity Sunrise models with its slots, which vanilla lists
 # when the block entity survives (the others are only ever replaced).
 LISTED = {'chest', 'trapped_chest', 'barrel', 'hopper', 'dispenser', 'dropper', 'crafter', 'furnace', 'blast_furnace',
           'smoker', 'brewing_stand', 'shulker_box', 'red_shulker_box', 'lime_shulker_box', 'copper_chest', 'exposed_copper_chest',
@@ -207,7 +207,7 @@ def main():
         args.count = 4000
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'block-removal-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = list(mining_experience_cases(facts, args.only))
@@ -216,15 +216,15 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     d.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaDispenserOracle.java')])
-    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaDispenserOracle',
+           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaDispenserOracle.java')])
+    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaDispenserOracle',
            str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
           env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    d.run([str(lab.cargo_target() / 'fast/horizon-client'), '--resources', str(resources)], cwd=work,
-          env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+    d.run([str(lab.cargo_target() / 'fast/sunrise-client'), '--resources', str(resources)], cwd=work,
+          env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     # Loot table names (D) are vanilla's bookkeeping; the drops themselves are compared.
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)

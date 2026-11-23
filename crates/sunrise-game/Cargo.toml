@@ -1,0 +1,44 @@
+[package]
+name = "sunrise-game"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The game as the platform runs it: the engine's entry with the platform's parts registered, for an executable to start (docs/layers.md)"
+
+[dependencies]
+sunrise-guest-stack = { path = "../sunrise-guest-stack" }
+sunrise-client = { path = "../sunrise-client", default-features = false }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
+
+sunrise-mod-host = { path = "../sunrise-mod-host", default-features = false }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sunrise-client"
+path = "src/main.rs"
+
+[features]
+default = ["audio", "controllers", "sunrise-extras"]
+audio = ["sunrise-client/audio"]
+controllers = ["sunrise-client/controllers"]
+sunrise-extras = ["sunrise-client/sunrise-extras"]
+testing = ["sunrise-client/testing"]
+friends = ["sunrise-client/friends"]
+rng-trace = ["sunrise-client/rng-trace"]
+system-allocator = ["sunrise-client/system-allocator"]
+alloc-census = ["sunrise-client/alloc-census"]
+alloc-count = ["sunrise-client/alloc-count"]
+windows-mimalloc = ["sunrise-client/windows-mimalloc"]
+windows-segment-heap = ["sunrise-client/windows-segment-heap"]
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+sunrise-protocol = { path = "../sunrise-protocol" }
+tempfile = "3"
+sunrise-core = { path = "../sunrise-core" }
+serde_json = "1"

@@ -1,0 +1,2 @@
+# sunrise-protocol's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-protocol connection::tests::packet_decoder_in_memory_microbenchmark by-hand manual # manual release-mode microbenchmark

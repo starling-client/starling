@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Item use must precede a later move, on real vanilla and Horizon servers.
+"""Item use must precede a later move, on real vanilla and Sunrise servers.
 
 A vanilla-codec client writes UseItem, ClientTickEnd, MovePlayerPosRot and
 ClientTickEnd together. The wind charge must originate at the old position
@@ -62,34 +62,34 @@ def main():
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/KnockbackClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/KnockbackClient.java'
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn',
-                    '-sourcepath', lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies,
+                    '-sourcepath', lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies,
                     '-d', classes, oracle], cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'],
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'],
                    cwd=lab.ROOT, check=True, capture_output=True)
     import json
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies,
-              'dev.horizonlab.parity.KnockbackClient']
+              'dev.sunriselab.parity.KnockbackClient']
     net.PLAYERS = ('Alice',)
     net.PROPERTIES['allow-flight'] = 'true'  # the scripted client holds its airborne position
     net.SETUP = ['cmd Alice gamerule spawn_mobs false']
     net.CASES = cases()
     world = net.generate_world(vanilla_server, build)
     native = net.run_side('vanilla', vanilla_server, client, build, world)
-    rust = net.run_side('horizon', horizon_server, client, build, world)
+    rust = net.run_side('sunrise', sunrise_server, client, build, world)
     expected = {case: ['Alice wind source x=0 vx=0'] for case in net.CASES}
     assert shown(native) == expected, f'vanilla did not exercise the old source: {shown(native)}'
     assert any('step=gliding gliding true' in line for line in native), 'vanilla never started gliding'
-    assert any('step=gliding gliding true' in line for line in rust), 'Horizon never started gliding'
+    assert any('step=gliding gliding true' in line for line in rust), 'Sunrise never started gliding'
     assert shown(rust) == expected, f'item use overtaken by a move: {shown(rust)}'
     lab.write_json(report, dict(schema=1, minecraft=lock['minecraft']['version'], cases=len(net.CASES),
-                               scope=__doc__, output_sha256=lab.digest(build / 'horizon.txt', 'sha256')))
+                               scope=__doc__, output_sha256=lab.digest(build / 'sunrise.txt', 'sha256')))
     print(f'item use order: {len(net.CASES)} cases match vanilla')
 
 

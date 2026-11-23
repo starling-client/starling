@@ -48,7 +48,7 @@ def run(invocation, env, timed, shim, run_one):
         log = Path(scratch, "violations")
         log.touch()
         preload = os.pathsep.join(filter(None, [str(shim), os.environ.get("LD_PRELOAD")]))
-        result = run_one(binary, {**env, "LD_PRELOAD": preload, "HORIZON_NETWORK_GUARD_LOG": str(log)},
+        result = run_one(binary, {**env, "LD_PRELOAD": preload, "SUNRISE_NETWORK_GUARD_LOG": str(log)},
                          args, timed, listing_env=env)
         records = log.read_text().splitlines()
         markers = {line for line in records if re.fullmatch(r"loaded [0-9]+", line)}

@@ -42,7 +42,7 @@ Refs #3473 for typed cross-level UUID lookup.
 ## Registry image build context: carried
 
 Refs #3472. Vocabulary generation tracks the engine's native hook declarations.
-The registry image now copies `crates/horizon-client/src/game/native_hooks`, and
+The registry image now copies `crates/sunrise-client/src/game/native_hooks`, and
 Railway watches that directory. This addresses the missing build-context input;
 a registry image build was not run locally.
 

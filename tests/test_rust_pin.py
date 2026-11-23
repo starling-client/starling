@@ -49,7 +49,7 @@ class RustPinTests(unittest.TestCase):
 
     def test_the_launcher_and_wasm_toolchains_read_the_pin(self):
         for path, include in (("launcher/src/rust_toolchain.rs", '"../../tools/ci/rust-version"'),
-                              ("crates/cargo-horizon-mod/src/wasm.rs", '"../../../tools/ci/rust-version"')):
+                              ("crates/cargo-sunrise-mod/src/wasm.rs", '"../../../tools/ci/rust-version"')):
             with self.subTest(path=path):
                 self.assertIn(f"include_str!({include}).trim_ascii()", (ROOT / path).read_text())
 

@@ -8,15 +8,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 BASE = 'cb01ae304c7136f1598f97650c63ccfc1da47b90'
 BLOCKS = runpy.run_path(str(Path(__file__).with_name('rename.py')))['blocks']
-PHASE = ROOT / 'crates/horizon-mod-api/src/world/phase.rs'
+PHASE = ROOT / 'crates/sunrise-mod-api/src/world/phase.rs'
 
 
 def main():
-    old_phase = subprocess.check_output(['git', 'show', BASE + ':crates/horizon-mod-api/src/world/phase.rs'], text=True)
+    old_phase = subprocess.check_output(['git', 'show', BASE + ':crates/sunrise-mod-api/src/world/phase.rs'], text=True)
     start = old_phase.index('    let metadata = matches!(')
     end = old_phase.index('    let settings =', start)
     names = set(re.findall(r'"(\w+)"', old_phase[start:end]))
-    for path in sorted((ROOT / 'crates/horizon-mod-api/src/host').glob('*.rs')):
+    for path in sorted((ROOT / 'crates/sunrise-mod-api/src/host').glob('*.rs')):
         source = path.read_text()
         edits = []
         for trait, body, offset in BLOCKS(source, r'pub trait (\w+)\s*\{'):
@@ -33,7 +33,7 @@ def main():
                 return f'    #[access({access})]\n{marker}{signature};'
             new_body, count = re.subn(pattern, replace, body)
             if count:
-                edits.append((trait.start(), offset + len(body), '#[horizon_mod_api_macros::host_area]\n' + source[trait.start():offset] + new_body))
+                edits.append((trait.start(), offset + len(body), '#[sunrise_mod_api_macros::host_area]\n' + source[trait.start():offset] + new_body))
         for start, end, replacement in reversed(edits):
             source = source[:start] + replacement + source[end:]
         source = re.sub(r'(?m)^//!.*$', '//! Host method declarations; access defaults and game forwarders are generated.', source, count=1)

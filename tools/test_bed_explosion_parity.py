@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A bed used in the Nether blows up as vanilla's does, for all four facings, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's each serve a copy of one flat world. Alice (survival, Normal, 200 health,
+A vanilla dedicated server and Sunrise's each serve a copy of one flat world. Alice (survival, Normal, 200 health,
 full netherite) stands in the Nether on an obsidian floor at y=200 and right-clicks a bed's head (the pillow). For
 each facing (north, south, west, east) she stands in three places: behind the bed's foot, beside the head, and beside
 the foot with an obsidian block hiding her from the head. Her health after the blast and the push her client is sent
@@ -227,34 +227,34 @@ def main():
     lock, jars, libraries = base.verify_artifacts()
     build = lab.LOCAL / NAME
     build.mkdir(parents=True, exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/KnockbackClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/KnockbackClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                    check=True, capture_output=True)
     import json
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.KnockbackClient']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.KnockbackClient']
     kb.CASES, kb.SETUP, kb.PLAYERS = CASES, SETUP, ('Alice',)
     kb.PROPERTIES['allow-flight'] = 'true'
     world = generate_world(vanilla_server, build)
     vanilla = compared(kb.run_side('vanilla', vanilla_server, client, build, world))
-    horizon = compared(kb.run_side('horizon', horizon_server, client, build, world))
+    sunrise = compared(kb.run_side('sunrise', sunrise_server, client, build, world))
     differ = []
     for case in CASES:
-        want, got = vanilla.get(case, []), horizon.get(case, [])
+        want, got = vanilla.get(case, []), sunrise.get(case, [])
         if not any('entity data' in l for l in want) or any(l.startswith(('error', 'disconnected')) for l in want):
             raise AssertionError(f'{case}: vanilla recorded no health or failed: {want}')
         if want != got:
-            differ.append(f'{case}:\n' + '\n'.join(difflib.unified_diff(want, got, 'vanilla', 'horizon', n=1, lineterm='')))
+            differ.append(f'{case}:\n' + '\n'.join(difflib.unified_diff(want, got, 'vanilla', 'sunrise', n=1, lineterm='')))
     if differ:
         raise AssertionError(f'{len(differ)} cases differ:\n' + '\n'.join(differ)[:8000])
     print(f'bed explosion: {len(CASES)} of {len(CASES)} cases identical')

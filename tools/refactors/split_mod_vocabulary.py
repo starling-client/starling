@@ -10,8 +10,8 @@ import pathlib
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-OLD = pathlib.Path('crates/horizon-mod-api/src')
-NEW = pathlib.Path('crates/horizon-mod-vocab/src')
+OLD = pathlib.Path('crates/sunrise-mod-api/src')
+NEW = pathlib.Path('crates/sunrise-mod-vocab/src')
 BASE = 'e96c76c0b9'
 STAY = {
     'wire/wire_guest.rs', 'wire/wire_resources.rs', 'wire/static_strings.rs',

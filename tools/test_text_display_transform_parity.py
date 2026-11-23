@@ -20,9 +20,9 @@ def main():
     cp = os.pathsep.join(map(str, [jars['client'], jars['server'], *libraries]))
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTextDisplayTransformOracle.java'
-    sources = [oracle, lab.ROOT/'crates/horizon-client/src/text_display.rs',
-        lab.ROOT/'crates/horizon-client/src/game/entities/text_displays.rs']
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTextDisplayTransformOracle.java'
+    sources = [oracle, lab.ROOT/'crates/sunrise-client/src/text_display.rs',
+        lab.ROOT/'crates/sunrise-client/src/game/entities/text_displays.rs']
     tested = base.source_hashes(sources)
     source = lab.LOCAL / 'text-display-parity/java.jsonl'
     # Every billboard mode, coupled and independent entity/camera rotations.
@@ -35,8 +35,8 @@ def main():
                     cases.append(dict(state, angles=[yaw, pitch, *camera]))
     inputs = build / 'cases.jsonl'
     inputs.write_text(''.join(json.dumps(case) + '\n' for case in cases))
-    harness.run_logged(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',lab.ROOT/'mods/horizon/src/test/java','-cp',cp,'-d',classes,oracle],build,'compile-java')
-    harness.run_logged(['java','-Xmx1G','-cp',str(classes)+os.pathsep+cp,'dev.horizonlab.parity.VanillaTextDisplayTransformOracle',inputs,build/'java.jsonl'],build,'java')
+    harness.run_logged(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',lab.ROOT/'mods/sunrise/src/test/java','-cp',cp,'-d',classes,oracle],build,'compile-java')
+    harness.run_logged(['java','-Xmx1G','-cp',str(classes)+os.pathsep+cp,'dev.sunriselab.parity.VanillaTextDisplayTransformOracle',inputs,build/'java.jsonl'],build,'java')
     command = harness.build_probe(build,'text_display_fixture')
     harness.run_logged([*command,inputs,build/'rust.jsonl'],build,'rust')
     java = [json.loads(line) for line in (build/'java.jsonl').read_text().splitlines()]

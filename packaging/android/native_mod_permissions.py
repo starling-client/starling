@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What of Android a native mod needs that the game asks the player for, read from the mod's source.
 
-A native mod is written for Horizon on a computer, where nothing asks before a program opens the
+A native mod is written for Sunrise on a computer, where nothing asks before a program opens the
 microphone; on Android the app must hold the permission, and ask the player for it. The mod is
 never changed for that (it is plug and play): native_build.sh writes what this finds in the
 build's build.json, each mod with its own, and StarlingActivity asks for it, saying which mod

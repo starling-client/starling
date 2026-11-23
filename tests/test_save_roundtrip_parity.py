@@ -40,10 +40,10 @@ class WindowsPath(type(Path())):
 class SaveRoundtripPathsTests(unittest.TestCase):
     def test_windows_paths_accept_expected_changes_but_retain_real_differences(self):
         with tempfile.TemporaryDirectory() as folder:
-            vanilla, horizon = WindowsPath(folder) / 'vanilla', WindowsPath(folder) / 'horizon'
+            vanilla, sunrise = WindowsPath(folder) / 'vanilla', WindowsPath(folder) / 'sunrise'
             for world, rule, health, slot, score in (
                 (vanilla, 24, 20.0, 0, 1),
-                (horizon, 30, 18.0, 1, 2),
+                (sunrise, 30, 18.0, 1, 2),
             ):
                 files = {
                     'level.dat': compound(),
@@ -62,7 +62,7 @@ class SaveRoundtripPathsTests(unittest.TestCase):
                     path.write_bytes(gzip.compress(tag(10, '', payload)))
             # This fixture has no region entities or leash holders.
             with patch.object(roundtrip.scene, 'LEADS', 0):
-                report = roundtrip.compare_worlds(vanilla, horizon)
+                report = roundtrip.compare_worlds(vanilla, sunrise)
             self.assertCountEqual(report, [
                 ('data/minecraft/custom.dat.score', 1, 2),
                 ('players/data/player.dat.Health', ('f', 20.0), ('f', 18.0)),

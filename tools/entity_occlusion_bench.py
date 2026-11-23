@@ -15,7 +15,7 @@ import perf_bench as bench
 import stress_scenes as stress
 
 # Keep this run isolated from the normal benchmark workspace.
-bench.WORK = Path('/tmp/horizon-entity-occlusion-release-quick')
+bench.WORK = Path('/tmp/sunrise-entity-occlusion-release-quick')
 shutil.rmtree(bench.WORK, ignore_errors=True)
 bench.WORK.mkdir(parents=True)
 
@@ -87,7 +87,7 @@ original_write_options = bench.write_options
 
 def write_options(game_dir, distance, version=None):
     text = original_write_options(game_dir, distance, version)
-    (game_dir / 'horizon-graphics.txt').write_text(
+    (game_dir / 'sunrise-graphics.txt').write_text(
         f'entityCulling:{CURRENT_MODE}\n'
         'entityCullingPrecheck:64\n'
         'graphicsApi:opengl\n'
@@ -100,7 +100,7 @@ bench.write_options = write_options
 original_game_env = lab.game_env
 
 def game_env(base=None, **extra):
-    extra['HORIZON_OCCLUSION_CULL_COUNTS'] = '1'
+    extra['SUNRISE_OCCLUSION_CULL_COUNTS'] = '1'
     return original_game_env(base, **extra)
 
 bench.lab.game_env = game_env
@@ -139,8 +139,8 @@ def percentile(values, fraction):
 def args_for():
     return Namespace(
         build=str(ROOT / 'target/release'),
-        game='horizon',
-        resources=str(ROOT / '.local/horizon-client/26.3'),
+        game='sunrise',
+        resources=str(ROOT / '.local/sunrise-client/26.3'),
         width=1280,
         height=720,
         offscreen=True,
@@ -165,7 +165,7 @@ if __name__ == '__main__':
         before = len(RAW)
         SHOT_INDEX = 0
         print(f'=== {mode} (release/OpenGL, 2 s per scene) ===', flush=True)
-        result = bench.run_horizon(args, 8)
+        result = bench.run_sunrise(args, 8)
         mode_raw = [summary for run_mode, summary in RAW[before:] if run_mode == mode]
         mode_out = {}
         for name in SCENE_NAMES:

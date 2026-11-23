@@ -23,7 +23,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     work = root / "target/wire-depth-wasm"
     package = work / "vocab"
-    source = root / "crates/horizon-mod-vocab"
+    source = root / "crates/sunrise-mod-vocab"
     shutil.copytree(source / "src", package / "src", dirs_exist_ok=True)
     build = (source / "build.rs").read_text()
     build = build.replace('std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..")',

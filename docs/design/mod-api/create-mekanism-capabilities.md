@@ -4,7 +4,7 @@ Clean-room capability audit of main `5c2583c030` (2026-11-08); no foreign mod or
 
 Source abbreviations: [items](https://wiki.aidancbrady.com/wiki/Logistical_Transporter), [fluids](https://wiki.aidancbrady.com/wiki/Mechanical_Pipe) (v9 upgrade note), [energy](https://wiki.aidancbrady.com/wiki/Universal_Cable) (V10 upgrade note), [chemicals](https://wiki.aidancbrady.com/wiki/Pressurized_Tube), [sides](https://wiki.aidancbrady.com/wiki/Machine_Configuration) are official Mekanism user wiki pages. They motivate operations, not engine implementation details.
 
-Repository references below are verified paths and lines. Prefix **API** = `crates/horizon-mod-vocab/src/`; **Game** = `crates/horizon-client/src/game/`.
+Repository references below are verified paths and lines. Prefix **API** = `crates/sunrise-mod-vocab/src/`; **Game** = `crates/sunrise-client/src/game/`.
 
 | Engine capability (public reason) | Status | Evidence and covered route |
 |---|---|---|

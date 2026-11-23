@@ -6,7 +6,7 @@ to it, each with its block entity, and runs DoubleBlockCombiner's
 combineWithNeigbour as ChestBlock.combine does: the double chest's halves
 (the right one first) or a single chest. That pairing decides a chest's
 menu (9x6 or 9x3), what a hopper fills and the lid both halves share. The
-Rust example (chest_pair_fixture) answers with horizon_client::containers'
+Rust example (chest_pair_fixture) answers with sunrise_client::containers'
 ChestHalf, which the game's menus and hoppers use. Compared for chests,
 trapped chests and copper chests in every weathering state, waxed or not,
 next to each of them and a barrel, with every chest type, two facings and
@@ -55,7 +55,7 @@ def main():
     all_cases = cases()
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in all_cases), encoding='utf-8')
     vanilla.run('VanillaChestPairOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'chest_pair_fixture', work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'chest_pair_fixture', work / 'cases.jsonl', work / 'rust.txt')
     errors = sum(line == 'error' for line in (work / 'native.txt').read_text(encoding='utf-8').split('\n'))
     if errors:
         print(f'{errors} cases fail in vanilla')

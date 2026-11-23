@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Horizon's command parser with vanilla's real Brigadier command tree.
+"""Compare Sunrise's command parser with vanilla's real Brigadier command tree.
 
 Java (VanillaCommandParseOracle) builds vanilla's `Commands` dispatcher with
 the real registries and data-pack loaded tags, exports the whole tree, and
@@ -41,7 +41,7 @@ def main():
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandParseOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandParseOracle.java'
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependency_path = os.pathsep.join(map(str, libraries))
@@ -56,7 +56,7 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
 
     def java(*arguments):
-        run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]), 'dev.horizonlab.parity.VanillaCommandParseOracle', *arguments], 'java-' + arguments[0])
+        run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]), 'dev.sunriselab.parity.VanillaCommandParseOracle', *arguments], 'java-' + arguments[0])
 
     java('registries', str(build))
     java('tree', str(build))
@@ -64,7 +64,7 @@ def main():
     registries = json.loads((build / 'registries.json').read_text())
     corpus = corpus_module.corpus(tree, registries)
     (build / 'corpus.txt').write_text(''.join(line + '\n' for line in corpus), encoding='utf-8')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast/examples' / ('client_probe.exe' if os.name=='nt' else 'client_probe')
     resources = lab.RESOURCES

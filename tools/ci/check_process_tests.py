@@ -10,7 +10,7 @@ function of the same file. A function starts one when its body:
   process; a `use ... as` alias of one counts too);
 - calls a function of the same file that starts one (bare, `self.`, `Self::`, `super::` or `Type::`), until nothing
   changes.
-Starting a process on a loaded machine can take ten times its measured time (cargo-horizon-mod's internals test:
+Starting a process on a loaded machine can take ten times its measured time (cargo-sunrise-mod's internals test:
 0.5 s measured, 5.47 s on the runner), so the daily run, not `verify`, runs these tests. Move one with
 `#[ignore = "daily"]` and its row, `python3 tools/ci/move_to_daily.py apply LIST`, reason `child-process`.
 
@@ -40,8 +40,8 @@ BUILDS = re.compile(r"\bCommand\b|\.\s*(?:args?|env|current_dir)\s*\(")
 # Kept unblanked by rust_tests.functions(keep=...), so `#[cfg(target_os = "windows")]` is seen.
 WINDOWS = frozenset({"windows"})
 WINDOWS_ONLY = re.compile(r"#\s*\[\s*cfg\s*\(\s*(?:windows|target_os\s*=\s*\"windows\")\s*\)\s*\]")
-# The crates/horizon-client tree also builds horizon-client-lib (its [lib] path reaches into it).
-SHARED = {"crates/horizon-client": ("horizon-client", "horizon-client-lib")}
+# The crates/sunrise-client tree also builds sunrise-client-lib (its [lib] path reaches into it).
+SHARED = {"crates/sunrise-client": ("sunrise-client", "sunrise-client-lib")}
 
 
 def spawn_names(path=SPAWNS):

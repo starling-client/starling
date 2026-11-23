@@ -1,37 +1,37 @@
 //! Repository-selected identity. An upstream build retains its original namespaces.
 macro_rules! identity {
     ($($name:ident: $upstream:literal => $fork:literal),* $(,)?) => {$ (
-        pub const $name: &str = if cfg!(horizon_fork_launcher) { $fork } else { $upstream };
+        pub const $name: &str = if cfg!(sunrise_fork_launcher) { $fork } else { $upstream };
     )*};
 }
 identity! {
-    VERSION_PREFIX: "horizon-launcher " => "horizon-fork-launcher ",
-    DESKTOP_ENTRY: "horizon-launcher.desktop" => "io.github.arismoko.horizonfork.launcher.desktop",
-    WINDOW_TITLE: "Horizon" => "Horizon Fork Launcher (arismoko)",
-    QUIT_LABEL: "Quit Horizon Launcher" => "Quit Horizon Fork Launcher (arismoko)",
-    DISPLAY_NAME: "Horizon Launcher" => "Horizon Fork Launcher (arismoko)",
-    EXECUTABLE: "horizon-launcher" => "horizon-fork-launcher",
-    WINDOWS_EXECUTABLE: "horizon-launcher.exe" => "horizon-fork-launcher.exe",
-    WINDOWS_EXECUTABLE_PREFIX: "horizon-launcher.exe." => "horizon-fork-launcher.exe.",
-    APP_ID: "horizon-launcher" => "io.github.arismoko.horizonfork.launcher",
-    KEYCHAIN_SERVICE: "dev.playhorizon.launcher" => "io.github.arismoko.horizonfork.launcher",
-    LOCATION_FOLDER: "horizon-launcher-location" => "horizon-fork-arismoko-location",
-    LAUNCHER_FOLDER: "horizon-launcher" => "horizon-fork-arismoko/launcher",
-    GAME_FOLDER: "horizon" => "horizon-fork-arismoko/game",
-    PUBLISHER: "Horizon" => "arismoko",
-    UNINSTALL_KEY: "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\HorizonLauncher" => "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ArismokoHorizonForkLauncher",
-    INSTALL_KEY: "Software\\Horizon\\Launcher" => "Software\\ArismokoHorizonFork\\Launcher",
-    REGISTRY_PARENT: "Software\\Horizon" => "Software\\ArismokoHorizonFork",
-    UNINSTALL_PREFIX: "horizon-launcher-uninstall-" => "horizon-fork-launcher-uninstall-",
-    SETUP_PREFIX: "horizon-launcher-setup" => "horizon-fork-launcher-setup",
-    PROCESS_FILTER: "IMAGENAME eq horizon-launcher.exe" => "IMAGENAME eq horizon-fork-launcher.exe",
+    VERSION_PREFIX: "sunrise-launcher " => "sunrise-fork-launcher ",
+    DESKTOP_ENTRY: "sunrise-launcher.desktop" => "io.github.arismoko.sunrisefork.launcher.desktop",
+    WINDOW_TITLE: "Sunrise" => "Sunrise Fork Launcher (arismoko)",
+    QUIT_LABEL: "Quit Sunrise Launcher" => "Quit Sunrise Fork Launcher (arismoko)",
+    DISPLAY_NAME: "Sunrise Launcher" => "Sunrise Fork Launcher (arismoko)",
+    EXECUTABLE: "sunrise-launcher" => "sunrise-fork-launcher",
+    WINDOWS_EXECUTABLE: "sunrise-launcher.exe" => "sunrise-fork-launcher.exe",
+    WINDOWS_EXECUTABLE_PREFIX: "sunrise-launcher.exe." => "sunrise-fork-launcher.exe.",
+    APP_ID: "sunrise-launcher" => "io.github.arismoko.sunrisefork.launcher",
+    KEYCHAIN_SERVICE: "dev.playhorizon.launcher" => "io.github.arismoko.sunrisefork.launcher",
+    LOCATION_FOLDER: "sunrise-launcher-location" => "horizon-fork-arismoko-location",
+    LAUNCHER_FOLDER: "sunrise-launcher" => "horizon-fork-arismoko/launcher",
+    GAME_FOLDER: "sunrise" => "horizon-fork-arismoko/game",
+    PUBLISHER: "Sunrise" => "arismoko",
+    UNINSTALL_KEY: "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SunriseLauncher" => "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ArismokoSunriseForkLauncher",
+    INSTALL_KEY: "Software\\Sunrise\\Launcher" => "Software\\ArismokoSunriseFork\\Launcher",
+    REGISTRY_PARENT: "Software\\Sunrise" => "Software\\ArismokoSunriseFork",
+    UNINSTALL_PREFIX: "sunrise-launcher-uninstall-" => "sunrise-fork-launcher-uninstall-",
+    SETUP_PREFIX: "sunrise-launcher-setup" => "sunrise-fork-launcher-setup",
+    PROCESS_FILTER: "IMAGENAME eq sunrise-launcher.exe" => "IMAGENAME eq sunrise-fork-launcher.exe",
 }
 
 /// Product home used by the Windows installer's About link.
-pub const ABOUT_URL: &str = if cfg!(horizon_fork_launcher) {
-    horizon_addresses::FORK_LAUNCHER_ABOUT
+pub const ABOUT_URL: &str = if cfg!(sunrise_fork_launcher) {
+    sunrise_addresses::FORK_LAUNCHER_ABOUT
 } else {
-    horizon_addresses::LAUNCHER_ABOUT
+    sunrise_addresses::LAUNCHER_ABOUT
 };
 
 /// The complete launcher-owned suffix, not just a generic leaf selected by an override.
@@ -62,8 +62,8 @@ mod tests {
         assert!(owns_launcher_data_dir(
             &profile.join(LAUNCHER_FOLDER.to_ascii_uppercase())
         ));
-        let other = if cfg!(horizon_fork_launcher) {
-            "horizon-launcher"
+        let other = if cfg!(sunrise_fork_launcher) {
+            "sunrise-launcher"
         } else {
             "horizon-fork-arismoko/launcher"
         };

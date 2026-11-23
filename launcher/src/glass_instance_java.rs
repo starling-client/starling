@@ -6,10 +6,10 @@ use crate::glass_ui::{self as ui, white};
 use glass_instance::{
     choice, choice_text, letter_tile, list_box, list_choice, loaders, section, tick, tile_image,
 };
-use horizon_launcher::instances::{self, Instance, Plays, Unkept};
-use horizon_launcher::loaders::Loader;
-use horizon_launcher::minecraft_versions::Kind as VersionKind;
-use horizon_theme::glass::{fill, ink, radius};
+use sunrise_launcher::instances::{self, Instance, Plays, Unkept};
+use sunrise_launcher::loaders::Loader;
+use sunrise_launcher::minecraft_versions::Kind as VersionKind;
+use sunrise_theme::glass::{fill, ink, radius};
 use new_instance::{NewKind, VersionList};
 use servers_page::Field;
 
@@ -41,7 +41,7 @@ impl Launcher {
                     .px(px(12.))
                     .rounded(px(radius::CONTROL))
                     .cursor_pointer()
-                    .font_family(horizon_theme::glass::FONT)
+                    .font_family(sunrise_theme::glass::FONT)
                     .text_size(px(13.))
                     .when(on, |d| {
                         d.bg(white(fill::BUTTON_HOVER))
@@ -209,13 +209,13 @@ impl Launcher {
         )
     }
 
-    /// What the dialog has `editing` play: Horizon, or a Java game with its loader. The loader
+    /// What the dialog has `editing` play: Sunrise, or a Java game with its loader. The loader
     /// keeps its version while its kind and Minecraft stay; a new one's (empty here) is the
     /// newest stable, asked of its service on Save.
     pub(super) fn draft_plays(&self, editing: &Instance) -> Option<Plays> {
         let d = self.instances.dialog.as_ref()?;
-        if d.java.kind == NewKind::Horizon {
-            return Some(Plays::Horizon);
+        if d.java.kind == NewKind::Sunrise {
+            return Some(Plays::Sunrise);
         }
         let minecraft = self.draft_minecraft()?;
         let loader = (d.java.kind == NewKind::Modded).then(|| {
@@ -240,8 +240,8 @@ impl Launcher {
         if to == Plays::of(editing) {
             return None;
         }
-        let horizon = backend::game_version(&self.draft_horizon().unwrap_or_default());
-        let lines: Vec<String> = instances::unkept(editing, &to, &horizon)
+        let sunrise = backend::game_version(&self.draft_sunrise().unwrap_or_default());
+        let lines: Vec<String> = instances::unkept(editing, &to, &sunrise)
             .into_iter()
             .map(|u| match u {
                 Unkept::Mods { made_for, .. } => trf(
@@ -261,7 +261,7 @@ impl Launcher {
         if lines.is_empty() {
             return None;
         }
-        let warn = ui::color(horizon_theme::glass::WARN);
+        let warn = ui::color(sunrise_theme::glass::WARN);
         Some(
             div()
                 .flex()

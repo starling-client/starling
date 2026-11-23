@@ -424,7 +424,7 @@ impl super::Device {
             key.shader_model.to_str()
         );
 
-        // Horizon: a shader compiled in an earlier run comes from the disk.
+        // Sunrise: a shader compiled in an earlier run comes from the disk.
         let disk_key = super::disk_cache::key(
             self.compiler_container.cache_name(),
             key.shader_model.to_str(),

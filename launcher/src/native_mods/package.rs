@@ -1,12 +1,12 @@
 //! Validated flat packages and launcher-owned horizon-mixins input.
 use super::{Bundle, MANIFEST};
-use horizon_mod_package::mod_surface::uses::USES_FILE;
-use horizon_mod_package::{manifest, Package};
+use sunrise_mod_package::mod_surface::uses::USES_FILE;
+use sunrise_mod_package::{manifest, Package};
 use std::{fs, path::Path};
 
 pub(super) fn read(dir: &Path) -> Result<Option<Bundle>, String> {
     for old in [
-        "horizon-native.json",
+        "sunrise-native.json",
         "horizon-mixin.toml",
         "native",
         "rust",
@@ -56,7 +56,7 @@ pub(super) fn tool_manifest(bundle: &Bundle) -> Result<(), String> {
         "compatibility".into(),
         toml::Value::Table(toml::Table::from_iter([(
             "horizon_revision".into(),
-            bundle.native().horizon.clone().into(),
+            bundle.native().sunrise.clone().into(),
         )])),
     );
     for (name, rows) in [
@@ -133,34 +133,34 @@ fn copy_files(to: &Path, files: impl IntoIterator<Item = (String, Vec<u8>)>) -> 
 /// into one game binary, and every other native refusal stops that build the same way. Leaving
 /// one mod out would quietly build a different set than the player enabled.
 pub(super) fn checked_bundles(folder: &Path) -> Result<Vec<Bundle>, String> {
-    let paths = horizon_mod_package::find(folder)
+    let paths = sunrise_mod_package::find(folder)
         .into_iter()
-        .chain(horizon_mod_package::find(
+        .chain(sunrise_mod_package::find(
             &folder
                 .parent()
                 .unwrap_or(folder)
-                .join(horizon_mod_package::mod_list::DIR),
+                .join(sunrise_mod_package::mod_list::DIR),
         ));
-    if let Some((id, error)) = horizon_mod_package::selection::package_errors(paths)
+    if let Some((id, error)) = sunrise_mod_package::selection::package_errors(paths)
         .into_iter()
         .next()
     {
         return Err(format!("{id}: {error}"));
     }
     let found = super::scan_bundles(folder)?;
-    let wasm: Vec<_> = horizon_mod_package::find(folder)
+    let wasm: Vec<_> = sunrise_mod_package::find(folder)
         .into_iter()
-        .chain(horizon_mod_package::find(
+        .chain(sunrise_mod_package::find(
             &folder
                 .parent()
                 .unwrap_or(folder)
-                .join(horizon_mod_package::mod_list::DIR),
+                .join(sunrise_mod_package::mod_list::DIR),
         ))
-        .filter_map(|path| horizon_mod_package::Package::read(&path).ok())
+        .filter_map(|path| sunrise_mod_package::Package::read(&path).ok())
         .filter(|package| package.manifest.wasm.is_some())
         .collect();
     for bundle in &found {
-        let dependent = horizon_mod_package::Package::read(&bundle.dir)?;
+        let dependent = sunrise_mod_package::Package::read(&bundle.dir)?;
         for library in &wasm {
             if !dependent
                 .manifest
@@ -221,21 +221,21 @@ mod mixed_tests {
         fs::write(
             addon.join(manifest::MANIFEST),
             format!(
-                "{}[dependencies]\nlib='*'\n[native]\ngame='26.3'\nhorizon='{}'\nmixins='{}'\n",
+                "{}[dependencies]\nlib='*'\n[native]\ngame='26.3'\nsunrise='{}'\nmixins='{}'\n",
                 header("addon"),
                 "a".repeat(40),
                 "b".repeat(40)
             ),
         )
         .unwrap();
-        let module = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x00\x0f\x08\x64\x79\x6c\x69\x6e\x6b\x2e\x30\x01\x04\x00\x00\x00\x00\x01\x04\x01\x60\x00\x00\x03\x02\x01\x00\x07\x2e\x03\x0e\x68\x6f\x72\x69\x7a\x6f\x6e\x5f\x6c\x61\x79\x6f\x75\x74\x00\x00\x0a\x68\x6f\x72\x69\x7a\x6f\x6e\x5f\x69\x6e\x00\x00\x0c\x68\x6f\x72\x69\x7a\x6f\x6e\x5f\x68\x6f\x6f\x6b\x00\x00\x0a\x04\x01\x02\x00\x0b";
+        let module = b"\x00\x61\x73\x6d\x01\x00\x00\x00\x00\x0f\x08\x64\x79\x6c\x69\x6e\x6b\x2e\x30\x01\x04\x00\x00\x00\x00\x01\x04\x01\x60\x00\x00\x03\x02\x01\x00\x07\x2e\x03\x0e\x73\x75\x6e\x72\x69\x73\x65\x5f\x6c\x61\x79\x6f\x75\x74\x00\x00\x0a\x73\x75\x6e\x72\x69\x73\x65\x5f\x69\x6e\x00\x00\x0c\x73\x75\x6e\x72\x69\x73\x65\x5f\x68\x6f\x6f\x6b\x00\x00\x0a\x04\x01\x02\x00\x0b";
         fs::write(library.join("mod.wasm"), module).unwrap();
         fs::write(
             library.join(manifest::MANIFEST),
             format!(
                 "{}[wasm]\nsha512='{}'\ntoolchain='t'\nbuilt_with='t'\n",
                 header("lib"),
-                horizon_mod_package::manifest::sha512_of(module),
+                sunrise_mod_package::manifest::sha512_of(module),
             ),
         )
         .unwrap();
@@ -276,7 +276,7 @@ mod state_tests {
     fn native_state_is_refused_before_staging() {
         let dir = super::super::tests::dir("state-refusal");
         super::super::tests::write_bundle(&dir, "stateful", "");
-        let path = dir.join(horizon_mod_package::manifest::MANIFEST);
+        let path = dir.join(sunrise_mod_package::manifest::MANIFEST);
         let mut text = std::fs::read_to_string(&path).unwrap();
         text.push_str("\n[[native.state]]\nid='autosave'\ntarget='game::Game'\nty='u32'\ninitial='0'\nconstructor=[]\n");
         std::fs::write(path, text).unwrap();

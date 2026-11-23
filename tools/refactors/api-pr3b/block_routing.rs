@@ -1,4 +1,4 @@
-extern crate self as horizon_world;
+extern crate self as sunrise_world;
 extern crate self as log;
 extern crate self as mod_api;
 #[macro_export]

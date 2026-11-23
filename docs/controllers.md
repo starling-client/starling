@@ -1,6 +1,6 @@
 # Controllers
 
-Horizon plays with PlayStation (DualShock 4, DualSense), Xbox (360, One,
+Sunrise plays with PlayStation (DualShock 4, DualSense), Xbox (360, One,
 Series) and Nintendo Switch Pro controllers, and on the Steam Deck with its
 built-in controls. Keyboard and mouse keep working exactly as before: with no
 controller connected, or with controllers turned off, nothing changes.
@@ -11,7 +11,7 @@ Nothing. Minecraft Java 26.3 never calls GLFW's gamepad or joystick API, has
 no controller options and ships no button glyphs. Its only non-mouse UI input
 is keyboard focus navigation (`InputType.KEYBOARD_ARROW` / `KEYBOARD_TAB`:
 arrows and Tab move a focus ring between widgets). So controller support is
-Horizon's own feature. Its default buttons are Horizon's own; analog walking and toggle sneak follow
+Sunrise's own feature. Its default buttons are Sunrise's own; analog walking and toggle sneak follow
 Bedrock Edition on consoles.
 
 ## Input layer
@@ -20,14 +20,14 @@ Bedrock Edition on consoles.
 libudev for hot-plugging), IOKit on macOS, Windows.Gaming.Input on Windows.
 Its SDL mapping database normalizes every pad to one positional layout
 (South/East/West/North face buttons, bumpers, triggers, sticks, D-pad,
-Select/Start). Horizon also injects a few SDL rows gilrs' bundled DB still
+Select/Start). Sunrise also injects a few SDL rows gilrs' bundled DB still
 misses (notably the 8BitDo Ultimate 2 on Linux/Bluetooth, whose right stick
 is on ABS_Z/ABS_RX without that row), and corrects that pad by vendor/product
 when no SDL row matched. No second windowing or event stack: gilrs is polled
 once per loop iteration next to winit's events.
 
 - The pure logic (mapping table, deadzones and curves, button edges, the
-  settings file, glyph choice) lives in `crates/horizon-client-input/src/gamepad.rs`
+  settings file, glyph choice) lives in `crates/sunrise-client-input/src/gamepad.rs`
   and is unit-tested. The game owns a thin gilrs backend and applies actions.
 - Controller actions go through the same path a keyboard key takes after
   rebinding: an action names a vanilla key mapping (`key.jump`, `key.attack`,
@@ -43,13 +43,13 @@ once per loop iteration next to winit's events.
   speed, as the server only hears the keys: an anticheat predicting from them
   pulls back a player moving at the stick's own angle and speed.
 - The pad last touched is the active one. Several pads are not merged.
-- `horizon-ctl pad ...` injects a virtual pad (buttons, sticks, triggers) into
+- `sunrise-ctl pad ...` injects a virtual pad (buttons, sticks, triggers) into
   a running game, for tests without hardware.
 - On Android (Starling) gilrs has no backend: the game takes Android's own
   key and joystick events for the pad (`KEYCODE_BUTTON_*`, the D-pad, the
   axes X/Y, Z/RZ, HAT_X/HAT_Y, LTRIGGER or BRAKE, RTRIGGER or GAS) before
   winit sees them, through an input hook in the vendored winit
-  (`third_party/winit`, `crates/horizon-client/src/android_lib.rs`); the
+  (`third_party/winit`, `crates/sunrise-client/src/android_lib.rs`); the
   mapping is `gamepad/android.rs`. The pad's maker picks the glyphs, and it
   vibrates through Android's `InputDevice` vibrators. A mouse and a keyboard
   play as on a computer (the mouse captured for mouse look), and the touch
@@ -66,7 +66,7 @@ once per loop iteration next to winit's events.
 | Drop item | D-pad down | D-pad down | `key.drop` |
 | Swap offhand | X | □ | `key.swapOffhand` |
 | Inventory | Y | △ | `key.inventory` |
-| Hotbar left / right | LB / RB | L1 / R1 | Horizon `pad.hotbarPrevious/Next` |
+| Hotbar left / right | LB / RB | L1 / R1 | Sunrise `pad.hotbarPrevious/Next` |
 | Use / place | LT | L2 | `key.use` |
 | Attack / break | RT | R2 | `key.attack` |
 | Sprint | Left stick click | L3 | `key.sprint` |
@@ -74,7 +74,7 @@ once per loop iteration next to winit's events.
 | Change camera | View | Create / Share | `key.togglePerspective` |
 | Pick block | D-pad left | D-pad left | `key.pickItem` |
 | Chat | D-pad up | D-pad up | `key.chat` |
-| Radial menu (hold) | D-pad right | D-pad right | Horizon `pad.radial` |
+| Radial menu (hold) | D-pad right | D-pad right | Sunrise `pad.radial` |
 | Pause / back | Menu | Options | Escape (fixed) |
 
 Advancements has no button of its own: it is on the radial menu's first page,
@@ -116,7 +116,7 @@ same slot.
 
 Two settings in Controller Settings > General, under Radial Menu, change how it
 is held and aimed, saved as `radialMode` and `radialStick` in
-`horizon-controller.txt`:
+`sunrise-controller.txt`:
 
 - Radial Menu: Hold (the default) or Toggle (`radialMode:hold|toggle`). In
   Toggle a press opens it, shown at once, and it stays open with the opener up:
@@ -232,11 +232,11 @@ Camera has Screenshot (up), Hide HUD (right) and Cinematic Camera (down). The
 rest start empty. Slots hold actions from a fixed list
 (`radial::RadialAction`), those that do everything on their press (Fullscreen,
 Quick Actions and the F3 debug screen besides those of the default pages), each shown
-by a short caption (`horizon.radial.action.*`). Its rules are in
-`horizon-client-input/src/radial.rs`, the overlay in
-`horizon-client-render/src/radial_overlay.rs`.
+by a short caption (`sunrise.radial.action.*`). Its rules are in
+`sunrise-client-input/src/radial.rs`, the overlay in
+`sunrise-client-render/src/radial_overlay.rs`.
 
-Pages live in `horizon-controller.txt`, written once they differ from the
+Pages live in `sunrise-controller.txt`, written once they differ from the
 defaults, so each splitscreen profile has its own, after `radialLayout:1` (the
 version of the default page list they were written against). A page the player
 hasn't changed is written as its preset, `radial_<page>_preset:general` or
@@ -246,14 +246,14 @@ what it already is changes nothing, and a page edited back to its default (or
 read from its slots as that) is its preset again; an edited page drops a preset
 id this game doesn't know, which would otherwise replace it. A page of the player's own is
 `radial_<page>_slots` (eight ids, by commas) and its name as
-`radial_<page>_name` (a name Horizon gave it, by language key) or
+`radial_<page>_name` (a name Sunrise gave it, by language key) or
 `radial_<page>_label` (the player's own text, kept as typed);
 `radial_<page>_kind:hotbar` is read and kept for a hotbar page, which this
 version shows with empty slots. Slot ids are vanilla key mappings by name
-(`key.chat`) and Horizon's own in its namespace (`horizon:emote`,
-`horizon:hotbar_next`, `horizon:hotbar_previous`); the ids they had before
+(`key.chat`) and Sunrise's own in its namespace (`sunrise:emote`,
+`sunrise:hotbar_next`, `sunrise:hotbar_previous`); the ids they had before
 (`key.emote`, `pad.hotbarNext`, `pad.hotbarPrevious`) read through an alias
-table. An id this game doesn't know (a newer Horizon's, a mod's) stays in its
+table. An id this game doesn't know (a newer Sunrise's, a mod's) stays in its
 slot, drawn as Missing and dimmed, and never runs, so a slot can't run a
 command. Fields and kinds it doesn't read stay too. A file can hold up to 16
 pages (`PARSE_MAX`), and the lines of any past them are kept; the menu and the
@@ -261,7 +261,7 @@ editor show the first six, and a page deleted there brings the next forward.
 Removing an action empties its slot and moves no other.
 
 Controller Settings > Bindings > Radial Menu edits them, on the settings shell
-(`horizon-client-render/src/radial_editor.rs`): the page list is the pages, by
+(`sunrise-client-render/src/radial_editor.rs`): the page list is the pages, by
 name, and each page has its eight slots by direction (A or a click opens the list
 of every action and Empty for that slot, which names the slot, marks what it holds
 and opens on it; Right steps a slot to the next action, Empty between the last and
@@ -285,7 +285,7 @@ player's resolved glyph style, so nothing that draws a glyph handles it
 ([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
 a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
 Position or By Letter, saved as `nintendoLetters:true|false` in
-`horizon-controller.txt`. By position unless changed (a build for the Switch
+`sunrise-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
 beside it, and changes nothing until a Nintendo controller is the one
 playing (the glyph choice alone doesn't turn it on). Bindings name the part, so a rebinding means the same on
@@ -326,7 +326,7 @@ Don't declare a button Escape deliberately ignores: Optimize World's and a conne
 no pad button, only A on them, and show in `undeclared` for that reason.
 
 A focused text field shows A at its right end. `game/interface/pad_actions.rs` holds this table. A screen that declares nothing keeps
-B as Escape. `horizon-ctl pad status` lists `undeclared`: a button labelled
+B as Escape. `sunrise-ctl pad status` lists `undeclared`: a button labelled
 Done, Back or Cancel on the current screen that didn't declare its job.
 `tools/pad_menu_e2e.py` fails on one in the settings screens. `glyphs` lists what is drawn: each
 button, its `sprite` (null when it is the label on a key) and the `rect` it covers.
@@ -334,7 +334,7 @@ button, its `sprite` (null when it is the label on a key) and the `rect` it cove
 A label wider than its button slides inside it, as vanilla's do
 (`AbstractWidget.extractScrollingStringOverContents`); one under a glyph slides beside it.
 
-Vanilla's screens are all mouse-driven, and Horizon draws them 1:1. A pad
+Vanilla's screens are all mouse-driven, and Sunrise draws them 1:1. A pad
 drives them two ways, each on the screens it suits:
 
 - **Focus**, in menus: a console-style highlight that the D-pad and the left
@@ -466,7 +466,7 @@ most for the narrator: the focused widget is the narration's focused one.
 It looks as vanilla's keyboard focus does: the focused widget draws its
 highlighted sprite, and rows and fields the white outline (as above). As
 for the pad, the screens draw their highlight from the pointer, so the focus
-puts Horizon's pointer (not the OS one, which stays where the mouse left it
+puts Sunrise's pointer (not the OS one, which stays where the mouse left it
 and stays visible) on the focused widget, and Enter is a click there. Moving
 the mouse hands the pointer back; a click or a scroll first puts it back
 where the mouse is.
@@ -474,7 +474,7 @@ where the mouse is.
 Approximations:
 
 - **Tab order** is reading order (top to bottom, then left to right), not
-  vanilla's add order (`children()` by `getTabOrderGroup`). Horizon has no
+  vanilla's add order (`children()` by `getTabOrderGroup`). Sunrise has no
   widget tree, and a screen's buttons and other targets are registered
   separately, so their draw order isn't one sequence; vanilla's layouts add
   widgets row by row, which reading order follows.
@@ -493,7 +493,7 @@ Approximations:
 - Left stick moves the crosshair with acceleration. Let go and it glides
   onto the nearest slot or control; a short flick toward a neighbouring slot
   lands on that slot rather than back where it started. The rules and their
-  numbers live in one place (`horizon_client_input::snap`).
+  numbers live in one place (`sunrise_client_input::snap`).
 - D-pad hops to the nearest target that way (a slot, a button). Held, it stops
   at the edge of the slots it is on; a fresh press crosses.
 - A = left click, X = right click, Y = quick move, B = back; View and the left
@@ -576,7 +576,7 @@ menu, and nothing it presses reaches the game or the screen behind:
 ### Text fields
 
 A on a focused text field (A in pointer mode clicks into it) opens the
-**on-screen keyboard**: a QWERTY grid and a symbols grid in Horizon's design
+**on-screen keyboard**: a QWERTY grid and a symbols grid in Sunrise's design
 language, at the bottom of the screen (at the top when the field is in the
 lower half, as chat is). D-pad or stick to move, A types, X deletes, Y is a
 space, LT is Shift (twice: caps lock), RB switches to symbols and accents,
@@ -605,7 +605,7 @@ Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;
-Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
+Steam + X opens it at any time. "On-Screen Keyboard: Auto / Sunrise / Steam"
 (`keyboard:`) picks one.
 
 ### Screens covered
@@ -613,7 +613,7 @@ Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
 Both modes send the same pointer events, but neither reaches everything. Focus mode
 registers targets on: the title menus (main, world list and its search, create
 and edit world, delete, multiplayer list and its edit screens), every options
-page (vanilla's and Horizon Settings with the pages it opens, key and
+page (vanilla's and Sunrise Settings with the pages it opens, key and
 controller binds, language list), pause and Play with Friends, death, chat, signs and books (their buttons), the
 survival and creative inventories, every container and station (chests,
 furnaces, brewing, crafter, crafting table with its recipe book, anvil,
@@ -625,7 +625,7 @@ book's page text), the pad drives the pointer instead.
 
 ## Glyphs
 
-A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
+A button is drawn as Sunrise's own art where its family has a picture, and otherwise as the label
 printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
 player's jar). Whatever draws or measures a glyph goes through that module, asking for it by what the button
 does (a bound action or a menu job), never by a button: a rebinding or a pad's letters reach every glyph
@@ -647,11 +647,11 @@ were measured from the hand-made art and typed in, so the set matches.
 
  the sprite.
 
-The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
+The art is in `crates/sunrise-client/assets/sunrise/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
 file. A resource pack replaces a picture by bringing the same path,
-`assets/horizon/textures/gui/controller/<file>.png`: the atlas packs other namespaces' `textures/gui/` as
-`horizon:gui/controller/<file>` and adds Horizon's own only when that sprite is missing (`HudAtlas`). A
+`assets/sunrise/textures/gui/controller/<file>.png`: the atlas packs other namespaces' `textures/gui/` as
+`sunrise:gui/controller/<file>` and adds Sunrise's own only when that sprite is missing (`HudAtlas`). A
 pack's picture of another size is drawn in the same place, and a pack can't add a picture for a button
 with no line. An atlas without the sprite falls back to text.
 
@@ -674,8 +674,8 @@ and everything else are Xbox.
 
 ## Options and remapping
 
-Controller settings are Horizon's own: **Options → Controls → Controller
-Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
+Controller settings are Sunrise's own: **Options → Controls → Controller
+Settings...** (or **Options → Sunrise Settings... → Controller Settings...**),
 a screen on the settings shell (`controller_ui.rs` on `settings_shell.rs`, [ui-kit.md](ui-kit.md)), like
 Extras and Graphics, with a search field and General, Bindings and Device pages. The strip under the list
 describes the pointed or focused row, and what a choice's value does. Left and Right step a choice both
@@ -696,7 +696,7 @@ product ids, the detected glyph family and the override, as lines the focus reac
 what each one is. Changes apply at once; **Undo** (X) is there only while something differs from when the
 screen opened, a binding included, and puts back every value and binding as they were. **Done** (B)
 leaves. They live in
-`horizon-controller.txt` next to `options.txt`, like `horizon-graphics.txt`: `options.txt` stays
+`sunrise-controller.txt` next to `options.txt`, like `sunrise-graphics.txt`: `options.txt` stays
 exactly vanilla's, so a vanilla client can share the game folder.
 
 ```
@@ -769,7 +769,7 @@ is silently skipped there.
 ## DualSense output
 
 Gilrs only reads the pads. A DualSense (054c:0ce6, the Edge 054c:0df2) is also
-written to directly, over HID: the `horizon-dualsense` crate builds its output
+written to directly, over HID: the `sunrise-dualsense` crate builds its output
 report and [hidapi](https://crates.io/crates/hidapi) (MIT, bundling the C
 hidapi under its BSD option) sends it: hidraw on Linux, IOKit on macOS (opened
 shared, so gilrs keeps reading the same pad), the HID API on Windows.
@@ -803,7 +803,7 @@ shared, so gilrs keeps reading the same pad), the HID API on Windows.
   0x01 instead and would stop seeing the pad (SDL's
   `SDL_HINT_JOYSTICK_ENHANCED_REPORTS`: "break Windows DirectInput for other
   applications"), so there a pad on Bluetooth gets no output unless
-  `HORIZON_DUALSENSE_BT=1`. Doing it for everyone means reading the pad's
+  `SUNRISE_DUALSENSE_BT=1`. Doing it for everyone means reading the pad's
   input ourselves over HID, as SDL does (a later PR). A pad on both cables is
   written over USB.
 - **Writer thread.** Writes block (a Bluetooth write can take milliseconds),
@@ -824,14 +824,14 @@ shared, so gilrs keeps reading the same pad), the HID API on Windows.
   install it):
 
   ```
-  # /etc/udev/rules.d/70-horizon-dualsense.rules
+  # /etc/udev/rules.d/70-sunrise-dualsense.rules
   KERNEL=="hidraw*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="0ce6|0df2", TAG+="uaccess"
   KERNEL=="hidraw*", KERNELS=="*054C:0CE6*|*054C:0DF2*", TAG+="uaccess"
   ```
 
   The kernel's own `hid-playstation` driver keeps working alongside: its
   reports set only the parts their flags name.
-- **Trying it without the game:** `cargo run -p horizon-dualsense --example
+- **Trying it without the game:** `cargo run -p sunrise-dualsense --example
   dualsense -- all` plays each output on a connected pad and reads back what
   the pad reports: the triggers' active effect, and the accelerometer's
   shake while the motors run (`watch` logs the shake while the game drives
@@ -855,7 +855,7 @@ rebinding moves the feel along: with the default mapping that is L2 for
 | That shield disabled by an axe | use | feedback from zone 1, strength 8 | the trigger locks until the shield recovers |
 | Mining (survival) | attack | vibration from zone 1: amplitude 2 (dirt) to 5 (obsidian) of 8, 40 Hz on sand and dirt, 30 on stone, 20 on wood, deepslate and ores, 10 on obsidian | a grit that gets heavier and slower on harder blocks; none on blocks that break at once |
 
-The press zone is where Horizon presses the trigger's action: the trigger
+The press zone is where Sunrise presses the trigger's action: the trigger
 threshold (0.4 by default) times ten, kept between 3 and 8, so with the
 defaults a crossbow catches from zone 2 and breaks at zone 4, as its bolt
 leaves. This assumes the ten zones split the travel evenly, as dualsensectl
@@ -867,7 +867,7 @@ triggers free; quitting frees them too. `pad status` shows the effects in
 use.
 
 Why these values, from what shipped games do and what the community
-documents (none of it measured on Horizon's pad yet):
+documents (none of it measured on Sunrise's pad yet):
 
 - **Only the official modes.** Off 0x05, feedback 0x21, weapon 0x25 and
   vibration 0x26 are the modes Nielk1's notes call official and expected in
@@ -886,12 +886,12 @@ documents (none of it measured on Horizon's pad yet):
   describes a bazooka whose resistance "will cause the trigger to catch at the
   input position just before the bullet is fired, and as you continue to pull
   the trigger, the bullet will fire and release the tension": the weapon
-  effect does exactly that, and Horizon moves its breaking point onto the
+  effect does exactly that, and Sunrise moves its breaking point onto the
   threshold so the click is the shot. DSX community presets use the same
   shape (DSX++'s example `Weapon {2, 6, 8}`; dualsensectl's
   `weapon 2 3 8` "resists strongly and lets go almost immediately").
   Returnal and Ratchet & Clank: Rift Apart use a half-press stop to split two
-  actions on one trigger; Minecraft has one action per trigger, so Horizon
+  actions on one trigger; Minecraft has one action per trigger, so Sunrise
   doesn't.
 - **Boosts click lighter.** A rocket or a pig's carrot fires on the pull, so
   it gets a catch that gives way rather than a wall that never does (strength
@@ -925,7 +925,7 @@ channels 1 and 2 silent), the same shapes come out crisp. Per OS:
 |---|---|---|
 | macOS | the pad lists as a 4-channel CoreAudio output ("DualSense Wireless Controller", seen on the Mac mini by dualsense-1); cpal opens it by name | no audio device |
 | Linux | snd-usb-audio exposes the card "Controller" with 4 channels; cpal opens it through ALSA (`plughw:CARD=Controller`), which fails while PipeWire or PulseAudio holds the card, as desktops do: then the motors' emulation stays | no audio device |
-| Windows | a WASAPI endpoint named "Wireless Controller" (or "DualSense Wireless Controller"), stereo until its speaker setup is set to Quadraphonic in the Sound control panel (`mmsys.cpl`, Configure); until then Horizon finds no 4-channel output and keeps the motors | no audio device |
+| Windows | a WASAPI endpoint named "Wireless Controller" (or "DualSense Wireless Controller"), stereo until its speaker setup is set to Quadraphonic in the Sound control panel (`mmsys.cpl`, Configure); until then Sunrise finds no 4-channel output and keeps the motors | no audio device |
 
 The audio haptics play only while the pad is out of its rumble emulation:
 any report with the rumble flags (flags 0, bits 0 and 1) silences them until
@@ -933,7 +933,7 @@ a report without them (SDL: "Leaving emulated rumble bits off will restore
 audio haptics"; nondebug/dualsense and
 [dse-haptics](https://github.com/iranran666/dse-haptics) arm them with an
 all-zero report 0x02). While HD haptics are open the motors stay at zero, so
-every report Horizon sends, starting with the one at opening, keeps them
+every report Sunrise sends, starting with the one at opening, keeps them
 armed; that first report also clears the attenuation a PS5 may have left.
 The frame layout `[0, 0, left, right]` at 48 kHz is the one
 [KytyPS5 #843](https://github.com/KytyPS5/KytyPS5/pull/843) plays on
@@ -945,8 +945,8 @@ report 0x32, reverse-engineered by
 and [dualsense-bt-haptics](https://github.com/awalol/dualsense-bt-haptics);
 it needs Bluetooth output, which only Linux gets (see above), and isn't
 done: there the motors' emulation is used. HD haptics are opt-in for now
-(`HORIZON_DUALSENSE_HAPTICS=1`) until they are confirmed on a real pad;
-games started for tests (`HORIZON_NO_AUDIO`) never open them, and the pad's
+(`SUNRISE_DUALSENSE_HAPTICS=1`) until they are confirmed on a real pad;
+games started for tests (`SUNRISE_NO_AUDIO`) never open them, and the pad's
 audio device is only ever opened by name, never the system's default output.
 
 ### Lightbar and player LEDs
@@ -956,10 +956,10 @@ audio device is only ever opened by name, never the system's default output.
 amber at half to red; Dimension is blue in the Overworld, orange in the
 Nether, violet in the End. Both at half brightness (the pad's full light is
 glaring); menus keep the last colour. The player LEDs show player 1 (the
-middle LED). Off leaves both to the pad. When Horizon lets go of the pad, a
+middle LED). Off leaves both to the pad. When Sunrise lets go of the pad, a
 lightbar or LEDs it changed go back to a host's defaults: blue (0, 0, 128)
 and the middle LED, as Linux's driver gives a first pad (neither SDL nor
-the kernel resets anything when it lets go; Horizon does, so the pad never
+the kernel resets anything when it lets go; Sunrise does, so the pad never
 keeps a game's colour or a stiff trigger). The microphone's mute LED is
 never touched (flags 1, bit 0 stays clear): whatever the system set
 stays. Over Bluetooth the colour waits for the pad's connection
@@ -988,7 +988,7 @@ Bluetooth.
 ## Steam Deck
 
 - In Game Mode, or any game launched through Steam, Steam Input presents the
-  Deck's controls as a virtual Xbox pad: Horizon sees it like any Xbox pad
+  Deck's controls as a virtual Xbox pad: Sunrise sees it like any Xbox pad
   and uses Xbox-letter glyphs (the Deck's face buttons are A B X Y). Steam's
   default "Gamepad" layout works with no setup; the trackpads stay mouse.
 - Started outside Steam on the Deck, the kernel's `hid-steam` driver exposes

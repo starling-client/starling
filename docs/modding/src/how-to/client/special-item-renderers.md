@@ -38,7 +38,7 @@ impl SpecialModelRenderer for Skillet {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register_special_model_renderer(
         &self,

@@ -1,4 +1,4 @@
-use horizon_core::nbt::Tag;
+use sunrise_core::nbt::Tag;
 use serde_json::{Value, json};
 
 fn describe(tag: &Tag) -> Value {

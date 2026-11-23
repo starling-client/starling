@@ -15,7 +15,7 @@ pub use launcher::browser;
 pub mod list;
 
 use browser::{
-    horizon::Registry,
+    sunrise::Registry,
     installed::{self, Entry, Installed},
     modrinth::Modrinth,
     Kind, Project, Query, Source, SourceId, Support, Version, GAME,
@@ -34,20 +34,20 @@ const LARGEST_SHADER_PACK: u64 = 256 << 20;
 /// The catalog's three lists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Shelf {
-    /// Horizon's registry of reviewed mods.
+    /// Sunrise's registry of reviewed mods.
     #[default]
     Mods,
     /// Modrinth's resource packs.
     ResourcePacks,
     /// Modrinth's Iris and OptiFine shader packs, which the game converts. A search also finds
-    /// Horizon's own.
+    /// Sunrise's own.
     ShaderPacks,
 }
 
 /// What an install put in the game folder, which says what the player does next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Done {
-    /// In `horizon-native-mods/`: it waits for a compile.
+    /// In `sunrise-native-mods/`: it waits for a compile.
     NativeMod,
     /// Loads with the resources, at the next start.
     ContentMod,
@@ -188,7 +188,7 @@ pub fn caution(project: &Project) -> Option<String> {
 }
 
 /// The native mods this game can't play, which the Mods shelf leaves out: the game says which
-/// (`horizon_client::starling_store::catalog_hidden`), once, before its first search.
+/// (`sunrise_client::starling_store::catalog_hidden`), once, before its first search.
 static HIDDEN_NATIVE_MODS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
 
 /// Leaves the native mods `ids` off the Mods shelf. Only the first call counts.
@@ -206,7 +206,7 @@ fn hidden_native_mod(project: &Project) -> bool {
 /// Whether `project` is a native mod, which only runs once compiled into the game. The registry
 /// says so: a search of it has its index at hand.
 pub fn is_native_mod(project: &Project) -> bool {
-    project.source == SourceId::Horizon && browser::horizon::is_native_mod(&project.id)
+    project.source == SourceId::Sunrise && browser::sunrise::is_native_mod(&project.id)
 }
 
 fn is_modrinth_shader_pack(project: &Project) -> bool {
@@ -232,7 +232,7 @@ pub fn installed_projects(home: &Path) -> HashSet<String> {
 const MOD_FOLDERS: [&str; 2] = [browser::java::MODS_DIR, native_mods::INSTALLED];
 
 /// The mods in the game folder `home`, by id, with their files (relative to `home`), however they
-/// got there: this catalog (`horizon-mods/<id>.hmod`), the launcher's (`<id>-<version>.hmod`), or
+/// got there: this catalog (`sunrise-mods/<id>.smod`), the launcher's (`<id>-<version>.smod`), or
 /// a file opened with Starling under its own name. A registry project's id is its mod's id.
 pub fn mods_present(home: &Path) -> std::collections::HashMap<String, Vec<String>> {
     let mut found = std::collections::HashMap::<String, Vec<String>>::new();
@@ -243,7 +243,7 @@ pub fn mods_present(home: &Path) -> std::collections::HashMap<String, Vec<String
         for entry in read.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
-            if !(name.ends_with(".hmod") || name.ends_with(".hnmod") || path.is_dir()) {
+            if !(name.ends_with(".smod") || name.ends_with(".hnmod") || path.is_dir()) {
                 continue;
             }
             if let Some(id) = package_id(&path, &name) {
@@ -279,17 +279,17 @@ fn package_id(path: &Path, name: &str) -> Option<String> {
     Some(id)
 }
 
-/// The `id` of a package's `horizon-mod.toml` (a top-level `id = "..."`), a `.hnmod` bundle's own
+/// The `id` of a package's `sunrise-mod.toml` (a top-level `id = "..."`), a `.hnmod` bundle's own
 /// id, or else the file's name without its extension.
 fn read_package_id(path: &Path, name: &str) -> Option<String> {
     let manifest = || -> Option<String> {
         let text = if path.is_dir() {
-            fs::read_to_string(path.join("horizon-mod.toml")).ok()?
+            fs::read_to_string(path.join("sunrise-mod.toml")).ok()?
         } else {
             let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
             let mut text = String::new();
             std::io::Read::read_to_string(
-                &mut archive.by_name("horizon-mod.toml").ok()?,
+                &mut archive.by_name("sunrise-mod.toml").ok()?,
                 &mut text,
             )
             .ok()?;
@@ -300,13 +300,13 @@ fn read_package_id(path: &Path, name: &str) -> Option<String> {
     manifest()
         .or_else(|| {
             name.ends_with(".hnmod")
-                .then(|| horizon_mod_package::index::native::Any::read(path).ok())
+                .then(|| sunrise_mod_package::index::native::Any::read(path).ok())
                 .flatten()
                 .map(|bundle| bundle.id().to_owned())
         })
         .or_else(|| {
             let stem = name
-                .strip_suffix(".hmod")
+                .strip_suffix(".smod")
                 .or_else(|| name.strip_suffix(".hnmod"))
                 .unwrap_or(name);
             Some(stem.to_owned())
@@ -354,7 +354,7 @@ pub fn remove(home: &Path, project: &Project) -> Result<Entry, String> {
         .entries
         .iter()
         .any(|e| e.source == project.source && e.project == project.id);
-    if ours || project.source != SourceId::Horizon || project.kind != Kind::Mod {
+    if ours || project.source != SourceId::Sunrise || project.kind != Kind::Mod {
         return installed::remove(home, &project.id);
     }
     // A registry mod that came some other way ([`mods_present`]): its files go, and it goes off.
@@ -393,13 +393,13 @@ pub fn remove(home: &Path, project: &Project) -> Result<Entry, String> {
     })
 }
 
-/// The mod id of an installed mod's entry, which the Mods page and `horizon-mods.txt` know it by:
-/// a registry mod's project id, else its file's name in `horizon-mods/` or `horizon-native-mods/`.
+/// The mod id of an installed mod's entry, which the Mods page and `sunrise-mods.txt` know it by:
+/// a registry mod's project id, else its file's name in `sunrise-mods/` or `sunrise-native-mods/`.
 pub fn mod_id(entry: &Entry) -> Option<String> {
-    if entry.source == SourceId::Horizon && entry.kind == Kind::Mod {
+    if entry.source == SourceId::Sunrise && entry.kind == Kind::Mod {
         return Some(entry.project.clone());
     }
-    browser::horizon::mod_id(entry).map(str::to_owned)
+    browser::sunrise::mod_id(entry).map(str::to_owned)
 }
 
 /// Installs `project` (and what it needs) into the game folder `home`, its download checked.
@@ -411,7 +411,7 @@ pub fn install(
     progress: &dyn Fn(&str, f32),
 ) -> Result<Done, String> {
     forget_missing(home);
-    if project.source == SourceId::Horizon && project.kind == Kind::Mod {
+    if project.source == SourceId::Sunrise && project.kind == Kind::Mod {
         let ours = Installed::load(home)
             .entries
             .iter()
@@ -459,7 +459,7 @@ fn shader_pack_version(versions: &[Version]) -> Option<&Version> {
 }
 
 /// Modrinth's shader pack into `shaderpacks/`, and on the list of what the catalog installed.
-/// Adapted from Horizon Android's `shader_catalog.rs` (Vasysik, MIT).
+/// Adapted from Sunrise Android's `shader_catalog.rs` (Vasysik, MIT).
 fn install_modrinth_shader_pack(
     project: &Project,
     home: &Path,
@@ -577,7 +577,7 @@ pub fn set_game_home(home: std::path::PathBuf) {
 
 /// Where a native mod's file goes (`mod_list::NATIVE_DIR`).
 mod native_mods {
-    pub const INSTALLED: &str = "horizon-native-mods";
+    pub const INSTALLED: &str = "sunrise-native-mods";
 }
 
 /// The launcher's languages: the catalog's texts stay in English, the game's own pages translate.
@@ -611,10 +611,10 @@ mod native_fit {
 /// Which installed files are native mods (the launcher's `native_status::is_native_file`).
 mod native_status {
     pub fn is_native_file(file: &str) -> bool {
-        // Starling's `.hnmod` (what the catalog installs), or Horizon's `.hmod`.
+        // Starling's `.hnmod` (what the catalog installs), or Sunrise's `.smod`.
         file.strip_prefix(super::native_mods::INSTALLED)
             .is_some_and(|rest| {
-                rest.starts_with('/') && (rest.ends_with(".hnmod") || rest.ends_with(".hmod"))
+                rest.starts_with('/') && (rest.ends_with(".hnmod") || rest.ends_with(".smod"))
             })
     }
 }

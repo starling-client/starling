@@ -21,13 +21,13 @@ remaining problem. Verified owners on the current source tree:
 
 | Route | Owner and observed behavior |
 | --- | --- |
-| Guest point build | `crates/horizon-mod-points/build.rs:1`: always calls `generate_points`; errors currently terminate the build through `expect`. |
-| Cached generator | `crates/horizon-mod-api-gen/src/build.rs:223`: enters the interface cache; `:227` tracks game, point and site sources, reads private input before selection, discovers points and sites, then parses/formats generated Rust and writes only changed output (`:258`). |
-| Cache admission | `crates/horizon-mod-api-gen/src/interface_cache.rs:17`: directory keyed by generator executable bytes; `:36` keys entries by source path and bytes. It verifies the summary digest and parses it; invalid summaries regenerate. Function bodies are stripped on cache creation. This is disposable local acceleration, not authenticated SDK evidence. |
-| Discovery and types | `crates/horizon-mod-api-gen/src/points.rs:922`: resolves Wire types, excludes private targets from public discovery and scans source. |
-| Selection and identity | `crates/horizon-mod-api-gen/src/points.rs:1166`: retains all public record shapes and IDs, limits guest codecs/exports by selection, and computes `POINT_LAYOUT` across the full public point set (`:1205`). Selection is not permission to renumber IDs or drop layout inputs. |
-| Site discovery | `crates/horizon-mod-api-gen/src/sites/stage.rs:7` and `:50`: tracked inputs and generated site IDs; these also belong in artifact validation. |
-| Wasm registration/package | `crates/cargo-horizon-mod/src/wasm.rs:248` and `wasm/group.rs:297`: catalog feeds registration preparation. `wasm/group.rs:637` passes selected names to compilation; `:569` binds the emitted points metadata digest into the package. None replaces source-derived Rust definitions. |
+| Guest point build | `crates/sunrise-mod-points/build.rs:1`: always calls `generate_points`; errors currently terminate the build through `expect`. |
+| Cached generator | `crates/sunrise-mod-api-gen/src/build.rs:223`: enters the interface cache; `:227` tracks game, point and site sources, reads private input before selection, discovers points and sites, then parses/formats generated Rust and writes only changed output (`:258`). |
+| Cache admission | `crates/sunrise-mod-api-gen/src/interface_cache.rs:17`: directory keyed by generator executable bytes; `:36` keys entries by source path and bytes. It verifies the summary digest and parses it; invalid summaries regenerate. Function bodies are stripped on cache creation. This is disposable local acceleration, not authenticated SDK evidence. |
+| Discovery and types | `crates/sunrise-mod-api-gen/src/points.rs:922`: resolves Wire types, excludes private targets from public discovery and scans source. |
+| Selection and identity | `crates/sunrise-mod-api-gen/src/points.rs:1166`: retains all public record shapes and IDs, limits guest codecs/exports by selection, and computes `POINT_LAYOUT` across the full public point set (`:1205`). Selection is not permission to renumber IDs or drop layout inputs. |
+| Site discovery | `crates/sunrise-mod-api-gen/src/sites/stage.rs:7` and `:50`: tracked inputs and generated site IDs; these also belong in artifact validation. |
+| Wasm registration/package | `crates/cargo-sunrise-mod/src/wasm.rs:248` and `wasm/group.rs:297`: catalog feeds registration preparation. `wasm/group.rs:637` passes selected names to compilation; `:569` binds the emitted points metadata digest into the package. None replaces source-derived Rust definitions. |
 
 A target-cold build with an empty `OUT_DIR` must still create these cache entries.
 A cache hit still reads/hashes inputs, parses smaller summaries, constructs point
@@ -37,7 +37,7 @@ costs. Their current proportions have not been measured here. Cache reuse across
 build-script executables or fresh targets must be measured, not assumed.
 
 Vanilla 26.3 is the gameplay specification; this Rust SDK generation facility is
-Horizon-specific and changes no vanilla call site. No vanilla declaration is
+Sunrise-specific and changes no vanilla call site. No vanilla declaration is
 claimed as a point-artifact contract. The [NeoForge public documentation](https://docs.neoforged.net/)
 separately documents its modding API and Gradle toolchain; no equivalent 26.3
 point/type/site artifact contract was verified. The public
@@ -135,7 +135,7 @@ never silently accept it on an estimate of equivalence.
 Identical effective inputs must yield byte-identical generated definitions,
 point/site IDs, layout values and module identity between routes and across
 repeated runs. Preserve current path remapping and compiler metadata handling
-(`crates/cargo-horizon-mod/src/wasm/group.rs:625`). Compare generated Rust,
+(`crates/cargo-sunrise-mod/src/wasm/group.rs:625`). Compare generated Rust,
 embedded identities, package points digest and module bytes separately; a matching
 `POINT_LAYOUT` alone is insufficient. Adding an artifact dependency or changing
 build-script inputs can itself change compiler/build identities. Any unavoidable
@@ -178,7 +178,7 @@ inventory; then agree manifest/authentication and limits with SDK staging owners
 then implement artifact production/admission using existing validation/emission;
 finally run equivalence, corruption and actual-mod measurements before deciding
 whether to enable the route. Put future logic/tests in separate modules; no
-growth of the over-limit `crates/horizon-client/src/game.rs` for instrumentation.
+growth of the over-limit `crates/sunrise-client/src/game.rs` for instrumentation.
 
 - **Trust anchor and packaging:** recommend a sibling artifact authenticated by
   the engine SDK manifest; agree its manifest owner and local-source verification

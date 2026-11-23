@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native raider metadata changes with Horizon's tracker, wire codec and client."""
+"""Compare native raider metadata changes with Sunrise's tracker, wire codec and client."""
 import itertools
 import os
 from pathlib import Path
@@ -34,12 +34,12 @@ def main():
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/integration_env.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/game/network/lan/mod.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/network/remote_mob_data.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs/raider.rs',
-               lab.ROOT / 'crates/horizon-client/src/mobs.rs',
-               lab.ROOT / 'crates/horizon-client/src/lan/entity.rs',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaRaiderCelebrationOracle.java']
+               lab.ROOT / 'crates/sunrise-client/src/game/network/lan/mod.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/network/remote_mob_data.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/raider.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs.rs',
+               lab.ROOT / 'crates/sunrise-client/src/lan/entity.rs',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaRaiderCelebrationOracle.java']
     hashes = base.source_hashes(sources)
     rows = list(cases())
     inputs = build / 'inputs.txt'
@@ -49,10 +49,10 @@ def main():
                                                      {'client': client}, libraries, lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaRaiderCelebrationOracle',
                      [inputs, build / 'client.txt'], 'client')
-    with tempfile.TemporaryDirectory(prefix='horizon-raider-parity-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-raider-parity-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_RAIDER_SYNC_INPUT=str(inputs), HORIZON_RAIDER_SYNC_OUTPUT=str(build / 'rust.txt'))
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
+        env.update(SUNRISE_RAIDER_SYNC_INPUT=str(inputs), SUNRISE_RAIDER_SYNC_OUTPUT=str(build / 'rust.txt'))
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
                             'game::remote_mob_data::tests::raider_celebration_parity_fixture',
                             '--', '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'client.txt', build / 'rust.txt', len(rows))
@@ -63,7 +63,7 @@ def main():
         client_jar_sha256=lab.digest(client, 'sha256'), input_sha256=input_hash,
         matched_output_lines=matched, output_sha256=lab.digest(build / 'rust.txt', 'sha256'),
         scope='Native Raider setters, spawn non-default values and dirty metadata for all six types, '
-              'compared with production Horizon metadata generation, entity tracking, encoded packets and client apply. '
+              'compared with production Sunrise metadata generation, entity tracking, encoded packets and client apply. '
               'Covers joining while celebrating, repeated values and clearing the flag. '
               'Raid AI, rendered arm geometry and a live network transport are not exercised.'))
     print(f'{matched} raider metadata sequences match the pinned client: {report}', flush=True)

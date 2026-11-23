@@ -23,7 +23,7 @@ pub mod terrain {
     }
     #[derive(Default)]
     pub struct TerrainMod;
-    #[mod_api::horizon_mod]
+    #[mod_api::sunrise_mod]
     impl Hooks for TerrainMod {
         fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
             let stone = registrar.block_key("minecraft:stone");
@@ -61,7 +61,7 @@ pub mod biome_source {
     }
     #[derive(Default)]
     pub struct ChaosMod;
-    #[mod_api::horizon_mod]
+    #[mod_api::sunrise_mod]
     impl Hooks for ChaosMod {
         fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
             registrar.register_biome_source("chaos", Chaos);
@@ -189,7 +189,7 @@ pub mod structures {
     }
     #[derive(Default)]
     pub struct StructureMod;
-    #[mod_api::horizon_mod]
+    #[mod_api::sunrise_mod]
     impl Hooks for StructureMod {
         fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
             let material = registrar.block_key(MATERIAL);

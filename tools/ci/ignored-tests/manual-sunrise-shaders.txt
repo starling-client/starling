@@ -1,0 +1,2 @@
+# sunrise-shaders's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-shaders real_packs::real_packs_read by-hand manual # needs SUNRISE_TEST_SHADER_PACKS

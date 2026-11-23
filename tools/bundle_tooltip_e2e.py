@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render regression: bundle component tooltips in anvil and brewing screens.
 
-Requires prepared 26.3 resources, a built horizon-client/horizon-ctl and Pillow.
+Requires prepared 26.3 resources, a built sunrise-client/sunrise-ctl and Pillow.
 Runs an isolated offscreen game; never opens existing player data. A name-only
 bundle tooltip is narrower than the component's 96 GUI-pixel minimum, so its
 purple frame cannot pass the image assertion. Screenshots are kept as evidence.
@@ -38,16 +38,16 @@ def longest_tooltip_border(image):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game", type=Path, default=ROOT / "target/fast/horizon-client")
-    parser.add_argument("--ctl", type=Path, default=ROOT / "target/fast/horizon-ctl")
-    parser.add_argument("--resources", type=Path, default=ROOT / ".local/horizon-client/26.3")
+    parser.add_argument("--game", type=Path, default=ROOT / "target/fast/sunrise-client")
+    parser.add_argument("--ctl", type=Path, default=ROOT / "target/fast/sunrise-ctl")
+    parser.add_argument("--resources", type=Path, default=ROOT / ".local/sunrise-client/26.3")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     output = args.output or Path(tempfile.mkdtemp(prefix="bundle-tooltip-"))
     output.mkdir(parents=True, exist_ok=True)
     output = output.resolve()
     homes = {}
-    for key in ("HORIZON_HOME", "HORIZON_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+    for key in ("SUNRISE_HOME", "SUNRISE_LAUNCHER_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         directory = output / key
         directory.mkdir(exist_ok=True)
         homes[key] = directory

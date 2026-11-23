@@ -7,7 +7,7 @@ numbers come from stdin (one per line; the first number on each line counts, so 
 (`launcher/lang/*.json`). Prints `<number>\t<file>` for every match; exits 2 when a PR's head is not fetched.
 
     git fetch origin '+refs/pull/*/head:refs/pull/*/head'
-    python3 tools/hotspots/open_prs.py --from-gh crates/horizon-mod-vocab/src/exports/part_table.rs
+    python3 tools/hotspots/open_prs.py --from-gh crates/sunrise-mod-vocab/src/exports/part_table.rs
     gh pr list --state open --limit 500 | python3 tools/hotspots/open_prs.py tools/ci/
 """
 import argparse

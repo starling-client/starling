@@ -253,7 +253,7 @@ fn a_file_that_is_not_the_listed_one_is_refused() {
 fn starlings_pins_are_the_research_lock() {
     let pins = Pins::starling();
     assert_eq!(pins.version, "26.3");
-    // The pinned version JSON, then every republished one the lock accepts (Horizon adds them).
+    // The pinned version JSON, then every republished one the lock accepts (Sunrise adds them).
     let lock: serde_json::Value =
         serde_json::from_str(include_str!("../../../../research-lock.json")).unwrap();
     let accepted = lock["minecraft"]["accepted_manifest_sha1"]

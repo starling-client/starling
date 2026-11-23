@@ -1,17 +1,17 @@
 //! Per-user setup on Windows, no administrator needed.
 //!
-//! `horizon-launcher-setup.exe` (the launcher's own binary under another name, made by the
-//! release workflow) copies itself to `%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`,
+//! `sunrise-launcher-setup.exe` (the launcher's own binary under another name, made by the
+//! release workflow) copies itself to `%LOCALAPPDATA%\Programs\Sunrise Launcher\sunrise-launcher.exe`,
 //! makes the Start menu shortcut (and the desktop one if asked) and the Uninstall entry under HKCU,
-//! and starts the installed copy. `horizon-launcher.exe uninstall` takes it all away again: the
+//! and starts the installed copy. `sunrise-launcher.exe uninstall` takes it all away again: the
 //! launcher's data folder only when asked, the game's folder never.
 //!
 //! Nothing here deletes a folder it didn't make: the install folder is always called
 //! [`APP_NAME`] ([`folder_for`]) and is removed with `remove_dir`, which only takes an empty one.
 //!
 //! Command lines (handled in `main` before the CLI parser, so MCP never sees them):
-//! `horizon-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--desktop-shortcut]`,
-//! `horizon-launcher.exe uninstall` (window), `... uninstall --quiet [--remove-data]`.
+//! `sunrise-launcher-setup.exe` (window), `... setup --quiet [--dir <folder>] [--desktop-shortcut]`,
+//! `sunrise-launcher.exe uninstall` (window), `... uninstall --quiet [--remove-data]`.
 use crate::backend;
 use crate::data_location::{self, Roots};
 use crate::shortcut;
@@ -79,11 +79,11 @@ fn args() -> Vec<String> {
     std::env::args().skip(1).collect()
 }
 
-/// Whether this binary is the setup: its file name starts with `horizon-launcher-setup` (the
-/// release workflow copies the launcher under that name). `HORIZON_LAUNCHER_SETUP=1` forces it,
+/// Whether this binary is the setup: its file name starts with `sunrise-launcher-setup` (the
+/// release workflow copies the launcher under that name). `SUNRISE_LAUNCHER_SETUP=1` forces it,
 /// for screenshots and tests.
 pub fn is_setup_exe() -> bool {
-    if std::env::var_os("HORIZON_LAUNCHER_SETUP").is_some_and(|v| v.to_string_lossy() == "1") {
+    if std::env::var_os("SUNRISE_LAUNCHER_SETUP").is_some_and(|v| v.to_string_lossy() == "1") {
         return true;
     }
     backend::exe_path()
@@ -108,9 +108,9 @@ fn invocation() -> Invocation {
     classify(&args(), is_setup_exe())
 }
 
-/// `%LOCALAPPDATA%\Programs\Horizon Launcher`; `HORIZON_LAUNCHER_SETUP_DIR` replaces it (tests).
+/// `%LOCALAPPDATA%\Programs\Sunrise Launcher`; `SUNRISE_LAUNCHER_SETUP_DIR` replaces it (tests).
 pub fn default_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HORIZON_LAUNCHER_SETUP_DIR").filter(|d| !d.is_empty()) {
+    if let Some(dir) = std::env::var_os("SUNRISE_LAUNCHER_SETUP_DIR").filter(|d| !d.is_empty()) {
         return folder_for(Path::new(&dir));
     }
     dirs::data_local_dir()
@@ -333,7 +333,7 @@ pub fn install(options: &Options, progress: impl Fn(Step, f32)) -> Result<PathBu
     let exe = dir.join(BINARY);
     progress(Step::Files, 0.05);
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // Running the installed copy as the setup (`HORIZON_LAUNCHER_SETUP=1`) rewrites the shortcuts
+    // Running the installed copy as the setup (`SUNRISE_LAUNCHER_SETUP=1`) rewrites the shortcuts
     // and the registry, but does not copy the file onto itself.
     if !same_path(&source, &exe) {
         place(&source, &exe).map_err(|e| format!("{}: {e}", exe.display()))?;
@@ -417,9 +417,9 @@ fn close_running_launchers(progress: &impl Fn(Step, f32)) {
 }
 
 /// The data location the player moved the launcher's data to (Settings > Data folder), when
-/// [`backend::data_dir`] follows it: not under `HORIZON_LAUNCHER_HOME`, which comes first.
+/// [`backend::data_dir`] follows it: not under `SUNRISE_LAUNCHER_HOME`, which comes first.
 fn moved_location() -> Option<Roots> {
-    if std::env::var_os("HORIZON_LAUNCHER_HOME").is_some_and(|p| !p.is_empty()) {
+    if std::env::var_os("SUNRISE_LAUNCHER_HOME").is_some_and(|p| !p.is_empty()) {
         return None;
     }
     data_location::configured_roots().ok().flatten()
@@ -433,7 +433,7 @@ fn named(path: &Path, name: &str) -> bool {
 }
 
 /// Whether `data`, the folder [`backend::data_dir`] names, is one the launcher made, so that
-/// `--remove-data` may delete it: the default `horizon-launcher` folder, or the `launcher` folder
+/// `--remove-data` may delete it: the default `sunrise-launcher` folder, or the `launcher` folder
 /// of a moved data location, which the move lays out as `<folder>\launcher`, `\game` and `\build`.
 fn made_by_launcher(data: &Path, location: Option<&Roots>) -> bool {
     let laid_out = location.is_some_and(|r| r.launcher == data && named(&r.launcher, "launcher"));
@@ -450,10 +450,10 @@ fn builds_are_launchers(builds: &Path, data: &Path, location: Option<&Roots>) ->
 pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<String>, String> {
     let dir = registered()
         .ok_or_else(|| {
-            crate::i18n::tr(if cfg!(horizon_fork_launcher) {
-                "Horizon Fork Launcher (arismoko) is not installed for this account."
+            crate::i18n::tr(if cfg!(sunrise_fork_launcher) {
+                "Sunrise Fork Launcher (arismoko) is not installed for this account."
             } else {
-                "Horizon Launcher is not installed for this account."
+                "Sunrise Launcher is not installed for this account."
             })
             .to_string()
         })?
@@ -491,7 +491,7 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
             Err(e) => left.push(format!(r"HKCU\{key}: {e}")),
         }
     }
-    // `Software\Horizon` goes only when nothing else (the game) keeps anything in it.
+    // `Software\Sunrise` goes only when nothing else (the game) keeps anything in it.
     if let Ok(parent) = hkcu.open_subkey_with_flags(crate::identity::REGISTRY_PARENT, KEY_READ) {
         let empty = parent
             .query_info()
@@ -529,7 +529,7 @@ pub fn uninstall(remove_data: bool, progress: impl Fn(Step, f32)) -> Result<Vec<
         progress(Step::Data, 0.8);
         let data = backend::data_dir();
         let location = moved_location();
-        // Only a folder the launcher made: `HORIZON_LAUNCHER_HOME` may point anywhere.
+        // Only a folder the launcher made: `SUNRISE_LAUNCHER_HOME` may point anywhere.
         if made_by_launcher(&data, location.as_ref()) {
             remove_all(&data, &mut left);
             // A profile whose name isn't ASCII keeps the build folder in %ProgramData%
@@ -628,22 +628,22 @@ mod tests {
     fn the_install_folder_is_always_ours() {
         assert_eq!(
             folder_for(Path::new(r"C:\Games")),
-            PathBuf::from(if cfg!(horizon_fork_launcher) {
-                r"C:\Games\Horizon Fork Launcher (arismoko)"
+            PathBuf::from(if cfg!(sunrise_fork_launcher) {
+                r"C:\Games\Sunrise Fork Launcher (arismoko)"
             } else {
-                r"C:\Games\Horizon Launcher"
+                r"C:\Games\Sunrise Launcher"
             })
         );
         assert_eq!(
-            folder_for(Path::new(if cfg!(horizon_fork_launcher) {
-                r"C:\Games\horizon fork launcher (arismoko)"
+            folder_for(Path::new(if cfg!(sunrise_fork_launcher) {
+                r"C:\Games\sunrise fork launcher (arismoko)"
             } else {
-                r"C:\Games\horizon launcher"
+                r"C:\Games\sunrise launcher"
             })),
-            PathBuf::from(if cfg!(horizon_fork_launcher) {
-                r"C:\Games\horizon fork launcher (arismoko)"
+            PathBuf::from(if cfg!(sunrise_fork_launcher) {
+                r"C:\Games\sunrise fork launcher (arismoko)"
             } else {
-                r"C:\Games\horizon launcher"
+                r"C:\Games\sunrise launcher"
             })
         );
     }
@@ -659,16 +659,16 @@ mod tests {
 
     #[test]
     fn uninstall_deletes_only_folders_the_launcher_made() {
-        // The default folder, and one `HORIZON_LAUNCHER_HOME` names the same.
+        // The default folder, and one `SUNRISE_LAUNCHER_HOME` names the same.
         let default = Path::new("profile").join(crate::identity::LAUNCHER_FOLDER);
         assert!(made_by_launcher(&default, None));
         assert!(builds_are_launchers(&default, &default, None));
         assert!(!made_by_launcher(Path::new(r"D:\Documents"), None));
         assert!(!made_by_launcher(Path::new(r"D:\Games\launcher"), None));
 
-        // Data moved to D:\Horizon (`data_location::layout`): its launcher and build folders go,
+        // Data moved to D:\Sunrise (`data_location::layout`): its launcher and build folders go,
         // the game folder never.
-        let moved = moved_to(r"D:\Horizon");
+        let moved = moved_to(r"D:\Sunrise");
         assert!(made_by_launcher(&moved.launcher, Some(&moved)));
         assert!(builds_are_launchers(
             &moved.build,
@@ -677,7 +677,7 @@ mod tests {
         ));
         assert!(!made_by_launcher(&moved.game, Some(&moved)));
         // A build folder inside the launcher folder goes with it.
-        let inside = Path::new(r"D:\Horizon\launcher\build");
+        let inside = Path::new(r"D:\Sunrise\launcher\build");
         assert!(builds_are_launchers(inside, &moved.launcher, Some(&moved)));
 
         // Not what a move lays out (a location file edited by hand): left alone.
@@ -730,12 +730,12 @@ mod tests {
             .to_str()
             .and_then(|t| t.strip_prefix(r"\\?\"))
             .map_or(temp.clone(), PathBuf::from);
-        let dir = temp.join(format!("horizon-link-{}", std::process::id()));
+        let dir = temp.join(format!("sunrise-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let exe = dir.join("Horizon Launcher").join("horizon-launcher.exe");
+        let exe = dir.join("Sunrise Launcher").join("sunrise-launcher.exe");
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"x").unwrap();
-        let link = dir.join("Horizon Launcher.lnk");
+        let link = dir.join("Sunrise Launcher.lnk");
         write_link(&link, &exe).unwrap();
         // The bug this guards: a link whose target the shell read as empty, so a double click did nothing.
         assert_eq!(
@@ -746,7 +746,7 @@ mod tests {
         assert!(points_to(&link, &exe));
         assert!(!points_to(
             &link,
-            Path::new(r"C:\Other\horizon-launcher.exe")
+            Path::new(r"C:\Other\sunrise-launcher.exe")
         ));
         let _ = fs::remove_dir_all(&dir);
     }

@@ -1,5 +1,5 @@
 {
-  description = "Horizon: Minecraft Java Edition 26.3 rewritten in Rust";
+  description = "Sunrise: Minecraft Java Edition 26.3 rewritten in Rust";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -19,17 +19,17 @@
         let
           call = pkgs.lib.callPackageWith (pkgs // packages // { inherit version; });
           packages = {
-            horizon-engine = call ./nix/horizon-engine.nix { };
-            horizon-server = call ./nix/horizon-server.nix { };
-            horizon-prepare = call ./nix/horizon-prepare.nix { };
-            horizon-client = call ./nix/horizon-client.nix { };
+            sunrise-engine = call ./nix/sunrise-engine.nix { };
+            sunrise-server = call ./nix/sunrise-server.nix { };
+            sunrise-prepare = call ./nix/sunrise-prepare.nix { };
+            sunrise-client = call ./nix/sunrise-client.nix { };
           };
         in packages;
     in {
       packages = forAllSystems (pkgs: gamePackages pkgs // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
         let
           version = "0.2.0";
-          pname = "horizon-launcher";
+          pname = "sunrise-launcher";
 
           unwrapped = pkgs.rustPlatform.buildRustPackage {
             pname = "${pname}-unwrapped";
@@ -61,16 +61,16 @@
 
           desktopItem = pkgs.makeDesktopItem {
             name = pname;
-            desktopName = "Horizon";
+            desktopName = "Sunrise";
             genericName = "Game launcher";
-            comment = "Install, prepare and play Horizon, Minecraft: Java Edition rewritten in Rust";
+            comment = "Install, prepare and play Sunrise, Minecraft: Java Edition rewritten in Rust";
             exec = pname;
-            icon = "horizon";
+            icon = "sunrise";
             categories = [ "Game" ];
-            startupWMClass = "horizon-launcher";
+            startupWMClass = "sunrise-launcher";
           };
 
-          horizonLauncher = pkgs.buildFHSEnv {
+          sunriseLauncher = pkgs.buildFHSEnv {
             inherit pname version;
 
             targetPkgs = pkgs: with pkgs; [
@@ -114,11 +114,11 @@
               pkg-config
             ];
 
-            runScript = "${unwrapped}/bin/horizon-launcher";
+            runScript = "${unwrapped}/bin/sunrise-launcher";
 
             profile = ''
-              export HORIZON_LAUNCHER_NO_SELF_UPDATE=1
-              export HORIZON_LAUNCHER_DESKTOP_EXEC="''${HORIZON_LAUNCHER_DESKTOP_EXEC:-${pname}}"
+              export SUNRISE_LAUNCHER_NO_SELF_UPDATE=1
+              export SUNRISE_LAUNCHER_DESKTOP_EXEC="''${SUNRISE_LAUNCHER_DESKTOP_EXEC:-${pname}}"
               export PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/share/pkgconfig:''${PKG_CONFIG_PATH:-}"
             '';
 
@@ -133,31 +133,31 @@
             passthru = { inherit unwrapped; };
 
             meta = with pkgs.lib; {
-              description = "Launcher for Horizon, Minecraft: Java Edition rewritten in Rust";
-              homepage = "https://playhorizon.dev";
+              description = "Launcher for Sunrise, Minecraft: Java Edition rewritten in Rust";
+              homepage = "https://playsunrise.net";
               license = licenses.mit;
               platforms = [ "x86_64-linux" "aarch64-linux" ];
               mainProgram = pname;
             };
           };
         in {
-          horizon-launcher = horizonLauncher;
-          default = horizonLauncher;
+          sunrise-launcher = sunriseLauncher;
+          default = sunriseLauncher;
         })
       );
 
       overlays.default = final: prev: {
-        horizon-launcher = self.packages.${final.stdenv.hostPlatform.system}.horizon-launcher;
+        sunrise-launcher = self.packages.${final.stdenv.hostPlatform.system}.sunrise-launcher;
       } // gamePackages final;
 
-      # services.horizon-server (docs/nix.md).
+      # services.sunrise-server (docs/nix.md).
       nixosModules = {
-        horizon-server = import ./nix/module.nix { inherit self; };
-        default = self.nixosModules.horizon-server;
+        sunrise-server = import ./nix/module.nix { inherit self; };
+        default = self.nixosModules.sunrise-server;
       };
 
       checks = forAllSystems (pkgs: {
-        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) horizon-server horizon-prepare;
+        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) sunrise-server sunrise-prepare;
       } // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # The module in a VM, without any of Mojang's files.
         nixos-module = pkgs.testers.runNixOSTest (import ./nix/tests/server.nix { inherit self; });

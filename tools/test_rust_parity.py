@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Horizon core operations with both checksum-pinned vanilla game JARs."""
+"""Compare Sunrise core operations with both checksum-pinned vanilla game JARs."""
 
 import argparse
 from collections import Counter
@@ -46,7 +46,7 @@ def corpus():
         for length in sorted({0, 1, per_word - 1, per_word, per_word + 1, 63, 64, 65, 4096}):
             yield f"storage {bits} {length} {rng.randrange(-2**63, 2**63)}"
     names = [[], [0], [0xffff], [0xd800], [0xdc00], [0xd800, 0x61, 0xdc00], [0xd83d, 0xde00], [0xdbff, 0xdfff],
-             *[[ord(c) for c in text] for text in ["minecraft:temperature", "octave_-3", "Aa", "BB", "Horizon", "àé中"]],
+             *[[ord(c) for c in text] for text in ["minecraft:temperature", "octave_-3", "Aa", "BB", "Sunrise", "àé中"]],
              *[[0x61] * n for n in [55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1024]]]
     for scenario in range(2200):
         name = names[scenario % len(names)] if scenario % 3 else [rng.randrange(65536) for _ in range(rng.randrange(160))]
@@ -169,19 +169,19 @@ def main():
     commands = list(corpus())
     inputs = build / "inputs.txt"
     inputs.write_text("\n".join(commands) + "\n", encoding="utf-8")
-    source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCoreOracle.java"
-    sources = [source, Path(__file__), *sorted((lab.ROOT / "crates/horizon-core").rglob("*.rs")),
-               lab.ROOT / "crates/horizon-core/Cargo.toml", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"]
+    source = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCoreOracle.java"
+    sources = [source, Path(__file__), *sorted((lab.ROOT / "crates/sunrise-core").rglob("*.rs")),
+               lab.ROOT / "crates/sunrise-core/Cargo.toml", lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"]
     tested_sources = source_hashes(sources)
     classes = build / "classes"
     classes.mkdir(exist_ok=True)
     dependency_path = os.pathsep.join(map(str, libraries))
     run(["javac", "--release", str(lock["minecraft"]["java_major"]), "-proc:none",
          "-cp", os.pathsep.join([str(jars["server"]), dependency_path]), "-d", str(classes), str(source)])
-    run(["cargo", "build", "--release", "--bin", "horizon-parity"])
+    run(["cargo", "build", "--release", "--bin", "sunrise-parity"])
     # Ask Cargo for its artifact path so custom target directories work too.
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=lab.ROOT, text=True))
-    binary = Path(metadata["target_directory"]) / "release" / ("horizon-parity.exe" if os.name == "nt" else "horizon-parity")
+    binary = Path(metadata["target_directory"]) / "release" / ("sunrise-parity.exe" if os.name == "nt" else "sunrise-parity")
     candidate = build / "rust.txt"
     with inputs.open("rb") as stdin, candidate.open("wb") as stdout:
         run([str(binary)], stdin=stdin, stdout=stdout)
@@ -189,7 +189,7 @@ def main():
     for side, jar in jars.items():
         reference = build / f"vanilla-{side}.txt"
         run(["java", "-Xmx512M", "-cp", os.pathsep.join([str(classes), str(jar), dependency_path]),
-             "dev.horizonlab.parity.VanillaCoreOracle", str(inputs), str(reference)])
+             "dev.sunriselab.parity.VanillaCoreOracle", str(inputs), str(reference)])
         matched = compare(reference, candidate)
         references.append({"side": side, "jar_sha256": lab.digest(jar, "sha256"),
                            "output_sha256": lab.digest(reference, "sha256"), "matched_output_lines": matched})

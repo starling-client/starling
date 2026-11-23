@@ -15,7 +15,7 @@ class PreparedExtrasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / "target") as directory:
             source, target = [Path(directory) / name for name in ("source", "target")]
             target.mkdir()
-            (target / "horizon-resources.json").write_text('{"schema": 7}')
+            (target / "sunrise-resources.json").write_text('{"schema": 7}')
             (target / "generated.json").write_text('{"value": "new"}')
             extras = {
                 "assets/minecraft/sounds/fixture.ogg": b"sound",
@@ -29,8 +29,8 @@ class PreparedExtrasTest(unittest.TestCase):
                 "retired-export.json": b"{}",
                 "assets/minecraft/lang/en_us.json": b"{}",
                 "assets/minecraft/lang/deprecated.json": b"{}",
-                "horizon-data.bin": b"old cache",
-                "horizon-sprites.cache": b"old cache",
+                "sunrise-data.bin": b"old cache",
+                "sunrise-sprites.cache": b"old cache",
                 "export.log": b"old log",
                 "Exporter.class": b"old class",
             }

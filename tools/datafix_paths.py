@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VARIABLE = 'HORIZON_DATAFIX_ROOT'
+VARIABLE = 'SUNRISE_DATAFIX_ROOT'
 READ_ONLY = Path('/box/shared/vanilla')
 
 

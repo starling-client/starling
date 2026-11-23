@@ -1,24 +1,24 @@
 //! The night look's specimen: its type and colours drawn by the launcher itself, over the sky's
-//! stops, for checking the tokens in the real renderer (`HORIZON_LAUNCHER_PAGE=specimen`; not a
+//! stops, for checking the tokens in the real renderer (`SUNRISE_LAUNCHER_PAGE=specimen`; not a
 //! page players reach).
 use crate::blocks::icon;
 use crate::plate::{alpha, cut, plate};
 use crate::theme::{self, night, Theme};
 use gpui::{div, prelude::*, px, rgb, Div, FontWeight, Hsla, Rgba};
-use horizon_theme::{contrast, MICRO};
+use sunrise_theme::{contrast, MICRO};
 use std::sync::LazyLock;
 
 /// Whether the launcher was opened on the specimen.
 pub fn wanted() -> bool {
     static WANTED: LazyLock<bool> =
-        LazyLock::new(|| std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("specimen"));
+        LazyLock::new(|| std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref() == Ok("specimen"));
     *WANTED
 }
 
 /// Each sky stop's share of the window's height, top to bottom.
 const BANDS: [f32; 6] = [0.2, 0.18, 0.17, 0.15, 0.15, 0.15];
 
-fn text(step: horizon_theme::Step, color: impl Into<Hsla>) -> Div {
+fn text(step: sunrise_theme::Step, color: impl Into<Hsla>) -> Div {
     div()
         .font_family(if step.px >= night::DISPLAY.px {
             theme::DISPLAY_FONT
@@ -101,7 +101,7 @@ pub fn render(t: &Theme) -> Div {
         .flex_col()
         .gap(px(14.))
         .w(px(600.))
-        .child(mono(muted).child("horizon-theme · night · Bricolage Grotesque"))
+        .child(mono(muted).child("sunrise-theme · night · Bricolage Grotesque"))
         .child(text(night::DISPLAY, ink).child("Survival with friends"))
         .child(text(night::TITLE, ink).child("Java · Fabric 0.16.9 · 142 mods"))
         .child(
@@ -109,7 +109,7 @@ pub fn render(t: &Theme) -> Div {
                 .child("Downloads 26.3 and Java 21, about 600 MB. Cancel any time: it picks up where it stopped."),
         )
         .child(text(night::CAPTION, muted).child("Last played 2 hours ago · 41 h in total · world “Spring Valley”"))
-        .child(mono(muted).child("~/Library/Application Support/horizon/instances/survival-with-friends"))
+        .child(mono(muted).child("~/Library/Application Support/sunrise/instances/survival-with-friends"))
         .child(weights)
         .child(text(night::UI, ink_soft).child("Zürich · Łódź · Ærøskøbing · Brașov · Ça va · 0123456789"))
         .child(

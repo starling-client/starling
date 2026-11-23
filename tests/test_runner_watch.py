@@ -7,9 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "ci"))
 import runner_watch as rw  # noqa: E402
 
 NOW = dt.datetime(2026, 11, 10, 12, 0, tzinfo=dt.timezone.utc)
-LIGHT = ["self-hosted", "linux", "horizon-light"]
-GAME = ["self-hosted", "linux", "horizon-game"]
-MAC_NIGHTLY = ["self-hosted", "macOS", "horizon-nightly"]
+LIGHT = ["self-hosted", "linux", "sunrise-light"]
+GAME = ["self-hosted", "linux", "sunrise-game"]
+MAC_NIGHTLY = ["self-hosted", "macOS", "sunrise-nightly"]
 
 
 def job(labels, hours_ago, status="queued", name="j"):
@@ -37,7 +37,7 @@ class Plan(unittest.TestCase):
         waiting = rw.waiting_jobs([job(LIGHT, 3), job(LIGHT, 5, name="claim"), job(MAC_NIGHTLY, 4)], NOW, 2)
         action, text = rw.plan(waiting, None, NOW)
         self.assertEqual(action, "open")
-        self.assertIn("| `horizon-light` | 2 | 5 h | [claim](https://x/claim) |", text)
+        self.assertIn("| `sunrise-light` | 2 | 5 h | [claim](https://x/claim) |", text)
         self.assertIn("SELF_HOSTED_CI", text)  # the fix for the light pool is named
         self.assertIn("no Nightly is published", text)  # and what the Mac pool stops
         self.assertNotIn("parity job waits", text)  # pools with nothing waiting are left out

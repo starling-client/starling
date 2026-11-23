@@ -17,19 +17,19 @@ mod tests {
     #[test]
     fn package_roots_are_matched_as_path_components() {
         for path in [
-            "/usr/bin/horizon-launcher",
-            "/nix/store/hash-horizon/bin/horizon-launcher",
-            "/app/bin/horizon-launcher",
+            "/usr/bin/sunrise-launcher",
+            "/nix/store/hash-sunrise/bin/sunrise-launcher",
+            "/app/bin/sunrise-launcher",
         ] {
             assert!(package_managed(Path::new(path)), "{path}");
         }
         for path in [
-            "/home/player/Downloads/Horizon.AppImage",
-            "/usr/local/bin/horizon-launcher",
-            "/usr-backup/horizon-launcher",
-            "/nix/storehouse/horizon-launcher",
-            "/application/horizon-launcher",
-            "/tmp/.mount_Horizon/usr/bin/horizon-launcher",
+            "/home/player/Downloads/Sunrise.AppImage",
+            "/usr/local/bin/sunrise-launcher",
+            "/usr-backup/sunrise-launcher",
+            "/nix/storehouse/sunrise-launcher",
+            "/application/sunrise-launcher",
+            "/tmp/.mount_Sunrise/usr/bin/sunrise-launcher",
         ] {
             assert!(!package_managed(Path::new(path)), "{path}");
         }

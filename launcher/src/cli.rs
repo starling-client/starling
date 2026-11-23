@@ -1,19 +1,19 @@
-//! `horizon-launcher <subcommand>`: the same steps as the window, from a terminal. Every
+//! `sunrise-launcher <subcommand>`: the same steps as the window, from a terminal. Every
 //! command goes through `backend`; this file only parses arguments and prints.
 mod progress;
 use progress::{native_progress, progress};
 
 use clap::{Parser, Subcommand};
-use horizon_launcher::account::{self, Accounts};
-use horizon_launcher::backend::{self, Release};
-use horizon_launcher::github_mods;
-use horizon_launcher::i18n::{tr, trf};
-use horizon_launcher::instances;
-use horizon_launcher::loaders;
-use horizon_launcher::native_mods;
-use horizon_launcher::other_launchers;
-use horizon_launcher::server_list;
-use horizon_launcher::storage::{Category, Storage};
+use sunrise_launcher::account::{self, Accounts};
+use sunrise_launcher::backend::{self, Release};
+use sunrise_launcher::github_mods;
+use sunrise_launcher::i18n::{tr, trf};
+use sunrise_launcher::instances;
+use sunrise_launcher::loaders;
+use sunrise_launcher::native_mods;
+use sunrise_launcher::other_launchers;
+use sunrise_launcher::server_list;
+use sunrise_launcher::storage::{Category, Storage};
 #[derive(Clone, Debug)]
 enum ClearStorage {
     All,
@@ -38,7 +38,7 @@ use std::process::Command;
 #[command(
     name = crate::identity::EXECUTABLE,
     version = backend::VERSION,
-    about = "Installs, prepares and starts Horizon. Without a subcommand, opens the window."
+    about = "Installs, prepares and starts Sunrise. Without a subcommand, opens the window."
 )]
 struct Cli {
     /// Print JSON instead of text, where a command has something to report
@@ -49,7 +49,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum JavaCmd {
-    /// The Java runtimes Horizon downloaded from Mojang and the ones installed on this computer
+    /// The Java runtimes Sunrise downloaded from Mojang and the ones installed on this computer
     List,
     /// Download Mojang's Java runtime: a major (8, 16, 17, 21, 25) or a component name from a
     /// version's JSON (java-runtime-delta)
@@ -108,7 +108,7 @@ enum ServersCmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Run a horizon-server command on a server, for example: servers run "My server" -- status
+    /// Run a sunrise-server command on a server, for example: servers run "My server" -- status
     Run {
         /// The server's name or folder
         server: String,
@@ -224,7 +224,7 @@ enum InstanceCmd {
         #[arg(long)]
         copy: Option<String>,
         /// Make a Minecraft: Java Edition instance of this version (1.21.4, latest or
-        /// latest-snapshot) instead of a Horizon one
+        /// latest-snapshot) instead of a Sunrise one
         #[arg(long, conflicts_with = "copy")]
         minecraft: Option<String>,
         /// With this mod loader: fabric, quilt, forge or neoforge
@@ -276,7 +276,7 @@ enum InstanceCmd {
     /// Rename an instance (its folder stays)
     Rename { instance: String, name: String },
     /// Delete an instance: its folder (worlds, options, packs) goes to the Trash, where you can
-    /// get it back. Horizon's own instance stays
+    /// get it back. Sunrise's own instance stays
     Delete { instance: String },
     /// Set an instance's icon: a block or item name from your prepared files (grass_block),
     /// a colour (#3fa7d6), or none
@@ -288,9 +288,9 @@ enum InstanceCmd {
     },
     /// Make Play start this instance
     Select { instance: String },
-    /// Keep an instance on one installed Horizon version, or "latest" to follow updates again
+    /// Keep an instance on one installed Sunrise version, or "latest" to follow updates again
     Version { instance: String, version: String },
-    /// Export an instance (or a port) to share: its settings, packs, Horizon mods and the worlds
+    /// Export an instance (or a port) to share: its settings, packs, Sunrise mods and the worlds
     /// named, as a .mrpack (resource packs from Modrinth listed by download) or a zip. Never
     /// logs, screenshots or account data; worlds go without their per-player files
     Export {
@@ -350,7 +350,7 @@ enum InstanceCmd {
         #[arg(long)]
         instance: Option<String>,
         /// A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod
-        /// loader, mods and overrides, instead of a Horizon instance or a Modpacks import
+        /// loader, mods and overrides, instead of a Sunrise instance or a Modpacks import
         #[arg(long)]
         java: bool,
     },
@@ -445,7 +445,7 @@ enum PackKindArg {
     Shader,
 }
 
-impl From<PackKindArg> for horizon_launcher::packs::Kind {
+impl From<PackKindArg> for sunrise_launcher::packs::Kind {
     fn from(k: PackKindArg) -> Self {
         match k {
             PackKindArg::Resource => Self::Resource,
@@ -465,7 +465,7 @@ enum PacksCmd {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Copy a pack file in: a resource pack .zip, a shader pack .zip or a .hshader
+    /// Copy a pack file in: a resource pack .zip, a shader pack .zip or a .sshader
     Add {
         file: PathBuf,
         #[arg(long)]
@@ -549,7 +549,7 @@ enum ModsCmd {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Search for packs Horizon loads, or for what a Java instance runs (made for its
+    /// Search for packs Sunrise loads, or for what a Java instance runs (made for its
     /// Minecraft version and loader)
     Search {
         text: Vec<String>,
@@ -564,7 +564,7 @@ enum ModsCmd {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Say how well a Java mod runs in Horizon: its jar is downloaded (checksum checked),
+    /// Say how well a Java mod runs in Sunrise: its jar is downloaded (checksum checked),
     /// carried over and read; the answer is kept
     Check {
         project: String,
@@ -575,7 +575,7 @@ enum ModsCmd {
         source: SourceArg,
     },
     /// Install a pack and what it needs into an instance, by its id or slug (checksums
-    /// checked); a Java mod is ported into horizon-mods and turned on (a Java instance gets the
+    /// checked); a Java mod is ported into sunrise-mods and turned on (a Java instance gets the
     /// jar made for its version and loader in mods/); a modpack is imported as an instance of
     /// its own; a data pack goes into the world `--world` names
     Install {
@@ -605,7 +605,7 @@ enum ModsCmd {
     /// Install a native mod from a GitHub link (docs/modding/src/how-to/native-mods.md, "Install from GitHub"):
     /// https://github.com/OWNER/REPO (its latest release, else its default branch),
     /// .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or
-    /// commit, checked like a registry mod. NOT reviewed by the Horizon registry
+    /// commit, checked like a registry mod. NOT reviewed by the Sunrise registry
     AddGithub {
         url: String,
         /// The mod to install when the link holds several
@@ -643,7 +643,7 @@ enum ModsCmd {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Turn on a mod the browser installed (horizon-mods.txt; the game's Mods screen has no
+    /// Turn on a mod the browser installed (sunrise-mods.txt; the game's Mods screen has no
     /// switch; in a Java instance, its file loses `.disabled`)
     Enable {
         project: String,
@@ -666,7 +666,7 @@ enum KindArg {
     Mod,
     Resource,
     Modpack,
-    /// Horizon's own shader packs (Horizon's registry only)
+    /// Sunrise's own shader packs (Sunrise's registry only)
     Shader,
     /// Data packs (Modrinth): install one into a world with `mods install <pack> --world <name>`
     Datapack,
@@ -677,17 +677,17 @@ enum SourceArg {
     Modrinth,
     /// CurseForge support is coming soon
     Curseforge,
-    /// Horizon's own registry: mods, modpacks and resource packs made for Horizon, reviewed
-    Horizon,
+    /// Sunrise's own registry: mods, modpacks and resource packs made for Sunrise, reviewed
+    Sunrise,
 }
 
 impl SourceArg {
-    fn get(self) -> Result<Box<dyn horizon_launcher::browser::Source>, String> {
-        use horizon_launcher::browser::{self, SourceId};
+    fn get(self) -> Result<Box<dyn sunrise_launcher::browser::Source>, String> {
+        use sunrise_launcher::browser::{self, SourceId};
         let id = match self {
             SourceArg::Modrinth => SourceId::Modrinth,
             SourceArg::Curseforge => SourceId::CurseForge,
-            SourceArg::Horizon => SourceId::Horizon,
+            SourceArg::Sunrise => SourceId::Sunrise,
         };
         browser::source(id).ok_or_else(|| browser::CURSEFORGE_SOON.into())
     }
@@ -697,7 +697,7 @@ impl SourceArg {
 enum Cmd {
     /// Write a shell completion script to stdout
     Completions { shell: clap_complete::Shell },
-    /// List Horizon releases, or the installed versions
+    /// List Sunrise releases, or the installed versions
     Versions {
         /// Only the versions installed here (no network)
         #[arg(long)]
@@ -706,19 +706,19 @@ enum Cmd {
     /// Download and install a release (a tag such as v2026.10.13, or "latest")
     Install { tag: String },
     /// Install a local unsigned developer build from a trusted checkout
-    #[command(about = tr("Install a local unsigned developer build from a trusted checkout"), after_help = tr("Example: horizon-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/horizon-client --trust-unsigned\nThis executes the checkout's build code and an unsigned game with your rights. Trust both before continuing."), long_about = tr("Install a local unsigned developer build. This runs the checkout's build code through cargo run -p xtask -- package. Commit tracked changes and rebuild first. Build horizon-ctl, horizon-prepare and horizon-server beside the game, generate horizon-wasm-std.wasm beside it with cargo run --locked -p cargo-horizon-mod -- wasm-std PATH, and compile exporters into the checkout's exporters folder. Native builds use the saved local source commit, including unpublished commits. Select this base explicitly; automatic updates never replace it."))]
+    #[command(about = tr("Install a local unsigned developer build from a trusted checkout"), after_help = tr("Example: sunrise-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/sunrise-client --trust-unsigned\nThis executes the checkout's build code and an unsigned game with your rights. Trust both before continuing."), long_about = tr("Install a local unsigned developer build. This runs the checkout's build code through cargo run -p xtask -- package. Commit tracked changes and rebuild first. Build sunrise-ctl, sunrise-prepare and sunrise-server beside the game, generate sunrise-wasm-std.wasm beside it with cargo run --locked -p cargo-sunrise-mod -- wasm-std PATH, and compile exporters into the checkout's exporters folder. Native builds use the saved local source commit, including unpublished commits. Select this base explicitly; automatic updates never replace it."))]
     DeveloperInstall(developer_builds::DeveloperInstall),
     /// Remove an installed version
     Remove { tag: String },
-    /// Install a game program you have, such as a horizon-client built on your fork's Actions,
+    /// Install a game program you have, such as a sunrise-client built on your fork's Actions,
     /// as its own version on an installed base's game files, and select it. A local unsigned
     /// developer base is allowed only when explicitly selected or named with --version.
     /// Nothing signed it: it runs with your rights, and updates never replace it
     #[command(
-        after_help = "The program must match this computer's executable format and carry the exact `horizon-game-executable;`\nidentity signature embedded by ordinary and launcher-generated games. It carries no mod API level or build id,\nand is not a signature of authenticity. Unmarked programs are refused."
+        after_help = "The program must match this computer's executable format and carry the exact `sunrise-game-executable;`\nidentity signature embedded by ordinary and launcher-generated games. It carries no mod API level or build id,\nand is not a signature of authenticity. Unmarked programs are refused."
     )]
     ImportBuild {
-        /// The program (horizon-client, horizon-client.exe on Windows), or a zip holding it
+        /// The program (sunrise-client, sunrise-client.exe on Windows), or a zip holding it
         path: PathBuf,
         /// The installed base whose game files it plays with (default: the selected usable
         /// base, else the newest release or Nightly; developer bases need explicit selection)
@@ -809,11 +809,11 @@ enum Cmd {
         update_lock: bool,
     },
     /// Native mods (docs/modding/src/how-to/native-mods.md): compile flat Rust mod projects against the instance's exact
-    /// Horizon source revision with the launcher's own Rust, as the version the instance then
+    /// Sunrise source revision with the launcher's own Rust, as the version the instance then
     /// plays. Not sandboxed: the mods' code runs with your rights
     NativeBuild {
         /// Discover internal uses through compiler diagnostics. Prints resolved declarations
-        /// as JSON for cargo horizon-mod internals sync; never installs or selects a game
+        /// as JSON for cargo sunrise-mod internals sync; never installs or selects a game
         #[arg(long, conflicts_with_all = ["server_output", "instance", "version", "update", "profile"], requires = "folder")]
         sync_internals: bool,
         #[arg(long, requires = "folder", conflicts_with_all = ["sync_internals", "server_output", "instance", "version", "update", "profile"])]
@@ -821,9 +821,9 @@ enum Cmd {
         /// Copy discovery catalogs into this caller-owned empty directory
         #[arg(long, requires = "catalog")]
         catalog_output: Option<PathBuf>,
-        /// A mod folder (horizon-mod.toml with [native], Cargo.toml and src/), or a folder of them
+        /// A mod folder (sunrise-mod.toml with [native], Cargo.toml and src/), or a folder of them
         /// (default: the native mods installed and turned on in the instance). Server exports
-        /// also read wasm internals declarations from .hmod packages directly in this folder
+        /// also read wasm internals declarations from .smod packages directly in this folder
         folder: Option<PathBuf>,
         /// Export mode: build a standalone dedicated-server engine into this folder instead of
         /// an instance's build. Needs a mod FOLDER; no instance is read or changed, and no
@@ -845,10 +845,10 @@ enum Cmd {
         instance: Option<String>,
         /// The installed version whose game files the build reuses, and whose commit it builds on
         /// when no mod pins one (default: the one the instance plays, so a rebuild stays on its
-        /// Horizon)
+        /// Sunrise)
         #[arg(long)]
         version: Option<String>,
-        /// Move to the newest installed release or Nightly instead of the Horizon the instance
+        /// Move to the newest installed release or Nightly instead of the Sunrise the instance
         /// plays (rebuilds the mods for that pinned SDK)
         #[arg(long, conflicts_with = "version")]
         update: bool,
@@ -888,7 +888,7 @@ enum Cmd {
     /// system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent
     /// violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any
     /// hue), background PATH (a picture behind Home; "default"
-    /// shows Horizon's landscape), cache-limit-gib N (managed cache limit
+    /// shows Sunrise's landscape), cache-limit-gib N (managed cache limit
     /// in GiB: 10, 25 (default), 50, 100; 0 disables automatic cleanup)
     Settings {
         #[arg(value_parser = SETTING_KEYS)]
@@ -924,13 +924,13 @@ enum Cmd {
         #[arg(long)]
         crash: bool,
     },
-    /// Look for a newer Horizon release and launcher, and install them
+    /// Look for a newer Sunrise release and launcher, and install them
     Update {
         /// Only report what is available
         #[arg(long)]
         check: bool,
     },
-    /// Linux: put Horizon in the applications menu (an entry and the icon, under
+    /// Linux: put Sunrise in the applications menu (an entry and the icon, under
     /// $XDG_DATA_HOME), or take it out with --remove
     DesktopEntry {
         /// Remove the entry and the icon, and stop adding them back
@@ -1000,8 +1000,8 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<RustCmd>,
     },
-    /// Servers hosted with horizon-server (the Servers page): list them, create one, or run any
-    /// horizon-server command on one
+    /// Servers hosted with sunrise-server (the Servers page): list them, create one, or run any
+    /// sunrise-server command on one
     Servers {
         #[command(subcommand)]
         action: Option<ServersCmd>,
@@ -1020,7 +1020,7 @@ enum Cmd {
         test: bool,
     },
     /// Show or set No AI: on hides and turns off every AI feature (the companion, agent control,
-    /// horizon-ctl and both MCP servers); off, the default, makes them available
+    /// sunrise-ctl and both MCP servers); off, the default, makes them available
     NoAi {
         /// Omit to show the current state
         #[arg(value_parser = ["on", "off"])]
@@ -1107,7 +1107,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
                 .ok_or_else(|| format!("{value}: say stay, minimize or hide"))?
         }
         "accent" => {
-            use horizon_launcher::themes::Accent;
+            use sunrise_launcher::themes::Accent;
             s.accent = Accent::parse(value).ok_or_else(|| {
                 let names: Vec<_> = Accent::ALL.iter().map(|a| a.name()).collect();
                 format!(
@@ -1119,14 +1119,14 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
         "background" => {
             s.background = match value.trim() {
                 "default" | "" => None,
-                file => Some(horizon_launcher::themes::keep_background(
+                file => Some(sunrise_launcher::themes::keep_background(
                     &backend::data_dir(),
                     std::path::Path::new(file),
                 )?),
             }
         }
         "language" => {
-            use horizon_launcher::i18n::Language;
+            use sunrise_launcher::i18n::Language;
             s.language = match value.trim() {
                 "system" | "default" => None,
                 code => Some(Language::parse(code).ok_or_else(|| {
@@ -1151,7 +1151,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
         "proxy" => {
             if value == "default" || value.is_empty() {
                 s.proxy = None;
-            } else if let Some(why) = horizon_launcher::proxy::refuse(value) {
+            } else if let Some(why) = sunrise_launcher::proxy::refuse(value) {
                 return Err(why);
             } else {
                 s.proxy = Some(value.trim().to_string());
@@ -1176,7 +1176,7 @@ pub fn run() -> Option<i32> {
     let cli = Cli::from_arg_matches(&definition.get_matches()).unwrap_or_else(|e| e.exit());
     let command = cli.command?;
     let result = match command {
-        Cmd::Mcp | Cmd::AgentConfig { .. } if no_ai => Err(horizon_platform::no_ai::REFUSAL.into()),
+        Cmd::Mcp | Cmd::AgentConfig { .. } if no_ai => Err(sunrise_platform::no_ai::REFUSAL.into()),
         Cmd::Mcp => crate::mcp::serve().map(|()| 0),
         command => {
             let result = execute(command, cli.json);
@@ -1207,7 +1207,7 @@ fn attached(cmd: Command) -> Result<i32, String> {
         .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
     #[cfg(unix)]
     {
-        horizon_launcher::process::supervisor::exit_code(status).map_err(|error| error.to_string())
+        sunrise_launcher::process::supervisor::exit_code(status).map_err(|error| error.to_string())
     }
     #[cfg(not(unix))]
     {
@@ -1235,7 +1235,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             clap_complete::generate(
                 shell,
                 &mut self::command(),
-                "horizon-launcher",
+                "sunrise-launcher",
                 &mut std::io::stdout(),
             );
         }
@@ -1261,7 +1261,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     "prepared, no sounds (prepare again)"
                 };
                 let label =
-                    horizon_launcher::developer_install::label(tag).unwrap_or_else(|| tag.clone());
+                    sunrise_launcher::developer_install::label(tag).unwrap_or_else(|| tag.clone());
                 println!("{mark} {label}  {state}");
             }
         }
@@ -1294,7 +1294,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 );
             } else {
                 println!(
-                    "Installed {tag}. Prepare it next: horizon-launcher prepare --version {tag}"
+                    "Installed {tag}. Prepare it next: sunrise-launcher prepare --version {tag}"
                 );
             }
         }
@@ -1429,7 +1429,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     }
                     let error = String::from(error);
                     if error.starts_with(native_mods::MISMATCH) {
-                        trf("{error} Run `cargo horizon-mod update --horizon {commit}` in each mod's folder to pin it to this game, then build again.", &[("error", &error), ("commit", &base)])
+                        trf("{error} Run `cargo sunrise-mod update --sunrise {commit}` in each mod's folder to pin it to this game, then build again.", &[("error", &error), ("commit", &base)])
                     } else { error }
                 })?;
             println!(
@@ -1502,7 +1502,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 {
                     return Err(format!(
                         "{} plays Minecraft: Java Edition: --version, --world, --creative, \
-                         --join and --account are for Horizon instances.",
+                         --join and --account are for Sunrise instances.",
                         instance.name
                     ));
                 }
@@ -1519,7 +1519,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 let vars = instance.vars(cmd.get_program());
                 cmd.envs(vars.iter().map(|(k, v)| (k, v)));
                 let started = std::time::Instant::now();
-                let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+                let played = attached(sunrise_launcher::launch::wrap(cmd, &instance.launch));
                 if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                     eprintln!("Play time not saved: {e}");
                 }
@@ -1532,7 +1532,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                     Accounts::load()
                         .find(&who)
                         .ok_or_else(|| {
-                            format!("No signed-in account {who}. See `horizon-launcher account`.")
+                            format!("No signed-in account {who}. See `sunrise-launcher account`.")
                         })?
                         .uuid
                         .clone(),
@@ -1562,13 +1562,13 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             let started = std::time::Instant::now();
             let vars = instance.vars(cmd.get_program());
             cmd.envs(vars.iter().map(|(k, v)| (k, v)));
-            horizon_launcher::jars::prepare_launch(
+            sunrise_launcher::jars::prepare_launch(
                 &mut cmd,
                 &instance.launch,
-                horizon_launcher::jars::Permission::headless(allow_jar_downloads),
+                sunrise_launcher::jars::Permission::headless(allow_jar_downloads),
             )
             .map_err(|error| error.to_string())?;
-            let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
+            let played = attached(sunrise_launcher::launch::wrap(cmd, &instance.launch));
             if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                 eprintln!("Play time not saved: {e}");
             }
@@ -1585,10 +1585,10 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             let dir = backend::server_dir(dir);
             // The server inherits this terminal, so typed lines reach its console.
             let mut cmd = backend::server(&tag, &dir, accept_eula)?;
-            horizon_launcher::jars::prepare_launch(
+            sunrise_launcher::jars::prepare_launch(
                 &mut cmd,
                 &Default::default(),
-                horizon_launcher::jars::Permission::headless(allow_jar_downloads),
+                sunrise_launcher::jars::Permission::headless(allow_jar_downloads),
             )
             .map_err(|error| error.to_string())?;
             return attached(cmd);
@@ -1649,7 +1649,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             }
         }
         Cmd::AgentConfig { test: true, .. } => {
-            let tools = horizon_launcher::agents::self_test(&backend::update_target())?;
+            let tools = sunrise_launcher::agents::self_test(&backend::update_target())?;
             if as_json {
                 json(serde_json::json!({ "answered": true, "tools": tools }));
             } else {
@@ -1657,7 +1657,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             }
         }
         Cmd::AgentConfig { client, .. } => {
-            use horizon_launcher::agents;
+            use sunrise_launcher::agents;
             let exe = &backend::update_target();
             if as_json {
                 let mut all = agents::json(exe);
@@ -1695,7 +1695,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 let value = value.ok_or("settings KEY VALUE: the value is missing")?;
                 set_setting(&mut settings, &key, &value)?;
                 settings.save()?;
-                horizon_launcher::proxy::announce(settings.proxy.clone());
+                sunrise_launcher::proxy::announce(settings.proxy.clone());
             }
             let all = settings_json(&settings);
             if as_json {
@@ -1725,7 +1725,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             }
         }
         Cmd::ShareLog { instance } => {
-            use horizon_launcher::game_log;
+            use sunrise_launcher::game_log;
             let i = match instance {
                 Some(name) => instances::find(&name)?,
                 None => instances::selected(),
@@ -1743,7 +1743,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             } else {
                 println!("{}", shared.url);
                 println!(
-                    "Delete it: horizon-launcher unshare-log {}:{}",
+                    "Delete it: sunrise-launcher unshare-log {}:{}",
                     shared.id, shared.token
                 );
             }
@@ -1752,7 +1752,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             let (id, token) = shared
                 .split_once(':')
                 .ok_or("Give the \"<id>:<token>\" share-log printed.")?;
-            horizon_launcher::game_log::unshare(&horizon_launcher::game_log::Shared {
+            sunrise_launcher::game_log::unshare(&sunrise_launcher::game_log::Shared {
                 url: String::new(),
                 id: id.into(),
                 token: token.into(),
@@ -1769,7 +1769,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
         }
         Cmd::Update { check } => update(check, as_json)?,
         Cmd::BugReport { text, log } => {
-            let path = horizon_launcher::bug_report::write(&text, log)?;
+            let path = sunrise_launcher::bug_report::write(&text, log)?;
             if as_json {
                 json(serde_json::json!({ "path": path }));
             } else {
@@ -1784,11 +1784,11 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
             settings.desktop_entry = Some(!remove);
             settings.save()?;
             if remove {
-                horizon_launcher::desktop::remove()?;
-                println!("Removed Horizon from the applications menu.");
+                sunrise_launcher::desktop::remove()?;
+                println!("Removed Sunrise from the applications menu.");
             } else {
-                horizon_launcher::desktop::install(backend::exe_path())?;
-                println!("Horizon is in the applications menu.");
+                sunrise_launcher::desktop::install(backend::exe_path())?;
+                println!("Sunrise is in the applications menu.");
             }
         }
         Cmd::Worlds { action } => worlds(
@@ -1821,7 +1821,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
     Ok(0)
 }
 fn java(action: JavaCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::java;
+    use sunrise_launcher::java;
     match action {
         JavaCmd::List => {
             let mut all = java::mojang_runtimes(&java::runtimes_dir());
@@ -1829,11 +1829,11 @@ fn java(action: JavaCmd, as_json: bool) -> Result<(), String> {
             if as_json {
                 json(serde_json::json!(all));
             } else if all.is_empty() {
-                println!("No Java yet. Horizon downloads Mojang's when an instance needs it.");
+                println!("No Java yet. Sunrise downloads Mojang's when an instance needs it.");
             } else {
                 for r in &all {
                     let from = match r.source {
-                        java::Source::Mojang => "Mojang's, downloaded by Horizon",
+                        java::Source::Mojang => "Mojang's, downloaded by Sunrise",
                         java::Source::Installed => "installed",
                     };
                     println!("Java {}  ({from})\n  {}", r.version, r.home.display());
@@ -1857,7 +1857,7 @@ fn java(action: JavaCmd, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 fn rust(action: RustCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::rust_toolchain as rust;
+    use sunrise_launcher::rust_toolchain as rust;
     match action {
         RustCmd::Status => {
             let installed = rust::installed();
@@ -1875,7 +1875,7 @@ fn rust(action: RustCmd, as_json: bool) -> Result<(), String> {
                 match (&installed, &version) {
                     (Some(t), Some(v)) => println!("{v} in {}", t.dir.display()),
                     _ => println!(
-                        "Rust {} is not installed (`horizon-launcher rust install`).",
+                        "Rust {} is not installed (`sunrise-launcher rust install`).",
                         rust::VERSION
                     ),
                 }
@@ -1907,19 +1907,19 @@ fn update(check: bool, as_json: bool) -> Result<(), String> {
     let updates = backend::check_updates()?;
     if as_json && check {
         json(serde_json::json!({
-            "horizon": updates.horizon.as_ref().map(|r| &r.tag),
+            "sunrise": updates.sunrise.as_ref().map(|r| &r.tag),
             "launcher": updates.launcher.as_ref().and_then(|r| backend::launcher_version(&r.tag)),
             "launcher_current": backend::VERSION,
         }));
         return Ok(());
     }
-    match &updates.horizon {
-        None => println!("Horizon: up to date."),
-        Some(r) if check => println!("Horizon: {} is available.", r.tag),
+    match &updates.sunrise {
+        None => println!("Sunrise: up to date."),
+        Some(r) if check => println!("Sunrise: {} is available.", r.tag),
         Some(r) => {
             let tag =
                 backend::install_tag(&r.tag, true, progress(format!("Installing {}", r.tag)))?;
-            println!("Horizon: installed {tag}.");
+            println!("Sunrise: installed {tag}.");
         }
     }
     match &updates.launcher {
@@ -1948,7 +1948,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
         accounts
             .find(who)
             .cloned()
-            .ok_or_else(|| format!("No signed-in account {who}. See `horizon-launcher account`."))
+            .ok_or_else(|| format!("No signed-in account {who}. See `sunrise-launcher account`."))
     };
     match action {
         AccountCmd::List => {
@@ -1965,7 +1965,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
             } else if accounts.accounts.is_empty() {
                 println!(
                     "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
-                     Edition: horizon-launcher account sign-in"
+                     Edition: sunrise-launcher account sign-in"
                 );
             } else {
                 for a in &accounts.accounts {
@@ -2075,8 +2075,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
 }
 /// `data`: the same consent as Settings → Data collection.
 fn data(action: DataCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::telemetry;
-    let review = |item: &horizon_telemetry::Item, yes: bool| -> Result<bool, String> {
+    use sunrise_launcher::telemetry;
+    let review = |item: &sunrise_telemetry::Item, yes: bool| -> Result<bool, String> {
         println!(
             "{}",
             serde_json::to_string_pretty(item).map_err(|e| e.to_string())?
@@ -2110,9 +2110,9 @@ fn data(action: DataCmd, as_json: bool) -> Result<(), String> {
                 println!("{name}: {}", if on { "on" } else { "off" });
             }
             println!("Waiting to be sent: {}", status["waiting"]);
-            match horizon_telemetry::endpoint() {
+            match sunrise_telemetry::endpoint() {
                 Some(url) => println!("Server: {url}"),
-                None => println!("Server: turned off (HORIZON_TELEMETRY_URL=off), nothing is sent"),
+                None => println!("Server: turned off (SUNRISE_TELEMETRY_URL=off), nothing is sent"),
             }
         }
         DataCmd::Allow { kinds } => {
@@ -2131,14 +2131,14 @@ fn data(action: DataCmd, as_json: bool) -> Result<(), String> {
         DataCmd::Delete => println!("{}", telemetry::delete_my_data()?),
         DataCmd::Send => println!("{:?}", telemetry::send()),
         DataCmd::Bug { text, log, yes } => {
-            telemetry::ensure_allowed(horizon_telemetry::Kind::Bug)?;
+            telemetry::ensure_allowed(sunrise_telemetry::Kind::Bug)?;
             let item = telemetry::bug_report(&text, log)?;
             if review(&item, yes)? {
                 println!("{}", telemetry::submit(&item)?);
             }
         }
         DataCmd::Benchmark { file, yes } => {
-            telemetry::ensure_allowed(horizon_telemetry::Kind::Benchmark)?;
+            telemetry::ensure_allowed(sunrise_telemetry::Kind::Benchmark)?;
             let item = telemetry::benchmark_report(&file)?;
             if review(&item, yes)? {
                 println!("{}", telemetry::submit(&item)?);
@@ -2148,13 +2148,13 @@ fn data(action: DataCmd, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 fn servers(action: ServersCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::servers::{self, NewServer, World};
+    use sunrise_launcher::servers::{self, NewServer, World};
     let find = |which: &str| {
         servers::list()
             .into_iter()
             .find(|e| e.name == which || e.dir == std::path::Path::new(which))
             .ok_or_else(|| {
-                format!("No server called {which}: `horizon-launcher servers` lists them")
+                format!("No server called {which}: `sunrise-launcher servers` lists them")
             })
     };
     match action {
@@ -2172,7 +2172,7 @@ fn servers(action: ServersCmd, as_json: bool) -> Result<(), String> {
                         .collect(),
                 ));
             } else if list.is_empty() {
-                println!("No server yet: horizon-launcher servers create --accept-eula");
+                println!("No server yet: sunrise-launcher servers create --accept-eula");
             }
             for e in list.iter().filter(|_| !as_json) {
                 println!(
@@ -2226,7 +2226,7 @@ fn servers(action: ServersCmd, as_json: bool) -> Result<(), String> {
             let tag = backend::resolve_version(version.as_deref())?;
             servers::set_up(&tag)?;
             println!(
-                "Servers run Horizon {}",
+                "Servers run Sunrise {}",
                 servers::runtime_release().unwrap_or(tag)
             );
         }
@@ -2237,7 +2237,7 @@ fn servers(action: ServersCmd, as_json: bool) -> Result<(), String> {
                 .status()
                 .map_err(|e| e.to_string())?;
             if !status.success() {
-                return Err(format!("horizon-server exited with {status}"));
+                return Err(format!("sunrise-server exited with {status}"));
             }
         }
         ServersCmd::Forget { server } => {
@@ -2255,8 +2255,8 @@ fn servers(action: ServersCmd, as_json: bool) -> Result<(), String> {
 /// Installs the native mods of `found` (a GitHub link, resolved) into the game folder `home`: the
 /// warning and the exact source link first, and nothing downloaded without `trust`.
 fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::browser::{horizon, installed, java_instance, Kind, Query, SourceId};
-    use horizon_launcher::modpacks;
+    use sunrise_launcher::browser::{sunrise, installed, java_instance, Kind, Query, SourceId};
+    use sunrise_launcher::modpacks;
     // What the browser installs goes into an instance's game folder; Java mods' checks are kept
     // in the default one, shared by all.
     let instance = match &action {
@@ -2288,10 +2288,10 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
     let from_registry = installed::Installed::load(&home)
         .entries
         .iter()
-        .any(|e| e.source == SourceId::Horizon);
+        .any(|e| e.source == SourceId::Sunrise);
     if from_registry {
-        if let Ok(index) = horizon::index() {
-            for said in horizon::turn_off_revoked(&index, &home) {
+        if let Ok(index) = sunrise::index() {
+            for said in sunrise::turn_off_revoked(&index, &home) {
                 eprintln!("{said}");
             }
         }
@@ -2304,10 +2304,10 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 json(list.iter().map(entry_json).collect());
             } else if list.is_empty() && github_mods::origins(&home).is_empty() {
                 println!(
-                    "Nothing installed from the browser yet: horizon-launcher mods search <text>"
+                    "Nothing installed from the browser yet: sunrise-launcher mods search <text>"
                 );
             }
-            for o in horizon_launcher::github_mods::origins(&home)
+            for o in sunrise_launcher::github_mods::origins(&home)
                 .iter()
                 .filter(|_| !as_json && java.is_none())
             {
@@ -2377,18 +2377,18 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         "id": p.id, "slug": p.slug, "title": p.title, "summary": p.summary,
                         "author": p.author, "downloads": p.downloads, "page": p.page,
                         "license": p.license, "support": support.label(), "reason": support.reason(),
-                        "about": if p.source == SourceId::Horizon { horizon::trust_and_capabilities(&p.id, instance.as_ref()) } else { Vec::new() },
+                        "about": if p.source == SourceId::Sunrise { sunrise::trust_and_capabilities(&p.id, instance.as_ref()) } else { Vec::new() },
                     })
                 }).collect());
             } else {
                 if datapack && !found.is_empty() {
-                    println!("{}\n", horizon_launcher::browser::datapack_support());
+                    println!("{}\n", sunrise_launcher::browser::datapack_support());
                 }
                 for p in &found {
                     let support = p.support();
-                    if p.source == SourceId::Horizon {
+                    if p.source == SourceId::Sunrise {
                         println!("{}  ({})  {}\n  {}", p.title, p.slug, p.author, p.summary);
-                        for line in horizon::trust_and_capabilities(&p.id, instance.as_ref()) {
+                        for line in sunrise::trust_and_capabilities(&p.id, instance.as_ref()) {
                             println!("  {line}");
                         }
                         continue;
@@ -2407,9 +2407,9 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         p.summary
                     );
                     if unchecked {
-                        println!("  horizon-launcher mods check {}", p.slug);
+                        println!("  sunrise-launcher mods check {}", p.slug);
                     } else if datapack {
-                        println!("  horizon-launcher mods install {} --world <world>", p.slug);
+                        println!("  sunrise-launcher mods install {} --world <world>", p.slug);
                     } else if let Some(why) = support.reason() {
                         println!("  {why}");
                     }
@@ -2426,7 +2426,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
             if p.kind != Kind::Mod {
                 return Err(format!("{} isn't a Java mod.", p.title));
             }
-            let (version, c) = horizon_launcher::browser::java::check_project(
+            let (version, c) = sunrise_launcher::browser::java::check_project(
                 &home,
                 &*source,
                 &p,
@@ -2466,7 +2466,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
             let source = source.get()?;
             let p = source.project(&project)?;
             if let Some(world) = world {
-                let world = horizon_launcher::worlds::find(&home, &world)?;
+                let world = sunrise_launcher::worlds::find(&home, &world)?;
                 let done = installed::install_datapack(
                     &*source,
                     &p,
@@ -2498,11 +2498,11 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     p.title
                 ));
             }
-            if p.kind == Kind::Modpack && p.source == SourceId::Horizon {
-                let pack = horizon::pack::install(&p.id, &line)?;
+            if p.kind == Kind::Modpack && p.source == SourceId::Sunrise {
+                let pack = sunrise::pack::install(&p.id, &line)?;
                 if as_json {
                     json(
-                        serde_json::json!({"pack": pack.id, "version": pack.version, "mods": pack.mods, "home": horizon::pack::home(&pack.work)}),
+                        serde_json::json!({"pack": pack.id, "version": pack.version, "mods": pack.mods, "home": sunrise::pack::home(&pack.work)}),
                     );
                 } else {
                     println!(
@@ -2511,7 +2511,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         pack.version,
                         pack.mods.join(", ")
                     );
-                    println!("Play it: horizon-launcher modpack play {}", pack.id);
+                    println!("Play it: sunrise-launcher modpack play {}", pack.id);
                 }
                 return Ok(());
             }
@@ -2526,7 +2526,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     .map(|t| backend::resources(&t));
                 let pack = modpacks::import_and_port(&file, resources.as_deref(), log)?;
                 println!("{} ({})", modpacks::outcome(&pack), pack.summary());
-                println!("Play it: horizon-launcher modpack play {}", pack.slug);
+                println!("Play it: sunrise-launcher modpack play {}", pack.slug);
                 return Ok(());
             }
             let done = match &java {
@@ -2560,7 +2560,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 });
             }
             for e in chosen {
-                let Some(source) = horizon_launcher::browser::source(e.source) else {
+                let Some(source) = sunrise_launcher::browser::source(e.source) else {
                     println!("{}: {} isn't available here.", e.title, e.source.label());
                     continue;
                 };
@@ -2613,14 +2613,14 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
             ..
         } => {
             if java.is_some() {
-                return Err("Native mods from GitHub are for Horizon instances.".into());
+                return Err("Native mods from GitHub are for Sunrise instances.".into());
             }
             let mut origins = github_mods::origins(&home);
             origins.retain(|o| id.as_deref().is_none_or(|i| o.id == i));
             if origins.is_empty() {
                 return Err(match id {
                     Some(i) => format!("{i} wasn't installed from GitHub."),
-                    None => "No native mod was installed from GitHub: horizon-launcher mods add-github <url>".into(),
+                    None => "No native mod was installed from GitHub: sunrise-launcher mods add-github <url>".into(),
                 });
             }
             for o in origins {
@@ -2666,13 +2666,13 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 .lookup(&project)
                 .cloned()
                 .ok_or_else(|| format!("{project} wasn't installed by the browser."))?;
-            let id = horizon::mod_id(&e)
+            let id = sunrise::mod_id(&e)
                 .filter(|_| e.kind == Kind::Mod)
                 .ok_or_else(|| format!("{} isn't a mod: only mods turn on and off.", e.title))?;
             if on {
-                if let Some(r) = horizon::index()
+                if let Some(r) = sunrise::index()
                     .ok()
-                    .filter(|_| e.source == SourceId::Horizon)
+                    .filter(|_| e.source == SourceId::Sunrise)
                     .and_then(|i| {
                         i.revoked(&e.project, e.checksum.trim_start_matches("SHA-256:"))
                             .cloned()
@@ -2681,7 +2681,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     return Err(format!("{} was taken down: {}", e.title, r.reason));
                 }
             }
-            horizon_launcher::browser::java::set_enabled(&home, id, on)?;
+            sunrise_launcher::browser::java::set_enabled(&home, id, on)?;
             println!("{} is {}.", e.title, if on { "on" } else { "off" });
         }
     }
@@ -2689,7 +2689,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
 }
 /// The other launchers' instances in `folder`, else in their default folders.
 fn other_instances(folder: Option<&Path>) -> Result<Vec<other_launchers::Found>, String> {
-    use horizon_launcher::sources::{Folders, Os};
+    use sunrise_launcher::sources::{Folders, Os};
     Ok(match folder {
         Some(dir) if !dir.is_dir() => return Err(format!("{} isn't a folder.", dir.display())),
         Some(dir) => other_launchers::in_folder(dir, None),
@@ -2701,7 +2701,7 @@ fn other_instances(folder: Option<&Path>) -> Result<Vec<other_launchers::Found>,
 }
 /// Where `instance others` looked when it found nothing, and what it looks for.
 fn no_other_instances(folder: Option<&Path>) -> String {
-    use horizon_launcher::sources::{Folders, Os};
+    use sunrise_launcher::sources::{Folders, Os};
     match folder {
         Some(dir) => format!(
             "No other launcher's instance found in {}. Name a launcher's own folder (the \
@@ -2742,7 +2742,7 @@ fn other_json(f: &other_launchers::Found) -> serde_json::Value {
 /// Runs the instance's post-exit command in this terminal, if it has one, and waits for it.
 fn after_exit(instance: &instances::Instance, vars: &[(&'static str, std::ffi::OsString)]) {
     let Some(mut cmd) =
-        horizon_launcher::launch::after_exit(&instance.launch, &instance.home, vars)
+        sunrise_launcher::launch::after_exit(&instance.launch, &instance.home, vars)
     else {
         return;
     };
@@ -2777,7 +2777,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
         serde_json::json!({
             "id": i.id, "name": i.name, "kind": format!("{:?}", i.kind).to_lowercase(),
             "home": i.home, "icon": i.icon, "group": i.group, "selected": selected,
-            "version": i.version, "version_label": i.version.as_deref().and_then(horizon_launcher::developer_install::label), "java": i.java, "played_secs": i.played.as_secs(),
+            "version": i.version, "version_label": i.version.as_deref().and_then(sunrise_launcher::developer_install::label), "java": i.java, "played_secs": i.played.as_secs(),
             "last_played_ms": i.last_played.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64),
         })
     };
@@ -2800,7 +2800,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             },
             (None, Some(v)) => format!(
                 "  {}",
-                horizon_launcher::developer_install::label(v).unwrap_or_else(|| v.clone())
+                sunrise_launcher::developer_install::label(v).unwrap_or_else(|| v.clone())
             ),
             (None, None) => String::new(),
         };
@@ -2845,7 +2845,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             loader_version,
             ..
         } => {
-            let versions = horizon_launcher::minecraft_versions::load()?;
+            let versions = sunrise_launcher::minecraft_versions::load()?;
             let id = &versions.find(&version)?.id;
             // The loader first: a version it doesn't have makes no instance.
             let loader = loader
@@ -2867,7 +2867,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
         } => {
             let Some(java) = instances::find(&instance)?.java else {
                 return Err(format!(
-                    "{instance} is a Horizon instance: mod loaders are for Java instances."
+                    "{instance} is a Sunrise instance: mod loaders are for Java instances."
                 ));
             };
             if list {
@@ -2891,7 +2891,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             })?)
         }
         InstanceCmd::Versions { snapshots, old } => {
-            let versions = horizon_launcher::minecraft_versions::load()?;
+            let versions = sunrise_launcher::minecraft_versions::load()?;
             let shown: Vec<_> = versions.of(snapshots, old).collect();
             if as_json {
                 json(serde_json::json!(shown));
@@ -2913,7 +2913,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             let window = window.as_deref().map(parse_window).transpose()?;
             if instances::find(&instance)?.java.is_none() {
                 return Err(format!(
-                    "{instance} is a Horizon instance: Horizon is not a Java program."
+                    "{instance} is a Sunrise instance: Sunrise is not a Java program."
                 ));
             }
             changed(instances::edit(&instance, |m| {
@@ -2966,7 +2966,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             dedicated_gpu,
             post_exit,
         } => {
-            use horizon_launcher::launch;
+            use sunrise_launcher::launch;
             let env = env.as_deref().map(launch::parse_env).transpose()?;
             let [gamemode, mangohud, dedicated_gpu] =
                 [gamemode, mangohud, dedicated_gpu].map(|v| v.as_deref().map(on_off));
@@ -3053,7 +3053,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             }
         }
         InstanceCmd::Shortcut { instance, remove } => {
-            use horizon_launcher::shortcut;
+            use sunrise_launcher::shortcut;
             let i = match instance {
                 Some(name) => instances::find(&name)?,
                 None => instances::selected(),
@@ -3103,7 +3103,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                 [] => {
                     return Err(format!(
                         "No other launcher has an instance called {name}: \
-                         horizon-launcher instance others"
+                         sunrise-launcher instance others"
                     ));
                 }
                 _ => {
@@ -3134,12 +3134,12 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             file, java: true, ..
         } => {
             let i =
-                horizon_launcher::instances_mrpack::import(&file, &|line, _| eprintln!("{line}"))?;
+                sunrise_launcher::instances_mrpack::import(&file, &|line, _| eprintln!("{line}"))?;
             if as_json {
                 json(value(&i, false));
             } else {
                 println!(
-                    "Made the Java instance {} in {}: horizon-launcher play --instance \"{}\"",
+                    "Made the Java instance {} in {}: sunrise-launcher play --instance \"{}\"",
                     i.name,
                     i.home.display(),
                     i.name
@@ -3147,8 +3147,8 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             }
         }
         InstanceCmd::Import { file, instance, .. } => {
-            use horizon_launcher::import::{self, Dropped};
-            use horizon_launcher::modpacks;
+            use sunrise_launcher::import::{self, Dropped};
+            use sunrise_launcher::modpacks;
             match import::what(&file)? {
                 Dropped::Instance => {
                     let i = import::import_instance(&file, &|line, _| eprintln!("{line}"))?;
@@ -3156,7 +3156,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                         json(value(&i, false));
                     } else {
                         println!(
-                            "Made the instance {} in {}: horizon-launcher instance select \"{}\"",
+                            "Made the instance {} in {}: sunrise-launcher instance select \"{}\"",
                             i.name,
                             i.home.display(),
                             i.name
@@ -3167,7 +3167,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                     let pack = modpacks::import(&file, &|line: String| eprintln!("{line}"))?;
                     println!("{} ({})", modpacks::outcome(&pack), pack.summary());
                     println!(
-                        "Port and play it: horizon-launcher modpack port {}",
+                        "Port and play it: sunrise-launcher modpack port {}",
                         pack.slug
                     );
                 }
@@ -3175,7 +3175,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                 // rather than touching an instance, and takes a `--version` to
                 // say which release's game files it plays with.
                 Dropped::Build => {
-                    let tag = horizon_launcher::build_import::import(&file, None)?;
+                    let tag = sunrise_launcher::build_import::import(&file, None)?;
                     if as_json {
                         json(serde_json::json!({ "version": tag }));
                     } else {
@@ -3187,15 +3187,15 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                         Some(name) => instances::find(&name)?,
                         None => instances::selected(),
                     };
-                    let p = horizon_launcher::packs::add(&i.home, &file)?;
+                    let p = sunrise_launcher::packs::add(&i.home, &file)?;
                     println!(
-                        "Added {} to {}: turn it on with horizon-launcher packs on",
+                        "Added {} to {}: turn it on with sunrise-launcher packs on",
                         p.title, i.name
                     );
                 }
                 Dropped::DataPack => {
                     return Err(format!(
-                        "{} is a data pack: put it into a world with horizon-launcher worlds \
+                        "{} is a data pack: put it into a world with sunrise-launcher worlds \
                          datapack-add <world> <file>",
                         file.display()
                     ));
@@ -3208,7 +3208,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             world,
             out,
         } => {
-            use horizon_launcher::export::{self, Format};
+            use sunrise_launcher::export::{self, Format};
             let i = match instance {
                 Some(name) => instances::find(&name)?,
                 None => instances::selected(),
@@ -3219,7 +3219,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
             };
             let worlds = world
                 .iter()
-                .map(|w| horizon_launcher::worlds::find(&i.home, w).map(|w| w.folder))
+                .map(|w| sunrise_launcher::worlds::find(&i.home, w).map(|w| w.folder))
                 .collect::<Result<Vec<_>, _>>()?;
             let linked = match format {
                 Format::Mrpack => export::linkable(&i.home, &export::from_modrinth),
@@ -3258,7 +3258,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
 }
 
 fn game_packs(action: PacksCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::packs::{self, Kind};
+    use sunrise_launcher::packs::{self, Kind};
     let home = |instance: Option<String>| -> Result<PathBuf, String> {
         Ok(match instance {
             Some(name) => instances::find(&name)?.home,
@@ -3330,11 +3330,11 @@ fn game_packs(action: PacksCmd, as_json: bool) -> Result<(), String> {
 
 fn set_pack(
     home: &std::path::Path,
-    kind: horizon_launcher::packs::Kind,
+    kind: sunrise_launcher::packs::Kind,
     query: &str,
     on: bool,
 ) -> Result<(), String> {
-    use horizon_launcher::packs;
+    use sunrise_launcher::packs;
     let pack = packs::find(home, kind, query)?;
     packs::set_enabled(home, &pack, on)?;
     println!("{} is {}.", pack.title, if on { "on" } else { "off" });
@@ -3342,7 +3342,7 @@ fn set_pack(
 }
 
 fn screenshots(action: ScreenshotsCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::screenshots;
+    use sunrise_launcher::screenshots;
     let home = |instance: Option<String>| -> Result<PathBuf, String> {
         Ok(match instance {
             Some(name) => instances::find(&name)?.home,
@@ -3434,8 +3434,8 @@ fn multiplayer(action: MultiplayerCmd, as_json: bool) -> Result<(), String> {
 }
 
 fn worlds(action: WorldsCmd, as_json: bool) -> Result<(), String> {
-    use horizon_launcher::datapacks;
-    use horizon_launcher::worlds::{self, World};
+    use sunrise_launcher::datapacks;
+    use sunrise_launcher::worlds::{self, World};
     let home = |instance: Option<String>| -> Result<PathBuf, String> {
         Ok(match instance {
             Some(name) => instances::find(&name)?.home,
@@ -3537,13 +3537,13 @@ fn worlds(action: WorldsCmd, as_json: bool) -> Result<(), String> {
 }
 
 fn modpack(action: ModpackCmd, as_json: bool) -> Result<i32, String> {
-    use horizon_launcher::browser::horizon;
-    use horizon_launcher::modpacks::{self, Imported};
-    use horizon_port_pack::report::Status;
+    use sunrise_launcher::browser::sunrise;
+    use sunrise_launcher::modpacks::{self, Imported};
+    use sunrise_port_pack::report::Status;
     let log = &|line: String| eprintln!("{line}");
     let work = |pack: &str| {
-        let registry = horizon::pack::packs_dir().join(pack);
-        if horizon::pack::is_pack(&registry) {
+        let registry = sunrise::pack::packs_dir().join(pack);
+        if sunrise::pack::is_pack(&registry) {
             return Ok(registry);
         }
         let work = modpacks::ports_dir().join(pack);
@@ -3584,19 +3584,19 @@ fn modpack(action: ModpackCmd, as_json: bool) -> Result<i32, String> {
     match action {
         ModpackCmd::List => {
             let packs = modpacks::list();
-            let registry = horizon::pack::list();
+            let registry = sunrise::pack::list();
             if packs.is_empty() && registry.is_empty() && !as_json {
-                println!("No modpack imported yet: horizon-launcher modpack import <pack>");
+                println!("No modpack imported yet: sunrise-launcher modpack import <pack>");
             }
             packs.iter().for_each(show);
             for p in &registry {
                 if as_json {
                     json(
-                        serde_json::json!({"pack": p.id, "name": p.name, "version": p.version, "source": "horizon", "mods": p.mods}),
+                        serde_json::json!({"pack": p.id, "name": p.name, "version": p.version, "source": "sunrise", "mods": p.mods}),
                     );
                 } else {
                     println!(
-                        "{} {}  ({}, from Horizon's registry)\n  {}",
+                        "{} {}  ({}, from Sunrise's registry)\n  {}",
                         p.name,
                         p.version,
                         p.id,
@@ -3629,10 +3629,10 @@ fn modpack(action: ModpackCmd, as_json: bool) -> Result<i32, String> {
         } => {
             let mut cmd = backend::client(&backend::resolve_version(version.as_deref())?)?;
             modpacks::apply_profile(&mut cmd, &work(&pack)?)?;
-            horizon_launcher::jars::prepare_launch(
+            sunrise_launcher::jars::prepare_launch(
                 &mut cmd,
                 &Default::default(),
-                horizon_launcher::jars::Permission::headless(allow_jar_downloads),
+                sunrise_launcher::jars::Permission::headless(allow_jar_downloads),
             )
             .map_err(|error| error.to_string())?;
             return attached(cmd);
@@ -3665,22 +3665,22 @@ mod tests {
                     "cli::tests::attached_status_actor",
                     "--nocapture",
                 ])
-                .env("HORIZON_CLI_STATUS_ROLE", "wrapper")
-                .env("HORIZON_CLI_STATUS_CODE", code.to_string())
-                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-                .env("HORIZON_NO_AUDIO", "1")
+                .env("SUNRISE_CLI_STATUS_ROLE", "wrapper")
+                .env("SUNRISE_CLI_STATUS_CODE", code.to_string())
+                .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("SUNRISE_NO_AUDIO", "1")
                 .current_dir(root.path())
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::inherit());
             for (key, folder) in [
-                ("HORIZON_HOME", "logs"),
-                ("HORIZON_LAUNCHER_HOME", "launcher"),
+                ("SUNRISE_HOME", "logs"),
+                ("SUNRISE_LAUNCHER_HOME", "launcher"),
                 ("XDG_DATA_HOME", "xdg-data"),
                 ("XDG_CONFIG_HOME", "xdg-config"),
-                ("HORIZON_LAUNCHER_TRASH", "trash"),
-                ("HORIZON_LAUNCHER_CLIPBOARD", "clipboard"),
-                ("HORIZON_LAUNCHER_DESKTOP", "desktop"),
+                ("SUNRISE_LAUNCHER_TRASH", "trash"),
+                ("SUNRISE_LAUNCHER_CLIPBOARD", "clipboard"),
+                ("SUNRISE_LAUNCHER_DESKTOP", "desktop"),
             ] {
                 command.env(key, root.path().join(folder));
             }
@@ -3690,16 +3690,16 @@ mod tests {
 
     #[test]
     fn attached_status_actor() {
-        let Ok(role) = std::env::var("HORIZON_CLI_STATUS_ROLE") else {
+        let Ok(role) = std::env::var("SUNRISE_CLI_STATUS_ROLE") else {
             return;
         };
-        let code: i32 = std::env::var("HORIZON_CLI_STATUS_CODE")
+        let code: i32 = std::env::var("SUNRISE_CLI_STATUS_CODE")
             .unwrap()
             .parse()
             .unwrap();
         if role == "child" {
-            assert!(std::env::var_os(horizon_mod_package::holder::ENV).is_none());
-            assert!(std::env::var_os(horizon_mod_package::holder::ENTRY).is_none());
+            assert!(std::env::var_os(sunrise_mod_package::holder::ENV).is_none());
+            assert!(std::env::var_os(sunrise_mod_package::holder::ENTRY).is_none());
             use std::io::IsTerminal;
             let shape = format!(
                 "{}:{}:{}",
@@ -3707,7 +3707,7 @@ mod tests {
                 std::io::stdout().is_terminal(),
                 std::io::stderr().is_terminal()
             );
-            assert_eq!(shape, std::env::var("HORIZON_CLI_STDIO_SHAPE").unwrap());
+            assert_eq!(shape, std::env::var("SUNRISE_CLI_STDIO_SHAPE").unwrap());
             #[cfg(unix)]
             if code == 143 {
                 unsafe {
@@ -3725,10 +3725,10 @@ mod tests {
                 "cli::tests::attached_status_actor",
                 "--nocapture",
             ])
-            .env("HORIZON_CLI_STATUS_ROLE", "child");
+            .env("SUNRISE_CLI_STATUS_ROLE", "child");
         use std::io::IsTerminal;
         command.env(
-            "HORIZON_CLI_STDIO_SHAPE",
+            "SUNRISE_CLI_STDIO_SHAPE",
             format!(
                 "{}:{}:{}",
                 std::io::stdin().is_terminal(),
@@ -3750,18 +3750,18 @@ mod tests {
             clap_complete::Shell::PowerShell,
         ] {
             let shell_name = shell.to_string();
-            let args = ["horizon-launcher", "completions", shell_name.as_str()].map(str::to_owned);
+            let args = ["sunrise-launcher", "completions", shell_name.as_str()].map(str::to_owned);
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(matches!(cli.command, Some(Cmd::Completions { .. })));
             let mut output = Vec::new();
-            clap_complete::generate(shell, &mut command(), "horizon-launcher", &mut output);
+            clap_complete::generate(shell, &mut command(), "sunrise-launcher", &mut output);
             let script = String::from_utf8(output).unwrap();
-            assert!(script.contains("horizon-launcher"));
+            assert!(script.contains("sunrise-launcher"));
             assert!(script.contains("versions"));
             assert!(script.contains("multiplayer"));
         }
-        assert!(Cli::try_parse_from(["horizon-launcher", "completions"]).is_err());
-        assert!(Cli::try_parse_from(["horizon-launcher", "completions", "unknown"]).is_err());
+        assert!(Cli::try_parse_from(["sunrise-launcher", "completions"]).is_err());
+        assert!(Cli::try_parse_from(["sunrise-launcher", "completions", "unknown"]).is_err());
     }
 
     #[test]
@@ -3782,7 +3782,7 @@ mod tests {
 
     #[test]
     fn play_takes_an_account_for_one_launch() {
-        let cli = Cli::try_parse_from(["horizon-launcher", "play", "--account", "Alex"]).unwrap();
+        let cli = Cli::try_parse_from(["sunrise-launcher", "play", "--account", "Alex"]).unwrap();
         match cli.command {
             Some(Cmd::Play { account, .. }) => assert_eq!(account.as_deref(), Some("Alex")),
             _ => panic!("not play"),
@@ -3792,7 +3792,7 @@ mod tests {
     #[test]
     fn play_takes_extra_arguments_that_start_with_hyphens() {
         let cli = Cli::try_parse_from([
-            "horizon-launcher",
+            "sunrise-launcher",
             "play",
             "--arg",
             "--server-thread",
@@ -3809,7 +3809,7 @@ mod tests {
     #[test]
     fn game_args_takes_one_line_that_starts_with_hyphens() {
         let cli = Cli::try_parse_from([
-            "horizon-launcher",
+            "sunrise-launcher",
             "game-args",
             "--server-thread --render-distance 40",
         ])
@@ -3837,7 +3837,7 @@ mod tests {
     #[test]
     fn mods_commands_name_their_instance() {
         let parse = |args: &[&str]| {
-            let cli = Cli::try_parse_from([&["horizon-launcher", "mods"], args].concat()).unwrap();
+            let cli = Cli::try_parse_from([&["sunrise-launcher", "mods"], args].concat()).unwrap();
             match cli.command {
                 Some(Cmd::Mods { action }) => action,
                 _ => panic!("expected mods"),
@@ -3891,7 +3891,7 @@ mod tests {
             Some(ModsCmd::Search { instance: Some(i), .. }) if i == "A"
         ));
         assert!(
-            Cli::try_parse_from(["horizon-launcher", "mods", "check", "x", "--instance", "A"])
+            Cli::try_parse_from(["sunrise-launcher", "mods", "check", "x", "--instance", "A"])
                 .is_err()
         );
     }
@@ -3901,7 +3901,7 @@ mod tests {
         let parse = |args: &[&str]| {
             Cli::try_parse_from(
                 [
-                    &["horizon-launcher", "native-build", "--sync-internals"],
+                    &["sunrise-launcher", "native-build", "--sync-internals"],
                     args,
                 ]
                 .concat(),
@@ -3930,7 +3930,7 @@ mod tests {
         let parse = |args: &[&str]| {
             Cli::try_parse_from(
                 [
-                    &["horizon-launcher", "native-build", "--trust-native-code"],
+                    &["sunrise-launcher", "native-build", "--trust-native-code"],
                     args,
                 ]
                 .concat(),

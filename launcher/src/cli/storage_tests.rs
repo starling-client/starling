@@ -4,23 +4,23 @@ use super::*;
 #[test]
 fn storage_command_and_cache_limit() {
     assert!(matches!(
-        Cli::try_parse_from(["horizon-launcher", "storage"])
+        Cli::try_parse_from(["sunrise-launcher", "storage"])
             .unwrap()
             .command,
         Some(Cmd::Storage { clear: None })
     ));
     assert!(matches!(
-        Cli::try_parse_from(["horizon-launcher", "storage", "--clear", "all"])
+        Cli::try_parse_from(["sunrise-launcher", "storage", "--clear", "all"])
             .unwrap()
             .command,
         Some(Cmd::Storage {
             clear: Some(ClearStorage::All)
         })
     ));
-    assert!(Cli::try_parse_from(["horizon-launcher", "storage", "--clear", "worlds"]).is_err());
-    assert!(Cli::try_parse_from(["horizon-launcher", "native-cache"]).is_err());
+    assert!(Cli::try_parse_from(["sunrise-launcher", "storage", "--clear", "worlds"]).is_err());
+    assert!(Cli::try_parse_from(["sunrise-launcher", "native-cache"]).is_err());
     assert!(
-        Cli::try_parse_from(["horizon-launcher", "storage", "--clear", "other-caches"]).is_ok()
+        Cli::try_parse_from(["sunrise-launcher", "storage", "--clear", "other-caches"]).is_ok()
     );
     let mut settings = backend::Settings::default();
     for value in ["10", "25", "50", "100", "0"] {

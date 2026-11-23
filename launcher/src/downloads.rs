@@ -1,6 +1,6 @@
 //! Bounded, streaming HTTP transfers shared by the launcher's Minecraft pipeline.
 //!
-//! `HORIZON_DOWNLOAD_*` settings are read once when the shared engine starts. Invalid values
+//! `SUNRISE_DOWNLOAD_*` settings are read once when the shared engine starts. Invalid values
 //! retain defaults; `Config` also supports direct configuration. Sizes are bytes, times seconds.
 //!
 //! | Suffix | Default | Meaning / bounds |
@@ -73,7 +73,7 @@ impl Config {
         let mut c = Self::default();
         macro_rules! setting {
             ($field:ident,$name:literal) => {
-                if let Ok(s) = std::env::var(concat!("HORIZON_DOWNLOAD_", $name)) {
+                if let Ok(s) = std::env::var(concat!("SUNRISE_DOWNLOAD_", $name)) {
                     if let Ok(n) = s.parse() {
                         c.$field = n;
                     }
@@ -92,7 +92,7 @@ impl Config {
             ("CONNECT_TIMEOUT", &mut c.connect_timeout),
             ("READ_TIMEOUT", &mut c.read_timeout),
         ] {
-            if let Ok(n) = std::env::var(format!("HORIZON_DOWNLOAD_{name}"))
+            if let Ok(n) = std::env::var(format!("SUNRISE_DOWNLOAD_{name}"))
                 .unwrap_or_default()
                 .parse::<u64>()
             {
@@ -611,7 +611,7 @@ impl Downloader {
             let mut nonce = [0; 8];
             getrandom::fill(&mut nonce).map_err(Failure::permanent)?;
             let temporary = parent.join(format!(
-                ".horizon-download-{}-{:x}.part",
+                ".sunrise-download-{}-{:x}.part",
                 std::process::id(),
                 u64::from_ne_bytes(nonce)
             ));
@@ -816,7 +816,7 @@ fn sweep_partials(parent: &Path) {
         let name = entry.file_name();
         let Some((pid, nonce)) = name
             .to_str()
-            .and_then(|s| s.strip_prefix(".horizon-download-"))
+            .and_then(|s| s.strip_prefix(".sunrise-download-"))
             .and_then(|s| s.strip_suffix(".part"))
             .and_then(|s| s.split_once('-'))
         else {
@@ -932,7 +932,7 @@ struct Clients {
 }
 fn build_client(config: &Config, proxy: Option<&str>) -> Result<Client, Failure> {
     let mut builder = Client::builder()
-        .user_agent(concat!("horizon-launcher/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("sunrise-launcher/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(config.connect_timeout)
         .read_timeout(config.read_timeout)
         .pool_max_idle_per_host(config.per_host)

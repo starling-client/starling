@@ -16,7 +16,7 @@ class ErrorShape(unittest.TestCase):
 
     def test_io_error_names_kind_and_os_error_but_no_path(self):
         log = self.render('Os { code: 2, kind: NotFound, message: "PRIVATE" } '
-                          'reading /home/runner/work/horizon/.local/horizon-client/26.3/assets/minecraft/blockstates/stone.json')
+                          'reading /home/runner/work/sunrise/.local/sunrise-client/26.3/assets/minecraft/blockstates/stone.json')
         self.assertIn("panic reason: Result::unwrap on an error (kind Os, NotFound, os error 2 ENOENT); "
                       "rest of payload withheld (resource privacy)", log)
         self.assertNotIn("stone.json", log)

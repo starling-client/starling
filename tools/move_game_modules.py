@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 
-GAME = Path('crates/horizon-client/src/game')
+GAME = Path('crates/sunrise-client/src/game')
 DECL = re.compile(r'^(#\[cfg\(test\)\]\n)?(pub(?:\(crate\))? )?mod (\w+);\n\n?', re.M)
 INCLUDE = 'include!(concat!(env!("OUT_DIR"), "/game_modules.rs"));\n'
 SUPPORT = {'agent_navigation': 'agent', 'mod_inventory_tests': 'mods'}
@@ -69,28 +69,28 @@ def rewrite(text, path, moves):
             new = os.path.relpath(target, Path(moves.get(path, path)).parent)
             return f'"{new}"'
         text = re.sub(r'"([^"\n]+\.rs)"', relative, text)
-    short = {old.removeprefix('crates/horizon-client/src/'): new.removeprefix('crates/horizon-client/src/')
+    short = {old.removeprefix('crates/sunrise-client/src/'): new.removeprefix('crates/sunrise-client/src/')
              for old, new in moves.items()}
     # Synthetic module-walker fixtures describe their own layout, not the real tree.
-    if '/horizon-mod-api-gen/' not in path:
+    if '/sunrise-mod-api-gen/' not in path:
         pattern = '|'.join(re.escape(p) for p in sorted(short, key=len, reverse=True))
         if path.startswith('tests/') and path.endswith('.py'):
             def glob(match):
                 name = match[2]
                 if name.startswith('crates/'):
-                    prefix = 'crates/horizon-client/src/'
+                    prefix = 'crates/sunrise-client/src/'
                 else:
                     prefix = ''
                 target = short[name.removeprefix(prefix)]
                 parts = target.split('/')
                 parts[1] = '*'
                 return f'next({match[1]}.glob({(prefix + "/".join(parts))!r}))'
-            text = re.sub(r'(\b\w+)\s*/\s*[\'"]((?:crates/horizon-client/src/)?(?:' + pattern + r'))[\'"]', glob, text)
+            text = re.sub(r'(\b\w+)\s*/\s*[\'"]((?:crates/sunrise-client/src/)?(?:' + pattern + r'))[\'"]', glob, text)
         text = re.sub(pattern, lambda m: short[m[0]], text)
     # The only real-tree read in this module; the other literals are synthetic fixtures.
     if path.endswith('/points.rs'):
-        text = text.replace('read_to_string(root.join("crates/horizon-client/src/game/remote.rs"))',
-                            'read_to_string(root.join("' + moves['crates/horizon-client/src/game/remote.rs'] + '"))')
+        text = text.replace('read_to_string(root.join("crates/sunrise-client/src/game/remote.rs"))',
+                            'read_to_string(root.join("' + moves['crates/sunrise-client/src/game/remote.rs'] + '"))')
     return text
 
 
@@ -154,7 +154,7 @@ def main():
                 Path(new).write_text(expected)
     if args.verify:
         assert removed == added
-        build = 'crates/horizon-mod-api-gen/src/build.rs'
+        build = 'crates/sunrise-mod-api-gen/src/build.rs'
         build_sources = git('show', f'{args.verify}:{build}'), Path(build).read_text()
         for output in ('mod_api_host_generated.rs', 'mod_api_fire_generated.rs', 'mod_api_goal_view_generated.rs'):
             binding = next(line.strip() for line in build_sources[0].splitlines() if line.lstrip().startswith(f'("{output}",'))

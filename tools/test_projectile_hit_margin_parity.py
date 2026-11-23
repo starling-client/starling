@@ -5,7 +5,7 @@
 `computeMargin`: `max(0, min(0.3, (tickCount - 2) / 20))`, nothing for its first two ticks and 0.3 from its eighth.
 A wind charge that passes 0.2 beside a mob on its second tick flies on; one that passes as close on its eighth hits.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each load a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each load a copy of one flat world
 vanilla generated first. Ticking is frozen; two NoAI zombies stand in two lanes, and a wind charge (no owner, no
 acceleration) flies along each lane one block a tick, 0.2 blocks beside its zombie's box: the first reaches it on its
 second tick, the second on its eighth. After every step each charge's exact Pos and Motion (or its absence) are read with
@@ -89,17 +89,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    for label, lines in (('vanilla', vanilla), ('horizon', horizon)):
+    sunrise = run('sunrise', sunrise_server, world, build)
+    for label, lines in (('vanilla', vanilla), ('sunrise', sunrise)):
         (build / f'{label}.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'projectile hit margin: {len(vanilla)} lines identical')
 

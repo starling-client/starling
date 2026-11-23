@@ -33,7 +33,7 @@ def main():
     for key, doc in new.items():
         if key in old and old[key] != doc:
             wanted[key[1]] = unescape(old[key])
-    for path in sorted((ROOT / "crates/horizon-mod-api/src/host").glob("*.rs")):
+    for path in sorted((ROOT / "crates/sunrise-mod-api/src/host").glob("*.rs")):
         text = path.read_text()
         for name, doc in wanted.items():
             pattern = re.compile(rf"((?:    ///[^\n]*\n)+)(    fn {name}\b)")

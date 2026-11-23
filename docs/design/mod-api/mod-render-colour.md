@@ -4,12 +4,12 @@
 is shared by mod pipelines, mod passes and shader packs:
 
 Colours are linear light, 1.0 is vanilla's white at paper white, and values above
-1 are allowed. Horizon's generated entry code converts to and from the frame,
+1 are allowed. Sunrise's generated entry code converts to and from the frame,
 as it does for 0.2 pack stages, so mod shader code only sees linear light. Mod
 code never assumes the frame's format and leaves the frame's alpha to the
 renderer. #869's typed configuration doesn't offer the colour format.
 
-This is a Horizon contract, with no NeoForge counterpart. The upstream basis is
+This is a Sunrise contract, with no NeoForge counterpart. The upstream basis is
 horizon-rust/horizon#9600 (HDR), horizon-rust/horizon#9930 (shader API 0.2) and
 horizon-rust/horizon#10040 (serving 0.2).
 
@@ -24,21 +24,21 @@ Depth, normals, light levels, emission and LabPBR channels stay data. Custom
 noise textures also stay data (`docs/api/shaders.md:171`).
 
 The existing pack generator supplies the conversion helpers in
-`crates/horizon-shader-api/src/stages.rs:133`, frame-storage conversion at
+`crates/sunrise-shader-api/src/stages.rs:133`, frame-storage conversion at
 `:510`, and linear post-chain entry code at `:610`. Mod pipelines (#884,
 [Drawing with your own render pipeline](../../modding/src/how-to/client/render-pipelines.md)) reuse the
 helpers at `:133` in their generated entry points; mod passes (#867, #869) do not
 exist yet. The current
 experimental serving limits are in `docs/api/shaders.md:163`: 0.2 needs
-`HORIZON_HDR_FRAME=float`; linear frame blending is not yet served.
+`SUNRISE_HDR_FRAME=float`; linear frame blending is not yet served.
 
 Instance inputs remain vanilla-space inputs: `ModelInstance::tint` is packed
 `0xAARRGGBB`, and block and sky light are each `0..=15`
-(`crates/horizon-mod-vocab/src/client/model_instance.rs:1`). The engine owns their
+(`crates/sunrise-mod-vocab/src/client/model_instance.rs:1`). The engine owns their
 conversion. Do not pre-decode these inputs just because shader colours are
 linear. R2 instance drawing (#808) must preserve this distinction.
 `WorldQuad::color` remains a `u32` ARGB colour with 8-bit channels, including
-coverage alpha (`crates/horizon-mod-vocab/src/client/world_draw.rs:40`). It cannot express
+coverage alpha (`crates/sunrise-mod-vocab/src/client/world_draw.rs:40`). It cannot express
 RGB above 1; HDR-range quad colours would need a later typed addition.
 
 ## Applying the rule

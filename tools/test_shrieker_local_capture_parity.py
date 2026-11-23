@@ -29,8 +29,8 @@ FIELDS = ['event', 'source', 'position', 'volume_bits', 'pitch_bits']
 CASES = [('dry', False), ('waterlogged', True)]
 HELPERS = ['tools/anvil_dump.py','tools/net_capture.py','tools/test_hostile_sound_categories_parity.py',
            'tools/test_locator_bar_parity.py','tools/test_dedicated_server_parity.py',
-           'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java',
-           'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaPacketCodecOracle.java']
+           'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java',
+           'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaPacketCodecOracle.java']
 
 def helper_hashes():
     return {n: hashlib.sha256((net.lab.ROOT/n).read_bytes()).hexdigest() for n in HELPERS}
@@ -204,9 +204,9 @@ def run(label, wet, command, client_command, build, world):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    # tools/parity.py runs every harness with no arguments: build the Horizon binary, capture into a new folder
+    # tools/parity.py runs every harness with no arguments: build the Sunrise binary, capture into a new folder
     # and run both sides.
-    parser.add_argument('--binary',type=Path,help='A Horizon client binary; built when omitted')
+    parser.add_argument('--binary',type=Path,help='A Sunrise client binary; built when omitted')
     parser.add_argument('--work-dir',type=Path,help='A new capture folder; one under .local/ when omitted')
     parser.add_argument('--reference-only',action='store_true')
     parser.add_argument('--reference-dir',type=Path)
@@ -218,9 +218,9 @@ def main():
     (build/'manifest.json').write_text(json.dumps(dict(script_sha256=sha,helpers=helper_hashes(),declared_at=sound.now()),indent=2))
     lock,_,java,native,client=net.sides(str(build),args.binary.resolve() if args.binary else None)
     _,jars,libs=net.base.verify_artifacts();cp=os.pathsep.join(map(str,[jars['server'],*libs]))
-    oracle=net.lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaPacketCodecOracle.java'
+    oracle=net.lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaPacketCodecOracle.java'
     subprocess.run(['javac','--release',str(lock['minecraft']['java_major']),'-proc:none','-cp',str(build/'classes')+os.pathsep+cp,'-d',build/'classes',oracle],check=True,capture_output=True)
-    codec=['java','-cp',str(build/'classes')+os.pathsep+cp,'dev.horizonlab.parity.VanillaPacketCodecOracle']
+    codec=['java','-cp',str(build/'classes')+os.pathsep+cp,'dev.sunriselab.parity.VanillaPacketCodecOracle']
     def side(prefix,command,world):
         out=[]
         for name,wet in CASES:

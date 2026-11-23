@@ -191,19 +191,19 @@ def name_entities(run):
                 fields['entity'] = names.setdefault(entity, f'e{len(names) + 1}')
 
 
-def compare(vanilla, horizon, ticks):
-    """The ticks 0..ticks where the two streams differ: [(tick, vanilla packets, Horizon packets)]. Fields
+def compare(vanilla, sunrise, ticks):
+    """The ticks 0..ticks where the two streams differ: [(tick, vanilla packets, Sunrise packets)]. Fields
     compare exactly, floats included: they are what vanilla's client sends."""
     out = []
     for i in range(ticks + 1):
         v = vanilla[i]['packets'] if i < len(vanilla) else None
-        h = horizon[i]['packets'] if i < len(horizon) else None
+        h = sunrise[i]['packets'] if i < len(sunrise) else None
         if v != h:
             out.append((i, v, h))
     return out
 
 
-def compare_answered(vanilla, horizon, ticks, av, ah):
+def compare_answered(vanilla, sunrise, ticks, av, ah):
     """compare, for a scenario the server answers once (a teleport): the tick each client received the answer
     in (`av`, `ah`) compares with the other client's, every other tick with the same tick, on the script's
     clock. A loaded server answers a few ticks later in one run than in the other, while the script's own
@@ -212,13 +212,13 @@ def compare_answered(vanilla, horizon, ticks, av, ah):
     The moves of the two answer ticks (LocalPlayer.sendPosition, at the end of the player's tick) keep the
     script's clock too: an answer that doesn't move the player (`tp @s ~ ~ ~`) leaves them to the 20-tick
     position reminder, which a later answer can land on in one run and not in the other."""
-    out = [d for d in compare(vanilla, horizon, ticks) if d[0] not in (av, ah)]
+    out = [d for d in compare(vanilla, sunrise, ticks) if d[0] not in (av, ah)]
     packets = lambda run, i: run[i]['packets'] if i < len(run) else None  # noqa: E731
-    v, h = packets(vanilla, av), packets(horizon, ah)
+    v, h = packets(vanilla, av), packets(sunrise, ah)
     if strip_moves(v) != strip_moves(h):
         out.append((av, v, h))
     for i in sorted({av, ah}):
-        vi, hi = packets(vanilla, i), packets(horizon, i)
+        vi, hi = packets(vanilla, i), packets(sunrise, i)
         if moves(vi) != moves(hi) and all(d[0] != i for d in out):
             out.append((i, vi, hi))
     return sorted(out, key=lambda d: d[0])
@@ -247,7 +247,7 @@ def describe(packets):
     return '\n'.join(lines)
 
 
-def field_diff(v, h, names=('vanilla', 'Horizon')):
+def field_diff(v, h, names=('vanilla', 'Sunrise')):
     """One line per differing field of packets paired by position, with the exact values."""
     a, b = names
     lines = []

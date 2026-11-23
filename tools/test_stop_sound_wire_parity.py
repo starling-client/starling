@@ -15,13 +15,13 @@ def main():
     (build/'report.json').unlink(missing_ok=True)
     lock,jars,libraries=base.verify_artifacts()
     cp=os.pathsep.join(map(str,[jars['server'],*libraries])); classes=build/'classes';classes.mkdir(exist_ok=True)
-    source=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaStopSoundWireOracle.java'
-    sources=[source,lab.ROOT/'crates/horizon-protocol/src/packets/play.rs',lab.ROOT/'crates/horizon-client/src/game/network/remote/mod.rs']
+    source=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaStopSoundWireOracle.java'
+    sources=[source,lab.ROOT/'crates/sunrise-protocol/src/packets/play.rs',lab.ROOT/'crates/sunrise-client/src/game/network/remote/mod.rs']
     tested=base.source_hashes(sources)
     run=lambda cmd,name:harness.run_logged(cmd,build,name)
     run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-cp',cp,'-d',classes,source],'compile-java')
-    run(['java','-cp',str(classes)+os.pathsep+cp,'dev.horizonlab.parity.VanillaStopSoundWireOracle',build/'java.jsonl'],'java')
-    run(['cargo','build','-p','horizon-protocol','--example','stop_sound_probe'],'compile-rust')
+    run(['java','-cp',str(classes)+os.pathsep+cp,'dev.sunriselab.parity.VanillaStopSoundWireOracle',build/'java.jsonl'],'java')
+    run(['cargo','build','-p','sunrise-protocol','--example','stop_sound_probe'],'compile-rust')
     run([lab.cargo_target()/'debug/examples/stop_sound_probe',build/'java.jsonl',build/'rust.jsonl'],'rust')
     java=[json.loads(x) for x in (build/'java.jsonl').read_text().splitlines()]
     rust=[json.loads(x) for x in (build/'rust.jsonl').read_text().splitlines()]

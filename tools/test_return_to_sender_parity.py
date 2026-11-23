@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_world_reopen_parity import game_env  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-RESOURCES = ROOT / '.local' / 'horizon-client' / '26.3'
+RESOURCES = ROOT / '.local' / 'sunrise-client' / '26.3'
 RUN = ROOT / '.local' / 'return-to-sender'
 MODES = {'server thread': []}
 TITLE = 'advancements.nether.return_to_sender.title'
@@ -39,12 +39,12 @@ TITLE = 'advancements.nether.return_to_sender.title'
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client and horizon-ctl (default: build them with the fast profile)')
+    parser.add_argument('--bin-dir', help='prebuilt sunrise-client and sunrise-ctl (default: build them with the fast profile)')
     parser.add_argument('--keep', action='store_true', help='keep the run folder')
     args = parser.parse_args()
     bin_dir = Path(args.bin_dir).resolve() if args.bin_dir else None
     if bin_dir is None:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib', '--bins'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib', '--bins'], cwd=ROOT, check=True)
         bin_dir = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / 'fast'
     shutil.rmtree(RUN, ignore_errors=True)
     RUN.mkdir(parents=True)
@@ -56,15 +56,15 @@ def main():
         socket = Path(tempfile.mkdtemp(prefix='hzrs')) / 'control.sock'  # sockets need short paths
 
         def ctl(*words, check=True):
-            result = subprocess.run([str(bin_dir / 'horizon-ctl'), '--socket', str(socket), '--timeout', '600',
+            result = subprocess.run([str(bin_dir / 'sunrise-ctl'), '--socket', str(socket), '--timeout', '600',
                                      *map(str, words)], cwd=folder, env=env, capture_output=True, text=True)
             if check and result.returncode:
-                sys.exit(f'horizon-ctl {" ".join(map(str, words))} failed: {result.stdout}{result.stderr}')
+                sys.exit(f'sunrise-ctl {" ".join(map(str, words))} failed: {result.stdout}{result.stderr}')
             return json.loads(result.stdout) if result.stdout.strip().startswith('{') else result.stdout
 
         # The game keeps launch's output handles, so it writes to a file: a pipe would not close.
         with open(folder / 'launch.txt', 'w') as out:
-            subprocess.run([str(bin_dir / 'horizon-ctl'), '--socket', str(socket), '--timeout', '600', 'launch',
+            subprocess.run([str(bin_dir / 'sunrise-ctl'), '--socket', str(socket), '--timeout', '600', 'launch',
                             '--resources', str(RESOURCES), '--world', 'world', '--seed', '1', '--render-distance', '4',
                             *flags, *extra], cwd=folder, env=env, stdout=out, stderr=subprocess.STDOUT, check=True)
         try:

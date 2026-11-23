@@ -6,7 +6,7 @@ import jdk.jfr.Recording;
 public final class JfrFixture {
     private static volatile Object[] retained;
     public static void main(String[] args) throws Exception {
-        Thread.currentThread().setName("Horizon JFR fixture \"quoted\"\tthread");
+        Thread.currentThread().setName("Sunrise JFR fixture \"quoted\"\tthread");
         try (var recording = new Recording()) {
             recording.enable("jdk.ThreadAllocationStatistics").withPeriod(Duration.ofMillis(100));
             recording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(10));

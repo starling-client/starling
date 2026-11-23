@@ -15,6 +15,6 @@ source = source[:test_start] + source[test_end:]
 source = source[:start] + source[end:]
 source = source.replace("use clap::{Parser, Subcommand};", "mod progress;\nuse progress::{native_progress, progress};\n\nuse clap::{Parser, Subcommand};", 1)
 presentation = presentation.replace("fn progress(", "pub(super) fn progress(", 1).replace("fn native_progress(", "pub(super) fn native_progress(", 1)
-module = "//! Download progress presentation for terminal and redirected CLI output.\nuse horizon_launcher::native_mods;\nuse std::io::{IsTerminal, Write};\n\n" + presentation + "#[cfg(test)]\nmod tests {\n    use super::*;\n\n" + tests + "}\n"
+module = "//! Download progress presentation for terminal and redirected CLI output.\nuse sunrise_launcher::native_mods;\nuse std::io::{IsTerminal, Write};\n\n" + presentation + "#[cfg(test)]\nmod tests {\n    use super::*;\n\n" + tests + "}\n"
 (root / "launcher/src/cli/progress.rs").write_text(module)
 cli.write_text(source)

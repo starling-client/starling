@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""On the wire, a Horizon client must look like vanilla 26.3's (its brand aside): a server's anticheat reads
+"""On the wire, a Sunrise client must look like vanilla 26.3's (its brand aside): a server's anticheat reads
 the order and timing of what the client sends, and a difference from vanilla's client can flag an honest
-player or keep them out. A real Horizon client joins a real vanilla 26.3 dedicated server through
+player or keep them out. A real Sunrise client joins a real vanilla 26.3 dedicated server through
 tools/net_capture.py, which records every packet; each rule below is one thing vanilla's client does,
 checked on that capture.
 
@@ -24,9 +24,9 @@ Rules (vanilla's code in brackets):
   python3 tools/vanilla_wire_e2e.py
   python3 tools/vanilla_wire_e2e.py --rules no-play-before-login --login-delay 2
 
-Every game and server here runs in fresh temporary folders (HORIZON_HOME, HORIZON_LAUNCHER_HOME, XDG_*), with no
-audio and no self-update. Needs .local (the vanilla jars and prepared resources) and a built horizon-client and
-horizon-ctl (--bin DIR, default target/fast).
+Every game and server here runs in fresh temporary folders (SUNRISE_HOME, SUNRISE_LAUNCHER_HOME, XDG_*), with no
+audio and no self-update. Needs .local (the vanilla jars and prepared resources) and a built sunrise-client and
+sunrise-ctl (--bin DIR, default target/fast).
 """
 import argparse
 import json
@@ -140,10 +140,10 @@ def run(args, out):
     lock, jars, libraries = base.verify_artifacts()
     deps = os.pathsep.join(map(str, [jars['server'], *libraries]))
     vanilla = ['java', '-Xmx1g', '-cp', deps, 'net.minecraft.server.Main', 'nogui']
-    resources = lab.LOCAL / 'horizon-client' / lab.VERSION
+    resources = lab.LOCAL / 'sunrise-client' / lab.VERSION
     work = Path(tempfile.mkdtemp(prefix='hz-wire-'))
     print(f'scratch: {work}')
-    for var, sub in (('HORIZON_HOME', 'home'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
+    for var, sub in (('SUNRISE_HOME', 'home'), ('SUNRISE_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'data'),
                      ('XDG_CONFIG_HOME', 'config')):
         (work / 'servers' / sub).mkdir(parents=True)
         os.environ[var] = str(work / 'servers' / sub)
@@ -198,7 +198,7 @@ def run(args, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='horizon-client and horizon-ctl')
+    parser.add_argument('--bin', default=str(lab.cargo_target() / 'fast'), help='sunrise-client and sunrise-ctl')
     parser.add_argument('--out', default=str(lab.LOCAL / 'vanilla-wire-e2e'))
     parser.add_argument('--rules', default=','.join(RULES), type=lambda s: s.split(','),
                         help='comma-separated rule names (default: all)')

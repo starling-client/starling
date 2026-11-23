@@ -31,8 +31,8 @@ def run_json(words, cwd, env):
 
 
 def whole(bins, file, work, env):
-    """Whether horizon-perf reads the file, which it does only once the writer has closed the stream."""
-    result = subprocess.run([str(bins / 'horizon-perf'), 'summary', str(file)], cwd=work, env=env, capture_output=True)
+    """Whether sunrise-perf reads the file, which it does only once the writer has closed the stream."""
+    result = subprocess.run([str(bins / 'sunrise-perf'), 'summary', str(file)], cwd=work, env=env, capture_output=True)
     return result.returncode == 0
 
 
@@ -42,15 +42,15 @@ def profiler(ctl, action):
 
 def commands(bins, work, env):
     socket = work / 'c.sock'
-    ctl = lambda *words: run_json([bins / 'horizon-ctl', '--socket', socket, *words], work, env)
-    perf = lambda *words: run_json([bins / 'horizon-perf', *words], work, env)
+    ctl = lambda *words: run_json([bins / 'sunrise-ctl', '--socket', socket, *words], work, env)
+    perf = lambda *words: run_json([bins / 'sunrise-perf', *words], work, env)
     return ctl, perf, socket
 
 
 def check_ctl(bins, resources, official=False):
     """profile start, mark and stop in single player, and the file they leave: both sides, the window and the server thread.
 
-    `official`: horizon-client is the horizon-official build, which has the captures part (open_at, [Open] and [Share]).
+    `official`: sunrise-client is the sunrise-official build, which has the captures part (open_at, [Open] and [Share]).
     """
     work, env = ac.scratch('profile', resources)
     ctl, perf, socket = commands(bins, work, env)
@@ -168,10 +168,10 @@ def check_ctl(bins, resources, official=False):
 
 
 def check_env(bins, resources):
-    """HORIZON_PROFILE=DIR: a capture of the run is in DIR once the game has quit."""
+    """SUNRISE_PROFILE=DIR: a capture of the run is in DIR once the game has quit."""
     work, env = ac.scratch('profile-env', resources)
     target = work / 'captures'
-    env['HORIZON_PROFILE'] = str(target)
+    env['SUNRISE_PROFILE'] = str(target)
     ctl, _, _ = commands(bins, work, env)
     try:
         ctl('launch', '--world', 'ProfEnv', '--creative', '--offscreen', '--wait')
@@ -181,11 +181,11 @@ def check_env(bins, resources):
         deadline = time.time() + 120
         files = []
         while not files or not whole(bins, files[0], work, env):
-            assert time.time() < deadline, 'HORIZON_PROFILE wrote no whole capture'
+            assert time.time() < deadline, 'SUNRISE_PROFILE wrote no whole capture'
             time.sleep(0.5)
             files = sorted(target.glob(PATTERN))
         assert not list((work / 'reports').glob(PATTERN)), 'the capture went to reports/ too'
-        print(f'PASS: HORIZON_PROFILE wrote {files[0].name}')
+        print(f'PASS: SUNRISE_PROFILE wrote {files[0].name}')
         return True
     except (ac.Failed, AssertionError) as e:
         print(f'FAIL: {e!r}')
@@ -230,9 +230,9 @@ def check_gpu(bins, resources):
 
 
 def check_gpu_env(bins, resources):
-    """HORIZON_SHADER_PACK_TIMING starts a capture with the passes timed, written to reports/."""
+    """SUNRISE_SHADER_PACK_TIMING starts a capture with the passes timed, written to reports/."""
     work, env = ac.scratch('profile-gpu-env', resources)
-    env['HORIZON_SHADER_PACK_TIMING'] = '1'
+    env['SUNRISE_SHADER_PACK_TIMING'] = '1'
     ctl, perf, _ = commands(bins, work, env)
     try:
         ctl('launch', '--world', 'ProfGpuEnv', '--creative', '--offscreen', '--wait')
@@ -241,7 +241,7 @@ def check_gpu_env(bins, resources):
         stopped = ctl('profile', 'stop')
         options = perf('query', 'meta', work / stopped['path'], '--side', 'client')['rows'][0]['options']
         assert options['gpu'] == 'passes' and options['window_s'] is None, options
-        print('PASS: HORIZON_SHADER_PACK_TIMING started a --gpu capture')
+        print('PASS: SUNRISE_SHADER_PACK_TIMING started a --gpu capture')
         return True
     except (ac.Failed, AssertionError) as e:
         print(f'FAIL: {e!r}')
@@ -256,19 +256,19 @@ def check_gpu_env(bins, resources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bin-dir', help='prebuilt horizon-client, horizon-ctl and horizon-perf (default: build with the fast profile)')
-    parser.add_argument('--official', action='store_true', help='the horizon-client in --bin-dir is the horizon-official build: expect open_at and the [Open] and [Share] buttons')
+    parser.add_argument('--bin-dir', help='prebuilt sunrise-client, sunrise-ctl and sunrise-perf (default: build with the fast profile)')
+    parser.add_argument('--official', action='store_true', help='the sunrise-client in --bin-dir is the sunrise-official build: expect open_at and the [Open] and [Share] buttons')
     args = parser.parse_args()
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game', '-p', 'horizon-client-lib',
-                        '-p', 'horizon-perf', '--bins'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib',
+                        '-p', 'sunrise-perf', '--bins'], cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)
         bins = Path(meta['target_directory']) / 'fast'
     resources = lab.RESOURCES.resolve()
-    if not (resources / 'horizon-resources.json').exists():
+    if not (resources / 'sunrise-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
     passed = [check_ctl(bins, resources, args.official), check_env(bins, resources), check_gpu(bins, resources), check_gpu_env(bins, resources)]
     sys.exit(0 if all(passed) else 1)

@@ -101,7 +101,7 @@ scan over the mods.
 
 Registered renderers draw two routes:
 
-- content-defined thrown types: a `data/<id>/horizon/entity_type/<name>.json` using the
+- content-defined thrown types: a `data/<id>/sunrise/entity_type/<name>.json` using the
   `minecraft:snowball` template ([content mods](../content-mods.md)) draws the renderer's geometry
   instead of its flying item. Without a renderer, it draws its item;
 - living types drawn as mobs, vanilla's (`minecraft:zombie`) and the content mods' living types: the

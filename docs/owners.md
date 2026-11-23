@@ -1,13 +1,13 @@
 # For server owners: `server.properties` to `server.toml`
 
-You run a vanilla server today and edit `server.properties`. With `horizon-server` you edit one file,
+You run a vanilla server today and edit `server.properties`. With `sunrise-server` you edit one file,
 `server.toml`, instead. Before every start the server writes `server.properties` from it, so the game reads
 exactly what a vanilla server reads. This page maps one to the other. The full guide is
 [hosting.md](hosting.md); the design is [server.md](server.md), section 4.
 
 ## Moving over
 
-Run `horizon-server init` in your server folder, or `horizon-server import server.properties`. It reads the
+Run `sunrise-server init` in your server folder, or `sunrise-server import server.properties`. It reads the
 file with vanilla's own parser:
 
 - keys that have a field below go into their section of `server.toml`;
@@ -54,7 +54,7 @@ A key that has a field above is an error under `[properties]`; set it in its sec
 
 ## Settings that are not in `server.properties`
 
-These belong to `horizon-server`, not to the game:
+These belong to `sunrise-server`, not to the game:
 
 | `server.toml` | Meaning |
 |---|---|
@@ -69,20 +69,20 @@ These belong to `horizon-server`, not to the game:
 - **Mistakes stop the start.** Unknown keys and values vanilla would refuse are errors, not ignored.
 - **In-game changes survive.** When the game changes a setting itself (`/whitelist on`), the supervisor copies
   it back into `server.toml` after the game stops, and keeps your comments and order.
-- **Changes apply at the next restart.** `horizon-server config set KEY=VALUE` edits the file without opening
+- **Changes apply at the next restart.** `sunrise-server config set KEY=VALUE` edits the file without opening
   it; on a running server it applies `difficulty`, `defaultgamemode` and `whitelist on|off` live. There is no
   full live reload yet.
 
-## Planned: limiting a server to Horizon clients
+## Planned: limiting a server to Sunrise clients
 
 The design ([server-next.md](server-next.md#6-who-can-join), section 6) adds one more setting. It is not in
 `server.toml` yet.
 
 ```toml
 [clients]
-allow = "any"        # "any" (vanilla Java and Horizon) or "horizon" (Horizon clients only)
+allow = "any"        # "any" (vanilla Java and Sunrise) or "sunrise" (Sunrise clients only)
 ```
 
-With `"horizon"` the server refuses a client that does not identify as Horizon. This is a convenience filter,
-not security: Horizon's client is open source, so a modified client can claim to be Horizon. The real gate
+With `"sunrise"` the server refuses a client that does not identify as Sunrise. This is a convenience filter,
+not security: Sunrise's client is open source, so a modified client can claim to be Sunrise. The real gate
 stays `online_mode`, plus the whitelist and bans on top of it.

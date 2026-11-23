@@ -17,7 +17,7 @@ let
   ];
 in
 lib.cleanSourceWith {
-  name = "horizon-source";
+  name = "sunrise-source";
   src = lib.cleanSource root;
   filter =
     path: _type:

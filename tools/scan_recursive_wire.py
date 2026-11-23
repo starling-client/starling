@@ -8,7 +8,7 @@ import re
 from check_mod_api_wire import ROOT, code_tokens
 
 
-def recursive_types(root=ROOT / "crates/horizon-mod-vocab/src", extra_paths=()):
+def recursive_types(root=ROOT / "crates/sunrise-mod-vocab/src", extra_paths=()):
     declarations = {}
     external_json = set()
     for path in sorted([*Path(root).rglob("*.rs"), *extra_paths]):
@@ -56,7 +56,7 @@ def recursive_types(root=ROOT / "crates/horizon-mod-vocab/src", extra_paths=()):
                 if k + 1 < len(parts) and parts[k + 1] == ":" and (k + 2 == len(parts) or parts[k + 2] != ":"):
                     excluded.add(k)
                 # External qualified types with coincidentally identical names.
-                if k >= 3 and parts[k - 2:k] == [":", ":"] and parts[k - 3] in ("runtime", "std", "horizon_mod_runtime"):
+                if k >= 3 and parts[k - 2:k] == [":", ":"] and parts[k - 3] in ("runtime", "std", "sunrise_mod_runtime"):
                     excluded.add(k)
             body = {v for k, v in enumerate(parts) if k not in excluded}
             if "Self" in body:
@@ -78,4 +78,4 @@ def recursive_types(root=ROOT / "crates/horizon-mod-vocab/src", extra_paths=()):
 
 
 if __name__ == "__main__":
-    print("\n".join(recursive_types(extra_paths=[ROOT / "crates/horizon-core/src/nbt.rs"])))
+    print("\n".join(recursive_types(extra_paths=[ROOT / "crates/sunrise-core/src/nbt.rs"])))

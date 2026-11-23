@@ -1,6 +1,6 @@
-# Horizon native client
+# Sunrise native client
 
-`horizon-client` is the playable Rust client for Minecraft Java Edition 26.3.
+`sunrise-client` is the playable Rust client for Minecraft Java Edition 26.3.
 It streams a world around the player on worker threads, renders every vanilla
 block model with smooth lighting and biome tints, and runs the validated player
 physics, health and hunger at 20 ticks per second. You can mine with vanilla
@@ -20,7 +20,7 @@ The launcher does not create firewall rules or change network-profile settings.
 
 ## musl Linux: manual installation
 
-On x86-64 musl distributions, download `horizon-linux-musl-x86_64.tar.gz` from the
+On x86-64 musl distributions, download `sunrise-linux-musl-x86_64.tar.gz` from the
 [Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly), when available. This optional
 build is omitted if its build fails. The launcher does not install or update it. Its desktop gameplay and
 vanilla parity are still unverified; see the [musl build limitations](release-flow.md#builds).
@@ -40,14 +40,14 @@ Resource preparation needs a **musl-compatible system JDK 25** (including `java`
 Linux Java runtime needs glibc. Install JDK 25 from your distribution or another musl-compatible provider,
 set `JAVA_HOME` to that JDK, and check `"$JAVA_HOME/bin/java" -version`. You also need your own Minecraft Java
 Edition 26.3 installation and its server jar. Download the server jar yourself from the `downloads.server.url`
-in that version's launcher JSON. Horizon's preparer does not download it.
+in that version's launcher JSON. Sunrise's preparer does not download it.
 
 Extract the archive and, inside its folder, run the following with your actual paths:
 
 ```sh
-./horizon-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
-./horizon-prepare sounds --minecraft-dir /path/to/minecraft
-./horizon-client --resources "$PWD/.local/horizon-client/26.3"
+./sunrise-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
+./sunrise-prepare sounds --minecraft-dir /path/to/minecraft
+./sunrise-client --resources "$PWD/.local/sunrise-client/26.3"
 ```
 
 The sounds command copies the sounds from your Minecraft installation's asset store. If that store is
@@ -55,8 +55,8 @@ incomplete, obtain the missing assets through your Minecraft launcher first. Pre
 layouts are described below.
 
 Updates are manual: download and extract the next musl archive, prepare its resources, and use that version's
-programs. Keep your saves in a separate `HORIZON_HOME` and point each version at it. Back up saves before
-updating. The bundled `horizon-server` also refuses automatic updates because the server update archives use
+programs. Keep your saves in a separate `SUNRISE_HOME` and point each version at it. Back up saves before
+updating. The bundled `sunrise-server` also refuses automatic updates because the server update archives use
 glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
 
 ## Run from a checkout
@@ -68,32 +68,32 @@ client from your official launcher install, and the 26.3 server jar you
 downloaded yourself; see [Build from source](../README.md#build-from-source)),
 verifies it against the pinned checksums, runs vanilla's data generator and small
 exporters against those jars, and extracts the jar's assets and data into ignored
-`.local/horizon-client/26.3/`. Sounds (about 380 MB) are copied from your
-launcher's asset store by `horizon-prepare sounds`, each file checked against the asset
+`.local/sunrise-client/26.3/`. Sounds (about 380 MB) are copied from your
+launcher's asset store by `sunrise-prepare sounds`, each file checked against the asset
 index's SHA-1. Preparation also tries to replace the JAR's gray 1×1 title panorama
 placeholders with the full textures from that asset store. If the store is missing or
 incomplete, preparation logs a warning and keeps the placeholders. To import the panorama
-later without rerunning the Java exporters, run `horizon-prepare panorama` (or
-`cargo run --release -p horizon-prepare -- panorama` in a checkout). Pass
+later without rerunning the Java exporters, run `sunrise-prepare panorama` (or
+`cargo run --release -p sunrise-prepare -- panorama` in a checkout). Pass
 `--minecraft-dir PATH` when using a different Minecraft installation.
 Prepared resources are private; never commit them.
 
-Preparation is `horizon-prepare` (`crates/horizon-prepare`, Rust): it needs no Python, only
+Preparation is `sunrise-prepare` (`crates/sunrise-prepare`, Rust): it needs no Python, only
 the JDK, for the small exporters that call Mojang's own code. Release folders ship it beside
-`horizon-client`, and the launcher prepares with it and copies the sounds as part of preparing.
+`sunrise-client`, and the launcher prepares with it and copies the sounds as part of preparing.
 
 `--output DIR` puts the resources elsewhere (the exporters' scratch files stay in the version
-folder's `.local/`), for preparing and for the asset commands alike. `horizon-prepare --check`
+folder's `.local/`), for preparing and for the asset commands alike. `sunrise-prepare --check`
 exits 0 when the resources are complete and current for this preparer, and otherwise prints
 each gap with the command that fills it on stdout and exits 1. It also exits 1 when it can't
 check, with `error:` on stderr (no `research-lock.json`, say). It runs no Java and reads no game
 files: it tests which files are there and the versions they were made for, not their contents, so
 a launcher that suspects damage prepares again. A preparation stamps its resources with the
-preparer's `OUTPUT_VERSION` (`horizon-prepare.json`) when it finishes, and removes the stamp
+preparer's `OUTPUT_VERSION` (`sunrise-prepare.json`) when it finishes, and removes the stamp
 before it writes anything, so `--check` reports a folder being prepared, or whose preparation
 stopped, as not current. Resources prepared before the stamp existed report an unknown version
 until they are prepared again. One preparation at a time writes to a folder: each holds
-`.horizon-prepare.lock` in the resources and in the version folder's `.local/`, and a second one
+`.sunrise-prepare.lock` in the resources and in the version folder's `.local/`, and a second one
 waits for the first. `--complete` prepares, copies the sounds, and fails unless `--check` would
 then pass: one command for resources with nothing missing. `--progress json` prints one JSON
 object a line instead of plain text (its format is part of the Launch API:
@@ -106,23 +106,23 @@ A launcher whose files are laid out its own way names them one by one instead of
 with `indexes/` and `objects/`); each replaces only what it names, and every file is still
 checked against `research-lock.json`'s pins. When an earlier import beside `--root` is still
 verified, it is reused and the named files aren't read. Two things no such launcher keeps:
-- **The server jar.** The first `--prepare` needs `--server-jar`. Horizon never downloads it; a
+- **The server jar.** The first `--prepare` needs `--server-jar`. Sunrise never downloads it; a
   launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account that
-  owns Minecraft: Java Edition, as `horizon-launcher` does.
+  owns Minecraft: Java Edition, as `sunrise-launcher` does.
 - **Java 25.** `--java-home PATH` names a runtime the launcher manages. The preparer takes the first
   Java of the pinned version from `JAVA_HOME`, the `PATH`, `--java-home`, then the official
   launcher's runtimes.
 
 ```sh
-cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
-cargo run --release -p horizon-prepare -- sounds
-cargo run --release -p horizon-game -- --render-distance 12
+cargo run --release -p sunrise-prepare -- --prepare --server-jar ~/Downloads/server.jar
+cargo run --release -p sunrise-prepare -- sounds
+cargo run --release -p sunrise-game -- --render-distance 12
 ```
 
-Development builds that link quickly: `cargo build --profile fast -p horizon-game`.
+Development builds that link quickly: `cargo build --profile fast -p sunrise-game`.
 
-`HORIZON_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
-in `horizon-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
+`SUNRISE_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
+in `sunrise-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
 query, cache-hit and cull counters remain available without profiling.
 
 Optional Windows allocator build features are documented in
@@ -150,19 +150,19 @@ Optional Windows allocator build features are documented in
 | Esc | Pause menu (Save and Quit) |
 
 Worlds autosave every 6000 ticks (5 minutes), when chunks unload and on quit.
-On headless Linux use `vscreen start ./target/release/horizon-client` and
+On headless Linux use `vscreen start ./target/release/sunrise-client` and
 `vscreen shot`.
 
-Sound: the game prints the output it opened (`Horizon: audio output ...`) or
-why it has none (`Horizon: no sound: ...`). It opens none with
-`HORIZON_NO_AUDIO` set, nor on a `vscreen`, where tests run beside someone
-listening; `HORIZON_AUDIO=1` opens it there anyway, so send it to a null sink
+Sound: the game prints the output it opened (`Sunrise: audio output ...`) or
+why it has none (`Sunrise: no sound: ...`). It opens none with
+`SUNRISE_NO_AUDIO` set, nor on a `vscreen`, where tests run beside someone
+listening; `SUNRISE_AUDIO=1` opens it there anyway, so send it to a null sink
 (`PIPEWIRE_PROPS='{ target.object=<sink> node.dont-fallback=true }'`). Don't
 mute a test run's stream in the mixer: PipeWire remembers the mute for every
-later `horizon-client`. The launcher starts the game as "Horizon" for that
-reason. On Linux, Horizon requests a 1024-frame fixed buffer for lower latency;
+later `sunrise-client`. The launcher starts the game as "Sunrise" for that
+reason. On Linux, Sunrise requests a 1024-frame fixed buffer for lower latency;
 if your audio server underruns (e.g. PipeWire with `min-quantum` ≥ 1024), set
-`HORIZON_AUDIO_BUFFER=2048` or `HORIZON_AUDIO_BUFFER=default` to use the backend's
+`SUNRISE_AUDIO_BUFFER=2048` or `SUNRISE_AUDIO_BUFFER=default` to use the backend's
 default buffer size.
 
 ### Experimental older servers
@@ -170,14 +170,14 @@ default buffer size.
 The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
 1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4, 1.21.2/1.21.3, 1.21/1.21.1,
 1.20.5/1.20.6, 1.20.3/1.20.4 and 1.20.2. It is off by default while compatibility is incomplete. Set
-`HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
+`SUNRISE_OLDER_SERVERS=1` before starting the game; the server's status ping selects
 the adapter. The client still needs its prepared **26.3** resources.
 
 ```sh
-HORIZON_OLDER_SERVERS=1 cargo run --profile fast -p horizon-game -- --server 127.0.0.1:25565
+SUNRISE_OLDER_SERVERS=1 cargo run --profile fast -p sunrise-game -- --server 127.0.0.1:25565
 ```
 
-In PowerShell, set `$env:HORIZON_OLDER_SERVERS = '1'`, then run the same Cargo
+In PowerShell, set `$env:SUNRISE_OLDER_SERVERS = '1'`, then run the same Cargo
 command without the environment assignment at its start.
 
 This does not load Fabric JARs or emulate every older version's movement and
@@ -215,7 +215,7 @@ magnitude; a custom direction independent of velocity has no scalar representati
 Wolf registry references on 1.21 through 1.21.4 are normalized past their older
 holder encoding; inline wolf definitions on those versions remain unsupported.
 The 1.20.3/1.20.4 bridge splits the whole-NBT registry sync and upgrades legacy
-NBT item stacks through Horizon's datafixes. A connection-local cache retains original
+NBT item stacks through Sunrise's datafixes. A connection-local cache retains original
 tags for unchanged stacks, bounded to 1,024 entries and 8 MiB of serialized values;
 ambiguous normalized keys, evicted entries and entries over 256 KiB use semantic
 reconstruction. Modified entity/block-entity data has no general reverse datafix,
@@ -246,7 +246,7 @@ have not been validated. Earlier Java releases, Classic/Alpha/Beta,
 April Fools and Bedrock are outside the implemented adapter set.
 
 For a protocol-only development check, append `--server-protocol 772` to
-`cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
+`cargo run -p sunrise-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
 The probe fails if it encounters packet or chunk decode errors.
 Use `--server-protocol 764` for 1.20.2, `765` for 1.20.3/1.20.4, `766` for 1.20.5/1.20.6,
 `767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
@@ -272,7 +272,7 @@ python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/ve
 python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions --check
 ```
 
-The version store defaults to `HORIZON_VERSIONS` (or `~/code/horizon-parity/versions`).
+The version store defaults to `SUNRISE_VERSIONS` (or `~/code/sunrise-parity/versions`).
 The pin uses the repository's imported `.local/` jar and reports; `--new DIR`
 selects a separately prepared pin. `--only VERSION...` selects releases while
 still checking pinned constants. `--check` writes no tracked files and fails if
@@ -280,17 +280,17 @@ any output differs; regeneration itself downloads nothing. This checks
 report-derived IDs; gameplay still needs its parity harnesses. When bumping the
 pin, regenerate these files and review the mappings with its reports.
 
-### Agent control (`horizon-ctl` and MCP)
+### Agent control (`sunrise-ctl` and MCP)
 
-AI agents and scripts play Horizon through `horizon-ctl`, a command line that
-reads the game as JSON and acts like a player, and `horizon-ctl mcp`, an MCP
+AI agents and scripts play Sunrise through `sunrise-ctl`, a command line that
+reads the game as JSON and acts like a player, and `sunrise-ctl mcp`, an MCP
 server with the same commands. `--control` makes the game accept them on a
 local socket; under control, losing window focus does not pause the game or
 release held keys, so a script can play while you use other windows.
 
 ```sh
-cargo build --release -p horizon-game -p horizon-client-lib --bins
-C=target/release/horizon-ctl
+cargo build --release -p sunrise-game -p sunrise-client-lib --bins
+C=target/release/sunrise-ctl
 $C launch --world Survival --seed 5 --wait   # start the game, open or create the world, wait for it
 $C state                                     # player, world, screen, crosshair target
 $C find-block birch_log                      # the 16 nearest loaded logs
@@ -306,8 +306,8 @@ $C screenshot /tmp/view.png                  # PNG of the next presented frame
 $C quit                                      # save and exit
 ```
 
-`horizon-ctl help` lists the commands by group and `horizon-ctl COMMAND --help`
-explains one with examples; `horizon-ctl help --game` lists what the running
+`sunrise-ctl help` lists the commands by group and `sunrise-ctl COMMAND --help`
+explains one with examples; `sunrise-ctl help --game` lists what the running
 game accepts, test hooks included.
 
 - **Observe:** `state` (position, rotation, velocity, health, food, saturation,
@@ -359,21 +359,21 @@ says whether it arrived, `break` what dropped and what was picked up, `place`
 the block placed. `stop` cancels the running action. Every reply is one JSON
 line; errors are `{"error": "..."}` objects, and the exit status is 0 on
 success, 1 when the game replied with an error, 2 for a usage error and 3 when
-the game cannot be reached or started. `horizon-ctl script FILE` (or stdin)
+the game cannot be reached or started. `sunrise-ctl script FILE` (or stdin)
 runs one command per line with shell-like quoting and stops at the first error
-(`--keep-going` doesn't); `sleep S` waits. `horizon-ctl -` is the older form
+(`--keep-going` doesn't); `sleep S` waits. `sunrise-ctl -` is the older form
 that reads stdin and keeps going.
 
-`launch` finds the game to start: `--game PATH`, else a `horizon-client` next
-to `horizon-ctl` (a build folder or a release folder), else the newest version
+`launch` finds the game to start: `--game PATH`, else a `sunrise-client` next
+to `sunrise-ctl` (a build folder or a release folder), else the newest version
 the launcher installed (`--version TAG` picks another), run with its prepared
 resources from the game home, where the saves are. So after installing with
-the launcher, `horizon-ctl launch --world X --wait` is all an agent needs.
+the launcher, `sunrise-ctl launch --world X --wait` is all an agent needs.
 Other arguments go to the game; its output goes to a `.log` file beside the
 socket.
 
 **Logs and crash reports.** Like vanilla, the game writes `logs/latest.log`
-in the game home (`$HORIZON_HOME`, else `~/.local/share/horizon`; the
+in the game home (`$SUNRISE_HOME`, else `~/.local/share/sunrise`; the
 dedicated server in its own folder) with lines like
 `[12:04:31] [Render thread/INFO]: message`, and at start archives the last
 run's as `logs/<yyyy-mm-dd>-<n>.log.gz` (seven a day), once the new run writes
@@ -381,27 +381,27 @@ its first line, keeping it plain as `logs/previous.log` too. Messages still prin
 stderr as before. A panic on the main thread or a fatal error writes
 `crash-reports/crash-<yyyy-mm-dd_HH.MM.SS>-client.txt` (the error, its stack,
 the machine, the GPU, render settings, resource packs, the open world and the
-last 50 log lines) and the game exits with a non-zero code. `horizon-ctl logs
-[--lines N]` prints the end of latest.log and `horizon-ctl logs --crash` the
+last 50 log lines) and the game exits with a non-zero code. `sunrise-ctl logs
+[--lines N]` prints the end of latest.log and `sunrise-ctl logs --crash` the
 newest report (the `logs` MCP tool returns the same). F3 + C held for ten
 seconds crashes the game on purpose, as in vanilla (the world is saved first);
-development builds also crash with `HORIZON_DEBUG_CRASH=SECONDS`, that long
+development builds also crash with `SUNRISE_DEBUG_CRASH=SECONDS`, that long
 after the first frame.
 
-**MCP.** `horizon-ctl mcp` serves the Model Context Protocol over stdin and
+**MCP.** `sunrise-ctl mcp` serves the Model Context Protocol over stdin and
 stdout (JSON-RPC 2.0, one message per line), with one tool per command and a
 JSON schema for each; `screenshot` returns the frame as an image. Register it
-in an MCP client as a stdio server with the command `horizon-ctl` and the
+in an MCP client as a stdio server with the command `sunrise-ctl` and the
 argument `mcp` (`--socket PATH` before `mcp` to pick a socket).
 
 **Transport.** On Linux and macOS the endpoint is a Unix socket:
-`$HORIZON_CONTROL`, else `$XDG_RUNTIME_DIR/horizon-control.sock` (without a runtime
+`$SUNRISE_CONTROL`, else `$XDG_RUNTIME_DIR/sunrise-control.sock` (without a runtime
 directory and with a temporary directory every user shares, as `/tmp`,
-`horizon-<uid>/horizon-control.sock` in it, a folder only that user may open), or
-`--control-socket PATH` (`horizon-ctl --socket PATH`). Windows has no Unix
+`sunrise-<uid>/sunrise-control.sock` in it, a folder only that user may open), or
+`--control-socket PATH` (`sunrise-ctl --socket PATH`). Windows has no Unix
 sockets: there the game listens on a random `127.0.0.1` port and writes
 `{"transport":"tcp","port":N,"token":"..."}` to the endpoint path
-(`%TEMP%\horizon-control.json` by default), readable only by its user; the
+(`%TEMP%\sunrise-control.json` by default), readable only by its user; the
 client's first line must be `auth TOKEN`. Any endpoint path ending in `.json`
 selects that transport on Linux and macOS too.
 
@@ -421,50 +421,50 @@ vertices culled.
 ### Discord Rich Presence
 
 While Discord runs on the same computer, the player's Discord profile shows
-"Playing Horizon" and what they are doing: "In the menus", "Singleplayer",
+"Playing Sunrise" and what they are doing: "In the menus", "Singleplayer",
 "Multiplayer" or "Hosting a world" (with the party size, of 8), the dimension
 ("In the Nether") and the time since they entered the world. It never shows a
 world's name or a server's address. The switch is on the Extras page, in its
 Multiplayer group (**Discord Rich Presence**, on by default; `discordPresence`
-in `horizon-extras.txt`; in splitscreen only the first player has it), and
-`HORIZON_NO_DISCORD=1` turns it off for one run.
+in `sunrise-extras.txt`; in splitscreen only the first player has it), and
+`SUNRISE_NO_DISCORD=1` turns it off for one run.
 
-The crate `horizon-discord` (Horizon layer) speaks Discord's local IPC itself
+The crate `sunrise-discord` (Sunrise layer) speaks Discord's local IPC itself
 (the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its own.
 The game hands it a status only when it changes, through the platform's
 `activity` hook (`game/runtime/activity.rs` says what the player does), and keeps the
 switch itself: its settings store and its Extras row (the platform's settings
-and pages registries). Only the official executable (`horizon-official`)
-registers it: horizon-client's own executable shows no presence and no switch. It retries every 15 s
+and pages registries). Only the official executable (`sunrise-official`)
+registers it: sunrise-client's own executable shows no presence and no switch. It retries every 15 s
 while Discord isn't running and stays within Discord's 5 updates per 20 s.
 Dedicated servers never start it, and automated runs (offscreen, benchmarks)
-only talk to a fake Discord: `lab.game_env` sets `HORIZON_NO_DISCORD=1`, and
+only talk to a fake Discord: `lab.game_env` sets `SUNRISE_NO_DISCORD=1`, and
 `tools/discord_presence_e2e.py` points games at a fake server with
-`HORIZON_DISCORD_IPC_DIR` (title, world, Nether and quit on both single-player
+`SUNRISE_DISCORD_IPC_DIR` (title, world, Nether and quit on both single-player
 paths; a LAN host and guest; the switch; a Discord started after the game).
-`DISCORD_APP_ID` is Discord's "Horizon" application, whose `horizon` image is
+`DISCORD_APP_ID` is Discord's "Sunrise" application, whose `sunrise` image is
 the large one; there are no game-mode images yet.
 
 ### Play on another of your machines
 
-Horizon targets desktop Linux, macOS and Windows (see [Windows ARM64](windows-arm64.md)).
+Sunrise targets desktop Linux, macOS and Windows (see [Windows ARM64](windows-arm64.md)).
 To play on another machine without Rust, JDK or prepared resources,
 package a release build where they exist:
 
 ```sh
-cargo build --release -p horizon-game
-python3 tools/package_native_client.py --out ~/builds/horizon
+cargo build --release -p sunrise-game
+python3 tools/package_native_client.py --out ~/builds/sunrise
 ```
 
-The archive holds the binary, the prepared resources and `horizon.sh`. Copy it
+The archive holds the binary, the prepared resources and `sunrise.sh`. Copy it
 to the target machine (same OS and architecture), unpack it and run
-`horizon/horizon.sh`; `horizon.sh --install` adds an application menu entry.
-Saves and `options.txt` go to `~/.local/share/horizon` (or `$HORIZON_HOME`), so
+`sunrise/sunrise.sh`; `sunrise.sh --install` adds an application menu entry.
+Saves and `options.txt` go to `~/.local/share/sunrise` (or `$SUNRISE_HOME`), so
 unpacking an update keeps them. The archive contains Mojang assets: keep it
 private.
 
 ## How it fits together
 
 Where each subsystem lives (game loop, rendering, streaming, light, meshing, saves) is in
-[AGENTS.md](../AGENTS.md#horizon-client-where-things-live) and [architecture.md](architecture.md). Every vanilla
+[AGENTS.md](../AGENTS.md#sunrise-client-where-things-live) and [architecture.md](architecture.md). Every vanilla
 comparison is a harness in `tools/` ([parity-workflow.md](parity-workflow.md)).

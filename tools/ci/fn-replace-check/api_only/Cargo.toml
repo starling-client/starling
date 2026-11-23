@@ -5,5 +5,5 @@ edition = "2024"
 publish = false
 
 [dependencies]
-horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
-horizon-mod-points = { path = ".horizon/sdk/api/crates/horizon-mod-points" }
+sunrise-mod-api = { path = ".sunrise/sdk/api/crates/sunrise-mod-api" }
+sunrise-mod-points = { path = ".sunrise/sdk/api/crates/sunrise-mod-points" }

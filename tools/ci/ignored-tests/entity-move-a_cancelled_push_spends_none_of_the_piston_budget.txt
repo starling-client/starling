@@ -1,1 +1,1 @@
-horizon-client game::piston_push::order_tests::a_cancelled_push_spends_none_of_the_piston_budget lib daily resources
+sunrise-client game::piston_push::order_tests::a_cancelled_push_spends_none_of_the_piston_budget lib daily resources

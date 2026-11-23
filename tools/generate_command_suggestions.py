@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Generate crates/horizon-client/src/lan/command_suggestions.rs: the argument
+"""Generate crates/sunrise-client/src/lan/command_suggestions.rs: the argument
 nodes of vanilla's command tree that have a custom suggestion provider, and
 the provider's network name (ClientboundCommandsPacket sends it; the commands
 report does not). The list comes from VanillaCommandSuggestionsExporter run
 against the pinned client jar:
 
-  javac --release 25 -proc:none -sourcepath mods/horizon/src/test/java -cp CLIENT_CP \\
-      -d BUILD mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandSuggestionsExporter.java
-  java -cp BUILD:CLIENT_CP dev.horizonlab.parity.VanillaCommandSuggestionsExporter suggestions.tsv
+  javac --release 25 -proc:none -sourcepath mods/sunrise/src/test/java -cp CLIENT_CP \\
+      -d BUILD mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaCommandSuggestionsExporter.java
+  java -cp BUILD:CLIENT_CP dev.sunriselab.parity.VanillaCommandSuggestionsExporter suggestions.tsv
   generate_command_suggestions.py suggestions.tsv
 """
 import argparse
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("tsv", type=Path)
-    parser.add_argument("--out", type=Path, default=ROOT / "crates/horizon-client/src/lan/command_suggestions.rs")
+    parser.add_argument("--out", type=Path, default=ROOT / "crates/sunrise-client/src/lan/command_suggestions.rs")
     args = parser.parse_args()
     rows = sorted(tuple(line.split("\t")) for line in args.tsv.read_text().splitlines() if line.strip())
     if len(rows) < 50:

@@ -24,13 +24,13 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    resources = Path(os.environ.get('HORIZON_TEST_RESOURCES',
-        lab.LOCAL / 'horizon-client' / lock['minecraft']['version'])).resolve()
+    resources = Path(os.environ.get('SUNRISE_TEST_RESOURCES',
+        lab.LOCAL / 'sunrise-client' / lock['minecraft']['version'])).resolve()
     if not (resources / 'movement-properties.nbt').is_file():
-        raise RuntimeError('Prepared resources required: set HORIZON_TEST_RESOURCES')
+        raise RuntimeError('Prepared resources required: set SUNRISE_TEST_RESOURCES')
     sources = [Path(__file__).resolve(),
-        lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSourceSilenceOracle.java',
-        *[lab.ROOT / 'crates/horizon-client/src' / p for p in (
+        lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSourceSilenceOracle.java',
+        *[lab.ROOT / 'crates/sunrise-client/src' / p for p in (
             'game.rs', 'mobs.rs', 'mobs/hostile.rs', 'mobs/wither.rs', 'mobs/sulfur_cube.rs',
             'game/explosion.rs', 'game/tnt.rs', 'game/potions.rs', 'game/persist.rs',
             'game/creatures.rs', 'game/wither.rs', 'game/dragon.rs', 'game/minecarts.rs')]]
@@ -39,17 +39,17 @@ def main():
         jars, baking.client_libraries(), lock['minecraft']['java_major'])
     with tempfile.TemporaryDirectory(prefix='source-silence-', dir=build) as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_TEST_RESOURCES=str(resources),
-            HORIZON_SOURCE_SILENCE_OUTPUT=scratch,
+        env.update(SUNRISE_TEST_RESOURCES=str(resources),
+            SUNRISE_SOURCE_SILENCE_OUTPUT=scratch,
             CARGO_BUILD_JOBS=os.environ.get('CARGO_BUILD_JOBS', '2'),
             RUST_TEST_THREADS='2')
-        h.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
+        h.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
             'game::tnt::tests::silent_', '--', '--nocapture'], build, 'rust', env=env)
         rust = build / 'rust.txt'
         rust.write_text(''.join((Path(scratch) / f'{name}.txt').read_text()
             for name in ('explosion', 'potions', 'bottles')), encoding='utf-8')
         h.run_logged(['java', '-Xmx1G', '-Djava.awt.headless=true', '-cp',
-            str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaSourceSilenceOracle',
+            str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaSourceSilenceOracle',
             build / 'client.txt'], build, 'client', env=env)
     matched = h.compare(build / 'client.txt', rust, 21)
     h.base.ensure_sources_unchanged(sources, hashes)

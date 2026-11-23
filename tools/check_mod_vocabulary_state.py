@@ -15,7 +15,7 @@ import re
 from layering.rust_text import blank, item_end
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "crates/horizon-mod-vocab/src"
+SOURCE = ROOT / "crates/sunrise-mod-vocab/src"
 INVENTORY = ROOT / "tools/layering/mod_vocab_state.json"
 DOCUMENT = ROOT / "docs/layering/mod-vocab-state.md"
 STATE = re.compile(r"(?<![\w'])static\s+(?:(?:mut|ref)\s+)?(?P<name>[A-Za-z_]\w*)\s*:(?!:)\s*(?P<type>[^=]+?)=")
@@ -195,12 +195,12 @@ Part of #2587. The vocabulary is **not stateless**, and this first change does *
 free of unsafe. Its crate-level `deny(unsafe_code)` remains in force. The unchanged
 `src/__private/points.rs` contains the sole temporary unsafe exception (local lint expectations)
 and the open injection-dispatch registry. #2697 moves the final seal into
-`horizon-engine-slots`; #3523 also moves generated point records and activity there, behind a set-once dispatch socket. The #2587 follow-up then moves raw-pointer
+`sunrise-engine-slots`; #3523 also moves generated point records and activity there, behind a set-once dispatch socket. The #2587 follow-up then moves raw-pointer
 conversion and ownership behind the points boundary and installs `forbid(unsafe_code)`.
 
 Crash detail buffers, profiling, borrowed resource scopes, static-string storage, retained fluids,
 package/phase/registration snapshots, live authoring requests, concrete Part registrars and diagnostic
-warning history belong to `horizon-mod-api`. The engine interface retains dispatch routing, enabled
+warning history belong to `sunrise-mod-api`. The engine interface retains dispatch routing, enabled
 bits, installed/per-game lookup tables, set-once callback sockets, one crash-owner `Cell`, and the
 named immutable caches below. Ordinary installed key and Part reads never call an authoring service.
 Registration callbacks are consulted only while the API-owned activity counter is nonzero.
@@ -218,14 +218,14 @@ inside inline modules are refused because Rust resolves them from an inline-modu
 the file's directory. Conditional path routing and module-declaring generated macros are refused
 instead of being skipped.
 Every listed generated OUT_DIR input is token-checked before write by
-`horizon-mod-api-gen`: no unlisted static declarations (including macro metavariables), unsafe,
+`sunrise-mod-api-gen`: no unlisted static declarations (including macro metavariables), unsafe,
 unsafe lint suppression, or further includes. The generated immutable ABI hash is checked against
 this same inventory by exact name and type; nested state is refused. Lifetimes and string literals are not declarations. The trusted
 Wire derive supplies codecs, not state; the crate's unsafe lint applies to its expansion as well.
 Ownership reasons are reviewed permissions,
 not generated from newly discovered declarations. The table is generated from those permissions.
 
-Source paths below are relative to `crates/horizon-mod-vocab/src`; `@generated/` identifies an
+Source paths below are relative to `crates/sunrise-mod-vocab/src`; `@generated/` identifies an
 OUT_DIR file checked by the generator before writing it.
 
 | File and item | Type | Ownership | Reason |

@@ -6,9 +6,9 @@
 /.github/                                @horizon-rust/council
 /tools/ci/                               @horizon-rust/council
 /tools/release_train.py                  @horizon-rust/council
-/crates/horizon-release-sign/            @horizon-rust/council
-/crates/horizon-server/src/update.rs     @horizon-rust/council
-/crates/horizon-server/Cargo.toml        @horizon-rust/council
+/crates/sunrise-release-sign/            @horizon-rust/council
+/crates/sunrise-server/src/update.rs     @horizon-rust/council
+/crates/sunrise-server/Cargo.toml        @horizon-rust/council
 /launcher/src/signed.rs                  @horizon-rust/council
 /launcher/src/backend.rs                 @horizon-rust/council
 /launcher/links.json                     @horizon-rust/council

@@ -1,0 +1,13 @@
+//! Fixed prebuilt entry point shared by both native mod routes.
+#![forbid(unsafe_code)]
+#[used]
+static HOLDER_CAPABILITY: [u8; sunrise_mod_package::holder::CAPABILITY.len()] =
+    sunrise_mod_package::holder::CAPABILITY;
+#[used]
+static GAME_IDENTITY: [u8; sunrise_mod_package::game_identity::MARK.len()] =
+    sunrise_mod_package::game_identity::MARK;
+fn main() {
+    std::hint::black_box(&HOLDER_CAPABILITY);
+    std::hint::black_box(&GAME_IDENTITY);
+    sunrise_mod_host::main();
+}

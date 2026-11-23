@@ -1,4 +1,4 @@
-"""Run from a clean checkout with HORIZON_TEST_RESOURCES pointing to prepared data.
+"""Run from a clean checkout with SUNRISE_TEST_RESOURCES pointing to prepared data.
 
 This exclusively owns the three production sources while running: do not build,
 edit or switch branches concurrently. Each mutation is restored in finally.
@@ -16,8 +16,8 @@ def terminate(signum, _frame):
 
 
 signal.signal(signal.SIGTERM, terminate)
-if not os.environ.get("HORIZON_TEST_RESOURCES"):
-    raise SystemExit("Set HORIZON_TEST_RESOURCES to prepared game data first")
+if not os.environ.get("SUNRISE_TEST_RESOURCES"):
+    raise SystemExit("Set SUNRISE_TEST_RESOURCES to prepared game data first")
 
 
 @dataclass(frozen=True)
@@ -33,12 +33,12 @@ root = Path.cwd()
 artifacts = root / 'target' / 'stored-id-proof'
 artifacts.mkdir(parents=True, exist_ok=True)
 subprocess.run(['git', 'diff', 'HEAD', '--exit-code', '--',
-                'crates/horizon-client/src/game/modding/native_entities.rs',
-                'crates/horizon-client/src/game/blocks/nether_portal.rs',
-                'crates/horizon-client/src/game/entities/entity.rs'], check=True)
-native = 'crates/horizon-client/src/game/modding/native_entities.rs'
-portal = 'crates/horizon-client/src/game/blocks/nether_portal.rs'
-entity = 'crates/horizon-client/src/game/entities/entity.rs'
+                'crates/sunrise-client/src/game/modding/native_entities.rs',
+                'crates/sunrise-client/src/game/blocks/nether_portal.rs',
+                'crates/sunrise-client/src/game/entities/entity.rs'], check=True)
+native = 'crates/sunrise-client/src/game/modding/native_entities.rs'
+portal = 'crates/sunrise-client/src/game/blocks/nether_portal.rs'
+entity = 'crates/sunrise-client/src/game/entities/entity.rs'
 # Each case changes one actual expression; repeated expression positions are explicit.
 cases = [
     Mutation(
@@ -166,7 +166,7 @@ for case in cases:
         assert found >= 0, name
     try:
         path.write_text(original[:found] + case.after + original[found + len(before):])
-        result = subprocess.run(['cargo', 'test', '-p', 'horizon-client', '--lib', case.test, '--', '--ignored'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        result = subprocess.run(['cargo', 'test', '-p', 'sunrise-client', '--lib', case.test, '--', '--ignored'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output = result.stdout
         (artifacts / f'pr1e1-mutation-{name}.log').write_text(output)
         assert result.returncode == 101 and 'test result: FAILED.' in output and 'panicked at' in output, (name, output[-4000:])
@@ -174,7 +174,7 @@ for case in cases:
     finally:
         path.write_text(original)
 for test in ('pending_ids_keep_counter_order', 'native_roots_keep_the_loaded_id', 'portal_ids_follow_only', 'pending_assignment_refuses_a_bound_zero', 'joins_follow_insertion_order'):
-    result = subprocess.run(['cargo', 'test', '-p', 'horizon-client', '--lib', test, '--', '--ignored'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(['cargo', 'test', '-p', 'sunrise-client', '--lib', test, '--', '--ignored'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (artifacts / f'pr1e1-restored-{test}.log').write_text(result.stdout)
     assert result.returncode == 0, (test, result.stdout[-4000:])
 print('Restored production source: all five focused regressions pass', flush=True)

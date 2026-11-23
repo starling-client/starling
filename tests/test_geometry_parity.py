@@ -22,7 +22,7 @@ class GeometryRunnerTests(unittest.TestCase):
                 self.assertFalse(report.exists())
 
     def test_collision_counts_reject_missing_partial_and_inconsistent_coverage(self):
-        for output in ["", "HORIZON_COLLISION_RESULT {}", 'HORIZON_COLLISION_RESULT {"registry_states":35723,"cached_states":1,"uncached_states":1,"queries":6,"unique_shapes":1}']:
+        for output in ["", "SUNRISE_COLLISION_RESULT {}", 'SUNRISE_COLLISION_RESULT {"registry_states":35723,"cached_states":1,"uncached_states":1,"queries":6,"unique_shapes":1}']:
             with self.subTest(output=output), self.assertRaises((AssertionError, KeyError)):
                 collision.counts(output)
 

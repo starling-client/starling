@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 350" role="img" aria-labelledby="t d" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', 'DejaVu Sans', sans-serif">
-  <title id="t">The three kinds of Horizon mod</title>
-  <desc id="d">One .hmod package holds horizon-mod.toml, assets and data. A content mod stops there. A native mod adds a Rust crate that the launcher compiles against the pinned game build. A WebAssembly mod adds mod.wasm, built from the same Rust, which the game runs in its sandbox.</desc>
+  <title id="t">The three kinds of Sunrise mod</title>
+  <desc id="d">One .smod package holds sunrise-mod.toml, assets and data. A content mod stops there. A native mod adds a Rust crate that the launcher compiles against the pinned game build. A WebAssembly mod adds mod.wasm, built from the same Rust, which the game runs in its sandbox.</desc>
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6e7681"/></marker>
   </defs>
   <!-- package -->
   <rect x="20" y="105" width="200" height="140" rx="12" fill="#f1f3f5" stroke="#5c6670" stroke-width="1.5"/>
-  <text x="120" y="132" text-anchor="middle" font-size="17" font-weight="700" fill="#1f2328">my_mod.hmod</text>
+  <text x="120" y="132" text-anchor="middle" font-size="17" font-weight="700" fill="#1f2328">my_mod.smod</text>
   <g font-family="'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace" font-size="13" fill="#1f2328">
-    <text x="42" y="162">horizon-mod.toml</text>
+    <text x="42" y="162">sunrise-mod.toml</text>
     <text x="42" y="184">assets/</text>
     <text x="42" y="206">data/</text>
     <text x="42" y="228" fill="#5c6670">+ code, for a code mod</text>

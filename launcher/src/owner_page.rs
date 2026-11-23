@@ -1,4 +1,4 @@
-//! The owner gate in the window (`horizon_launcher::account::launch`): the screen that asks for a
+//! The owner gate in the window (`sunrise_launcher::account::launch`): the screen that asks for a
 //! Microsoft account that owns Minecraft: Java Edition. It covers the launcher once for players
 //! without one (those who played offline before the gate), and again whenever Play is refused.
 //! The sign-in runs on it, code and all.
@@ -8,7 +8,7 @@ impl Launcher {
     /// Whether the screen covers the window: no owner, and either Play was refused or the player
     /// hasn't read it yet. The data question comes first.
     pub(crate) fn asking_owner(&self) -> bool {
-        (!horizon_launcher::developer_offline::selected() || sign_in_preview())
+        (!sunrise_launcher::developer_offline::selected() || sign_in_preview())
             && (self.owner == Some(false) || sign_in_preview())
             && (self.owner_screen_open || !self.settings.owner_notice_seen || sign_in_preview())
             && !self.asking_consent()
@@ -69,11 +69,11 @@ impl Launcher {
                     .child(tr("Sign in to play").to_string()),
             )
             .child(line(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                "Sunrise needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
                 n.ink_soft,
             ))
             .child(line(
-                "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                "No Minecraft install needed: Sunrise downloads it from Mojang for your account.",
                 n.ink_soft,
             ));
         let raised = || {
@@ -273,7 +273,7 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         use crate::glass_ui::{self as ui, white};
-        use horizon_theme::glass::{ink, radius};
+        use sunrise_theme::glass::{ink, radius};
         let t = self.theme;
         let panel = || {
             div()
@@ -295,7 +295,7 @@ impl Launcher {
             .child(
                 div()
                     .mt(px(8.))
-                    .font_family(horizon_theme::glass::DISPLAY_FONT)
+                    .font_family(sunrise_theme::glass::DISPLAY_FONT)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(px(28.))
                     .line_height(px(35.))
@@ -309,10 +309,10 @@ impl Launcher {
                     .flex_col()
                     .gap(px(8.))
                     .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
-                        "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                        "Sunrise needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
                     )))
                     .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
-                        "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                        "No Minecraft install needed: Sunrise downloads it from Mojang for your account.",
 ))),
             );
         card = match state {
@@ -410,7 +410,7 @@ impl Launcher {
             Shown::Error(e) => card.child(
                 panel().child(
                     ui::text(14., FontWeight::NORMAL, ink::FULL)
-                        .text_color(ui::color(horizon_theme::glass::DANGER))
+                        .text_color(ui::color(sunrise_theme::glass::DANGER))
                         .child(e.to_string()),
                 ),
             ),
@@ -448,10 +448,10 @@ impl Launcher {
                         .bg(gpui::white())
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
-                        .font_family(horizon_theme::glass::FONT)
+                        .font_family(sunrise_theme::glass::FONT)
                         .text_size(px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(gpui::rgb(horizon_theme::glass::ON_LIGHT))
+                        .text_color(gpui::rgb(sunrise_theme::glass::ON_LIGHT))
                         .child(microsoft::logo(18.))
                         .child(tr("Sign in with Microsoft")),
                     &t,
@@ -522,11 +522,11 @@ enum Shown<'a> {
     Error(&'a str),
 }
 
-/// `HORIZON_LAUNCHER_PAGE=sign-in` opens the sheet with a made-up code, for screenshots: nothing
+/// `SUNRISE_LAUNCHER_PAGE=sign-in` opens the sheet with a made-up code, for screenshots: nothing
 /// asks Microsoft, and the gate itself is as it was (no account, no Play).
 pub(super) fn sign_in_preview() -> bool {
     static PREVIEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *PREVIEW.get_or_init(|| std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("sign-in"))
+    *PREVIEW.get_or_init(|| std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref() == Ok("sign-in"))
 }
 
 /// `https://www.microsoft.com/link` as `microsoft.com/link`.

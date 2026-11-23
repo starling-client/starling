@@ -41,10 +41,10 @@ def main():
     report.unlink(missing_ok=True)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaServerPropertyNumbersOracle.java'
-    sources = [oracle, lab.ROOT / 'crates/horizon-core/src/text.rs',
-               lab.ROOT / 'crates/horizon-server-files/src/properties.rs',
-               lab.ROOT / 'crates/horizon-server-files/examples/properties_numbers.rs',
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaServerPropertyNumbersOracle.java'
+    sources = [oracle, lab.ROOT / 'crates/sunrise-core/src/text.rs',
+               lab.ROOT / 'crates/sunrise-server-files/src/properties.rs',
+               lab.ROOT / 'crates/sunrise-server-files/examples/properties_numbers.rs',
                lab.ROOT / 'tools/test_server_property_numbers_parity.py', lab.ROOT / 'Cargo.lock']
     hashes = base.source_hashes(sources)
     values = number_cases()
@@ -62,8 +62,8 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none',
          '-cp', classpath, '-d', classes, oracle], 'compile-java')
     expected = run(['java', '-Djava.awt.headless=true', '-cp', str(classes) + os.pathsep + classpath,
-                    'dev.horizonlab.parity.VanillaServerPropertyNumbersOracle', inputs], 'vanilla')
-    actual = run(['cargo', 'run', '--locked', '-p', 'horizon-server-files', '--example',
+                    'dev.sunriselab.parity.VanillaServerPropertyNumbersOracle', inputs], 'vanilla')
+    actual = run(['cargo', 'run', '--locked', '-p', 'sunrise-server-files', '--example',
                   'properties_numbers', '--', inputs], 'rust')
     if len(expected) != len(actual) or len(actual) != len(values) * 3:
         raise AssertionError(f'incomplete corpus: {len(expected)} vanilla / {len(actual)} native records')

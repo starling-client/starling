@@ -63,7 +63,7 @@ extra entries within one candidate reload. The vanilla view used outside a
 candidate reload has no per-file store, so it logs once per evaluation.
 
 The public [NeoForge data load condition documentation](https://docs.neoforged.net/docs/resources/server/conditions/)
-describes `ICondition` and the top-level `neoforge:conditions` array. Horizon's
-owned-namespace refusal is the Horizon-specific addition described above.
+describes `ICondition` and the top-level `neoforge:conditions` array. Sunrise's
+owned-namespace refusal is the Sunrise-specific addition described above.
 Foreign unknown ids leave the file absent and produce an error-level diagnostic;
 they do not themselves refuse the whole reload.

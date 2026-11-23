@@ -3,7 +3,7 @@
 
 EnderDragon.tickDeath ends the fight (dragonFight.setDragonKilled: the exit portal, a gateway, the egg) and gives
 the first kill's 12000 experience only when it has a fight, which only the End's dragons have
-(ServerLevel.getDragonFight); elsewhere it is worth 500 and ends nothing. A vanilla dedicated server and Horizon's
+(ServerLevel.getDragonFight); elsewhere it is worth 500 and ends nothing. A vanilla dedicated server and Sunrise's
 each serve a fresh flat world; the console summons a dying dragon (Health 0, NoAI: LivingEntity.baseTick runs
 tickDeath while isDeadOrDying) in the overworld and waits past its 200 death ticks. Then, around 0 0, the
 dragon egg, end portal and bedrock blocks of the exit portal it left, and the experience its orbs hold, must match
@@ -105,31 +105,31 @@ def run_side(label, command, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, help='prebuilt Horizon game (otherwise build fast)')
+    parser.add_argument('--binary', type=Path, help='prebuilt Sunrise game (otherwise build fast)')
     parser.add_argument('--out', type=Path, default=lab.LOCAL / 'dragon-death-outside-end-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=lab.ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'fast' / (
-            'horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+            'sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
-                'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
+                'sunrise': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
     results = {label: run_side(label, command, out) for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     for label, result in results.items():
         print(f'{label}: {result}', flush=True)
     # The spec as read from EnderDragon.tickDeath: no fight outside the End, so nothing built and 500 experience.
     assert results['vanilla'] == {'blocks': dict.fromkeys(BLOCKS, 0), 'experience': 500}, results['vanilla']
-    assert results['horizon'] == results['vanilla'], f'the dragon\'s death outside the End differs; see {out}'
+    assert results['sunrise'] == results['vanilla'], f'the dragon\'s death outside the End differs; see {out}'
     print('dragon death outside the End: matches vanilla', flush=True)
 
 

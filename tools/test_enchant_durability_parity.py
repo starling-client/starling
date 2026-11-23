@@ -6,7 +6,7 @@ Unbreaking or Mending enchantment on a real `ItemStack` and calls
 `EnchantmentHelper.processDurabilityChange` / `modifyDurabilityToRepairFromXp`
 with a seeded level random. Rust (`enchant_durability_fixture`) evaluates the
 same `minecraft:item_damage` / `minecraft:repair_with_xp` value effects through
-`horizon_items::enchant::Enchantments`. Both print one integer per case.
+`sunrise_items::enchant::Enchantments`. Both print one integer per case.
 
 The base corpus is Unbreaking: levels 0-3 on five damageable items, the
 small/large removal paths and their seam, negative/zero/large amounts and
@@ -64,22 +64,22 @@ def main():
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     all_cases = list(cases(not args.no_mending))
     inputs = build / 'cases.jsonl'
     inputs.write_text(f'#resources {resources}\n' + ''.join(json.dumps(c) + '\n' for c in all_cases),
                       encoding='utf-8')
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEnchantDurabilityOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEnchantDurabilityOracle.java'
     sources = [oracle, Path(__file__), lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py',
-               lab.ROOT / 'crates/horizon-client/examples/probe/enchant_durability_fixture.rs',
-               lab.ROOT / 'crates/horizon-items/src/enchant.rs',
-               lab.ROOT / 'crates/horizon-items/src/items.rs',
-               lab.ROOT / 'crates/horizon-items/src/item_data.rs']
+               lab.ROOT / 'crates/sunrise-client/examples/probe/enchant_durability_fixture.rs',
+               lab.ROOT / 'crates/sunrise-items/src/enchant.rs',
+               lab.ROOT / 'crates/sunrise-items/src/items.rs',
+               lab.ROOT / 'crates/sunrise-items/src/item_data.rs']
     tested = base.source_hashes(sources)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
 
     def run(command, name, timeout=900):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
@@ -89,8 +89,8 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', str(java_root),
          '-cp', dependencies, '-d', classes, oracle], 'compile-java')
     run(['java', '-Xmx2g', '-cp', str(classes) + os.pathsep + dependencies,
-         'dev.horizonlab.parity.VanillaEnchantDurabilityOracle', inputs, build / 'client.txt'], 'client')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'],
+         'dev.sunriselab.parity.VanillaEnchantDurabilityOracle', inputs, build / 'client.txt'], 'client')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'],
         'compile-rust', timeout=3600)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))

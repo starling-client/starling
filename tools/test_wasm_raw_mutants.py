@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "crates/horizon-mod-wasm/src/raw.rs"
+SOURCE = ROOT / "crates/sunrise-mod-wasm/src/raw.rs"
 MUTANTS = [
     ("signature", [("        check_slot(table, &manifest.id, injection)?;", "")]),
     ("wire", [("if entry.hash != shape {", "if false && entry.hash != shape {")]),
@@ -32,9 +32,9 @@ def main():
                 assert changed.count(before) == 1, before
                 changed = changed.replace(before, after)
             SOURCE.write_text(changed)
-            env = dict(os.environ, HORIZON_CONTROLLED_RAW_CASE=case)
+            env = dict(os.environ, SUNRISE_CONTROLLED_RAW_CASE=case)
             run = subprocess.run(
-                ["cargo", "test", "-p", "horizon-mod-wasm", "--lib",
+                ["cargo", "test", "-p", "sunrise-mod-wasm", "--lib",
                  "raw::controlled_exports::controlled_load_and_registration", "--", "--nocapture"],
                 cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             )

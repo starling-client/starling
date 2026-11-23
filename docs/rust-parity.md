@@ -1,4 +1,4 @@
-# Horizon Rust rewrite status
+# Sunrise Rust rewrite status
 
 The behavior target is the repository's pinned **Minecraft Java Edition 26.3**.
 One-to-one parity with vanilla gameplay is the acceptance criterion. It has **not**
@@ -31,7 +31,7 @@ families now have native differential coverage. Full simulation callbacks,
 complete chunk generation, entity behavior, networking, rendering and playable
 integration remain unfinished. The linked subsystem documents and hashed reports
 record the exact tested scope and remaining gaps.
-The `horizon-assets` crate now decodes pinned cuboid models, with all 2,883 bundled
+The `sunrise-assets` crate now decodes pinned cuboid models, with all 2,883 bundled
 block-model JSON files and 2,457 synthetic cases compared against the actual
 client parser. [Decoder scope and validation](native-client.md#validation)
 also include parent/texture resolution over 5,648 roots and cuboid baking over
@@ -57,7 +57,7 @@ interpolation and game-loop synchronization remain unfinished.
 
 ## Completion criteria and playable builds
 
-The final deliverable is the complete Horizon Rust game with one-to-one parity
+The final deliverable is the complete Sunrise Rust game with one-to-one parity
 with pinned Java Edition 26.3, plus a playable **Linux** build that the user can
 download and test. The target platform is a Linux x86-64 desktop with an NVIDIA
 GPU (Vulkan) on Wayland. macOS and Windows are out of scope. The build must include a packaged native
@@ -78,7 +78,7 @@ verified development checkpoints regularly.
 
 ## Implemented foundation
 
-`crates/horizon-core` is a dependency-free Rust library with no unsafe code.
+`crates/sunrise-core` is a dependency-free Rust library with no unsafe code.
 It uses small integer position values, exclusively owned RNG state, and packed
 64-bit storage. These choices avoid Java object overhead in this slice; no
 whole-game memory, FPS, or render-distance gain has been measured.
@@ -1264,7 +1264,7 @@ attribute queries. Healing, health and base absorption limits, synchronized
 health storage and hunger regeneration therefore share its stored values and
 modifier engine. The [health integration comparison](../benchmarks/rust-live-attribute-health-2026-10-07/scoped-parity.json)
 matches **666,082 lines per reference JAR for each storage backend**, including
-all 93 entity suppliers and observer failure prefixes. All `horizon-world`
+all 93 entity suppliers and observer failure prefixes. All `sunrise-world`
 targets compile, and library/affected fixture Clippy checks pass. This borrowed
 binding keeps its selected attribute map fixed; entity virtual dispatch,
 attribute refresh, player absorption synchronization and starvation damage
@@ -1329,7 +1329,7 @@ separate phase from `tickEffects`.
 ## Scoreboards, teams and subtitles
 
 `tools/test_scoreboard_parity.py` runs vanilla's own `Scoreboard` (what
-`ServerScoreboard` extends) and `horizon_client::scoreboard` on 500 scripted
+`ServerScoreboard` extends) and `sunrise_client::scoreboard` on 500 scripted
 cases, about 81,000 operations: objectives with every kind of criteria (custom,
 team kill, and statistics in every spelling `ObjectiveCriteria.byName` accepts,
 which resolve to their canonical names), display names, render types,
@@ -1373,7 +1373,7 @@ expiry, the fade by age, the direction arrows and the box width. The overlay
 listens to the sound engine from the frame that renders it with the option on
 until one renders with it off, as vanilla's does.
 
-Not covered yet: the player's air supply (Horizon does not track drowning, so
+Not covered yet: the player's air supply (Sunrise does not track drowning, so
 the `air` criteria stays at 300); displays auto-updated with the player's name
 carry the team formatting but not the click, hover and insertion of
 `Player.getDisplayName`; there is no attack sweep for allies to be spared from;
@@ -1385,7 +1385,7 @@ which the client does not handle yet.
 The loom, the crafter and the recipe book run on code checked against
 vanilla's own classes, and the game uses that code:
 
-- **Menus.** `horizon_client::menu` runs `LoomMenu` (selectable patterns,
+- **Menus.** `sunrise_client::menu` runs `LoomMenu` (selectable patterns,
   `clickMenuButton`, the six-layer limit, quick moves, the result's `onTake`)
   and the server's `CrafterMenu` over the block entity (the result following
   the grid, `setSlotState`, a filled disabled slot enabling itself) besides the
@@ -1399,7 +1399,7 @@ vanilla's own classes, and the game uses that code:
   with disabled slots and containers, other crafters or air in front, comparing
   block changes, container contents, the animation ticks, triggered flag,
   comparator signal, shot items, level events and the level random.
-- **Recipe placement.** `horizon_client::menu::place` ports `ServerPlaceRecipe`
+- **Recipe placement.** `sunrise_client::menu::place` ports `ServerPlaceRecipe`
   with `StackedContents`' recipe picker for the inventory, crafting table and
   furnaces. Vanilla counts the available items in a hash map ordered by
   identity hash codes, an order that changes between runs and decides which
@@ -1450,7 +1450,7 @@ output is taken, and the limited crafting game rule. Tooltips in general lack
 the lines `item_tooltip` writes for recipe results (the game's hover tooltips
 do not show attribute modifiers yet).
 
-`horizon_client::hotbar` reads the creative toolbars of an older `hotbar.nbt`
+`sunrise_client::hotbar` reads the creative toolbars of an older `hotbar.nbt`
 through the `HOTBAR` data fixers (`EmptyItemInHotbarFix`, every item stack
 fixer): `tools/test_hotbar_parity.py` loads generated files of 34 versions with
 the real `HotbarManager`. The creative screen's Saved Hotbars tab shows its
@@ -1459,7 +1459,7 @@ rows, and the save and load keys write and read it
 
 ## Player list and world border rendering
 
-`horizon_client::tab_list` lays out vanilla's `PlayerTabOverlay` as draw calls:
+`sunrise_client::tab_list` lays out vanilla's `PlayerTabOverlay` as draw calls:
 the listed players in `PLAYER_COMPARATOR` order (higher list order first,
 spectators last, team name, profile name ignoring case), at most 80 of them in
 columns of 20 rows; heads with the default skin for the UUID, flipped for
@@ -1481,11 +1481,11 @@ held, from the local player and scoreboard in single player and from
 `PlayerInfoUpdate`, the tab list header and footer, `onlineMode` and the
 objective, score, display-slot and team packets on a server (checked live
 against the 26.3 server jar). Real skins are not downloaded: every head uses
-its default skin. Horizon has no "chat background only" option, so the row
+its default skin. Sunrise has no "chat background only" option, so the row
 background is vanilla's default.
 
-The client `WorldBorder` wraps `horizon_core::geometry::border` (checked by
-`test_world_border_parity.py`) and `horizon_client::border_render` ports
+The client `WorldBorder` wraps `sunrise_core::geometry::border` (checked by
+`test_world_border_parity.py`) and `sunrise_client::border_render` ports
 `WorldBorderRenderer`: `extract`'s fade (`(1 - distance / render distance)^4`)
 and status colour (growing, shrinking, stationary), the wall buffer that is only
 rebuilt when the border moves, the model offset and the texture scroll of
@@ -1502,7 +1502,7 @@ dimensions.
 
 ## Resource pack screen and chat input
 
-`horizon_client::pack_screen` is `PackSelectionScreen` as a state machine: the
+`sunrise_client::pack_screen` is `PackSelectionScreen` as a state machine: the
 header, the two `TransferableSelectionList`s (rows, header entries, scroll,
 selection outline, focus, the hover overlay and its arrows, incompatible packs'
 tint and text), the search box filtering both lists, the footer buttons and
@@ -1514,7 +1514,7 @@ the break). `tools/test_pack_screen_parity.py` drives a real
 `PackSelectionScreen` (`VanillaPackScreenOracle`) through 3,000 random sessions
 of clicks, typing and the mouse wheel and compares every call.
 
-`horizon_client::chat::ChatScreen` ports `ChatScreen`, its `EditBox` and
+`sunrise_client::chat::ChatScreen` ports `ChatScreen`, its `EditBox` and
 `CommandSuggestions`: argument colouring, usage lines and parse errors, the
 suggestion list (sorting, hover, Tab and Shift+Tab, clicks), history and the
 input's editing keys. `tools/test_chat_screen_parity.py` runs a real
@@ -1525,7 +1525,7 @@ suggestions the server's dispatcher answers as
 input's state and every call. Not compared: the mouse wheel over the
 suggestion list and clipboard keys.
 
-`horizon_client::creative` is the creative inventory. Its tabs come from
+`sunrise_client::creative` is the creative inventory. Its tabs come from
 `creative-inventory.json`, which `VanillaCreativeTabsExporter` writes from
 vanilla's own `CreativeModeTabs.tryRebuildTabContents` over the vanilla data
 pack's registries: every stack with its components, and for each stack of the
@@ -1547,7 +1547,7 @@ search stacks, 6,845 searches). Not compared: the saved hotbars tab.
 
 ## Pillager patrols and raids
 
-`horizon_client::patrol` ports `PatrolSpawner` and `horizon_client::raid` ports
+`sunrise_client::patrol` ports `PatrolSpawner` and `sunrise_client::raid` ports
 `Raid` and `Raids`; the game runs both through them. `tools/test_raid_parity.py`
 runs vanilla's own classes in `VanillaRaidOracle`, on a stand-in `ServerLevel`
 built from boxes of blocks and light, a biome, village sections, village points

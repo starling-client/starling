@@ -401,8 +401,8 @@ def impl_targets(header, text, workspace):
 def narrow_rust_sources(sources, scope):
     """Drop the workspace Rust sources a harness's declared PARITY_RUST_SCOPE proves it can't reach.
 
-    The scope lists source prefixes (crates/horizon-core/src/nbt.rs,
-    crates/horizon-world/src/datafix/). It applies only if it is closed: no
+    The scope lists source prefixes (crates/sunrise-core/src/nbt.rs,
+    crates/sunrise-world/src/datafix/). It applies only if it is closed: no
     file in it names a module, crate item or macro outside it (crate::,
     super::, other workspace crates), declares a module it doesn't cover, or
     includes source; and no file outside it implements anything for a type
@@ -496,7 +496,7 @@ PROBE_SOURCE = re.compile(r"/examples/probe/(?:(support)/)?(\w+)\.rs$")
 # Each crate's probe example (crates/<crate>/examples/probe) and its target name. Until 2026-10-24 they were all
 # `probe`, and Cargo copies every crate's examples into one <profile>/examples/: a harness could run the binary
 # another harness had just copied there.
-PROBE_TARGETS = {"horizon-client": "client_probe", "horizon-protocol": "protocol_probe", "horizon-world": "world_probe"}
+PROBE_TARGETS = {"sunrise-client": "client_probe", "sunrise-protocol": "protocol_probe", "sunrise-world": "world_probe"}
 OLD_PROBE_SOURCE = re.compile(r"crates/([\w-]+)/examples/probe[/.]")
 
 
@@ -604,7 +604,7 @@ def java_sources(arguments):
 
 
 def run_environment(reuse_oracles=False):
-    environment = dict(os.environ, CARGO_TARGET_DIR=str(TARGET), PYTHONDONTWRITEBYTECODE="1", HORIZON_NO_AUDIO="1", **PROFILE)
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(TARGET), PYTHONDONTWRITEBYTECODE="1", SUNRISE_NO_AUDIO="1", **PROFILE)
     environment.pop("CARGO_BUILD_JOBS", None)
     # tools/parity_shim.py stands in for java and javac and replays unchanged oracle runs. Not on Windows: a
     # program started without a shell is found there only as an .exe, and the shim's execv returns before the program.
@@ -683,10 +683,10 @@ def selected_builds(artifacts, packages=None):
         kind, name, profile, selection, examples = artifact
         owner = (packages or {}).get((kind, name))
         selected = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"]
-        if not name and kind in ("bins", "examples") and "horizon-client" in selected \
-                and "horizon-client-lib" in (packages or {}).values():
+        if not name and kind in ("bins", "examples") and "sunrise-client" in selected \
+                and "sunrise-client-lib" in (packages or {}).values():
             # Broad records predate the client package split too.
-            owner = "horizon-client-lib"
+            owner = "sunrise-client-lib"
         if owner and selected and owner not in selected:
             # A recorded target may have moved packages; retain its feature flags and old selections.
             selection = [*selection, "-p", owner]
@@ -886,12 +886,12 @@ class LocalExecutor:
         trace.unlink(missing_ok=True)
         log = (STATE_DIR / "logs" / f"{name}.log").open("w")
         environment = run_environment(reuse)
-        # A game the harness starts logs into HORIZON_HOME, which is a real player's folder when it is unset
+        # A game the harness starts logs into SUNRISE_HOME, which is a real player's folder when it is unset
         # (lab.game_env keeps this one).
         game_home = STATE_DIR / "game-home" / name
         shutil.rmtree(game_home, ignore_errors=True)
         game_home.mkdir(parents=True)
-        environment.setdefault("HORIZON_HOME", str(game_home))
+        environment.setdefault("SUNRISE_HOME", str(game_home))
         environment["PARITY_SHIM_OUTPUTS"] = str(outputs_listing(name, fresh=True))
         environment.pop("PARITY_SHARD", None)
         if shard:
@@ -1360,7 +1360,7 @@ def trace_main(output, script, arguments):
 SHARED_INPUTS = {"research-lock.json", "Cargo.lock"}
 # Manifest sections that say what a crate is and where its targets are, not what it builds with.
 MANIFEST_SECTION_KEPT = re.compile(r"\[\[?(?:package|lib|bin|example|test|bench|lints|badges)\b[^\]]*\]\]?$")
-WORKSPACE_CRATE = r"(horizon[\w-]*|cargo-horizon-mod|xtask)"
+WORKSPACE_CRATE = r"(sunrise[\w-]*|cargo-sunrise-mod|xtask)"
 # A workspace crate named as a dependency (by path, or from the workspace's own table) without choosing its features,
 # or listed as a member.
 WORKSPACE_LINE = re.compile(WORKSPACE_CRATE + r'\s*=\s*(?:\{(?![^}]*\bfeatures\b)[^}]*\b(?:path|workspace)\s*=[^}]*\}|true)'
@@ -1478,7 +1478,7 @@ def canonical_dependency_path(path: str) -> str:
 
 def changed_harnesses(found, records, ref):
     """Harnesses new or changed since the merge base of HEAD and ref: their script, or a dependency of theirs that is
-    an oracle (Java under mods/horizon/src/test) or a probe (a crate's example or binary), changed or was added."""
+    an oracle (Java under mods/sunrise/src/test) or a probe (a crate's example or binary), changed or was added."""
     changed = changed_files(ref)
     if changed is None:
         print(f"note: no merge base with {ref}; the flake check repeats nothing", flush=True)
@@ -1487,7 +1487,7 @@ def changed_harnesses(found, records, ref):
     for name, script in found.items():
         dependencies = map(canonical_dependency_path, records.get(name, {}).get("dependencies", []))
         specific = [path.split(KEEP)[0] for path in dependencies
-                    if path.startswith("mods/horizon/src/test/") or "/examples/" in path or "/src/bin/" in path]
+                    if path.startswith("mods/sunrise/src/test/") or "/examples/" in path or "/src/bin/" in path]
         if Path(script).relative_to(ROOT).as_posix() in changed or any(path in changed for path in specific):
             found_changed.add(name)
     return found_changed
@@ -1559,7 +1559,7 @@ def affected_harnesses(found, records, changed, reach=True, base=None):
 
 def platform_skips(config, host=None):
     """Harnesses tools/parity_hosts.json marks as giving different results on this platform, and those this host's
-    entry excludes (playhorizon's CI runner runs its own pull request jobs here, not only workers sent to it):
+    entry excludes (playsunrise's CI runner runs its own pull request jobs here, not only workers sent to it):
     {name: reason}."""
     skips = {} if sys.platform == "linux" else dict(config.get("linux_only", {}))
     skips.update(config.get("hosts", {}).get(HOST if host is None else host, {}).get("exclude", {}))
@@ -1575,7 +1575,7 @@ def known_flaky(config):
 def solo_harnesses(config):
     """Harnesses tools/parity_hosts.json's "solo" lists ({name: reason}: those driving game windows, whose frames
     are drawn on the CPU on Linux runners) run alone on a machine with SOLO_CPUS CPUs or fewer for this process
-    (playhorizon's runner has 4): beside other harnesses there they lose ticks between control requests. The set,
+    (playsunrise's runner has 4): beside other harnesses there they lose ticks between control requests. The set,
     or an empty one on a bigger machine. PARITY_SOLO=1 or 0 forces it on or off."""
     forced = os.environ.get("PARITY_SOLO")
     cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1

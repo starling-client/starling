@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Hot-path performance trends (docs/hot-path-trends.md): measure, record, and draw the page.
 
-    python3 tools/hot_paths.py measure --game target/release/horizon-hot-paths-game --resources RES --out run.json
+    python3 tools/hot_paths.py measure --game target/release/sunrise-hot-paths-game --resources RES --out run.json
     python3 tools/hot_paths.py record run.json HISTORY     # validate, keep only known fields, add to HISTORY/runs
     python3 tools/hot_paths.py page HISTORY                # write HISTORY/index.html and HISTORY/README.md
 
-`measure` runs the game's built-in benchmark (`HORIZON_HOT_PATHS`, crates/horizon-client/src/game/runtime/
-hot_paths/; the executable is crates/horizon-hot-paths-game) on fixed, seeded workloads. Each workload is one measured region, and three numbers come out of it,
+`measure` runs the game's built-in benchmark (`SUNRISE_HOT_PATHS`, crates/sunrise-client/src/game/runtime/
+hot_paths/; the executable is crates/sunrise-hot-paths-game) on fixed, seeded workloads. Each workload is one measured region, and three numbers come out of it,
 each divided by the workload's operations:
 
 - instructions: Callgrind's count of the instructions the region executed (`Ir`), on every thread. It does not
@@ -54,15 +54,15 @@ def scratch_env(root, **extra):
     """The game's environment for one run: lab.game_env with its homes under `root`, and no telemetry."""
     import lab  # here, so the record and page commands need nothing beside this file
     homes = {}
-    for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
+    for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         folder = Path(root) / key.lower()
         folder.mkdir(parents=True, exist_ok=True)
         homes[key] = folder
     # The worker pools' size follows the machine's cores unless it is fixed.
-    return lab.game_env(HORIZON_TELEMETRY_URL='off', HORIZON_WORKER_THREADS='2', **homes, **extra)
+    return lab.game_env(SUNRISE_TELEMETRY_URL='off', SUNRISE_WORKER_THREADS='2', **homes, **extra)
 
 
-# The native mod built into horizon-hot-paths-game: its package beside the executable, as the launcher leaves one.
+# The native mod built into sunrise-hot-paths-game: its package beside the executable, as the launcher leaves one.
 LISTENER = 'hot_paths_listener'
 LISTENER_MANIFEST = f"""id = '{LISTENER}'
 name = '{LISTENER}'
@@ -72,19 +72,19 @@ side = 'both'
 capabilities = ['registries']
 [native]
 game = '26.3'
-horizon = '{'a' * 40}'
+sunrise = '{'a' * 40}'
 mixins = '{'b' * 40}'
 """
 
 
 def install(game, folder):
     """Copy the benchmark's executable into `folder` with the listener mod's package beside it."""
-    package = folder / 'horizon-native-mods' / LISTENER
+    package = folder / 'sunrise-native-mods' / LISTENER
     (package / 'src').mkdir(parents=True)
-    (package / 'horizon-mod.toml').write_text(LISTENER_MANIFEST)
+    (package / 'sunrise-mod.toml').write_text(LISTENER_MANIFEST)
     (package / 'Cargo.toml').write_text(f"[package]\nname = '{LISTENER}'\nversion = '1.0.0'\n")
     (package / 'src/lib.rs').write_text('// Built into the executable.\n')
-    return shutil.copy2(game, folder / 'horizon-client')
+    return shutil.copy2(game, folder / 'sunrise-client')
 
 
 # The game wants a main-thread stack of 136 MiB and, finding less, raises the limit and starts itself again.
@@ -102,9 +102,9 @@ def run_game(game, resources, work, mods, only, prefix=()):
     """One process of the benchmark; returns its lines by workload name."""
     work.mkdir(parents=True)
     out = work / 'workloads.jsonl'
-    env = scratch_env(work, HORIZON_HOT_PATHS=str(out), HORIZON_HOT_PATHS_MODS=mods)
+    env = scratch_env(work, SUNRISE_HOT_PATHS=str(out), SUNRISE_HOT_PATHS_MODS=mods)
     if only:
-        env['HORIZON_HOT_PATHS_ONLY'] = only
+        env['SUNRISE_HOT_PATHS_ONLY'] = only
     game_dir = work / 'game'
     game_dir.mkdir()
     command = [*prefix, str(game), '--resources', str(resources), '--game-dir', str(game_dir)]
@@ -446,7 +446,7 @@ def page(args):
         for run in reversed(runs[-15:]))
     notes = ''.join(f'<li>{html.escape(note)}</li>' for note in newest['notes'])
     text = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Horizon hot paths</title>
+<html lang="en"><head><meta charset="utf-8"><title>Sunrise hot paths</title>
 <style>
 body {{ font: 14px/1.45 system-ui, sans-serif; margin: 2em auto; max-width: 1100px; padding: 0 1em; color: #1c1c1c; }}
 table {{ border-collapse: collapse; width: 100%; margin-bottom: 2em; }}
@@ -455,7 +455,7 @@ td.n {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .step {{ background: #b3261e; color: #fff; padding: 0 5px; border-radius: 3px; font-size: 12px; }}
 .noisy {{ background: #e8e2c8; padding: 0 5px; border-radius: 3px; font-size: 12px; }}
 </style></head><body>
-<h1>Horizon hot paths</h1>
+<h1>Sunrise hot paths</h1>
 <p>Newest run: {html.escape(newest['date'])}, commit <code>{newest['commit'][:12]}</code>, host {html.escape(newest['host'])}.
 {len(runs)} runs recorded. Every value is per operation of a fixed, seeded workload, the median of the run's samples.</p>
 <p>Instructions and allocator calls do not depend on the machine's speed. Wall time does, and is noisy.
@@ -472,7 +472,7 @@ runs were measured on another CPU model or with another rustc or Valgrind. Nothi
 """
     (history / 'index.html').write_text(text)
     stepped_rows = [row['name'] for row in table if row['step']]
-    readme = ['# Horizon hot-path history', '',
+    readme = ['# Sunrise hot-path history', '',
               'Written by the `hot-paths` workflow on main; do not edit by hand. Open `index.html` for the trend page;',
               '`runs/` holds one JSON record per run.', '',
               f"Newest run: {newest['date']}, commit `{newest['commit'][:12]}`, host `{newest['host']}`.", '',

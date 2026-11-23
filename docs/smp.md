@@ -1,12 +1,12 @@
 # Survival multiplayer (SMP): the official server's mod
 
-The official Horizon server (play.playhorizon.dev) wants an organised survival game: a currency players earn in
+The official Sunrise server (play.playsunrise.net) wants an organised survival game: a currency players earn in
 game, a server market, safe player-to-player trades, small games of chance with that currency, and spawn, homes,
 teleport requests, warps, land claims and rules.
 
-**None of it is in Horizon.** The server people download stays a plain server, like vanilla's server jar: no SMP
+**None of it is in Sunrise.** The server people download stays a plain server, like vanilla's server jar: no SMP
 command, no SMP setting in `server.toml`, nothing in the release build. The SMP is a **native mod**, `smp`, that
-only the official server builds into its engine. What Horizon gains are general **server hook points** any native
+only the official server builds into its engine. What Sunrise gains are general **server hook points** any native
 mod can use (commands, players, messages, inventories, the world folder, then interactions, damage, menus): the
 mod API grows, and a server owner who wants their own SMP, shop or claims mod can write it on the same points.
 
@@ -14,26 +14,26 @@ Status: design (this page); built in phases below.
 
 ## Players install nothing
 
-Everything works with a stock Horizon client: no mod, no resource pack, nothing on the player's side. The SMP speaks
-only what vanilla's protocol already carries and the Horizon client already renders:
+Everything works with a stock Sunrise client: no mod, no resource pack, nothing on the player's side. The SMP speaks
+only what vanilla's protocol already carries and the Sunrise client already renders:
 
 - chat commands with completions (the server's command tree), and chat lines;
 - menus the server opens with vanilla menu types (a 6-row chest, `generic_9x6`) and fills with ordinary items as
   buttons and displays; the server rules every click, the client only shows them;
 - vanilla sounds, titles, the action bar, boss bars and the scoreboard sidebar for what a player should notice.
 
-Only the Horizon client may join the official server; that gate is anticheat-1's work, not the SMP's. The SMP may rely
+Only the Sunrise client may join the official server; that gate is anticheat-1's work, not the SMP's. The SMP may rely
 on what the stock client renders, never on a client mod.
 
 ## Architecture
 
 | Part | Where | What |
 |---|---|---|
-| Server hook points | this repository, `crates/horizon-client/src/game/native_hooks/` ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)) | compiled against the installed game's exact source revision, empty when no mod hooks them |
+| Server hook points | this repository, `crates/sunrise-client/src/game/native_hooks/` ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)) | compiled against the installed game's exact source revision, empty when no mod hooks them |
 | The `smp` mod | [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods), `native/smp/` | a horizon-mixins bundle: `smp_store.rs`, `smp_economy.rs`, `smp_market.rs`... hold the rules and data (also the mod's own crate, with its tests, no game types), `glue.rs` and small helpers hook the points |
-| The official server's engine | built from a Horizon release's commit with the bundle applied | `horizon-server`'s `[engine] path` points at it; the rest of the server is unchanged |
+| The official server's engine | built from a Sunrise release's commit with the bundle applied | `sunrise-server`'s `[engine] path` points at it; the rest of the server is unchanged |
 
-Why a native mod: it is the mod system Horizon has now, it runs on the server
+Why a native mod: it is the mod system Sunrise has now, it runs on the server
 that simulates the world, and it keeps the SMP out of everyone else's game. Why hook points rather than reaching into
 the game's private code: hook points give mods a named contract at the intended action. The official server rebuilds
 its mod against the exact source revision of the game it runs, updating the mod when that contract changes.
@@ -115,7 +115,7 @@ claim from outside.
 
 ## Configuration and data
 
-Everything is in the world's folder, `world/horizon-smp/`, so a backup of the world carries it, and a world without
+Everything is in the world's folder, `world/sunrise-smp/`, so a backup of the world carries it, and a world without
 that folder is untouched: the mod creates it the first time it runs.
 
 | File | Holds |
@@ -153,7 +153,7 @@ with. The coin is a fresh random key from the system, never the world's random.
 
 A native mod is built into the game it runs in ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)). For the server: the source of the
 release the server runs, `horizon-mixins apply` with the `smp` bundle, then the server build
-(`cargo build --release --no-default-features -p horizon-game`), and `horizon-server`'s `[engine] path` set to
+(`cargo build --release --no-default-features -p sunrise-game`), and `sunrise-server`'s `[engine] path` set to
 the result. When to deploy it on the official server is the owners' decision; the mod's README holds the exact
 commands.
 
@@ -166,8 +166,8 @@ made only when a player acts on a block. Each phase measures a server tick with 
 ## Phases
 
 Each is pull requests under ~500 lines, each tested: the hook points here (unit tests, a game test that hooks
-them), the mod in horizon-mods (its crate's tests, and a proof: a dedicated server built with the bundle and real
-clients driven by `horizon-ctl`, in fresh folders).
+them), the mod in sunrise-mods (its crate's tests, and a proof: a dedicated server built with the bundle and real
+clients driven by `sunrise-ctl`, in fresh folders).
 
 1. **Economy**: command and player hook points; the mod's ledger, data files and audit log, `/balance`, `/pay`,
    `/baltop`, `/eco`; then the items helpers and the market (`/sell`, `/buy`, `/worth`).

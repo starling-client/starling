@@ -12,13 +12,13 @@ assigned to any row.
 
 Two mechanisms reach the mod API from client-lib code, and both were enumerated:
 
-1. Catalog targets. `rg -n 'horizon_client_lib::' crates/horizon-mod-vocab/src/hooks` returns 22
-   `target = "horizon_client_lib::…"` attributes in 19 declaration files. The generator classifies
-   them in `crates/horizon-mod-api-gen/src/lib.rs:344` (`free_function_source`, prefix
-   `horizon_client_lib::`) and resolves each target's `native_<hook>` in `dispatch.rs:46` (`emit`).
+1. Catalog targets. `rg -n 'sunrise_client_lib::' crates/sunrise-mod-vocab/src/hooks` returns 22
+   `target = "sunrise_client_lib::…"` attributes in 19 declaration files. The generator classifies
+   them in `crates/sunrise-mod-api-gen/src/lib.rs:344` (`free_function_source`, prefix
+   `sunrise_client_lib::`) and resolves each target's `native_<hook>` in `dispatch.rs:46` (`emit`).
 2. The callback table. 19 of the 22 are installed through `NativeClientHooks`
-   (`crates/horizon-client/src/native_client_hooks.rs:9`, installed at `entry.rs:225`); the other 3
-   call `mod_api::dispatch_` themselves (`crates/horizon-client/src/crafting/native_hooks.rs:14,40,56`).
+   (`crates/sunrise-client/src/native_client_hooks.rs:9`, installed at `entry.rs:225`); the other 3
+   call `mod_api::dispatch_` themselves (`crates/sunrise-client/src/crafting/native_hooks.rs:14,40,56`).
 
 Two consequences a reviewer should keep in mind:
 
@@ -26,13 +26,13 @@ Two consequences a reviewer should keep in mind:
   `Game::native_<name>` default, so the design's "targets without an explicit annotation" set is
   empty today. This was checked against `catalog.rs:363,508` (the default is a Game
   method) and `hook_targets.rs:41` (resolution only rewrites Game native-hook modules).
-  Re-run `rg -n 'default_target|entry\("target"\)' crates/horizon-mod-api-gen/src/catalog.rs`
+  Re-run `rg -n 'default_target|entry\("target"\)' crates/sunrise-mod-api-gen/src/catalog.rs`
   and read `hook_targets.rs` as well as the explicit-target and callback-table searches;
   searching explicit annotations alone does not establish the implicit set.
 - None of the 22 receives a `Host`. 20 take `&LoopContext` and the two data-load collections
   (`ingredient`, `recipe_property_sets`) take `&LoadContext`. `LoopContext` is documented as holding
   "no game, world handle or mutable registry access"
-  (`crates/horizon-world/src/native_load_context.rs:189`). The mutating ones instead write `&mut`
+  (`crates/sunrise-world/src/native_load_context.rs:189`). The mutating ones instead write `&mut`
   out-parameters. That is the Host-less shape the clean break replaces.
 
 ## Client-lib target inventory
@@ -74,8 +74,8 @@ read-only fire boundary.
 The read sets and bold outcome names below are migration proposals, not existing token validation.
 Existing callbacks mutate state directly; cancellation does not currently imply transaction rollback.
 
-Paths are relative to the repository root. `hooks/` is `crates/horizon-mod-vocab/src/hooks/` and
-`client/` is `crates/horizon-client/src/`. The design's line numbers moved; these are current.
+Paths are relative to the repository root. `hooks/` is `crates/sunrise-mod-vocab/src/hooks/` and
+`client/` is `crates/sunrise-client/src/`. The design's line numbers moved; these are current.
 
 | Route | Current owner | Vanilla method mirrored | Read set | Existing public result per outcome |
 | --- | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ client-lib targets, and are migrated with the rest of the server menu path.
 
 ## Baseline caller fixtures
 
-`crates/horizon-client/src/menu/dfa_tests.rs` pins three stage-2 acceptance rows through today's
+`crates/sunrise-client/src/menu/dfa_tests.rs` pins three stage-2 acceptance rows through today's
 public `Menu::click` / `Menu::place_recipe` callers, without installing listeners or adding runtime code:
 
 - Cursor stone 3 into an empty chest slot: cursor empty, destination stone 3.
@@ -126,14 +126,14 @@ public `Menu::click` / `Menu::place_recipe` callers, without installing listener
 These are Rust caller regressions with independent vanilla expectations, not a new Java/Rust parity
 harness or proof of dispatch counts, tokens, cancellation, stale refusal or rollback. The recipe fixture
 is ignored by default and asserts that resources were actually loaded when explicitly requested.
-Run on the build server with prepared resources at `.local/horizon-client/26.3`:
+Run on the build server with prepared resources at `.local/sunrise-client/26.3`:
 
 ```sh
-cargo test -p horizon-client-lib --lib dfa_baseline_ -- --include-ignored
+cargo test -p sunrise-client-lib --lib dfa_baseline_ -- --include-ignored
 ```
 
-The sources live under horizon-client, but `client_lib.rs` owns the `menu` module and its unit tests.
-The recipe test reads `HORIZON_TEST_RESOURCES`, or `.local/horizon-client/26.3` in the checkout when
+The sources live under sunrise-client, but `client_lib.rs` owns the `menu` module and its unit tests.
+The recipe test reads `SUNRISE_TEST_RESOURCES`, or `.local/sunrise-client/26.3` in the checkout when
 that is unset, and fails rather than passing silently when neither has the prepared data.
 
 ## Vanilla evidence
@@ -143,8 +143,8 @@ Each row is a method this page cites, queried with
 For overloaded methods select each `--overload-index`. Inventory classes use
 `net.minecraft.world.inventory`; `ServerPlaceRecipe` uses `net.minecraft.recipebook`, the packet
 listener uses `net.minecraft.server.network`, and `LivingEntity` uses `net.minecraft.world.entity`.
-The supplied data was read from the sibling horizon-pp `.local` via a process-local `lab.LOCAL`
-override, with scratch `HORIZON_HOME` and JDK 25. No game files are included here.
+The supplied data was read from the sibling sunrise-pp `.local` via a process-local `lab.LOCAL`
+override, with scratch `SUNRISE_HOME` and JDK 25. No game files are included here.
 REA's Java output for `moveItemStackTo` contains contradictory branches despite its `complete`
 status; the matching/empty-slot branches were cross-checked with JDK `javap -c -p` on the same jar.
 

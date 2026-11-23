@@ -26,7 +26,7 @@ import org.json.JSONObject;
 final class NativeMods {
     private NativeMods() {}
 
-    static final String LIBRARY = "libhorizon_android.so";
+    static final String LIBRARY = "libsunrise_android.so";
     /** Beside a build's library: the `stamp` of the install it was made under (native_builds.rs). */
     private static final String APK = "apk";
     /** Starts that ended before the first frame, after which the build is set aside. */

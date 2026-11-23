@@ -8,7 +8,7 @@ def main():
     backend = root / "launcher/src/backend.rs"
     destination = root / "launcher/src/backend/release_assets.rs"
     source = backend.read_text()
-    start = source.index("/// The release assets of each system Horizon ships for:")
+    start = source.index("/// The release assets of each system Sunrise ships for:")
     end = source.index("/// `a == b`, in a const context.", start)
     declaration = source[start:end]
     if destination.exists():

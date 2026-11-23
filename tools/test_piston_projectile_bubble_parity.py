@@ -7,7 +7,7 @@ through (`Entity.applyEffectsFromBlocks`), bubble columns among them: a projecti
 charge a piston lifts through a bubble column climbs it this way (the Orbital Skybender's reading column). An arrow
 gets it too: the piston's push runs the same `applyEffectsFromBlocks` whatever the arrow's own tick does.
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen. An upward piston in the floor lifts a stone under a snowball with no gravity, no motion and a fall distance of
 5, floating over the stone's east edge; the snowball's box reaches into a one-block bubble column (soul sand under it,
 glass around and over it) in the next column. A second lane has no bubble column; two more lanes do the same with an
@@ -119,17 +119,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'piston projectile bubble: {len(vanilla)} lines identical')
 

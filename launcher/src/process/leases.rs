@@ -77,8 +77,8 @@ impl ChildLeases {
             })
             .collect::<io::Result<Vec<_>>>()?;
         let fds: Vec<_> = transfer.iter().map(AsRawFd::as_raw_fd).collect();
-        command.env("HORIZON_RUNTIME_DATA_ROOT", &self.data).env(
-            "HORIZON_RUNTIME_LEASE_FDS",
+        command.env("SUNRISE_RUNTIME_DATA_ROOT", &self.data).env(
+            "SUNRISE_RUNTIME_LEASE_FDS",
             fds.iter().map(i32::to_string).collect::<Vec<_>>().join(","),
         );
         // SAFETY: only async-signal-safe fcntl calls run after fork. transfer owns every fd until

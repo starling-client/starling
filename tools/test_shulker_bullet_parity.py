@@ -61,13 +61,13 @@ def main():
         'the cap of 3). Level.loadedAndEntityCanStandOn(pos, bullet), the test that turns a bullet in flight, over '
         'forty block states with full, partial, hollow, empty and context-dependent collision shapes, with the '
         'bullet below, level with, on and above the block. The bullet\'s own random flight path is not compared.',
-        sources=[lab.ROOT / 'crates/horizon-client/src/mobs/shulker.rs',
-                 lab.ROOT / 'crates/horizon-client/src/projectiles.rs',
-                 lab.ROOT / 'crates/horizon-client-render/src/collisions.rs',
-                 lab.ROOT / 'crates/horizon-world/src/block_collision.rs',
-                 lab.ROOT / 'crates/horizon-world/src/collision_context.rs',
-                 lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBlockUpdateOracle.java',
-                 lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java'])
+        sources=[lab.ROOT / 'crates/sunrise-client/src/mobs/shulker.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/projectiles.rs',
+                 lab.ROOT / 'crates/sunrise-client-render/src/collisions.rs',
+                 lab.ROOT / 'crates/sunrise-world/src/block_collision.rs',
+                 lab.ROOT / 'crates/sunrise-world/src/collision_context.rs',
+                 lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaBlockUpdateOracle.java',
+                 lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java'])
 
 
 if __name__ == '__main__':

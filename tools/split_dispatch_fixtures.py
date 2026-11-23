@@ -16,12 +16,12 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = Path("crates/horizon-mod-api-gen/dispatch-tests/src/lib.rs")
+SOURCE = Path("crates/sunrise-mod-api-gen/dispatch-tests/src/lib.rs")
 DIRECTORY = SOURCE.parent / "fixtures"
 SHELL = '#[cfg(test)]\nmod tests {\n    #[allow(dead_code)]\n    mod stubs {\n        include!(concat!(env!("OUT_DIR"), "/dispatch_fixtures_stubs.rs"));\n    }\n    use generated as mod_api;\n    include!(concat!(env!("OUT_DIR"), "/dispatch_fixtures_root.rs"));\n}\n'
 REFLOWS = [
-    ('let subscribers = horizon_client_core::subscribers::Subscribers::new(\n            HOOK_COUNT,\n            mods.len(),\n            subscriptions,\n        );',
-     'let subscribers =\n    horizon_client_core::subscribers::Subscribers::new(HOOK_COUNT, mods.len(), subscriptions);'),
+    ('let subscribers = sunrise_client_core::subscribers::Subscribers::new(\n            HOOK_COUNT,\n            mods.len(),\n            subscriptions,\n        );',
+     'let subscribers =\n    sunrise_client_core::subscribers::Subscribers::new(HOOK_COUNT, mods.len(), subscriptions);'),
     ("fn item_model_property(\n                &self,\n                _: &dyn ClientHost,\n                event: &mut ItemModelPropertyEvent<'_>,\n            ) {",
      "fn item_model_property(&self, _: &dyn ClientHost, event: &mut ItemModelPropertyEvent<'_>) {"),
 ]
@@ -125,11 +125,11 @@ def main():
     base = args.verify or args.base
     source = run("git", "show", f"{base}:{SOURCE}") if base else (ROOT / SOURCE).read_text()
     metadata = json.loads(run("cargo", "metadata", "--no-deps", "--format-version", "1"))
-    run("cargo", "build", "-q", "-p", "horizon-mod-api-gen", "--bin", "dispatch-fixture-layout")
+    run("cargo", "build", "-q", "-p", "sunrise-mod-api-gen", "--bin", "dispatch-fixture-layout")
     executable = "dispatch-fixture-layout.exe" if sys.platform == "win32" else "dispatch-fixture-layout"
     binary = Path(metadata["target_directory"]) / "debug" / executable
     manifest = json.loads(run(str(binary), source=source))
-    native = "crates/horizon-client/src/game/native_hooks"
+    native = "crates/sunrise-client/src/game/native_hooks"
     paths = run("git", "ls-tree", "-r", "--name-only", base, native).splitlines() if base else [str(p.relative_to(ROOT)) for p in (ROOT / native).glob("*.rs")]
     references = {Path(p).stem: set(re.findall(r"\b\w+\b", run("git", "show", f"{base}:{p}") if base else (ROOT / p).read_text()))
                   for p in paths if p.endswith(".rs") and Path(p).stem not in ("mod", "shared", "fire")}

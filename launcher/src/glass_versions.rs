@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::glass_ui::{self as ui, Tone};
-use horizon_theme::glass::{ink, radius};
+use sunrise_theme::glass::{ink, radius};
 
 /// A release's day as the mockup writes it ("Nov 1"), with its time in UTC when known.
 pub(super) fn published(date: &str, time: &str) -> String {
@@ -59,7 +59,7 @@ fn nightly_card_text(release: &Release) -> Option<(String, String)> {
     release.nightly.as_ref()?;
     let date = published(&release.date, "");
     let title = format!("{} · {date}", tr("Nightly"));
-    let commit = horizon_launcher::nightly::label(&release.tag)
+    let commit = sunrise_launcher::nightly::label(&release.tag)
         .and_then(|label| {
             label
                 .split_once(" · ")
@@ -92,7 +92,7 @@ impl Launcher {
         let page_title = ui::page_head(
             tr("Versions"),
             tr(
-                "Horizon's Nightly builds, newest first. Your worlds live in the game \
+                "Sunrise's Nightly builds, newest first. Your worlds live in the game \
                 folder, so removing a version never touches them.",
             ),
         )
@@ -162,7 +162,7 @@ impl Launcher {
                                 .child(tr("Support the work below")),
                         )
                         .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
-                            "Horizon is built in the open. Sponsors fund the next release.",
+                            "Sunrise is built in the open. Sponsors fund the next release.",
                         ))),
                 )
                 .child(
@@ -200,7 +200,7 @@ impl Launcher {
                 "Imported builds",
                 build_import::is_imported,
                 Some(tr(
-                    "Unsigned: you picked these programs yourself, and Horizon can't \
+                    "Unsigned: you picked these programs yourself, and Sunrise can't \
                     check where they came from. Updates never replace them.",
                 )),
                 on_disk,
@@ -537,7 +537,7 @@ impl Launcher {
                     line.push(trf("Built on {base}", &[("base", &about.base)]));
                 }
                 if let Some(about) = build_import::about(&tag) {
-                    let base = horizon_launcher::nightly::label(&about.base).unwrap_or(about.base);
+                    let base = sunrise_launcher::nightly::label(&about.base).unwrap_or(about.base);
                     line.push(trf("Game files from {base}", &[("base", &base)]));
                     line.push(about.file);
                 }
@@ -548,7 +548,7 @@ impl Launcher {
                 } else {
                     self.glass_version_actions(&tag, cx).into_any_element()
                 };
-                let title = horizon_launcher::nightly::label(&tag)
+                let title = sunrise_launcher::nightly::label(&tag)
                     .or_else(|| build_import::label(&tag))
                     .unwrap_or_else(|| tag.trim_start_matches('v').to_string());
                 d = d.child(self.glass_version_card(&tag, title, &mut line, false, on_disk, right));

@@ -15,7 +15,7 @@ const SAID: &str = "wasm probe: ";
 static SERVER_TICKS: AtomicU64 = AtomicU64::new(0);
 static SEEN: AtomicU64 = AtomicU64::new(0);
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Mod {
     fn server_tick(&self, host: &mut dyn ServerHost, event: &mut ServerTickEvent<'_>) {
         if !matches!(event.phase, mod_api::ServerTickPhase::ServerTickEnd { .. }) {

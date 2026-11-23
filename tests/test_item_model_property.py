@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ItemModelPropertyTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_unlistened_fast_path_and_owned_stack_dispatch(self):
-        source = (next(ROOT.glob('crates/horizon-client/src/game/*/item_draw.rs'))).read_text(encoding="utf-8")
+        source = (next(ROOT.glob('crates/sunrise-client/src/game/*/item_draw.rs'))).read_text(encoding="utf-8")
         actual = method(source, "item_model_property")
         fixture = r'''
 use std::cell::Cell;

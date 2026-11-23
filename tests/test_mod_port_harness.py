@@ -117,7 +117,7 @@ class VerdictLifecycleTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.attempt("first")
         self.assertEqual(sentinel.read_text(), "keep")
-        self.assertFalse((self.work / "mods/first/harness/horizon.json").exists())
+        self.assertFalse((self.work / "mods/first/harness/sunrise.json").exists())
         self.assertEqual(self.verdict("untouched").read_text(), self.old)
 
 

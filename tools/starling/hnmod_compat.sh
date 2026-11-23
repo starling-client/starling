@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Whether the website's native mods (.hnmod, written against Horizon's main API) still build on this Starling:
+# Whether the website's native mods (.hnmod, written against Sunrise's main API) still build on this Starling:
 # each mod alone through what a phone's build does (packaging/android/native_build.sh: the source's preparation,
-# horizon-materialize, native_mod_adapt.py, `horizon-mixins apply`), then `cargo ndk check` of horizon-android for
+# sunrise-materialize, native_mod_adapt.py, `horizon-mixins apply`), then `cargo ndk check` of sunrise-android for
 # arm64-v8a. Run by .github/workflows/hnmod-compat.yml on GitHub's runners, which hold no secrets: mods with crates of
 # their own ([[crate]], build scripts and macros) are checked too. It was the build VM's ~/compat (sync 6).
 #
@@ -31,17 +31,17 @@ if [ ! -x "$tools/bin/horizon-mixins" ]; then
 fi
 
 commit=$(git -C "$source" rev-parse HEAD)
-# horizon-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
+# sunrise-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
 # the build folder below is a copy without the repository (native_build.sh sets it the same way).
-export HORIZON_GAME_BUILD_ID=$commit
+export SUNRISE_GAME_BUILD_ID=$commit
 work=${WORK:-$(mktemp -d)}
 mkdir -p "$work"
 build=$work/build
-manifest=crates/horizon-android/Cargo.toml
+manifest=crates/sunrise-android/Cargo.toml
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TERM_COLOR=never
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$work/target}
 
-# The source as native_build.sh prepares it (read the reasons there): no links, horizon-android's library an empty
+# The source as native_build.sh prepares it (read the reasons there): no links, sunrise-android's library an empty
 # file while horizon-mixins plans, lib.rs without its conditional attribute, the game's modules written out, the
 # modules named through a parent folder moved beside their module.
 rm -rf "$work/source"
@@ -49,21 +49,21 @@ mkdir -p "$work/source"
 git -C "$source" archive --format=tar HEAD | tar -x -C "$work/source"
 find "$work/source" -type l -delete
 echo "$commit" > "$work/source/.horizon-revision"
-lib_line='path = "../horizon-client/src/android_lib.rs"'
+lib_line='path = "../sunrise-client/src/android_lib.rs"'
 grep -qxF "$lib_line" "$work/source/$manifest" || fail "$manifest no longer has: $lib_line"
-sed -i "s|^path = \"../horizon-client/src/android_lib.rs\"\$|path = \"plan-stub.rs\"|" "$work/source/$manifest"
-: > "$work/source/crates/horizon-android/plan-stub.rs"
+sed -i "s|^path = \"../sunrise-client/src/android_lib.rs\"\$|path = \"plan-stub.rs\"|" "$work/source/$manifest"
+: > "$work/source/crates/sunrise-android/plan-stub.rs"
 lib_attr='#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]'
-grep -qxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" \
-  || fail "crates/horizon-client/src/lib.rs no longer has: $lib_attr"
-grep -vxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" > "$work/lib.rs"
-cp "$work/lib.rs" "$work/source/crates/horizon-client/src/lib.rs"
+grep -qxF "$lib_attr" "$work/source/crates/sunrise-client/src/lib.rs" \
+  || fail "crates/sunrise-client/src/lib.rs no longer has: $lib_attr"
+grep -vxF "$lib_attr" "$work/source/crates/sunrise-client/src/lib.rs" > "$work/lib.rs"
+cp "$work/lib.rs" "$work/source/crates/sunrise-client/src/lib.rs"
 cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > "$out/logs/_fetch.log" 2>&1 \
   || { tail -20 "$out/logs/_fetch.log"; fail "cargo fetch failed"; }
 CARGO_TARGET_DIR=$work/materialize-target cargo run --quiet --locked --offline \
-  --manifest-path "$work/source/Cargo.toml" -p horizon-mod-api-gen --bin horizon-materialize \
+  --manifest-path "$work/source/Cargo.toml" -p sunrise-mod-api-gen --bin sunrise-materialize \
   -- "$work/source" > "$out/logs/_materialize.log" 2>&1 \
-  || { tail -20 "$out/logs/_materialize.log"; fail "horizon-materialize failed"; }
+  || { tail -20 "$out/logs/_materialize.log"; fail "sunrise-materialize failed"; }
 python3 "$work/source/packaging/android/native_mixins_source.py" "$work/source" > "$out/logs/_mixins_source.log" 2>&1 \
   || { cat "$out/logs/_mixins_source.log"; fail "native_mixins_source.py failed"; }
 
@@ -87,10 +87,10 @@ git -C "$source" show "HEAD:$manifest" > "$original"
 check_tree() {  # TREE LOG FLAGS
   mkdir -p "$build"
   rsync -r --checksum --delete --exclude /target/ --exclude "/$manifest" \
-    --exclude /crates/horizon-android/plan-stub.rs --exclude /native-hooks.json "$1/" "$build/"
+    --exclude /crates/sunrise-android/plan-stub.rs --exclude /native-hooks.json "$1/" "$build/"
   cmp -s "$original" "$build/$manifest" || cp "$original" "$build/$manifest"
   # shellcheck disable=SC2086
-  (cd "$build" && timeout 2400 cargo ndk -t arm64-v8a check -p horizon-android $3 --message-format=short) > "$2" 2>&1
+  (cd "$build" && timeout 2400 cargo ndk -t arm64-v8a check -p sunrise-android $3 --message-format=short) > "$2" 2>&1
 }
 record() {  # MOD LOG SECONDS CODE
   if [ "$4" = 0 ]; then
@@ -137,7 +137,7 @@ for mod in "$@"; do
   # The errors in full (which call, which argument): cargo replays them from its cache, in seconds.
   if [ $code != 0 ]; then
     # shellcheck disable=SC2086
-    (cd "$build" && timeout 600 cargo ndk -t arm64-v8a check -p horizon-android $flags) > "$out/logs/$mod.full.log" 2>&1
+    (cd "$build" && timeout 600 cargo ndk -t arm64-v8a check -p sunrise-android $flags) > "$out/logs/$mod.full.log" 2>&1
   fi
 done
 echo "hnmod_compat: $(grep -c $'\tok\t' "$out/check.tsv") ok (the control included)," \

@@ -12,7 +12,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = Path('crates/horizon-mod-vocab/src/part_table.rs')
+SOURCE = Path('crates/sunrise-mod-vocab/src/part_table.rs')
 DIRECTORY = SOURCE.with_suffix('')
 INCLUDE = 'include!(concat!(env!("OUT_DIR"), "/part_table_generated.rs"));\n'
 COMMENT = '//! Shared table state, cross-kind registration and common test fixtures only.\n'
@@ -159,7 +159,7 @@ def main():
     parser.add_argument('--verify', metavar='BASE')
     parser.add_argument('--base', metavar='BASE')
     args = parser.parse_args()
-    run('cargo', 'build', '-q', '-p', 'horizon-mod-api-gen', '--bin', 'part-table-layout')
+    run('cargo', 'build', '-q', '-p', 'sunrise-mod-api-gen', '--bin', 'part-table-layout')
     metadata = json.loads(run('cargo', 'metadata', '--no-deps', '--format-version', '1'))
     binary = Path(metadata['target_directory']) / 'debug' / 'part-table-layout'
     layout = lambda source: json.loads(run(str(binary), source=source))

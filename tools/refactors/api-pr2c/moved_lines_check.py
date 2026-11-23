@@ -52,12 +52,12 @@ for record in import_edits:
     print('  ' + record['path'] + ': ' + repr(record['old']))
 checked = 0
 for name in subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=M', BASE, '--', '*.rs'], text=True).splitlines():
-    if name.startswith(('crates/horizon-mod-api-gen/', 'crates/horizon-mod-api-macros/', 'crates/horizon-mod-api/src/host/', 'crates/horizon-mod-api/src/hooks/')) or name in {
-        'crates/horizon-mod-api/src/world/phase.rs', 'crates/horizon-client/src/game/host/mod.rs',
+    if name.startswith(('crates/sunrise-mod-api-gen/', 'crates/sunrise-mod-api-macros/', 'crates/sunrise-mod-api/src/host/', 'crates/sunrise-mod-api/src/hooks/')) or name in {
+        'crates/sunrise-mod-api/src/world/phase.rs', 'crates/sunrise-client/src/game/host/mod.rs',
     }:
         continue
     source = subprocess.check_output(['git', 'show', f'{BASE}:{name}'], text=True)
-    if name in {'crates/horizon-client/src/game/host/draw.rs', 'crates/horizon-client/src/game/host/services.rs'}:
+    if name in {'crates/sunrise-client/src/game/host/draw.rs', 'crates/sunrise-client/src/game/host/services.rs'}:
         edits = []
         for impl, body, offset in blocks(source, r"impl (\w+) for Game<'_>\s*\{"):
             if impl[1] in {'DrawClientHost', 'ServicesServerHost', 'ServicesClientHost'}:

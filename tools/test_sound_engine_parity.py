@@ -10,7 +10,7 @@ pauses, minecart states and client ticks.
 After every step it prints each instance's `isActive` and the AL source the
 engine configured (state, gain, pitch, position, relative, looping, distance
 model, max distance, rolloff, reference distance), the subtitle notifications
-and the channel pool counts. Horizon's `SoundEngine` replays the scripts
+and the channel pool counts. Sunrise's `SoundEngine` replays the scripts
 against a backend that records the same AL source fields.
 """
 import json
@@ -320,7 +320,7 @@ def main():
     lines = fixtures()
     matched, report = h.run_harness(
         'sound-engine', 'VanillaSoundEngineOracle', 'sound_engine_fixture', ''.join(l + '\n' for l in lines),
-        extra_sources=[h.lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSoundRig.java'],
+        extra_sources=[h.lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSoundRig.java'],
         java_args=[h.RESOURCES], rust_args=[h.RESOURCES],
         scope='Real SoundEngine (OpenAL Soft null device, inline executor, silent static buffers, never-ready streams): play results, '
               'AL source parameters set by play/tickInGameSound/refreshCategoryVolume (gain from calculateVolume, clamped pitch, linear '

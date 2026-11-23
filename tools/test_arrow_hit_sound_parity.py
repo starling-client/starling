@@ -102,8 +102,8 @@ def run_side(label, command, client, folder, decoder):
         passed('execute if block 4 201 4 minecraft:air')
         # The final silent command keeps the existing net harness connected
         # while the console runs this bounded scene. It then stops Studio.
-        env = lab.game_env(HORIZON_NET_REPORT=folder / 'client-report.json',
-            HORIZON_NET_CHAT='/studio record start h331;h331_capture_ready;'
+        env = lab.game_env(SUNRISE_NET_REPORT=folder / 'client-report.json',
+            SUNRISE_NET_CHAT='/studio record start h331;h331_capture_ready;'
             '/scoreboard players set #hold h331 0;/studio record stop')
         with (folder / 'client.log').open('w') as log:
             process = subprocess.Popen([str(client), '--resources', str(lab.RESOURCES.resolve()),
@@ -172,15 +172,15 @@ def main():
     if args.binary:
         binary = args.binary.resolve(strict=True)
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-game',
-                        '--bin', 'horizon-client'], cwd=lab.ROOT, check=True)
-        binary = lab.cargo_target() / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game',
+                        '--bin', 'sunrise-client'], cwd=lab.ROOT, check=True)
+        binary = lab.cargo_target() / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     client_binary = args.client_binary.resolve(strict=True) if args.client_binary else binary
     lock, jars, libraries = base.verify_artifacts()
     classes, dependencies, _ = oracle_harness.compile_oracle(out, 'VanillaEntitySoundPacketOracle',
         jars, libraries, lock['minecraft']['java_major'])
     decoder = ['java', '-Xmx1g', '-cp', str(classes)+os.pathsep+dependencies,
-               'dev.horizonlab.parity.VanillaEntitySoundPacketOracle']
+               'dev.sunriselab.parity.VanillaEntitySoundPacketOracle']
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     reference = args.reference_dir.resolve() if args.reference_dir else out
     if not args.reference_dir:
@@ -190,8 +190,8 @@ def main():
         (out / 'reference.json').write_text(json.dumps(java, indent=2)+'\n')
     if args.reference_only:
         return 0
-    rust = run_side('horizon', [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui'],
-                    client_binary, out / 'horizon', decoder)
+    rust = run_side('sunrise', [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui'],
+                    client_binary, out / 'sunrise', decoder)
     assert json.loads((reference / 'reference.json').read_text())['contract_pass']
     (out / 'report.json').write_text(json.dumps(rust, indent=2)+'\n')
     print(f"Arrow block-hit source: {rust['category']} (expected 6); {len(rust['admission'])} admission/control checks passed")

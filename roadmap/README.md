@@ -1,7 +1,7 @@
 # The roadmap
 
 `roadmap.toml` is the one source of the roadmap. `tools/roadmap.py build` turns it into
-[ROADMAP.md](../ROADMAP.md); the website's hub (playhorizon.dev/hub) and Kira read the same items. The work
+[ROADMAP.md](../ROADMAP.md); the website's hub (playsunrise.net/hub) and Kira read the same items. The work
 board stays the task-level view (every issue and pull request); the roadmap is the overview, and each pull
 request carries the `roadmap:<id>` label of the item it moves.
 
@@ -17,7 +17,7 @@ focus = true                     # optional: one of the 3 to 5 Now items in the 
 ongoing = true                   # optional: a workstream that goes on after its pull requests merge
 owner = "levzzz5154"             # Now items: the GitHub login who leads it (a person, or the account an agent works as)
 issue = "#3911"                  # Now items: the tracking issue that holds the checklist
-plain = """Servers that show dialogs ... will work in Horizon."""   # players' words, at most 240 characters
+plain = """Servers that show dialogs ... will work in Sunrise."""   # players' words, at most 240 characters
 dev = """26.3's dialog packets and model (#1720), ..."""             # crates, approach, what is left
 links = ["#1720", "#1734", "docs/hosting.md"]                       # #N, a repository path, or https://
 shipped_in = "v0.2.58"           # shipped items only: a game tag, launcher@x.y.z, or "website"
@@ -61,7 +61,7 @@ Whoever moves the work (the orchestrator on each heartbeat, or anyone in their p
    shows it among the releases, and `/data/journal.json` carries it to Kira's #updates and to X.
    In the same pass, `python3 tools/parity_gaps.py readme --write` refreshes the parity headline: the
    player-visible gaps still open in the port ledger's ten lists (#3512 to #3521), on the README and the website.
-6. Suggestions come only from #horizon-ideas posts on Discord: Kira sends each one to the maintainers' private
+6. Suggestions come only from #sunrise-ideas posts on Discord: Kira sends each one to the maintainers' private
    channel. A good one becomes an item in a normal pull request; none is published automatically.
 
 CI runs `tests/test_roadmap.py` (in the Python tests), which fails when ROADMAP.md is not what `build` writes
@@ -69,7 +69,7 @@ or when the file breaks a rule; `python3 tools/roadmap.py check --offline` runs 
 
 ## The journal
 
-The hub's Journal tab and `https://playhorizon.dev/data/journal.json` are built with each deploy of the website
+The hub's Journal tab and `https://playsunrise.net/data/journal.json` are built with each deploy of the website
 (`src/hub.js` in horizon-rust/horizon-site). The tab shows every game and launcher release with its notes' changes, each placed under
 the roadmap item it moves (the pull request's `roadmap:<id>` label, else the item that links it), the merged pull
 requests no release has yet, and the weekly summaries above.
@@ -78,24 +78,24 @@ requests no release has yet, and the weekly summaries above.
 merged pull request, release, shipped item and weekly summary, newest first, the latest 300.
 
 ```json
-{ "format": "horizon-journal", "version": 2, "generated": "…", "url": "https://playhorizon.dev/hub#journal",
+{ "format": "sunrise-journal", "version": 2, "generated": "…", "url": "https://playsunrise.net/hub#journal",
   "entries": [
     { "id": "pr-1234", "kind": "merge", "date": "…", "title": "the pull request's title", "url": "…",
       "number": 1234, "item": "example", "item_title": "Example" },
     { "id": "release-v0.2.57", "kind": "release", "date": "…", "title": "…", "plain": "one line", "url": "…",
       "tag": "v0.2.57" },
     { "id": "shipped-server-resource-packs", "kind": "shipped", "date": "the release's", "title": "…",
-      "plain": "…", "url": "https://playhorizon.dev/hub#server-resource-packs", "item": "…", "item_title": "…",
+      "plain": "…", "url": "https://playsunrise.net/hub#server-resource-packs", "item": "…", "item_title": "…",
       "shipped_in": "v0.2.48", "post": "at most 240 characters", "announce": false },
     { "id": "weekly-2026-43", "kind": "weekly", "date": "the week's last second", "title": "…", "plain": "…",
-      "dev": "…", "url": "https://playhorizon.dev/hub#week-2026-43" } ] }
+      "dev": "…", "url": "https://playsunrise.net/hub#week-2026-43" } ] }
 ```
 
 - An `id` never changes: readers post each one once. `merge` entries are the pull requests players see (no
   `skip-release` label), plus any that moves a roadmap item; `item` is absent when none does.
 - `announce: true` (the item's `announce` key) asks Kira to post the shipped item on X too, with `post`.
-- `https://playhorizon.dev/data/roadmap.json` is `roadmap.toml` as JSON (`areas`, `items` with every key above,
-  `overview`, the weekly summaries); an item's page is `https://playhorizon.dev/hub#<id>`.
+- `https://playsunrise.net/data/roadmap.json` is `roadmap.toml` as JSON (`areas`, `items` with every key above,
+  `overview`, the weekly summaries); an item's page is `https://playsunrise.net/hub#<id>`.
 
 ## The intake: votes and bug reports
 

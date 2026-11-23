@@ -39,6 +39,6 @@ any other file causes the archive to be refused ([the manifest](../../reference/
 Although the archive accepts `build.rs`, a native build refuses it unless you disable it with
 `build = false` in Cargo's `[package]` table and remove build dependencies.
 
-A native `.hmod` carries both source and content: the launcher compiles the source, and the game
+A native `.smod` carries both source and content: the launcher compiles the source, and the game
 loads the package's `assets/` and `data/`. [Wasm packages](../wasm-mods.md) carry executable
-`mod.wasm` bytes declared in `[wasm]`. All package kinds take their identity from `horizon-mod.toml`.
+`mod.wasm` bytes declared in `[wasm]`. All package kinds take their identity from `sunrise-mod.toml`.

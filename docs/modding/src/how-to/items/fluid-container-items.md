@@ -5,7 +5,7 @@ Use `ItemPart::contained_fluid` to tell a `neoforge:fluid_container` item model 
 Attach the Part to your item with `item_part`. Keep a `FluidKey` obtained during registration with `fluid_key` or `declare_fluid`, and answer from the stack's components:
 
 ```rust,ignore
-#[horizon_part]
+#[sunrise_part]
 impl ItemPart for WaterContainer {
     fn contained_fluid(&self, _: &dyn ClientHost, event: &mut ContainedFluidEvent<'_>) {
         *event.fluid = Some(self.water);
@@ -21,7 +21,7 @@ This example reports water for every stack; read `event.stack` to distinguish em
 | --- | --- |
 | `Some(key)` for a registered fluid | Draws that fluid through the mask. |
 | `None` (the initial answer) | Draws the model's declared fluid untinted, or omits the fluid layer when it declares `minecraft:empty`. |
-| Registered fluid without item appearance data (`horizon/fluid`) | Draws the missing texture through the mask. |
+| Registered fluid without item appearance data (`sunrise/fluid`) | Draws the missing texture through the mask. |
 | Key with no registered fluid | Uses the `None` result and logs a warning once per item. |
 | Item in `minecraft:` | Uses vanilla's water/lava bucket lookup; Parts attached by key or tag do not receive this hook. |
 

@@ -6,14 +6,14 @@ Host methods now live in one trait per area, so each overridden method moves to 
 area trait, and every area the double leaves alone is implemented by the generated
 `mod_api::impl_<union>_areas!(Double, except(<areas it overrides>))` macro.
 
-Usage: split_doubles.py FILE...   (rewrites the files in place; reads crates/horizon-mod-api/src/host/)
+Usage: split_doubles.py FILE...   (rewrites the files in place; reads crates/sunrise-mod-api/src/host/)
 """
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-HOST_DIR = ROOT / "crates/horizon-mod-api/src/host"
+HOST_DIR = ROOT / "crates/sunrise-mod-api/src/host"
 UNIONS = {
     "Host": ("Host",),
     "ServerHost": ("ServerHost",),

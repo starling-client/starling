@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mods:
-        description: Ids of the Horizon catalog's native mods to build beside the APK, separated by spaces
+        description: Ids of the Sunrise catalog's native mods to build beside the APK, separated by spaces
         required: false
         default: accelerateddecay cloudglass
       profile:
@@ -134,11 +134,11 @@ jobs:
       - name: Build the APK
         env:
           RUSTFLAGS: -C prefer-dynamic
-          HORIZON_ANDROID_KEY_ALIAS: horizon-debug
+          SUNRISE_ANDROID_KEY_ALIAS: sunrise-debug
         run: |
           python packaging/android/build_apk.py --abi arm64-v8a --profile "$PROFILE" --preview
           # The game's libraries as the APK has them, to check the mods' build leaves them as they are.
-          (cd "target/aarch64-linux-android/$PROFILE" && sha256sum libhorizon_android.so deps/lib*.so) > "$RUNNER_TEMP/game.sha256"
+          (cd "target/aarch64-linux-android/$PROFILE" && sha256sum libsunrise_android.so deps/lib*.so) > "$RUNNER_TEMP/game.sha256"
       - name: Fetch the catalog's packages of the mods
         run: |
           mkdir -p "$RUNNER_TEMP/hmods"
@@ -154,14 +154,14 @@ jobs:
               assert file["url"].startswith(host), file["url"]
               data = urllib.request.urlopen(file["url"], timeout=120).read()
               assert hashlib.sha256(data).hexdigest() == file["sha256"], project["id"]
-              open(f"{out}/{project['id']}.hmod", "wb").write(data)
+              open(f"{out}/{project['id']}.smod", "wb").write(data)
               print(project["id"], len(data))
           EOF
       - name: Build the mods beside the game
         env:
           RUSTFLAGS: -C prefer-dynamic
         run: |
-          python3 tools/android_native_sdk.py mods "$RUNNER_TEMP/native-libs" "$RUNNER_TEMP"/hmods/*.hmod --profile "$PROFILE" --abi arm64-v8a
+          python3 tools/android_native_sdk.py mods "$RUNNER_TEMP/native-libs" "$RUNNER_TEMP"/hmods/*.smod --profile "$PROFILE" --abi arm64-v8a
           # A mod library only loads beside the exact game it was linked against: the one in the APK.
           (cd "target/aarch64-linux-android/$PROFILE" && sha256sum --quiet -c "$RUNNER_TEMP/game.sha256") \
             || { echo "the mods' build changed the game's libraries: the mods don't match the APK"; exit 1; }
@@ -194,5 +194,5 @@ jobs:
           cp target/android/starling-*-arm64-v8a.apk "$apk"
           gh release create "nightly-$short" "$apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "Starling Preview nightly $(date -u +%Y-%m-%d) · $short (native mods)" \
-            --notes "Starling Preview built from $GITHUB_SHA with the game as Rust libraries ($PROFILE profile), so native mods from Horizon's catalog load beside it. arm64-v8a only."
+            --notes "Starling Preview built from $GITHUB_SHA with the game as Rust libraries ($PROFILE profile), so native mods from Sunrise's catalog load beside it. arm64-v8a only."
           echo "APK: https://github.com/$GITHUB_REPOSITORY/releases/download/nightly-$short/$(basename "$apk")"

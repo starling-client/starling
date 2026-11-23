@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use horizon_mod_package::dependencies;
-use horizon_mod_package::mod_surface;
+use sunrise_mod_package::dependencies;
+use sunrise_mod_package::mod_surface;
 
 mod api;
 mod api_route;
@@ -57,7 +57,7 @@ const PREFIX: &str = "native-";
 const STAGING: &str = "area-aware-mixins-input-v1";
 /// horizon-mixins, for bundles that don't name the revision they were tested with.
 const MIXINS_GIT: &str = "https://github.com/horizon-rust/horizon-mixins";
-pub const MIXINS_REV: &str = horizon_mod_package::mixins_tool::REV;
+pub const MIXINS_REV: &str = sunrise_mod_package::mixins_tool::REV;
 
 /// `native-build --mixins-from-source`: this process builds the horizon-mixins tool from its
 /// pinned source and never looks for the prebuilt one, so CI keeps that path proven.
@@ -92,16 +92,16 @@ impl Profile {
 }
 
 /// What a native build compiles: the game the player plays, or the headless engine a dedicated
-/// server runs (`horizon-engine`, docs/server.md). Both build the same source with the same
+/// server runs (`sunrise-engine`, docs/server.md). Both build the same source with the same
 /// mixins. The server uses `--no-default-features` (no audio or controllers), a separate cache,
 /// and a standalone runtime folder outside the managed versions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Target {
-    /// The game: `horizon-client` as the release ships it.
+    /// The game: `sunrise-client` as the release ships it.
     #[default]
     Client,
     /// The headless engine: the same binary without the default features, installed and
-    /// exported as `horizon-engine`.
+    /// exported as `sunrise-engine`.
     Server,
 }
 
@@ -121,11 +121,11 @@ impl Target {
     }
 
     /// The name the built binary is installed under: the game's own, the engine's
-    /// (`horizon-engine`, docs/server.md).
+    /// (`sunrise-engine`, docs/server.md).
     fn binary(self) -> String {
         match self {
             Self::Client => backend::CLIENT.into(),
-            Self::Server => format!("horizon-engine{}", std::env::consts::EXE_SUFFIX),
+            Self::Server => format!("sunrise-engine{}", std::env::consts::EXE_SUFFIX),
         }
     }
 }
@@ -398,7 +398,7 @@ pub fn internals_rustc_wrapper() -> Option<i32> {
 
 pub fn sync_internals(
     folder: &Path,
-) -> Result<Vec<horizon_mod_package::internals::ListedInternal>, Failed> {
+) -> Result<Vec<sunrise_mod_package::internals::ListedInternal>, Failed> {
     require_consent()?;
     internals_sync::check(folder).map_err(|error| Failed::Other(error.to_string()))
 }
@@ -428,14 +428,14 @@ pub fn cache_error(error: crate::storage::Error) -> String {
 }
 
 const MANIFEST: &str = "horizon-mixin.toml";
-/// A registry download's `horizon-mod.toml` at the `.hmod` package root.
-const NATIVE_MANIFEST: &str = horizon_mod_package::manifest::MANIFEST;
-/// Where an instance keeps the native mods installed from the registry, `<id>.hmod`, each on or
-/// off in `horizon-mods.txt` like any mod.
-pub const INSTALLED: &str = horizon_mod_package::mod_list::NATIVE_DIR;
+/// A registry download's `sunrise-mod.toml` at the `.smod` package root.
+const NATIVE_MANIFEST: &str = sunrise_mod_package::manifest::MANIFEST;
+/// Where an instance keeps the native mods installed from the registry, `<id>.smod`, each on or
+/// off in `sunrise-mods.txt` like any mod.
+pub const INSTALLED: &str = sunrise_mod_package::mod_list::NATIVE_DIR;
 
 /// The native mods turned on in the game folder `home`, unpacked into a folder [`build`] takes.
-/// Each flat `.hmod` passes the registry's shared package boundary; no code is run.
+/// Each flat `.smod` passes the registry's shared package boundary; no code is run.
 pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
     stage_installed(home, root().join("installed.incoming"))?.ok_or_else(|| {
         format!(
@@ -451,11 +451,11 @@ pub(crate) fn stage_installed(home: &Path, out: PathBuf) -> Result<Option<PathBu
     let mut paths: Vec<PathBuf> = fs::read_dir(home.join(INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hmod"));
+    paths.retain(|p| p.extension().is_some_and(|e| e == "smod"));
     paths.sort();
     let mut count = 0;
     for path in paths {
-        let bundle = horizon_mod_package::index::native::Bundle::read(&path)
+        let bundle = sunrise_mod_package::index::native::Bundle::read(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         if !crate::browser::java::is_enabled(home, &bundle.manifest.id) {
             continue;
@@ -490,12 +490,12 @@ pub(crate) fn stage_installed(home: &Path, out: PathBuf) -> Result<Option<PathBu
 /// A validated flat mod project. The package manifest owns identity and build pins.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bundle {
-    pub manifest: horizon_mod_package::manifest::Manifest,
+    pub manifest: sunrise_mod_package::manifest::Manifest,
     pub dir: PathBuf,
 }
 
 impl Bundle {
-    fn native(&self) -> &horizon_mod_package::manifest::Native {
+    fn native(&self) -> &sunrise_mod_package::manifest::Native {
         self.manifest
             .native
             .as_ref()
@@ -688,14 +688,14 @@ fn ask_github(repo: &str, revision: &str) -> Result<String, String> {
         .ok_or_else(|| format!("GitHub doesn't know {repo} commit {revision}."))
 }
 
-/// How [`build`] starts its error when mods pin another Horizon revision.
-pub const MISMATCH: &str = "Made for other Horizon versions: ";
+/// How [`build`] starts its error when mods pin another Sunrise revision.
+pub const MISMATCH: &str = "Made for other Sunrise versions: ";
 
-/// Each pinned mod whose Horizon revision isn't `revision`, as `id → pin`, and the build's.
+/// Each pinned mod whose Sunrise revision isn't `revision`, as `id → pin`, and the build's.
 fn mismatch(mods: &[Bundle], revision: &str) -> Option<String> {
     let list: Vec<String> = mods
         .iter()
-        .map(|b| (b, &b.native().horizon))
+        .map(|b| (b, &b.native().sunrise))
         .filter(|(_, r)| *r != revision)
         .map(|(b, r)| format!("{} → {}", b.manifest.id, &r[..r.len().min(7)]))
         .collect();
@@ -709,14 +709,14 @@ fn mismatch(mods: &[Bundle], revision: &str) -> Option<String> {
 }
 
 fn build_revision(base: &str, built_on: Option<&About>) -> Result<String, String> {
-    built_on.map_or_else(|| revision_of(base), |about| Ok(about.horizon.clone()))
+    built_on.map_or_else(|| revision_of(base), |about| Ok(about.sunrise.clone()))
 }
 
 fn mismatch_error(list: &str) -> String {
     format!("{MISMATCH}{list}; rebuild against this game.")
 }
 
-/// The build id (the Horizon commit) `version` (an installed release or Nightly) was built from:
+/// The build id (the Sunrise commit) `version` (an installed release or Nightly) was built from:
 /// a developer install's checkout, else what the release's signed copy of its SDK's index names
 /// ([`sdk_cache::build_of`]).
 pub fn revision_of(version: &str) -> Result<String, String> {
@@ -726,7 +726,7 @@ pub fn revision_of(version: &str) -> Result<String, String> {
     sdk_cache::build_of(
         version,
         &sdk_cache::Base::from_env(),
-        &horizon_release_sign::trusted_keys_for(backend::REPO),
+        &sunrise_release_sign::trusted_keys_for(backend::REPO),
     )
     .map_err(|refusal| refusal.to_string())
 }
@@ -736,8 +736,8 @@ pub fn revision_of(version: &str) -> Result<String, String> {
 pub struct About {
     /// The release or Nightly it started from.
     pub base: String,
-    /// The Horizon commit it compiled.
-    pub horizon: String,
+    /// The Sunrise commit it compiled.
+    pub sunrise: String,
     /// What it compiles: the game or the headless engine a server runs.
     pub target: Target,
     /// The mods turned on that it was built without, and why.
@@ -754,7 +754,7 @@ fn checked_about(version: &str) -> Result<Option<About>, String> {
         return Ok(None);
     }
     about_in(&backend::version_dir(version)).map(Some).ok_or_else(|| trf(
-        "Native build {version} has a missing or invalid native-mods.json record. Rebuild it from an installed Horizon version.",
+        "Native build {version} has a missing or invalid native-mods.json record. Rebuild it from an installed Sunrise version.",
         &[("version", version)],
     ))
 }
@@ -766,7 +766,7 @@ fn about_in(dir: &Path) -> Option<About> {
     let field = |name: &str| json[name].as_str().map(str::to_owned);
     Some(About {
         base: field("base")?,
-        horizon: field("horizon").filter(|r| is_revision(r))?,
+        sunrise: field("sunrise").filter(|r| is_revision(r))?,
         target: match field("target").as_deref() {
             Some("server") => Target::Server,
             Some("client") => Target::Client,
@@ -796,7 +796,7 @@ pub(crate) fn newest_installed(installed: &[String]) -> Option<&String> {
 }
 
 /// The installed version a build for an instance that plays `current` starts from: `current`
-/// itself, so a rebuild stays on the Horizon it plays (a native build's own revision, [`about`]).
+/// itself, so a rebuild stays on the Sunrise it plays (a native build's own revision, [`about`]).
 /// With `update`, or when it plays nothing installed, the newest installed release or Nightly.
 /// An imported build is no commit to build on: its game files' version is.
 pub fn base_for(current: Option<&str>, installed: &[String], update: bool) -> Option<String> {
@@ -807,7 +807,7 @@ pub fn base_for(current: Option<&str>, installed: &[String], update: bool) -> Op
     }
 }
 
-/// The newer Horizon a build with `update` would move native build `version` to: the newest
+/// The newer Sunrise a build with `update` would move native build `version` to: the newest
 /// installed release or Nightly, when it is newer than the one the build started from.
 pub fn update_for(version: &str, installed: &[String]) -> Option<String> {
     newer_than(&about(version)?.base, installed)
@@ -859,7 +859,7 @@ fn bundle_files(bundle: &Bundle) -> Result<Vec<(String, PathBuf)>, String> {
     package::files(bundle)
 }
 
-/// The installed version `bundles` built on Horizon `revision` with horizon-mixins `mixins`
+/// The installed version `bundles` built on Sunrise `revision` with horizon-mixins `mixins`
 /// become: `native-<7 digits of the revision>-<12 hex digits>`. The two targets' keys never mix:
 /// a server build salts its hash, so it is another version than the client build of the same
 /// mods.
@@ -947,7 +947,7 @@ pub enum Step {
         name: String,
         profile: Profile,
     },
-    /// The mods' own crates checked against Horizon's `Cargo.lock`.
+    /// The mods' own crates checked against Sunrise's `Cargo.lock`.
     Crates,
     /// The mod tools (the SDK's slices) of a build are fetched: bytes done of the whole.
     Tools {
@@ -1042,7 +1042,7 @@ impl Step {
             ),
             Self::Tool => tr("Building horizon-mixins (once)").into(),
             Self::Source(revision) => trf(
-                "Downloading Horizon's source at {revision}",
+                "Downloading Sunrise's source at {revision}",
                 &[("revision", &revision[..7])],
             ),
             Self::Mixins => tr("Applying the mixins").into(),
@@ -1300,7 +1300,7 @@ fn mod_id_from_file(file: &str) -> Option<&str> {
 
 /// A horizon-mixins diagnostic (`{"code", "message", "file"}`) in one line, led by the mod it
 /// names (`mod_id`, its `injection_id`, or extracted from its `file` path for `E_MODULE_CONFLICT`),
-/// so a player with several mods sees which one doesn't apply to the build's Horizon: their files'
+/// so a player with several mods sees which one doesn't apply to the build's Sunrise: their files'
 /// paths are deep in the launcher's folder.
 fn diagnostic(text: &str) -> Option<String> {
     let start = text.find('{')?;
@@ -1356,7 +1356,7 @@ fn prepare_mixins_source(source: &Path, prepared: &Path) -> Result<(), String> {
         fs::remove_dir_all(prepared).map_err(|e| format!("{}: {e}", prepared.display()))?;
     }
     let result = sync(source, prepared)
-        .and_then(|()| horizon_platform::mod_build::api_gen::materialize_game_modules(prepared));
+        .and_then(|()| sunrise_platform::mod_build::api_gen::materialize_game_modules(prepared));
     if result.is_err() {
         let _ = fs::remove_dir_all(prepared);
     }
@@ -1401,7 +1401,7 @@ fn source(revision: &str) -> Result<PathBuf, String> {
     }
     let archive = format!(
         "https://codeload.github.com/{}/tar.gz/{revision}",
-        horizon_mod_package::index::native::PREBUILT_REPO
+        sunrise_mod_package::index::native::PREBUILT_REPO
     );
     let partial = root().join("source").join(format!(".{revision}.partial"));
     let top = unpack_archive(&archive, &partial, u64::MAX)?;
@@ -1733,13 +1733,13 @@ fn guard_worlds(
 }
 
 /// The pipeline both targets build with ([`build`], [`build_server`]): `folder`'s mods on the
-/// Horizon revision they pin (else `base`'s, the installed version whose game files the build
+/// Sunrise revision they pin (else `base`'s, the installed version whose game files the build
 /// reuses: a native build's own revision when it is one, [`base_for`]), compiled as `target`
 /// (the game, or the headless engine) and installed as its own version,
 /// `native-<revision>-<key>` (the key hashes the revision, the mods' files, the tool's commit,
 /// the profile and the target). A build already made is used again. A mod pinned to another
-/// Horizon revision is refused: the error starts with [`MISMATCH`] and names the mismatched pins.
-/// Building never changes a mod's Horizon pin to match the installed game. Isolation leaves out
+/// Sunrise revision is refused: the error starts with [`MISMATCH`] and names the mismatched pins.
+/// Building never changes a mod's Sunrise pin to match the installed game. Isolation leaves out
 /// only a mod blamed by mixin or compiler diagnostics and its required dependents; servers refuse
 /// failures without leaving anything out.
 /// Nothing of the player's outside the launcher's data is touched: no instance is edited and
@@ -1794,8 +1794,8 @@ fn pipeline(
         .cloned()
         .collect();
     let side = match target {
-        Target::Client => horizon_mod_package::manifest::Side::Client,
-        Target::Server => horizon_mod_package::manifest::Side::Server,
+        Target::Client => sunrise_mod_package::manifest::Side::Client,
+        Target::Server => sunrise_mod_package::manifest::Side::Server,
     };
     let declared: Vec<Vec<dependencies::Dependency>> = mods
         .iter()
@@ -1826,15 +1826,15 @@ fn pipeline(
             dependencies: deps,
         })
         .collect();
-    // Native sources live beside the instance's horizon-mods directory. Read
+    // Native sources live beside the instance's sunrise-mods directory. Read
     // its policy before compiling, but never use dispatch overrides to stage
     // an incomplete or reversed Cargo library graph.
     let instance = folder.parent().unwrap_or_else(|| Path::new("."));
     let overrides =
-        dependencies::Overrides::read(&instance.join(horizon_mod_package::mod_list::DIR))?;
-    let settings = horizon_mod_package::mod_list::ModList::load(instance);
+        dependencies::Overrides::read(&instance.join(sunrise_mod_package::mod_list::DIR))?;
+    let settings = sunrise_mod_package::mod_list::ModList::load(instance);
     let content: Vec<_> =
-        horizon_mod_package::selection::content_packages(instance, &settings.enabled, &[])
+        sunrise_mod_package::selection::content_packages(instance, &settings.enabled, &[])
             .collect();
     let requested_ids: std::collections::HashSet<_> = requested
         .iter()
@@ -1887,7 +1887,7 @@ fn pipeline(
     let revision = build_revision(base, built_on.as_ref())?;
     let developer = crate::developer_install::is_developer(origin);
     let sdk_base = sdk_cache::Base::from_env();
-    let keys = horizon_release_sign::trusted_keys_for(backend::REPO);
+    let keys = sunrise_release_sign::trusted_keys_for(backend::REPO);
     // A developer install's checkout has no published surface to test against: its mods are
     // made for it exactly. Any other build tests each mod made for another build (SDK design §10).
     let sdk = if developer {
@@ -1957,7 +1957,7 @@ fn pipeline(
         }
     }
     if target == Target::Server {
-        let jars = horizon_mod_package::manifest::collect_jar_requirements(
+        let jars = sunrise_mod_package::manifest::collect_jar_requirements(
             mods.iter()
                 .map(|bundle| (bundle.manifest.id.as_str(), bundle.manifest.jar.as_slice())),
         )
@@ -2109,7 +2109,7 @@ fn pipeline(
     let about = |route: &str, catalog: &internals::Catalog| {
         serde_json::json!({
             "base": origin,
-            "horizon": revision,
+            "sunrise": revision,
             "horizon_mixins": mixins,
             "rust": rust_toolchain::VERSION,
             "profile": profile.name(),
@@ -2271,11 +2271,11 @@ fn select_build_profile(
     }
 }
 
-/// Builds `folder`'s mods on the Horizon revision they pin (else `base`'s, the installed version
+/// Builds `folder`'s mods on the Sunrise revision they pin (else `base`'s, the installed version
 /// whose game files the build reuses: a native build's own revision when it is one, [`base_for`])
 /// and points `instance` at the build, the default one included. Returns the build's version; a
 /// build already made is used again. Mods pinning different revisions cannot build together:
-/// the error starts with [`MISMATCH`] and names them; `cargo horizon-mod update --horizon
+/// the error starts with [`MISMATCH`] and names them; `cargo sunrise-mod update --sunrise
 /// <commit>` in each mod's folder pins it to the installed game, then build again.
 /// `profile` is an explicit override; None applies the instance's choice only when needed.
 pub fn build(
@@ -2350,7 +2350,7 @@ fn playing(instance: &Instance) -> String {
     about(&version).map_or(version, |about| about.base)
 }
 
-/// Builds `folder`'s mods as the headless engine a dedicated server runs (`horizon-engine`,
+/// Builds `folder`'s mods as the headless engine a dedicated server runs (`sunrise-engine`,
 /// docs/server.md): the same pipeline as [`build`] on the same revision, compiled with
 /// `--no-default-features`, installed as its own version (its key distinct from the game's, so
 /// the two never stand in for each other) and exported into `output` as a standalone runtime
@@ -2483,7 +2483,7 @@ fn copy_runtime(from: &Path, to: &Path) -> std::io::Result<()> {
         if entry.file_type()?.is_dir() {
             copy_runtime(&entry.path(), &destination)?;
         } else {
-            horizon_prepare::clone_or_copy(&entry.path(), &destination)?;
+            sunrise_prepare::clone_or_copy(&entry.path(), &destination)?;
             fs::set_permissions(&destination, entry.metadata()?.permissions())?;
         }
     }
@@ -2513,8 +2513,8 @@ pub(crate) fn copy_base(
         let copied = if entry.path().is_dir() {
             backend::copy_dir(&entry.path(), &to)
         } else {
-            // A clone is a new file: horizon-ctl and horizon-server keep their permissions.
-            horizon_prepare::clone_or_copy(&entry.path(), &to)
+            // A clone is a new file: sunrise-ctl and sunrise-server keep their permissions.
+            sunrise_prepare::clone_or_copy(&entry.path(), &to)
                 .and_then(|()| fs::set_permissions(&to, entry.metadata()?.permissions()))
         };
         copied.map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;
@@ -2525,13 +2525,13 @@ pub(crate) fn copy_base(
 /// Whether a file of the version a build starts from goes into the new build. The game (the
 /// target's own binary), its record, and unsupported `native-data/` artifacts are not carried
 /// over. A server build is the headless engine: it keeps neither the game's own binary
-/// nor any `horizon-engine` the base shipped, which would run unmodded beside its own.
+/// nor any `sunrise-engine` the base shipped, which would run unmodded beside its own.
 fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
     let mut own: Vec<String> = [
-        "Horizon.app",
+        "Sunrise.app",
         "native-mods.json",
         "native-data",
-        horizon_mod_package::mod_list::NATIVE_DIR,
+        sunrise_mod_package::mod_list::NATIVE_DIR,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2539,7 +2539,7 @@ fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
     own.push(backend::CLIENT.to_string());
     own.push(".installed".to_string());
     if target == Target::Server {
-        own.push("horizon-engine".to_string());
+        own.push("sunrise-engine".to_string());
     }
     let named = |n: &str| name == std::ffi::OsStr::new(n);
     !own.iter()
@@ -2575,19 +2575,19 @@ mod tests {
     fn a_native_build_starts_from_a_release_the_launcher_installed() {
         use std::io::Write;
         use std::net::TcpListener;
-        if std::env::var_os("HORIZON_PLAYER_FLOW_CHILD").is_none() {
+        if std::env::var_os("SUNRISE_PLAYER_FLOW_CHILD").is_none() {
             let home = tempfile::tempdir().unwrap();
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "native_mods::tests::a_native_build_starts_from_a_release_the_launcher_installed",
                 ])
-                .env("HORIZON_PLAYER_FLOW_CHILD", "1")
-                .env("HORIZON_LAUNCHER_HOME", home.path().join("launcher"))
-                .env("HORIZON_HOME", home.path().join("home"))
+                .env("SUNRISE_PLAYER_FLOW_CHILD", "1")
+                .env("SUNRISE_LAUNCHER_HOME", home.path().join("launcher"))
+                .env("SUNRISE_HOME", home.path().join("home"))
                 .env("XDG_DATA_HOME", home.path().join("data"))
                 .env("XDG_CONFIG_HOME", home.path().join("config"))
-                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -2607,7 +2607,7 @@ mod tests {
             header.set_cksum();
             tar.append_data(
                 &mut header,
-                format!("horizon-linux-x86_64/{}", backend::CLIENT),
+                format!("sunrise-linux-x86_64/{}", backend::CLIENT),
                 &game[..],
             )
             .unwrap();
@@ -2621,7 +2621,7 @@ mod tests {
         let install_release = |tag: &str| {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!(
-                "http://{}/horizon-linux-x86_64.tar.gz",
+                "http://{}/sunrise-linux-x86_64.tar.gz",
                 listener.local_addr().unwrap()
             );
             let body = archive.clone();
@@ -2649,10 +2649,10 @@ mod tests {
             };
             backend::install_as(&release, tag, &sha256, None, |_| {}).unwrap();
             server.join().unwrap();
-            // `horizon-launcher prepare` writes the resources from the player's own Minecraft.
+            // `sunrise-launcher prepare` writes the resources from the player's own Minecraft.
             let resources = backend::resources(tag);
             fs::create_dir_all(&resources).unwrap();
-            fs::write(resources.join("horizon-resources.json"), b"{}").unwrap();
+            fs::write(resources.join("sunrise-resources.json"), b"{}").unwrap();
         };
         let (old, new) = ("v2026.11.01", "v2026.11.02");
         // (a) A fresh install: the release is the build's base, chosen as the launcher chooses.
@@ -2668,7 +2668,7 @@ mod tests {
             Target::Client,
             &binary,
             &[],
-            &serde_json::json!({"base": base, "horizon": "0".repeat(40), "target": "client"}),
+            &serde_json::json!({"base": base, "sunrise": "0".repeat(40), "target": "client"}),
             &[],
         )
         .unwrap();
@@ -2724,7 +2724,7 @@ mod tests {
 
     #[test]
     fn a_mod_saved_into_a_world_is_never_switched_off_without_the_players_choice() {
-        use horizon_platform::world::nbt::{self, Limits, Tag};
+        use sunrise_platform::world::nbt::{self, Limits, Tag};
         let _guard = TEST_STATE.lock().unwrap();
         let home = dir("guard-worlds");
         let world = home.join("saves").join("Home");
@@ -2910,15 +2910,15 @@ mod tests {
         let source = dir("resource-base");
         let client = dir("resource-client");
         let server = dir("resource-server");
-        fs::create_dir_all(source.join(".local/horizon-client/26.3")).unwrap();
-        fs::write(source.join(".local/horizon-client/26.3/data"), b"prepared").unwrap();
-        fs::write(source.join("horizon-ctl"), b"control").unwrap();
+        fs::create_dir_all(source.join(".local/sunrise-client/26.3")).unwrap();
+        fs::write(source.join(".local/sunrise-client/26.3/data"), b"prepared").unwrap();
+        fs::write(source.join("sunrise-ctl"), b"control").unwrap();
         copy_base(&source, &client, Target::Client, true).unwrap();
         copy_base(&source, &server, Target::Server, false).unwrap();
         assert!(!client.join(".local").exists());
-        assert_eq!(fs::read(client.join("horizon-ctl")).unwrap(), b"control");
+        assert_eq!(fs::read(client.join("sunrise-ctl")).unwrap(), b"control");
         assert_eq!(
-            fs::read(server.join(".local/horizon-client/26.3/data")).unwrap(),
+            fs::read(server.join(".local/sunrise-client/26.3/data")).unwrap(),
             b"prepared"
         );
         for path in [source, client, server] {
@@ -2937,10 +2937,10 @@ mod tests {
         ] {
             assert!(!carried_over(OsStr::new(own), Target::Client), "{own}");
         }
-        for kept in ["horizon-ctl", "resources", "LICENSE"] {
+        for kept in ["sunrise-ctl", "resources", "LICENSE"] {
             assert!(carried_over(OsStr::new(kept), Target::Client), "{kept}");
         }
-        // A server build keeps neither the game's own binary nor a stale `horizon-engine` the
+        // A server build keeps neither the game's own binary nor a stale `sunrise-engine` the
         // base shipped, which would run unmodded beside the built one.
         let engine = Target::Server.binary();
         assert!(
@@ -2952,7 +2952,7 @@ mod tests {
     }
 
     pub(super) fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("horizon-native-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("sunrise-native-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -2971,9 +2971,9 @@ mod tests {
             .collect()
     }
 
-    fn project_manifest(id: &str, version: &str, horizon: &str, mixins: &str) -> String {
+    fn project_manifest(id: &str, version: &str, sunrise: &str, mixins: &str) -> String {
         format!(
-            "id='{id}'\nname='{id}'\nversion='{version}'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nhorizon='{horizon}'\nmixins='{mixins}'\n"
+            "id='{id}'\nname='{id}'\nversion='{version}'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nsunrise='{sunrise}'\nmixins='{mixins}'\n"
         )
     }
 
@@ -2986,7 +2986,7 @@ mod tests {
         .unwrap();
         fs::write(
             project.join("Cargo.toml"),
-            "[package]\nname='example'\nversion='9.0.0'\n[dependencies]\nhorizon-client='0.1'\n",
+            "[package]\nname='example'\nversion='9.0.0'\n[dependencies]\nsunrise-client='0.1'\n",
         )
         .unwrap();
         fs::write(project.join("src/lib.rs"), helper).unwrap();
@@ -2997,7 +2997,7 @@ mod tests {
         let root = dir("mixins-area-input");
         let source = root.join("download");
         let prepared = root.join("prepared");
-        let src = source.join("crates/horizon-client/src");
+        let src = source.join("crates/sunrise-client/src");
         let area = src.join("game/items");
         let hooks = src.join("game/native_hooks");
         fs::create_dir_all(&area).unwrap();
@@ -3027,7 +3027,7 @@ mod tests {
                 })
                 .collect()
         }
-        let output = prepared.join("crates/horizon-client/src");
+        let output = prepared.join("crates/sunrise-client/src");
         assert!(modules(&output.join("game.rs")).contains(&"using_item".into()));
         assert_eq!(modules(&output.join("game/native_hooks/mod.rs")), ["base"]);
         assert_eq!(
@@ -3138,11 +3138,11 @@ mod tests {
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    fn write_native(at: &Path, id: &str, horizon: &str, mixins: &str) {
+    fn write_native(at: &Path, id: &str, sunrise: &str, mixins: &str) {
         write_bundle(at, id, "pub fn marker() {}\n");
         fs::write(
             at.join(NATIVE_MANIFEST),
-            project_manifest(id, "0.3.0", horizon, mixins),
+            project_manifest(id, "0.3.0", sunrise, mixins),
         )
         .unwrap();
     }
@@ -3163,16 +3163,16 @@ mod tests {
 
     #[test]
     fn a_registry_download_is_a_bundle_with_its_pins() {
-        let d = dir("hmod");
+        let d = dir("smod");
         write_native(&d.join("veinminer"), "veinminer", A, B);
         write_bundle(&d.join("local"), "hello", "fn hook() {}");
         let found = bundles(&d).unwrap();
         assert_eq!(found.len(), 2);
         assert_eq!(found[1].manifest.id, "veinminer");
         assert_eq!(found[1].dir, d.join("veinminer"));
-        assert_eq!(found[1].native().horizon, A);
+        assert_eq!(found[1].native().sunrise, A);
         assert_eq!(found[1].native().mixins, B);
-        assert_eq!(found[0].native().horizon, A);
+        assert_eq!(found[0].native().sunrise, A);
     }
 
     #[test]
@@ -3194,7 +3194,7 @@ mod tests {
         )
         .unwrap();
         for old in [
-            "horizon-native.json",
+            "sunrise-native.json",
             "horizon-mixin.toml",
             "native",
             "rust",
@@ -3226,7 +3226,7 @@ mod tests {
             }
             zip.finish().unwrap();
         };
-        pack("veinminer.hmod", None);
+        pack("veinminer.smod", None);
         assert!(installed_mods(&home).is_err(), "off until turned on");
         crate::browser::java::set_enabled(&home, "veinminer", true).unwrap();
         let out = installed_mods(&home).unwrap();
@@ -3240,7 +3240,7 @@ mod tests {
         fs::write(
             injected.join(NATIVE_MANIFEST),
             project_manifest("injected", "0.3.0", A, B)
-                + "[[native.module]]\nid='marker'\nfile='crates/horizon-client/src/game.rs'\nname='marker'\nsource='src/lib.rs'\n",
+                + "[[native.module]]\nid='marker'\nfile='crates/sunrise-client/src/game.rs'\nname='marker'\nsource='src/lib.rs'\n",
         )
         .unwrap();
         let mut mods = found.clone();
@@ -3259,7 +3259,7 @@ mod tests {
         assert_eq!(
             (
                 found[0].manifest.id.as_str(),
-                found[0].native().horizon.as_str()
+                found[0].native().sunrise.as_str()
             ),
             ("veinminer", A)
         );
@@ -3272,7 +3272,7 @@ mod tests {
                 source_digest(&found[0])
             )]
         );
-        pack("veinminer.hmod", Some(("data/veinminer/table.bin", "data")));
+        pack("veinminer.smod", Some(("data/veinminer/table.bin", "data")));
         let out = installed_mods(&home).unwrap();
         let path = out.join("veinminer/data/veinminer/table.bin");
         assert_eq!(fs::read(&path).unwrap(), b"data");
@@ -3298,7 +3298,7 @@ mod tests {
             )
             .unwrap()
         );
-        pack("veinminer.hmod", Some(("build.sh", "curl evil | sh")));
+        pack("veinminer.smod", Some(("build.sh", "curl evil | sh")));
         assert!(installed_mods(&home).is_err(), "only Rust and TOML sources");
     }
 
@@ -3402,7 +3402,7 @@ mod tests {
         let fresh = d.join("fresh");
         let snapshot = d.join("snapshot");
         let stage = d.join("stage");
-        let patched = Path::new("crates/horizon-client/src/game.rs");
+        let patched = Path::new("crates/sunrise-client/src/game.rs");
         fs::create_dir_all(fresh.join(patched).parent().unwrap()).unwrap();
         fs::write(fresh.join(patched), "patched by mixins").unwrap();
         sync(&fresh, &snapshot).unwrap();
@@ -3453,9 +3453,9 @@ mod tests {
         let record = |target: Option<&str>| {
             let json = match target {
                 Some(target) => {
-                    format!(r#"{{"base":"v2026.10.13","horizon":"{A}","target":"{target}"}}"#)
+                    format!(r#"{{"base":"v2026.10.13","sunrise":"{A}","target":"{target}"}}"#)
                 }
-                None => format!(r#"{{"base":"v2026.10.13","horizon":"{A}"}}"#),
+                None => format!(r#"{{"base":"v2026.10.13","sunrise":"{A}"}}"#),
             };
             fs::write(d.join("native-mods.json"), json).unwrap();
             about_in(&d)
@@ -3464,7 +3464,7 @@ mod tests {
         assert_eq!(record(Some("client")).unwrap().target, Target::Client);
         assert_eq!(record(Some("server")).unwrap().target, Target::Server);
         assert_eq!(record(Some("anything-else")), None);
-        assert_eq!(record(Some("client")).unwrap().horizon, A);
+        assert_eq!(record(Some("client")).unwrap().sunrise, A);
     }
 
     /// The export ([`build_server`]): a standalone runtime folder with the engine, resources
@@ -3527,7 +3527,7 @@ mod tests {
 
     #[test]
     fn server_install_is_not_playable_and_export_survives_cache_removal() {
-        if std::env::var_os("HORIZON_SERVER_EXPORT_TEST_CHILD").as_deref()
+        if std::env::var_os("SUNRISE_SERVER_EXPORT_TEST_CHILD").as_deref()
             != Some(std::ffi::OsStr::new("1"))
         {
             // Environment overrides belong to this exact-test process only;
@@ -3542,9 +3542,9 @@ mod tests {
                     "native_mods::tests::server_install_is_not_playable_and_export_survives_cache_removal",
                     "--nocapture",
                 ])
-                .env("HORIZON_SERVER_EXPORT_TEST_CHILD", "1")
-                .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-                .env("HORIZON_NO_AUDIO", "1")
+                .env("SUNRISE_SERVER_EXPORT_TEST_CHILD", "1")
+                .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+                .env("SUNRISE_NO_AUDIO", "1")
                 .env("RUST_BACKTRACE", "0")
                 .env("TMPDIR", &temporary)
                 .env("TMP", &temporary)
@@ -3553,14 +3553,14 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             for (variable, directory) in [
-                ("HORIZON_LAUNCHER_HOME", "launcher"),
-                ("HORIZON_HOME", "home"),
+                ("SUNRISE_LAUNCHER_HOME", "launcher"),
+                ("SUNRISE_HOME", "home"),
                 ("XDG_DATA_HOME", "data"),
                 ("XDG_CONFIG_HOME", "config"),
                 ("XDG_CACHE_HOME", "cache"),
-                ("HORIZON_LAUNCHER_TRASH", "trash"),
-                ("HORIZON_LAUNCHER_CLIPBOARD", "clipboard"),
-                ("HORIZON_LAUNCHER_DESKTOP", "desktop"),
+                ("SUNRISE_LAUNCHER_TRASH", "trash"),
+                ("SUNRISE_LAUNCHER_CLIPBOARD", "clipboard"),
+                ("SUNRISE_LAUNCHER_DESKTOP", "desktop"),
             ] {
                 command.env(variable, home.path().join(directory));
             }
@@ -3644,14 +3644,14 @@ mod tests {
         let base = "native-test-server-base";
         let version = "native-test-server-cache";
         let source = backend::version_dir(base);
-        fs::create_dir_all(source.join(".local/horizon-client/26.3")).unwrap();
+        fs::create_dir_all(source.join(".local/sunrise-client/26.3")).unwrap();
         fs::write(
-            source.join(".local/horizon-client/26.3/facts.json"),
+            source.join(".local/sunrise-client/26.3/facts.json"),
             b"facts",
         )
         .unwrap();
         fs::write(source.join(Target::Server.binary()), b"unmodded").unwrap();
-        let native_dir = horizon_mod_package::mod_list::NATIVE_DIR;
+        let native_dir = sunrise_mod_package::mod_list::NATIVE_DIR;
         fs::create_dir_all(source.join(native_dir).join("stale")).unwrap();
         eprintln!("NATIVE_SERVER_EXPORT_STEP=prepare_package");
         let project = dir("server-runtime-project");
@@ -3709,7 +3709,7 @@ mod tests {
             b"modded"
         );
         assert_eq!(
-            fs::read(output.join(".local/horizon-client/26.3/facts.json")).unwrap(),
+            fs::read(output.join(".local/sunrise-client/26.3/facts.json")).unwrap(),
             b"facts"
         );
         assert!(output.join("native-mods.json").is_file());
@@ -3733,7 +3733,7 @@ mod tests {
         assert!(!package.join("jars").exists());
         assert!(!output.join(native_dir).join("stale").exists());
         eprintln!("NATIVE_SERVER_EXPORT_STEP=load_runtime");
-        let runtime = horizon_mod_package::runtime::Runtime::load(
+        let runtime = sunrise_mod_package::runtime::Runtime::load(
             &output.join(Target::Server.binary()),
             &[mod_vocab::__private::native::BuiltMod {
                 id: "exported",
@@ -3807,9 +3807,9 @@ mod tests {
         backend::Settings::load().allow_native_mods().unwrap();
         let file = backend::data_dir().join("instances.json");
         let previous = fs::read(&file).ok();
-        let stored = br#"{"instances":{"horizon":{"native_profile":"balanced"}}}"#;
+        let stored = br#"{"instances":{"sunrise":{"native_profile":"balanced"}}}"#;
         fs::write(&file, stored).unwrap();
-        let instance = instances::find("horizon").unwrap();
+        let instance = instances::find("sunrise").unwrap();
         let folder = dir("automatic-profile");
         let error = build(
             "v2099.09.09",
@@ -3841,7 +3841,7 @@ mod tests {
         write_bundle(&folder, "snapshot", "");
         fs::write(
             folder.join("Cargo.toml"),
-            "[package]\nname='snapshot'\nversion='0.1.0'\n[dependencies]\nhorizon-client='0.1'\n",
+            "[package]\nname='snapshot'\nversion='0.1.0'\n[dependencies]\nsunrise-client='0.1'\n",
         )
         .unwrap();
         let preview = root().join("installed.routes");
@@ -4061,8 +4061,8 @@ mod tests {
         use std::time::{Duration, SystemTime};
         let (from, to) = (dir("sync-old-from"), dir("sync-old-to"));
         let commit = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-        fs::create_dir_all(from.join("crates/horizon-core/src")).unwrap();
-        let file = from.join("crates/horizon-core/src/storage.rs");
+        fs::create_dir_all(from.join("crates/sunrise-core/src")).unwrap();
+        let file = from.join("crates/sunrise-core/src/storage.rs");
         fs::write(&file, "pub fn unpack_into() {}").unwrap();
         fs::File::options()
             .write(true)
@@ -4070,9 +4070,9 @@ mod tests {
             .unwrap()
             .set_modified(commit)
             .unwrap();
-        fs::create_dir_all(to.join("crates/horizon-core/src")).unwrap();
+        fs::create_dir_all(to.join("crates/sunrise-core/src")).unwrap();
         fs::write(
-            to.join("crates/horizon-core/src/storage.rs"),
+            to.join("crates/sunrise-core/src/storage.rs"),
             "pub fn unpack() {}",
         )
         .unwrap();
@@ -4080,7 +4080,7 @@ mod tests {
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));
         sync(&from, &to).unwrap();
-        let staged = to.join("crates/horizon-core/src/storage.rs");
+        let staged = to.join("crates/sunrise-core/src/storage.rs");
         assert_eq!(
             fs::read_to_string(&staged).unwrap(),
             "pub fn unpack_into() {}"
@@ -4094,10 +4094,10 @@ mod tests {
         fs::remove_dir_all(to).unwrap();
     }
 
-    /// levzzz5154's decision (2026-10-29): a rebuild stays on the Horizon the instance plays;
+    /// levzzz5154's decision (2026-10-29): a rebuild stays on the Sunrise the instance plays;
     /// only an update (`--update`, `base_for`'s `update`) moves it to a newer one.
     #[test]
-    fn a_rebuild_stays_on_the_instances_horizon_until_an_update() {
+    fn a_rebuild_stays_on_the_instances_sunrise_until_an_update() {
         let installed: Vec<String> = [
             "nightly-2026-10-29-4baa571",
             "v2026.10.20",
@@ -4131,24 +4131,24 @@ mod tests {
 
     #[test]
     fn tool_errors_read_in_one_line() {
-        let err = "{\n  \"code\": \"E_REVISION\",\n  \"message\": \"requires exact Horizon revision a\",\n  \"file\": \"m.toml\"\n}";
+        let err = "{\n  \"code\": \"E_REVISION\",\n  \"message\": \"requires exact Sunrise revision a\",\n  \"file\": \"m.toml\"\n}";
         assert_eq!(
             diagnostic(err).as_deref(),
-            Some("E_REVISION: requires exact Horizon revision a (m.toml)")
+            Some("E_REVISION: requires exact Sunrise revision a (m.toml)")
         );
     }
 
     #[test]
     fn a_tool_error_starts_with_the_mod_that_does_not_apply() {
-        // horizon-mixins e8cd0aa on Horizon 998b1d8 with fast_items 0.1.0 and appleskin 1.0.0
+        // horizon-mixins e8cd0aa on Sunrise 998b1d8 with fast_items 0.1.0 and appleskin 1.0.0
         // (made for ba6344a), as a player's build was on 2026-11-04.
         let err = r#"{
   "code": "E_TARGET_NOT_FOUND",
-  "message": "no source function 'horizon_client::game::titles::Game<'_>::draw_titles'",
-  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/appleskin/horizon-mixin.toml",
+  "message": "no source function 'sunrise_client::game::titles::Game<'_>::draw_titles'",
+  "file": "/home/p/.local/share/sunrise-launcher/native/mixins.incoming/appleskin/horizon-mixin.toml",
   "mod_id": "appleskin",
   "injection_id": "hud",
-  "target": "horizon_client::game::titles::Game<'_>::draw_titles"
+  "target": "sunrise_client::game::titles::Game<'_>::draw_titles"
 }"#;
         let line = diagnostic(err).unwrap();
         assert!(
@@ -4168,13 +4168,13 @@ mod tests {
         // horizon-mixins e8cd0aa emits E_MODULE_CONFLICT without mod_id (issue #9391).
         let err = r#"{
   "code": "E_MODULE_CONFLICT",
-  "message": "conflict in module horizon_physics",
-  "file": "/home/p/.local/share/horizon-launcher/native/mixins.incoming/horizon_physics/horizon-mixin.toml"
+  "message": "conflict in module sunrise_physics",
+  "file": "/home/p/.local/share/sunrise-launcher/native/mixins.incoming/sunrise_physics/horizon-mixin.toml"
 }"#;
         let line = diagnostic(err).unwrap();
         assert!(
             line.starts_with(
-                "horizon_physics: E_MODULE_CONFLICT: conflict in module horizon_physics"
+                "sunrise_physics: E_MODULE_CONFLICT: conflict in module sunrise_physics"
             ),
             "{line}"
         );
@@ -4183,7 +4183,7 @@ mod tests {
         let err_win = r#"{
   "code": "E_MODULE_CONFLICT",
   "message": "conflict in module biomecompass",
-  "file": "C:\\Users\\p\\AppData\\Local\\horizon-launcher\\native\\mixins.incoming\\biomecompass\\horizon-mixin.toml"
+  "file": "C:\\Users\\p\\AppData\\Local\\sunrise-launcher\\native\\mixins.incoming\\biomecompass\\horizon-mixin.toml"
 }"#;
         let line_win = diagnostic(err_win).unwrap();
         assert!(
@@ -4196,7 +4196,7 @@ mod tests {
         let err_mods = r#"{
   "code": "E_MODULE_CONFLICT",
   "message": "conflict in module worldedit",
-  "file": "/home/p/.local/share/horizon-launcher/native/mods.incoming/worldedit/horizon-mod.toml"
+  "file": "/home/p/.local/share/sunrise-launcher/native/mods.incoming/worldedit/sunrise-mod.toml"
 }"#;
         let line_mods = diagnostic(err_mods).unwrap();
         assert!(
@@ -4253,7 +4253,7 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args([
             "-c",
-            "echo 'error: could not compile `horizon-client`' >&2; exit 101",
+            "echo 'error: could not compile `sunrise-client`' >&2; exit 101",
         ]);
         let e = run(cmd, "Compiling the game", |_| {}).unwrap_err();
         assert!(!e.contains("Smart App Control"), "{e}");
@@ -4290,12 +4290,12 @@ mod tests {
 mod registry_binary_tests {
     #[test]
     fn source_preparation_lookup_requires_exact_build_and_target() {
-        let index = horizon_mod_package::index::Index::parse(include_str!(
-            "../../crates/horizon-mod-package/tests/index/index-v1.json"
+        let index = sunrise_mod_package::index::Index::parse(include_str!(
+            "../../crates/sunrise-mod-package/tests/index/index-v1.json"
         ))
         .unwrap();
         let mut version = index.project("coords_hud").unwrap().versions[0].clone();
-        version.native_binaries = vec![horizon_mod_package::index::NativeBinary {
+        version.native_binaries = vec![sunrise_mod_package::index::NativeBinary {
             build: "exact-build".into(),
             target: "aarch64-apple-darwin".into(),
             file: version.file.clone(),
@@ -4306,7 +4306,7 @@ mod registry_binary_tests {
                 .unwrap()
                 .file
                 .name,
-            "coords_hud-0.1.0.hmod"
+            "coords_hud-0.1.0.smod"
         );
         assert!(version
             .native_binary("other-build", "aarch64-apple-darwin")

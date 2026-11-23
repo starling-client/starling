@@ -1,6 +1,6 @@
 # PvP & HUD
 
-Settings PvP players expect from a client, on **Options → Horizon Settings... → PvP & HUD...**. Every one is
+Settings PvP players expect from a client, on **Options → Sunrise Settings... → PvP & HUD...**. Every one is
 off by default: a fresh install looks exactly like vanilla 26.3, and turning one off restores vanilla.
 
 ## Fair play
@@ -19,9 +19,9 @@ Each feature is built from what it visibly does, never from another client's or 
 
 | Part | Code |
 |---|---|
-| Settings, parsing, the page's rows | `crates/horizon-client-render/src/pvp.rs` (stored in `horizon-extras.txt`, see [extras.md](extras.md)) |
+| Settings, parsing, the page's rows | `crates/sunrise-client-render/src/pvp.rs` (stored in `sunrise-extras.txt`, see [extras.md](extras.md)) |
 | The page | `options_ui.rs` (`Page::Pvp`), the rows of `pvp::rows()` drawn like the Extras page |
-| Game glue | `crates/horizon-client/src/game/extras/pvp.rs` |
+| Game glue | `crates/sunrise-client/src/game/extras/pvp.rs` |
 
 ## Crosshair (`crosshair`, default off)
 
@@ -53,7 +53,7 @@ Each feature is built from what it visibly does, never from another client's or 
 
 Boxes in the screen corners, placed like the minimap and mods' boxes (`extras_hud::Corners`), each in a corner of
 its own, with an optional dark background (on by default). F3's debug screen takes the top corners as it does from
-mods' boxes. Code: `crates/horizon-client-render/src/pvp_hud.rs` (lines, cache, layout) and `game/extras/pvp.rs`.
+mods' boxes. Code: `crates/sunrise-client-render/src/pvp_hud.rs` (lines, cache, layout) and `game/extras/pvp.rs`.
 
 - **Armour** (bottom right): each piece worn, head first, with the uses left as a number or a percent, coloured
   like the item's durability bar (green to red). Only what the inventory already shows.
@@ -108,7 +108,7 @@ Code: `game/interface/hud_editor.rs`.
 
 `Enchantment.getFullname` with the level as a number ("Sharpness 5", also past vanilla's numerals: "Sharpness 255")
 wherever the client names an enchantment (tooltips, the enchanting table's hint). A one-level enchantment still has
-none ("Mending"). Code: `horizon_items::enchant::set_numeric_levels`, set each frame from the option.
+none ("Mending"). Code: `sunrise_items::enchant::set_numeric_levels`, set each frame from the option.
 
 ## Enchantment glint colour (`glintColour`, default off)
 
@@ -145,7 +145,7 @@ Overworld.
 
 | Option | Key | What it does |
 |---|---|---|
-| Timestamps | `chatTimestamps` | The local time a message came in, before it, in grey (`horizon.chat.timestamp`). |
+| Timestamps | `chatTimestamps` | The local time a message came in, before it, in grey (`sunrise.chat.timestamp`). |
 | Compact chat | `chatCompact` | A message equal to the one before it (same text, kind and tag, neither signed) raises that one's count, "(x3)", instead of adding lines. |
 | Copy on click | `chatCopy` | In the open chat, a click on a message where the click has no action of its own copies the message's text (without time or count). |
 | Chat search | `chatSearch` | Ctrl+F in the open chat: the box takes a query and only the messages holding it (any case) show. Enter, Esc or Ctrl+F again stops. |
@@ -167,7 +167,7 @@ knockback, no damage); hurt sounds and crit particles stay. `pvp::Combat`.
 
 ## 1.8 combat in worlds you host (`combatRules`, default off)
 
-The other options only change the look; this one changes the rules, so it applies only where Horizon is the
+The other options only change the look; this one changes the rules, so it applies only where Sunrise is the
 server: single player (its server thread) and the worlds you open to LAN, at once when switched, and a dedicated
 server whose `server.toml` has `[combat]` `legacy = true` ([hosting.md](hosting.md)). Servers you join keep their
 own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrentItem`:
@@ -183,7 +183,7 @@ own rules. Melee hits follow 1.8.9's `EntityPlayer.attackTargetEntityWithCurrent
   resistance is a chance to take none instead of a cut; the sprint and Knockback push is added on top (0.1 up)
   instead of halving the motion first.
 
-Code: `crates/horizon-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
+Code: `crates/sunrise-client/src/legacy_combat.rs` (the formulas, with their 1.8.9 sources),
 `game/world/legacy_rules.rs`; `lan_e2e.py --check legacy-pvp` measures it between two games.
 
 It is only the look: the client sends a server exactly what Modern sends (same attacks, same timing, no
@@ -192,7 +192,7 @@ block-hit packets), so vanilla servers and their anticheats see nothing new. Cod
 
 ## PvP preset
 
-The **PvP preset** button (first on the PvP & HUD page and on Horizon Extras) turns on, in one click: the custom
+The **PvP preset** button (first on the PvP & HUD page and on Sunrise Extras) turns on, in one click: the custom
 crosshair, the armour and effects widgets, vanilla's Toggle Sprint and Toggle Sneak (Controls), lower fire (40% unless
 already set), and the official FPS counter and keystrokes (with CPS) native mods when they are installed
 (`pvp::PRESET_MODS`). It only turns things on and keeps each option's own settings, so any of them can be turned

@@ -1,21 +1,21 @@
 //! The two things the launcher does to the player's desktop that a test run must never do to the
 //! real one: moving files to the system's trash, and writing to the clipboard.
 //!
-//! - `HORIZON_LAUNCHER_TRASH=<folder>`: what would go to the trash is moved into that folder
+//! - `SUNRISE_LAUNCHER_TRASH=<folder>`: what would go to the trash is moved into that folder
 //!   instead (under a free name).
-//! - `HORIZON_LAUNCHER_CLIPBOARD=<file>`: what would be copied is written to that file instead
+//! - `SUNRISE_LAUNCHER_CLIPBOARD=<file>`: what would be copied is written to that file instead
 //!   (text as UTF-8, a picture as its PNG or JPEG bytes).
 //!
-//! Test runs point both into their scratch folders, beside `HORIZON_HOME` and
-//! `HORIZON_LAUNCHER_HOME`, and `HORIZON_LAUNCHER_DESKTOP` too (`shortcut`: where desktop
+//! Test runs point both into their scratch folders, beside `SUNRISE_HOME` and
+//! `SUNRISE_LAUNCHER_HOME`, and `SUNRISE_LAUNCHER_DESKTOP` too (`shortcut`: where desktop
 //! shortcuts go).
 use std::path::{Path, PathBuf};
 
-pub const TRASH_ENV: &str = "HORIZON_LAUNCHER_TRASH";
-pub const CLIPBOARD_ENV: &str = "HORIZON_LAUNCHER_CLIPBOARD";
+pub const TRASH_ENV: &str = "SUNRISE_LAUNCHER_TRASH";
+pub const CLIPBOARD_ENV: &str = "SUNRISE_LAUNCHER_CLIPBOARD";
 
 /// Moves a file or folder to the system's trash, where the player can still get it back, or
-/// into `HORIZON_LAUNCHER_TRASH` when it is set.
+/// into `SUNRISE_LAUNCHER_TRASH` when it is set.
 pub fn to_trash(path: &Path) -> Result<(), String> {
     match std::env::var_os(TRASH_ENV).filter(|v| !v.is_empty()) {
         Some(dir) => to_folder(path, Path::new(&dir)),
@@ -67,7 +67,7 @@ fn on_own_thread<T: Send>(f: impl FnOnce() -> Result<T, String> + Send) -> Resul
     })
 }
 
-/// The file copies go to instead of the clipboard, when `HORIZON_LAUNCHER_CLIPBOARD` is set.
+/// The file copies go to instead of the clipboard, when `SUNRISE_LAUNCHER_CLIPBOARD` is set.
 pub fn clipboard_file() -> Option<PathBuf> {
     std::env::var_os(CLIPBOARD_ENV)
         .filter(|v| !v.is_empty())
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn a_trash_folder_takes_what_would_go_to_the_trash() {
-        let root = std::env::temp_dir().join(format!("horizon-seams-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sunrise-seams-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (home, bin) = (root.join("home"), root.join("trash"));
         std::fs::create_dir_all(home.join("World/region")).unwrap();

@@ -3,10 +3,10 @@
 
 Reads the string literals of shipped Rust (every crate tools/layers.json doesn't call a tool, and the launcher),
 without tests, examples or #[cfg(test)] modules, and finds the hosts in them: a URL's host anywhere in a string,
-or a whole string that is a host name (`play.playhorizon.dev`, `stun.l.google.com:19302`). Placeholders
+or a whole string that is a host name (`play.playsunrise.net`, `stun.l.google.com:19302`). Placeholders
 (`example.com`, `*.test`, `*.invalid`, `localhost`) and loopback, private and documentation IPs are skipped.
 tools/addresses.json says where each host may be:
-- `homes`: the files that hold the Horizon layer's addresses; anything goes there;
+- `homes`: the files that hold the Sunrise layer's addresses; anything goes there;
 - `vanilla`: the endpoints vanilla itself contacts; allowed anywhere;
 - `not_addresses`: strings that look like hosts but are not contacted (a suffix matcher, a translation key);
 - `allowed`: today's addresses outside a home, "path host". They only go away: with --base, a branch may move
@@ -241,7 +241,7 @@ def check(config, found, base=None, upstream_rows=frozenset()):
             used.add((rel, host))
             continue
         problems.append(f"{rel}: {host} is a built-in address outside the address list. A vanilla endpoint goes in "
-                        f"'vanilla', anything else in the Horizon layer's address home ({DOC})")
+                        f"'vanilla', anything else in the Sunrise layer's address home ({DOC})")
     if base is not None:
         before = {tuple(entry.split(" ", 1)) for entry in base.get("allowed", [])}
         restored = (allowed - before) & upstream_rows

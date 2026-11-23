@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boat paddle metadata transitions through actual vanilla/Horizon servers.
+"""Boat paddle metadata transitions through actual vanilla/Sunrise servers.
 
 Drive both paddles, stop one, stop both, resume one, then dismount without
 sending a final paddle packet. Clients must receive the false transitions.

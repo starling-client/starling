@@ -247,7 +247,7 @@ class LimitTests(unittest.TestCase):
 
 @unittest.skipUnless(
     (ROOT / ".github/workflows/triage-command.yml").exists(),
-    "Horizon's triage workflow is not in this repository",
+    "Sunrise's triage workflow is not in this repository",
 )
 class WorkflowTests(unittest.TestCase):
     def test_workflow_is_safe(self):

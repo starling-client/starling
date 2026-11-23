@@ -20,13 +20,13 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobDiscardOracle.java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMobDiscardOracle.java'
     sources = [source, Path(__file__).resolve(),
-               lab.ROOT / 'crates/horizon-client/src/game/mob_discard_tests.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/commands.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/entity.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/native_mobs.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/persist.rs']
+               lab.ROOT / 'crates/sunrise-client/src/game/mob_discard_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/commands.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/entity.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/native_mobs.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/persist.rs']
     def hashes():
         return {str(p.relative_to(lab.ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     tested = hashes()
@@ -41,21 +41,21 @@ def main():
     javac = str(args.java_home / 'bin/javac') if args.java_home else 'javac'
     rust = build / 'rust.json'
     rust.unlink(missing_ok=True)
-    env = lab.game_env(HORIZON_TEST_RESOURCES=args.resources.resolve(), HORIZON_DISCARD_REPORT=rust)
+    env = lab.game_env(SUNRISE_TEST_RESOURCES=args.resources.resolve(), SUNRISE_DISCARD_REPORT=rust)
     def run(name, command):
         with (build / (name + '.log')).open('w') as log:
             subprocess.run(list(map(str, command)), cwd=lab.ROOT, env=env,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     run('compile-java', [javac, '-proc:none', '-cp', cp, '-d', build, source])
-    run('rust', ['cargo', 'test', '--offline', '--locked', '-p', 'horizon-client', '--lib',
+    run('rust', ['cargo', 'test', '--offline', '--locked', '-p', 'sunrise-client', '--lib',
                  'discarded_mob_leaves_selectors_and_saves_while_frozen', '--', '--ignored', '--nocapture'])
     actual = json.loads(rust.read_text())
     for side, jar in jars.items():
         output = build / (side + '.json')
         output.unlink(missing_ok=True)
         cp = os.pathsep.join(map(str, [build, jar, *libraries]))
-        run(side, [java, '-cp', cp, 'dev.horizonlab.parity.VanillaMobDiscardOracle', output])
+        run(side, [java, '-cp', cp, 'dev.sunriselab.parity.VanillaMobDiscardOracle', output])
         expected = json.loads(output.read_text())
         assert expected == actual, (side, expected, actual)
     assert hashes() == tested, 'tested source changed during the comparison'

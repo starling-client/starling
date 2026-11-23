@@ -68,11 +68,11 @@ def main():
     report_path=build/"report.json";report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBiomeSourceCodecOracle.java"
+    oracle=lab.ROOT/"mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaBiomeSourceCodecOracle.java"
     exporter=oracle.with_name("VanillaBiomeExport.java")
     helpers=[oracle.with_name(name+".java") for name in ["VanillaMaterialConditionOracle","VanillaAnchorOracle","VanillaBiomeTemperatureOracle"]]
-    sources=[oracle,exporter,*helpers,lab.ROOT/"tools/test_biome_temperature_parity.py",lab.ROOT/"tools/test_material_condition_parity.py",Path(__file__),lab.ROOT/"tools/test_worldgen_parity.py",lab.ROOT/"tools/test_rust_parity.py",lab.ROOT/"tools/lab.py",lab.ROOT/"Cargo.toml",lab.ROOT/"Cargo.lock",lab.ROOT/"crates/horizon-core/Cargo.toml",lab.ROOT/"crates/horizon-world/Cargo.toml",
-             *sorted((lab.ROOT/"crates/horizon-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/horizon-world/src").rglob("*.rs")),lab.ROOT/"crates/horizon-world/examples/probe/biome_source_codec_fixture.rs"]
+    sources=[oracle,exporter,*helpers,lab.ROOT/"tools/test_biome_temperature_parity.py",lab.ROOT/"tools/test_material_condition_parity.py",Path(__file__),lab.ROOT/"tools/test_worldgen_parity.py",lab.ROOT/"tools/test_rust_parity.py",lab.ROOT/"tools/lab.py",lab.ROOT/"Cargo.toml",lab.ROOT/"Cargo.lock",lab.ROOT/"crates/sunrise-core/Cargo.toml",lab.ROOT/"crates/sunrise-world/Cargo.toml",
+             *sorted((lab.ROOT/"crates/sunrise-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/sunrise-world/src").rglob("*.rs")),lab.ROOT/"crates/sunrise-world/examples/probe/biome_source_codec_fixture.rs"]
     tested_sources=base.source_hashes(sources)
     classes=build/"classes";classes.mkdir(exist_ok=True)
     def run(command,name):
@@ -87,7 +87,7 @@ def main():
     exports=[]
     for side,jar in jars.items():
         path=build/f'presets-{side}.json';exports.append(path)
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependency_path]),'dev.horizonlab.parity.VanillaBiomeExport',path],side+'-export')
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependency_path]),'dev.sunriselab.parity.VanillaBiomeExport',path],side+'-export')
         presets=json.loads(path.read_text())
         if not presets or ('presets' in bundle and presets!=bundle['presets']):raise ValueError('reference biome preset tables differ')
         bundle['presets']=presets
@@ -95,14 +95,14 @@ def main():
     fixtures=list(corpus(bundle));inputs=build/'inputs.txt';inputs.write_text('\n'.join(fixtures)+'\n',encoding='utf-8')
     (build/'positions.json').write_text(json.dumps(positions(),separators=(',',':')),encoding='utf-8')
     fixture_paths=[inputs,*exports,build/'positions.json',*[build/(name+'.json') for name in bundle]];tested_fixtures=base.source_hashes(fixture_paths)
-    run(["cargo","build","--release","-p","horizon-world","--example","world_probe"],"compile-rust")
+    run(["cargo","build","--release","-p","sunrise-world","--example","world_probe"],"compile-rust")
     metadata=json.loads(subprocess.check_output(["cargo","metadata","--no-deps","--format-version","1"],cwd=lab.ROOT,text=True))
     binary=Path(metadata["target_directory"])/"release/examples"/("world_probe.exe" if os.name=="nt" else "world_probe")
     run([binary,"biome_source_codec_fixture",build],"rust")
     references=[]
     for side,jar in jars.items():
         reference=build/f"{side}.txt"
-        run(["java","-Xmx512M","-cp",os.pathsep.join([str(classes),str(jar),dependency_path]),"dev.horizonlab.parity.VanillaBiomeSourceCodecOracle",side,build],side)
+        run(["java","-Xmx512M","-cp",os.pathsep.join([str(classes),str(jar),dependency_path]),"dev.sunriselab.parity.VanillaBiomeSourceCodecOracle",side,build],side)
         matched=base.compare(reference,build/"rust.txt")
         references.append({"side":side,"jar_sha256":lab.digest(jar,"sha256"),"output_sha256":lab.digest(reference,"sha256"),"matched_output_lines":matched})
         print(f"{side}: {matched:,} biome-source codec output lines match Rust",flush=True)

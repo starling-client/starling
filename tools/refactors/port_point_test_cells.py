@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 root = Path(__file__).resolve().parents[2]
-paths = list((root/'crates/horizon-mod-points/tests').glob('*.rs')) + [root/'crates/horizon-mod-wasm/tests/native_listener.rs', root/'crates/horizon-mod-wasm/tests/real_member.rs', root/'crates/horizon-mod-wasm/tests/support/checks.rs']
+paths = list((root/'crates/sunrise-mod-points/tests').glob('*.rs')) + [root/'crates/sunrise-mod-wasm/tests/native_listener.rs', root/'crates/sunrise-mod-wasm/tests/real_member.rs', root/'crates/sunrise-mod-wasm/tests/support/checks.rs']
 for p in paths:
     s = p.read_text(); additions=[]; arms=[]
     if 'point(slot =' in s: continue
@@ -15,7 +15,7 @@ for p in paths:
             additions.append(f'fn __fnr_read_{kind}_{slot}() -> Option<{ty}> {{ let pointer = crate::__REPLACE[{cell}].load(std::sync::atomic::Ordering::Relaxed); if pointer.is_null() {{ None }} else {{ Some(unsafe {{ std::mem::transmute::<*mut (), {ty}>(pointer) }}) }} }}')
         arms.append(f'__pointa_{name}();')
         return m.group(0).replace('point(',f'point(slot = {slot}, ',1)
-    s = re.sub(r'#\[(?:horizon_mod_api_macros::)?point\(([^\n]*)\)\]\nfn (\w+)\(([^\n]*)\)(\s*->\s*[^\{]+)?\s*\{', point, s)
+    s = re.sub(r'#\[(?:sunrise_mod_api_macros::)?point\(([^\n]*)\)\]\nfn (\w+)\(([^\n]*)\)(\s*->\s*[^\{]+)?\s*\{', point, s)
     if not arms: continue
     if p.name != 'checks.rs':
         count = 8 if p.name in ('native_listener.rs', 'real_member.rs') else len(arms)*2

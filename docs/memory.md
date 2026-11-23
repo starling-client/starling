@@ -2,16 +2,16 @@
 
 Where the game's memory goes, and the tools that say so. This page describes what exists today; each new tool adds its section when it lands.
 
-Start with `horizon-ctl memory` for what holds memory now, count allocations to see how much a frame churns, add the heap census to see who allocated what is held, and fall back to an external heap profiler only on small probes.
+Start with `sunrise-ctl memory` for what holds memory now, count allocations to see how much a frame churns, add the heap census to see who allocated what is held, and fall back to an external heap profiler only on small probes.
 
-## What the game holds now: `horizon-ctl memory`
+## What the game holds now: `sunrise-ctl memory`
 
 ```sh
-horizon-ctl memory            # one JSON object, from the running game
-horizon-ctl memory > a.json   # keep it to compare with a later one
+sunrise-ctl memory            # one JSON object, from the running game
+sunrise-ctl memory > a.json   # keep it to compare with a later one
 ```
 
-The reply is built in `crates/horizon-client/src/game/memory.rs`. Sizes are MiB with one decimal and end in `_mb`.
+The reply is built in `crates/sunrise-client/src/game/memory.rs`. Sizes are MiB with one decimal and end in `_mb`.
 
 | Key | What it counts |
 | --- | --- |
@@ -49,12 +49,12 @@ F3 shows three vanilla memory lines on Linux and Windows, read every half second
 `alloc-count` makes the game's allocator count blocks. Each thread owns a slot of four counters (allocations, bytes allocated, frees, bytes freed) that only it writes, so counting is two loads and stores per allocation and per free, with no atomic read-modify-write and no shared cache line. A `realloc` counts as a free of the old size and an allocation of the new one, so a growing `Vec` shows as churn. Slots are never reused: a finished thread's counts stay in the total. Beyond 1023 threads the rest share slot 0.
 
 ```sh
-cargo build --profile fast -p horizon-game --features alloc-count
+cargo build --profile fast -p sunrise-game --features alloc-count
 ```
 
-Without the feature `horizon_threads::GameAllocator` is plain mimalloc: nothing is counted and nothing is added to the allocation path. `alloc-census` includes `alloc-count`. With `system-allocator` nothing counts, and `alloc` is `null` as in a build without the feature.
+Without the feature `sunrise_threads::GameAllocator` is plain mimalloc: nothing is counted and nothing is added to the allocation path. `alloc-census` includes `alloc-count`. With `system-allocator` nothing counts, and `alloc` is `null` as in a build without the feature.
 
-In a counting build `horizon-ctl stats`, `bench` and `fly` reply with an `alloc` object next to the frame times (`null` in other builds), over the rendered frames since the last reset:
+In a counting build `sunrise-ctl stats`, `bench` and `fly` reply with an `alloc` object next to the frame times (`null` in other builds), over the rendered frames since the last reset:
 
 ```json
 "alloc": {
@@ -70,7 +70,7 @@ In a counting build `horizon-ctl stats`, `bench` and `fly` reply with an `alloc`
 - With `raw` (`stats raw`, `fly ... raw`) the reply also has `alloc_count` and `alloc_bytes`, one entry per frame beside `frame_ms`.
 - Counts are requested sizes, not the allocator's size classes, and they exclude the census header.
 
-Cost, measured with `cargo run --profile fast -p horizon-threads --example alloc_count_bench` (10 million allocate-and-free pairs of 64 bytes, per thread, on a machine shared with other builds, three runs):
+Cost, measured with `cargo run --profile fast -p sunrise-threads --example alloc_count_bench` (10 million allocate-and-free pairs of 64 bytes, per thread, on a machine shared with other builds, three runs):
 
 | | mimalloc | counting | added |
 | --- | --- | --- | --- |
@@ -81,14 +81,14 @@ On the game, three alternating runs of `--benchmark standard` with and without t
 
 ## Who allocated it: the heap census
 
-`alloc-census` replaces the global allocator with `horizon_threads::CensusAllocator`, which also counts like `alloc-count`: mimalloc with a 16-byte header in front of each block (more for alignments above 16). The last four bytes of the header hold the block's tag, and `LIVE[tag]` is a relaxed atomic that every allocation adds to and every free subtracts from. `horizon-ctl memory` then lists `heap_by_tag_mb`, the 60 largest tags, as `["tag", mb]` rows.
+`alloc-census` replaces the global allocator with `sunrise_threads::CensusAllocator`, which also counts like `alloc-count`: mimalloc with a 16-byte header in front of each block (more for alignments above 16). The last four bytes of the header hold the block's tag, and `LIVE[tag]` is a relaxed atomic that every allocation adds to and every free subtracts from. `sunrise-ctl memory` then lists `heap_by_tag_mb`, the 60 largest tags, as `["tag", mb]` rows.
 
 Build it and read it:
 
 ```sh
-cargo build --profile fast -p horizon-game --features alloc-census
-target/fast/horizon-client --resources .local/horizon-client/26.3 --world T &
-target/fast/horizon-ctl memory | jq '.heap_by_tag_mb'
+cargo build --profile fast -p sunrise-game --features alloc-census
+target/fast/sunrise-client --resources .local/sunrise-client/26.3 --world T &
+target/fast/sunrise-ctl memory | jq '.heap_by_tag_mb'
 ```
 
 A block's tag is what ran on its thread when it was allocated, innermost first:
@@ -106,7 +106,7 @@ The census is for measuring: it is off in players' builds, and `heap_by_tag_mb` 
 
 ### What the census costs
 
-Measured on Linux (Vulkan, `--offscreen`, `--profile fast`, one commit built with and without `--features alloc-census`), five runs of `horizon-client --benchmark standard` without the census and four with it, alternating, on a machine shared with other builds. Medians of the runs:
+Measured on Linux (Vulkan, `--offscreen`, `--profile fast`, one commit built with and without `--features alloc-census`), five runs of `sunrise-client --benchmark standard` without the census and four with it, alternating, on a machine shared with other builds. Medians of the runs:
 
 | | without | with `alloc-census` | change |
 | --- | --- | --- | --- |
@@ -122,17 +122,17 @@ The memory cost is the headers (16 bytes a block, 32 or more for larger alignmen
 
 ## Where one frame goes: spans, spikes and traces
 
-The game times its work in named spans (`crates/horizon-client-render/src/spans.rs`). Three tools read them:
+The game times its work in named spans (`crates/sunrise-client-render/src/spans.rs`). Three tools read them:
 
-- `HORIZON_SPIKES=MS` times the spans on every thread and sets the slow ring's threshold: the last 256 frames (or server ticks) slower than MS milliseconds are kept with their largest spans and the render thread's CPU time in the frame. Nothing is logged; every capture carries the ring, and `horizon-perf query ticks --worst 10` or `query spans --slow` reads it.
-- `horizon-ctl trace FILE [SECONDS]` writes every span of every thread to FILE, a `.hzperf` capture, for the given time (or until `horizon-ctl trace stop`; the spans stop at 60 s); `HORIZON_TRACE=FILE` writes one once the first hardware probe has finished. The startup steps stay in `HORIZON_STARTUP_TRACE`.
-- `horizon-ctl stats [reset] [raw]`, `horizon-ctl bench SECONDS` and `horizon-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures, except `alloc` in an `alloc-count` build.
+- `SUNRISE_SPIKES=MS` times the spans on every thread and sets the slow ring's threshold: the last 256 frames (or server ticks) slower than MS milliseconds are kept with their largest spans and the render thread's CPU time in the frame. Nothing is logged; every capture carries the ring, and `sunrise-perf query ticks --worst 10` or `query spans --slow` reads it.
+- `sunrise-ctl trace FILE [SECONDS]` writes every span of every thread to FILE, a `.hzperf` capture, for the given time (or until `sunrise-ctl trace stop`; the spans stop at 60 s); `SUNRISE_TRACE=FILE` writes one once the first hardware probe has finished. The startup steps stay in `SUNRISE_STARTUP_TRACE`.
+- `sunrise-ctl stats [reset] [raw]`, `sunrise-ctl bench SECONDS` and `sunrise-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures, except `alloc` in an `alloc-count` build.
 
 See [Graphics](graphics.md) for how the spans are used to chase a slow frame.
 
 ## Resident memory in benchmark reports
 
-`horizon-client --benchmark standard` (see [Benchmark report format](benchmark-report.md)) samples the process's resident set four times a second on Linux and macOS, from `/proc/PID/status` (`VmRSS`) or `ps`. Its report holds `memory.rss_peak_mb` (the maximum over the run) and `memory.rss_steady_mb` (the median while the four scenes are flown), and each scene's entry in `frames` has `cpu_p50_ms`, the median CPU time of a frame (the frame less its waits for the GPU, the display and the limiter). `tools/perf_bench.py` writes the same metrics for vanilla and for Horizon, for comparisons between builds.
+`sunrise-client --benchmark standard` (see [Benchmark report format](benchmark-report.md)) samples the process's resident set four times a second on Linux and macOS, from `/proc/PID/status` (`VmRSS`) or `ps`. Its report holds `memory.rss_peak_mb` (the maximum over the run) and `memory.rss_steady_mb` (the median while the four scenes are flown), and each scene's entry in `frames` has `cpu_p50_ms`, the median CPU time of a frame (the frame less its waits for the GPU, the display and the limiter). `tools/perf_bench.py` writes the same metrics for vanilla and for Sunrise, for comparisons between builds.
 
 ## The renderer alone: `scene_replay --memory`
 
@@ -143,6 +143,6 @@ See [Graphics](graphics.md) for how the spans are used to chase a slow frame.
 `--features system-allocator` sends Rust's allocations to the system heap instead of mimalloc, so profilers that replace `malloc` (heaptrack, valgrind's massif) see them. Use it on small probes only: the whole game is far too large for them (heaptrack needed more than 7 GB to follow it), and the system heap is slower than mimalloc. `system-allocator` wins over `alloc-census` when both are given.
 
 ```sh
-cargo build --profile fast -p horizon-game --features system-allocator
-heaptrack target/fast/horizon-client --resources .local/horizon-client/26.3 --world T
+cargo build --profile fast -p sunrise-game --features system-allocator
+heaptrack target/fast/sunrise-client --resources .local/sunrise-client/26.3 --world T
 ```

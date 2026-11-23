@@ -1,0 +1,43 @@
+[package]
+name = "sunrise-mod-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The mod host above the engine: loading, Host implementations, registries and hook dispatch (#2534)"
+
+[dependencies]
+mod-render = { package = "sunrise-mod-render", path = "../sunrise-mod-render" }
+sunrise-engine-slots = { path = "../sunrise-engine-slots" }
+mod-points = { package = "sunrise-mod-points", path = "../sunrise-mod-points" }
+sunrise-guest-stack = { path = "../sunrise-guest-stack" }
+sunrise-client = { path = "../sunrise-client", default-features = false }
+
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
+mod-api = { package = "sunrise-mod-api", path = "../sunrise-mod-api" }
+
+log = "0.4"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true
+
+[features]
+default = ["audio", "controllers", "sunrise-extras"]
+audio = ["sunrise-client/audio"]
+controllers = ["sunrise-client/controllers"]
+sunrise-extras = ["sunrise-client/sunrise-extras"]
+testing = ["sunrise-client/testing"]
+friends = ["sunrise-client/friends"]
+rng-trace = ["sunrise-client/rng-trace"]
+system-allocator = ["sunrise-client/system-allocator"]
+alloc-census = ["sunrise-client/alloc-census"]
+windows-mimalloc = ["sunrise-client/windows-mimalloc"]
+windows-segment-heap = ["sunrise-client/windows-segment-heap"]
+
+[dev-dependencies]
+serde_json = "1"

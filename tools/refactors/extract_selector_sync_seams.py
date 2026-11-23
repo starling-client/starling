@@ -17,11 +17,11 @@ def move(source: str, first: str, after: str, destination: str, header: str, foo
     path.write_text(text)
 
 
-move("crates/horizon-client/src/lan/hub.rs",
+move("crates/sunrise-client/src/lan/hub.rs",
      "    /// Publish the frozen server token inventory", "    /// The command tree a player",
-     "crates/horizon-client/src/lan/hub/selector_sync.rs", "use super::*;\n\nimpl Hub {\n", "}\n",
+     "crates/sunrise-client/src/lan/hub/selector_sync.rs", "use super::*;\n\nimpl Hub {\n", "}\n",
      "mod selector_sync;\n")
-move("crates/horizon-client/src/game/network/remote/mod.rs",
+move("crates/sunrise-client/src/game/network/remote/mod.rs",
      "/// The hurt sound of a `ClientboundDamageEventPacket`", "/// The live entity a bound sound names",
-     "crates/horizon-client/src/game/network/remote/selector_metadata.rs", "use super::*;\n\n", "",
+     "crates/sunrise-client/src/game/network/remote/selector_metadata.rs", "use super::*;\n\n", "",
      "mod selector_metadata;\nuse selector_metadata::hurt_sound_for;\n")

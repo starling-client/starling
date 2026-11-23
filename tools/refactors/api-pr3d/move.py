@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 import subprocess
 
-SOURCE = "crates/horizon-mod-api/src/render.rs"
-EXPORT = "crates/horizon-mod-api/src/exports/render.rs"
+SOURCE = "crates/sunrise-mod-api/src/render.rs"
+EXPORT = "crates/sunrise-mod-api/src/exports/render.rs"
 
 
 def replacements(lib):
     return {
         "mod_api::render::": f"{lib}::render::",
-        "crates/horizon-mod-api/src/render.rs": "crates/horizon-mod-render/src/render.rs",
+        "crates/sunrise-mod-api/src/render.rs": "crates/sunrise-mod-render/src/render.rs",
         "mod_api::render as native_render": f"{lib}::render as native_render",
         "mod_api::__private::built::WorldDrawn": f"{lib}::render::built::WorldDrawn",
         "mod_api::__private::built::HandDrawn": f"{lib}::render::built::HandDrawn",

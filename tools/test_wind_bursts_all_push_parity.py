@@ -6,7 +6,7 @@ ticking chunk bursts (`WindCharge.explode`) against a block by the border, and `
 adds its knockback to the motion of a primed TNT just over the border. The TNT never ticks, so its motion only
 grows: every burst of every tick adds to it, two bursts in one tick twice.
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen; only chunk (10, 0) is forced, so chunk (11, 0) holds the TNTs (x 176 and on) and does not tick them. Each
 lane has a stone block one over the floor at x 175, a primed TNT on the floor at x 176.5 beside it, and one wind
 charge (control lane) or two (one on each side, along z) flying into the stone, which they reach on the same tick.
@@ -31,7 +31,7 @@ LANES = [('one_charge', 4, [(-0.6, 0.5)]), ('two_charges', 10, [(-0.6, 0.5), (1.
 FORCELOAD = 'forceload add 160 0 175 15'
 NUMBER = re.compile(r'(-?[0-9][0-9.E-]*)[df]')
 BLOCKS = ['time set 6000', *[f'setblock 175 -59 {z} minecraft:stone' for _tag, z, _charges in LANES]]
-# An arrow that waits in the air joins first: Horizon ticks its TNT after the projectiles then, and holds the
+# An arrow that waits in the air joins first: Sunrise ticks its TNT after the projectiles then, and holds the
 # bursts' pushes for after that tick.
 ENTITIES = ['summon minecraft:arrow 170.5 -55.0 0.5 {NoGravity:1b,Motion:[0.0d,0.0d,0.0d]}',
             *[f'summon minecraft:tnt 176.5 -60.0 {z}.5 {{fuse:200s,Motion:[0.0d,0.0d,0.0d],Tags:["{tag}"]}}'
@@ -93,17 +93,17 @@ def proves(vanilla):
     return None
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:24]))
     print(f'wind bursts all push: {len(vanilla)} lines identical')
 

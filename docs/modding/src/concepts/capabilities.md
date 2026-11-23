@@ -127,9 +127,9 @@ level without those effects. The capability also journals its composter-local ra
 so an aborted transfer attempt and its retry have the same chance outcome, without rewinding
 unrelated world randomness. This ownership follows NeoForge's public
 [`TransactionalRandom` contract](https://aldak0.ru/javadoc/26.3.x/net/neoforged/neoforge/transfer/item/TransactionalRandom.html).
-Horizon initializes each position's stream once by copying the current level random state;
+Sunrise initializes each position's stream once by copying the current level random state;
 capability composting then neither advances nor rewinds the ordinary level stream. This
-initialization is Horizon's mapping, not a claim about NeoForge's unspecified initial seed.
+initialization is Sunrise's mapping, not a claim about NeoForge's unspecified initial seed.
 Cached streams retire with their chunk or world epoch. Direct hand, villager and vanilla
 container paths keep their existing level-random behavior.
 

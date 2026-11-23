@@ -2,7 +2,7 @@
 """Compare item lore tooltip styles with the pinned vanilla client.
 
 Vanilla prints what ``ItemLore.addToTooltip`` adds after ``ComponentUtils.mergeStyles``
-with dark purple italic (VanillaLoreTooltipOracle). Horizon prints what
+with dark purple italic (VanillaLoreTooltipOracle). Sunrise prints what
 ``item_tooltip::lore_texts`` gives (examples/probe/lore_tooltip_fixture).
 """
 import json
@@ -126,9 +126,9 @@ if __name__ == '__main__':
         ' explicit and inherited, nesting four levels deep, sibling strings and objects, empty texts, ten-line lore,'
         ' non-ASCII text and the hidden_components/hide_tooltip combinations',
         sources=[
-            lab.ROOT / 'crates/horizon-client/src/item_tooltip.rs',
-            lab.ROOT / 'crates/horizon-items/src/item_data.rs',
-            lab.ROOT / 'crates/horizon-client-core/src/text.rs',
-            lab.ROOT / 'crates/horizon-client-core/src/component.rs',
+            lab.ROOT / 'crates/sunrise-client/src/item_tooltip.rs',
+            lab.ROOT / 'crates/sunrise-items/src/item_data.rs',
+            lab.ROOT / 'crates/sunrise-client-core/src/text.rs',
+            lab.ROOT / 'crates/sunrise-client-core/src/component.rs',
         ],
         expected_lines=len(corpus()))

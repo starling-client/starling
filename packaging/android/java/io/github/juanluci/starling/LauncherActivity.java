@@ -28,7 +28,7 @@ import java.io.OutputStream;
  * What runs before the game (StarlingActivity) when it is handed something, in a process and a
  * task of its own: a file opened with Starling or shared to it (a resource pack, a world, a mod,
  * the prepared resources) is copied into the game's import inbox, which the game installs from
- * (crates/horizon-client/src/import.rs); and a restart the game asked for starts it again once
+ * (crates/sunrise-client/src/import.rs); and a restart the game asked for starts it again once
  * its old process has ended.
  */
 public final class LauncherActivity extends Activity {
@@ -136,7 +136,7 @@ public final class LauncherActivity extends Activity {
     /**
      * The launcher's colours as the game kept them before asking for the restart (android.rs
      * `keep_restart_look`): background, plate, plate border, accent, text, muted text and bar
-     * track. Horizon Android's default dark theme when there are none.
+     * track. Sunrise Android's default dark theme when there are none.
      */
     private static int[] restartLook(Context context) {
         int[] look = {0xFF13111C, 0xFF1E1A2B, 0xFF5A5468, 0xFF8B78F0, 0xFFF5F2FC, 0xFFA39BBF,
@@ -160,8 +160,8 @@ public final class LauncherActivity extends Activity {
     }
 
     /**
-     * The restart screen: Horizon Android's launcher intro as it ends (android_control_theme.rs
-     * `draw_horizon_intro`, its first frame in the new process), the bar moving until the game
+     * The restart screen: Sunrise Android's launcher intro as it ends (android_control_theme.rs
+     * `draw_sunrise_intro`, its first frame in the new process), the bar moving until the game
      * is back, and the game's line under it.
      */
     private static final class RestartView extends View {
@@ -266,7 +266,7 @@ public final class LauncherActivity extends Activity {
         }
     }
 
-    /** The file an "Open with" or a share hands to Horizon, if any. */
+    /** The file an "Open with" or a share hands to Sunrise, if any. */
     @SuppressWarnings("deprecation")
     private static Uri handedFile(Intent intent) {
         if (intent == null) {

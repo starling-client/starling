@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native DyeItem.interactLivingEntity with Horizon's sheep-dye interaction."""
+"""Compare native DyeItem.interactLivingEntity with Sunrise's sheep-dye interaction."""
 import os
 from pathlib import Path
 import tempfile
@@ -32,11 +32,11 @@ def main():
     paths = [
         'tools/test_sheep_dye_parity.py', 'tools/oracle_harness.py',
         'tools/test_rust_parity.py', 'tools/lab.py', 'tools/integration_env.py',
-        'Cargo.toml', 'Cargo.lock', 'crates/horizon-client/src/mobs/sheep_dye.rs',
-        'crates/horizon-client/src/mobs.rs',
-        'crates/horizon-client/examples/probe/main.rs',
-        'crates/horizon-client/examples/probe/sheep_dye_fixture.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSheepDyeOracle.java',
+        'Cargo.toml', 'Cargo.lock', 'crates/sunrise-client/src/mobs/sheep_dye.rs',
+        'crates/sunrise-client/src/mobs.rs',
+        'crates/sunrise-client/examples/probe/main.rs',
+        'crates/sunrise-client/examples/probe/sheep_dye_fixture.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaSheepDyeOracle.java',
     ]
     sources = [lab.ROOT / p for p in paths]
     hashes = h.base.source_hashes(sources)
@@ -49,7 +49,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='sheep-dye-', dir=build) as scratch:
         env = integration_env.game_environment(os.environ, scratch)
         h.run_logged(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                      'dev.horizonlab.parity.VanillaSheepDyeOracle', build / 'client.txt'],
+                      'dev.sunriselab.parity.VanillaSheepDyeOracle', build / 'client.txt'],
                      build, 'client', env=env)
         h.run_logged([*probe, build / 'rust.txt'], build, 'rust', env=env)
     matched = h.compare(build / 'client.txt', build / 'rust.txt', 1152)

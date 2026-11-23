@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class RenderHandHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_each_hand_can_be_cancelled_posed_or_drawn_in(self):
-        source = next(p.read_text() for p in [ROOT / "crates/horizon-client/src/game.rs", *sorted((ROOT / "crates/horizon-client/src/game").rglob("*.rs"))] if "fn hand_geometry(" in p.read_text())
+        source = next(p.read_text() for p in [ROOT / "crates/sunrise-client/src/game.rs", *sorted((ROOT / "crates/sunrise-client/src/game").rglob("*.rs"))] if "fn hand_geometry(" in p.read_text())
         start = source.index("            let snapshot =", source.index("fn hand_geometry("))
         end = source.index("            // No mod moved the hand", start)
         dispatch = source[start:end]

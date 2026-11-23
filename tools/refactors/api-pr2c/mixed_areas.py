@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).parent
 blocks = runpy.run_path(str(HERE / 'rename.py'))['blocks']
 for stem in ('draw', 'services'):
-    path = ROOT / f'crates/horizon-client/src/game/host/{stem}.rs'
+    path = ROOT / f'crates/sunrise-client/src/game/host/{stem}.rs'
     source = path.read_text()
     edits = []
     for impl, body, offset in blocks(source, r'impl (\w+) for Game<[^{}]*\{'):

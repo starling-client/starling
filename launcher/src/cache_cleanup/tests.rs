@@ -6,7 +6,7 @@ impl Home {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let home = std::env::temp_dir().join(format!(
-            "horizon-cleanup-{}-{}",
+            "sunrise-cleanup-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -142,7 +142,7 @@ fn pin_file_clears_only_one_file_and_refuses_lock_or_nested_names() {
 #[cfg(target_os = "linux")]
 #[test]
 fn flat_cache_fits_a_small_descriptor_limit() {
-    if std::env::var_os("HORIZON_CLEANUP_FD_CHILD").is_none() {
+    if std::env::var_os("SUNRISE_CLEANUP_FD_CHILD").is_none() {
         use std::os::unix::process::CommandExt;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child
@@ -151,7 +151,7 @@ fn flat_cache_fits_a_small_descriptor_limit() {
                 "cache_cleanup::tests::flat_cache_fits_a_small_descriptor_limit",
                 "--nocapture",
             ])
-            .env("HORIZON_CLEANUP_FD_CHILD", "1");
+            .env("SUNRISE_CLEANUP_FD_CHILD", "1");
         // Only the isolated child gets the lowered limit, never another test's process.
         unsafe {
             child.pre_exec(|| {

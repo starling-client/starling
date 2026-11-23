@@ -74,9 +74,9 @@ def concurrency_for(path, event, sha, number=None, ref="refs/heads/main", inputs
     return group, cancel
 
 
-# Starling's repository drops Horizon's dyna-ci and daily workflows (it builds its own APK); the other tests still
+# Starling's repository drops Sunrise's dyna-ci and daily workflows (it builds its own APK); the other tests still
 # import this module's parser and helpers.
-@unittest.skipUnless(WORKFLOWS[0].exists(), "Horizon's dyna-ci workflow is not in this repository")
+@unittest.skipUnless(WORKFLOWS[0].exists(), "Sunrise's dyna-ci workflow is not in this repository")
 class ConcurrencyTests(unittest.TestCase):
     def test_main_pushes_run_side_by_side_and_finish(self):
         for path in WORKFLOWS:

@@ -120,7 +120,7 @@ def main():
         return 0
     if '--work-dir' not in rest:
         # The automatic parity runner invokes harnesses without arguments.
-        rest += ['--work-dir', str(Path(tempfile.mkdtemp(prefix='horizon-pumpkin-use-')) / 'capture')]
+        rest += ['--work-dir', str(Path(tempfile.mkdtemp(prefix='sunrise-pumpkin-use-')) / 'capture')]
         sys.argv = [sys.argv[0]] + rest
     folder = Path(rest[rest.index('--work-dir') + 1]).resolve()
     assert not folder.exists(), 'preserve previous attempts'

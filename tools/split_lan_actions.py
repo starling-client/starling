@@ -28,8 +28,8 @@ INCLUDE = 'include!(concat!(env!("OUT_DIR"), "/lan_action_modules.rs"));\n'
 
 
 def source_path(base=None):
-    for path in ("crates/horizon-client/src/game/network/lan_actions.rs",
-                 "crates/horizon-client/src/game/lan_actions.rs"):
+    for path in ("crates/sunrise-client/src/game/network/lan_actions.rs",
+                 "crates/sunrise-client/src/game/lan_actions.rs"):
         if (run("git", "ls-tree", base, "--", path).strip() if base
                 else (ROOT / path).is_file()):
             return Path(path)
@@ -94,7 +94,7 @@ def main():
     directory = old.with_suffix("")
     source = run("git", "show", f"{base}:{old}") if base else (ROOT / old).read_text()
     metadata = json.loads(run("cargo", "metadata", "--no-deps", "--format-version", "1"))
-    run("cargo", "build", "-q", "-p", "horizon-mod-api-gen", "--bin", "native-hook-layout")
+    run("cargo", "build", "-q", "-p", "sunrise-mod-api-gen", "--bin", "native-hook-layout")
     binary = Path(metadata["target_directory"]) / "debug" / (
         "native-hook-layout.exe" if sys.platform == "win32" else "native-hook-layout")
     expected, normalized, ownership = split(source, binary)

@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 root = Path(__file__).resolve().parents[2]
-listing = root / 'crates/horizon-mod-api-gen/replaceable.txt'
+listing = root / 'crates/sunrise-mod-api-gen/replaceable.txt'
 for target in listing.read_text().splitlines():
     if not target or target.startswith('#'):
         continue
@@ -15,8 +15,8 @@ for target in listing.read_text().splitlines():
     package = root / 'crates' / crate.replace('_', '-')
     manifest = package / 'Cargo.toml'
     text = manifest.read_text()
-    if 'horizon-mod-api-macros' not in text:
-        manifest.write_text(text + '\n[dependencies]\nhorizon-mod-api-macros = { path = "../horizon-mod-api-macros" }\n' if '[dependencies]' not in text else text.replace('[dependencies]', '[dependencies]\nhorizon-mod-api-macros = { path = "../horizon-mod-api-macros" }', 1))
+    if 'sunrise-mod-api-macros' not in text:
+        manifest.write_text(text + '\n[dependencies]\nsunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }\n' if '[dependencies]' not in text else text.replace('[dependencies]', '[dependencies]\nsunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }', 1))
     candidates = []
     for path in (root / 'crates').rglob('*.rs'):
         if '/src/' not in str(path):
@@ -40,7 +40,7 @@ for target in listing.read_text().splitlines():
     if len(candidates) != 1:
         raise RuntimeError((target, candidates))
     path, offset, indent = candidates[0]
-    if path.read_text()[:offset].rstrip().endswith("#[horizon_mod_api_macros::replaceable]"):
+    if path.read_text()[:offset].rstrip().endswith("#[sunrise_mod_api_macros::replaceable]"):
         continue
     source = path.read_text()
-    path.write_text(source[:offset] + indent + '#[horizon_mod_api_macros::replaceable]\n' + source[offset:])
+    path.write_text(source[:offset] + indent + '#[sunrise_mod_api_macros::replaceable]\n' + source[offset:])

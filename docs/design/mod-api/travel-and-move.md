@@ -1,7 +1,7 @@
 # Design: travel and move hooks
 
 Proposal for [#1009](https://github.com/arismoko/horizon/issues/1009), not an implemented API.
-This is a clean-room Horizon design from vanilla 26.3 and the requested use cases.
+This is a clean-room Sunrise design from vanilla 26.3 and the requested use cases.
 There is no NeoForge counterpart. No other project's source informs this proposal.
 Code follows agreement on this note.
 
@@ -60,7 +60,7 @@ and see the same hook through the generator.
 ## Ownership and route map
 
 References verified at worktree HEAD `9556bd72a8`; paths below are relative to
-`crates/horizon-client/src/`. These are current owners, not claims that hooks exist.
+`crates/sunrise-client/src/`. These are current owners, not claims that hooks exist.
 
 | Route / owner | Current file:line | Required integration |
 | --- | --- | --- |
@@ -72,10 +72,10 @@ References verified at worktree HEAD `9556bd72a8`; paths below are relative to
 | Integrated, LAN and dedicated guest turns | `game/network/lan_actions/turns.rs:6`, `:18`, `:45` | Server context bound to acting guest, never host player identity |
 | Action service and scoped fake actors | `game/modding/native_server.rs:538`, `:549` | Enter existing player action validation; physical motion subsequently uses shared hooks |
 | Normal living mobs | `mobs/living.rs:1451`, `:1544` | Lift decision to game adapter; include mob air and fluid/glide equivalents, not just player motion |
-| Shared air equations | `../horizon-world/src/living_air.rs:134` | Keep physics below game independent of Host |
+| Shared air equations | `../sunrise-world/src/living_air.rs:134` | Keep physics below game independent of Host |
 
 The last path is relative to the crates directory instead of the client source
-root: `crates/horizon-world/src/living_air.rs:134` is the shared owner.
+root: `crates/sunrise-world/src/living_air.rs:134` is the shared owner.
 Vehicle movement must use the entity move boundary for the vehicle itself;
 passenger positioning is not a second travel or physical move. Shulker pushes and
 other external physical displacement preserve their cause and invoke move even
@@ -146,7 +146,7 @@ cases isolate move from travel acceleration and gravity.
 
 Vanilla was inspected with `python3 tools/rea_vanilla.py method
 net.minecraft.world.entity.LivingEntity travel` and the corresponding `Entity move`
-query using the prepared jars under `/workspace/horizon`. The former selects fluid,
+query using the prepared jars under `/workspace/sunrise`. The former selects fluid,
 glide then air; the latter limits piston movement before collision and applies fall
 and emission behavior afterward. No vanilla implementation is copied here.
 

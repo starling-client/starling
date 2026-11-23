@@ -23,7 +23,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
 BOOK = "docs/modding/src"
-SITE = "https://arismoko.github.io/horizon/"
+SITE = "https://arismoko.github.io/sunrise/"
 BLOB = "https://github.com/arismoko/horizon/blob/main/"
 TEXT = (".md", ".rs", ".toml", ".py", ".json", ".txt", ".yml", ".yaml", ".js", ".html")
 LINK = re.compile(r"(\]\()([^\s)]+)(\))|^( {0,3}\[[^\]\n]+\]:[ \t]*<?)([^\s>]+)", re.MULTILINE)

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Kill wrong-owner dispatch faults through the real Game tick, restoring source.
 
-Needs HORIZON_TEST_RESOURCES and isolated game home environment variables.
+Needs SUNRISE_TEST_RESOURCES and isolated game home environment variables.
 """
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "crates/horizon-client/src/game/world/ordered_tick.rs"
+SOURCE = ROOT / "crates/sunrise-client/src/game/world/ordered_tick.rs"
 original = SOURCE.read_text()
-cmd = ["cargo", "test", "-p", "horizon-client", "--lib",
+cmd = ["cargo", "test", "-p", "sunrise-client", "--lib",
        "dispatch_ticks_both_owners_of_each_located_kind", "--", "--ignored"]
 try:
     baseline = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)

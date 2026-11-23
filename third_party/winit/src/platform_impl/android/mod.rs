@@ -34,7 +34,7 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
 
-/// Horizon's patch: the app's hook (`platform::android::set_input_hook`), which sees each input
+/// Sunrise's patch: the app's hook (`platform::android::set_input_hook`), which sees each input
 /// event before this backend turns it into window events.
 static INPUT_HOOK: std::sync::OnceLock<crate::platform::android::InputHook> =
     std::sync::OnceLock::new();
@@ -380,7 +380,7 @@ impl<T: 'static> EventLoop<T> {
     where
         F: FnMut(event::Event<T>, &RootAEL),
     {
-        // Horizon's patch: what the app's hook answers goes no further.
+        // Sunrise's patch: what the app's hook answers goes no further.
         if let Some(status) = INPUT_HOOK.get().and_then(|hook| hook(event)) {
             return status;
         }

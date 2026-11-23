@@ -1,16 +1,16 @@
 //! Resolve a published release's channel or exact installed version.
 use super::Release;
-use horizon_release_sign::Channel;
+use sunrise_release_sign::Channel;
 
 /// The snapshot tagged `tag` (`snapshot-<date>-<commit>`, docs/release-flow.md "Snapshot"), looked
 /// up by its tag alone, or nothing for any other tag. No list or update ever offers a snapshot, so a
-/// developer names it (`horizon-launcher install <tag>`); it installs as its tag, which its title
+/// developer names it (`sunrise-launcher install <tag>`); it installs as its tag, which its title
 /// must name and its SHA256SUMS.v2.sig must be signed for (`backend::install`).
 pub(super) fn snapshot(tag: &str) -> Result<Vec<Release>, String> {
     if Channel::of(tag) != Some(Channel::Snapshot) {
         return Ok(Vec::new());
     }
-    if !horizon_release_sign::is_build(Channel::Snapshot, tag) {
+    if !sunrise_release_sign::is_build(Channel::Snapshot, tag) {
         return Err(format!(
             "{tag} is not a snapshot's snapshot-<date>-<commit>."
         ));
@@ -20,7 +20,7 @@ pub(super) fn snapshot(tag: &str) -> Result<Vec<Release>, String> {
         crate::github::API,
         super::REPO
     ))?
-    .ok_or_else(|| format!("No Horizon snapshot is tagged {tag}."))?;
+    .ok_or_else(|| format!("No Sunrise snapshot is tagged {tag}."))?;
     let settings = super::Settings::load();
     let assets = super::game_assets_for(
         std::env::consts::OS,
@@ -79,9 +79,9 @@ mod tests {
                 "name": "Nightly 2026-11-10 · 9f13812",
                 "published_at": "2026-11-10T17:07:46Z",
                 "prerelease": true,
-                "assets": [{"name": "horizon-linux-x86_64.tar.gz", "size": 123}]
+                "assets": [{"name": "sunrise-linux-x86_64.tar.gz", "size": 123}]
             }]),
-            Some("horizon-linux-x86_64.tar.gz"),
+            Some("sunrise-linux-x86_64.tar.gz"),
             None,
         )
     }
@@ -96,7 +96,7 @@ mod tests {
                 assert_eq!(release.nightly.as_deref(), Some(channel));
                 assert_eq!(
                     release.asset,
-                    Some((format!("https://github.com/arismoko/horizon/releases/download/{channel}/horizon-linux-x86_64.tar.gz"), 123))
+                    Some((format!("https://github.com/arismoko/horizon/releases/download/{channel}/sunrise-linux-x86_64.tar.gz"), 123))
                 );
             }
         }
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn a_snapshot_is_found_by_its_tag_and_installs_as_it() {
         const SNAPSHOT: &str = "snapshot-2026-11-13-bbbbbbb";
-        let (arm, x64) = ("horizon-windows-arm64.zip", "horizon-windows-x64.zip");
+        let (arm, x64) = ("sunrise-windows-arm64.zip", "sunrise-windows-x64.zip");
         let list = serde_json::json!([{
             "tag_name": SNAPSHOT,
             "name": "Snapshot 2026-11-13 · bbbbbbb",

@@ -1,9 +1,9 @@
-//! The selected instance's resource packs and shader packs on Home (`horizon_launcher::packs`):
+//! The selected instance's resource packs and shader packs on Home (`sunrise_launcher::packs`):
 //! each turned on or off with one click, Remove (to the trash, after a confirmation), and
-//! Add (a file picker) or a .zip or .hshader dropped anywhere on the section.
+//! Add (a file picker) or a .zip or .sshader dropped anywhere on the section.
 use super::*;
 use gpui::{ExternalPaths, Image, ImageFormat};
-use horizon_launcher::packs::{self, Kind as PackKind, Pack};
+use sunrise_launcher::packs::{self, Kind as PackKind, Pack};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -188,7 +188,7 @@ impl Launcher {
             head = head.child(
                 text(theme::CAPTION)
                     .text_color(t.muted)
-                    .child(tr("None yet: drop a .hshader or a shader pack .zip here.")),
+                    .child(tr("None yet: drop a .sshader or a shader pack .zip here.")),
             );
         }
         section = section.child(head);

@@ -19,7 +19,7 @@ ROOT = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], tex
 head, base = subprocess.check_output(['git', 'rev-parse', 'HEAD', args.base], cwd=ROOT, text=True).splitlines()
 if head != base or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=ROOT, text=True):
     parser.error('run from a clean checkout of the specified base')
-DIRECTORY = ROOT / 'crates/horizon-mod-api/src/parts'
+DIRECTORY = ROOT / 'crates/sunrise-mod-api/src/parts'
 path = DIRECTORY / 'mod.rs'
 source = path.read_text()
 lines = source.splitlines(keepends=True)
@@ -105,16 +105,16 @@ p.write_text(text)
 # Documentation links must name the declaring trait; Rustdoc does not resolve
 # a supertrait's method as Union::method. Object method calls stay unchanged.
 for file, replacements in {
-    'crates/horizon-mod-api/src/lib.rs': {
+    'crates/sunrise-mod-api/src/lib.rs': {
         '[`Registrar::block_key`]': '[`Registrar::block_key`](BlocksRegistrar::block_key)',
         '[`Registrar::fluid_key`]': '[`Registrar::fluid_key`](FluidsRegistrar::fluid_key)',
         '[`Registrar::effect_key`]': '[`Registrar::effect_key`](EffectsRegistrar::effect_key)',
         '([`Registrar::declare_entity_attributes`](crate::Registrar))': '([`Registrar::declare_entity_attributes`](EntityAttributesRegistrar::declare_entity_attributes))',
     },
-    'crates/horizon-mod-api/src/world/ticket_controller.rs': {
+    'crates/sunrise-mod-api/src/world/ticket_controller.rs': {
         '(super::Registrar::register_ticket_controller)': '(super::TicketsRegistrar::register_ticket_controller)',
     },
-    'crates/horizon-mod-api/src/block/item_place.rs': {
+    'crates/sunrise-mod-api/src/block/item_place.rs': {
         '(super::Registrar::place_provider)': '(super::ItemsRegistrar::place_provider)',
     },
 }.items():

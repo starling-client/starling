@@ -1,0 +1,15 @@
+[package]
+name = "sunrise-official-servers"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sunrise's official server in the multiplayer list, and the withdrawn partner server taken out of it (docs/layers.md)"
+
+[dependencies]
+sunrise-addresses = { path = "../sunrise-addresses" }
+sunrise-platform = { path = "../sunrise-platform", features = ["protocol"] }
+log = "0.4"
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@ Provisional answer to [#825](https://github.com/arismoko/horizon/issues/825): th
 
 ## Evidence and limits
 
-Vanilla 26.3 was queried from `/workspace/horizon` using `python3 tools/rea_vanilla.py method net.minecraft.world.entity.animal.Animal spawnChildFromBreeding`. The returned method calls getBreedOffspring, returns for null, sets the baby flag and position, calls finalizeSpawnChildFromBreeding, then addFreshEntityWithPassengers. Thus the proposed callback observes a constructed child before finalization and insertion. Queries for Slime and AbstractCubeMob in the monster package failed class resolution; exact vanilla split method contents and species overrides remain unverified. Horizon's inspected owners below identify AbstractCubeMob.remove as their reference; those comments are not independent vanilla verification.
+Vanilla 26.3 was queried from `/workspace/sunrise` using `python3 tools/rea_vanilla.py method net.minecraft.world.entity.animal.Animal spawnChildFromBreeding`. The returned method calls getBreedOffspring, returns for null, sets the baby flag and position, calls finalizeSpawnChildFromBreeding, then addFreshEntityWithPassengers. Thus the proposed callback observes a constructed child before finalization and insertion. Queries for Slime and AbstractCubeMob in the monster package failed class resolution; exact vanilla split method contents and species overrides remain unverified. Sunrise's inspected owners below identify AbstractCubeMob.remove as their reference; those comments are not independent vanilla verification.
 
 The issue names NeoForge 26.3 MobSplitEvent.getChildren and BabyEntitySpawnEvent.setChild. Requests to the public [MobSplitEvent Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/neoforged/neoforge/event/entity/living/MobSplitEvent.html) and [BabyEntitySpawnEvent Javadoc](https://aldak.netlify.app/javadoc/26.3.x/net/neoforged/neoforge/event/entity/living/BabyEntitySpawnEvent.html) failed in the web reader. Exact mutability, null-child, cancellation, parent side effects and supported breeding routes are **unverified**. The issue establishes the desired capability, not proof of NeoForge behavior. No NeoForge source, patches or other project's source was read. Public-contract and remaining vanilla verification gate implementation.
 
@@ -28,19 +28,19 @@ Follow [#1606](https://github.com/arismoko/horizon/issues/1606): pending childre
 
 ## Owning routes and hook migration
 
-Paths and line numbers are inspected Horizon owners at this note's base. Vanilla method names in this table are reference targets, not claims that all were independently queried.
+Paths and line numbers are inspected Sunrise owners at this note's base. Vanilla method names in this table are reference targets, not claims that all were independently queried.
 
 | Route | Owner and treatment |
 | --- | --- |
-| Slime, magma cube, sulfur cube death | `crates/horizon-client/src/game/mobs/creatures/mod.rs:1745` split_dead_cube explicitly covers all three; replace count loop at 1754 with constructed collection. Reference AbstractCubeMob.remove. Size 1 and primed sulfur producing zero children do not dispatch. |
-| Split child initialization | `crates/horizon-client/src/mobs/cube.rs:90` specializes sulfur size/baby state; yaw draws follow at 96. Preserve these draws and list order even on veto. |
-| Live animal breeding | `crates/horizon-client/src/game/mobs/creatures/mod.rs:3948` breed is the common owner, reached at 3614; inheritance construction precedes finalization at 4226 and insertion at 4231/4237. Move the existing early callback after actual child construction. Include horse/donkey mule, equine inheritance, fox trust, color and variant paths in this common owner. Reference Animal.spawnChildFromBreeding and species getBreedOffspring overrides. |
+| Slime, magma cube, sulfur cube death | `crates/sunrise-client/src/game/mobs/creatures/mod.rs:1745` split_dead_cube explicitly covers all three; replace count loop at 1754 with constructed collection. Reference AbstractCubeMob.remove. Size 1 and primed sulfur producing zero children do not dispatch. |
+| Split child initialization | `crates/sunrise-client/src/mobs/cube.rs:90` specializes sulfur size/baby state; yaw draws follow at 96. Preserve these draws and list order even on veto. |
+| Live animal breeding | `crates/sunrise-client/src/game/mobs/creatures/mod.rs:3948` breed is the common owner, reached at 3614; inheritance construction precedes finalization at 4226 and insertion at 4231/4237. Move the existing early callback after actual child construction. Include horse/donkey mule, equine inheritance, fox trust, color and variant paths in this common owner. Reference Animal.spawnChildFromBreeding and species getBreedOffspring overrides. |
 | Turtle/frog eggs | Same file:4006–4015 excludes live children and preserves finalization/XP. References TurtleBreedGoal.breed and frog breeding behavior; exact vanilla frog method unverified. No baby callback for egg laying. |
 | Sniffer egg | Same file:4004–4008 finalizes then lays an egg. Reference Sniffer.spawnChildFromBreeding; no live-child callback. |
 | Turtle hatch | Same file:3789 hatch_turtles, reference TurtleEggBlock.randomTick. Hatching is independent spawning, outside breeding callback. |
 | Spawn egg offspring | Same file:7696 spawn_egg_offspring, reference SpawnEggItem spawning behavior. Excluded from this breeding moment. |
 | Villager/armadillo | Existing baby_entity_spawn declaration explicitly excludes their own paths. Exact owners and vanilla methods remain unverified; implementation must trace these before claiming full live-breeding coverage. Recommend include only if public counterpart and vanilla moment agree, otherwise document the distinct moment. |
-| Native pending lend | `crates/horizon-client/src/game/modding/native_unspawned_mob.rs:107` lend_unspawned already owns scoped lending and unwind restoration. Extend its ownership discipline; do not treat the stand-in clone as a child. |
+| Native pending lend | `crates/sunrise-client/src/game/modding/native_unspawned_mob.rs:107` lend_unspawned already owns scoped lending and unwind restoration. Extend its ownership discipline; do not treat the stand-in clone as a child. |
 
 Change mob_split and baby_entity_spawn in place, once per vanilla moment. Delete count/kind-only transport, obsolete helpers and the stale “handle does not exist” prose in both declarations, hook notes, generated native/wasm bindings and samples together. Retain parent/player metadata. Do not add parallel legacy hooks or a second post-construction hook.
 

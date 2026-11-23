@@ -1,0 +1,2 @@
+# sunrise-mod-vocab's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-mod-vocab hooks_tests::subscriber_tick_benchmark by-hand manual # optimized hot-hook microbenchmark

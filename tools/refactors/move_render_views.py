@@ -4,14 +4,14 @@ import argparse
 from pathlib import Path
 import subprocess
 
-SOURCE = 'crates/horizon-mod-render/src/render.rs'
-TARGET = 'crates/horizon-client-render/src/render_views.rs'
+SOURCE = 'crates/sunrise-mod-render/src/render.rs'
+TARGET = 'crates/sunrise-client-render/src/render_views.rs'
 
 def pieces(text):
     start = text.index('/// The most world views')
     end = text.index('/// Asked as each frame', start)
     filtering = text.index('/// The views of those asked')
-    filter_end = text.index('pub use horizon_client_render::render_geometry', filtering)
+    filter_end = text.index('pub use sunrise_client_render::render_geometry', filtering)
     tests = text.index('#[cfg(test)]', filter_end)
     return text[start:end], text[filtering:filter_end], text[tests:]
 

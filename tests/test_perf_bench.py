@@ -94,8 +94,8 @@ class PerfBenchStatsTests(unittest.TestCase):
         self.assertEqual(s["histogram"][HISTOGRAM_EDGES_MS.index(100)], 9)
         self.assertEqual(s["histogram"][-1], 1, "1000 ms and over")
 
-    def test_same_figures_as_horizon_bench(self):
-        # crates/horizon-bench's frame_figures_and_histogram test, value for value.
+    def test_same_figures_as_sunrise_bench(self):
+        # crates/sunrise-bench's frame_figures_and_histogram test, value for value.
         s = frames("flight", 0, [2.0] * 998 + [20.0, 1500.0])
         self.assertEqual((s["seconds"], s["low_1pct_fps"], s["low_01pct_fps"]), (3.516, 6.51, 0.667))
         self.assertEqual((s["histogram"][2], s["histogram"][13], s["histogram"][23]), (998, 1, 1))
@@ -115,9 +115,9 @@ class PerfBenchStatsTests(unittest.TestCase):
         from tools.perf_bench import SIZES, parse_sizes, size_label
         self.assertEqual(parse_sizes("1280x720,1920X1080"), [(1280, 720), (1920, 1080)])
         self.assertEqual(SIZES, [(1280, 720), (1920, 1080)])
-        self.assertEqual(size_label("horizon-m4", 1280, 720), "horizon-m4")
-        self.assertEqual(size_label("horizon-m4", 1920, 1080), "horizon-m4-1080p")
-        self.assertEqual(size_label("horizon-m4", 2560, 1080), "horizon-m4-2560x1080")
+        self.assertEqual(size_label("sunrise-m4", 1280, 720), "sunrise-m4")
+        self.assertEqual(size_label("sunrise-m4", 1920, 1080), "sunrise-m4-1080p")
+        self.assertEqual(size_label("sunrise-m4", 2560, 1080), "sunrise-m4-2560x1080")
 
     def test_one_options_file_sets_the_render_distance(self):
         self.assertEqual(OPTIONS["renderDistance"].format(distance=16), "16")
@@ -200,7 +200,7 @@ class WaitLoadedTests(unittest.TestCase):
         self.assertAlmostEqual(self.run_script(busy + quiet), 1.0, places=6)
 
     def test_a_quiet_start_is_not_a_load(self):
-        # Right after a teleport Horizon reports steady counts and nothing queued for 1.5 s before it loads:
+        # Right after a teleport Sunrise reports steady counts and nothing queued for 1.5 s before it loads:
         # with a target the clock runs on until the chunks are there and the meshing has gone quiet.
         idle = [self.status(3, 0, stages=0) for _ in range(30)]
         loading = [self.status(30 * (i + 1), 500 * i, stages=500) for i in range(20)]
@@ -231,7 +231,7 @@ class PortabilityTests(unittest.TestCase):
         run = {"startup": {"title_s": 1.0, "world_s": 5.0}, "memory": {}, "load_before": None,
                "scenes": {"village": {"load_s": 2.0, "frame_ms": [5.0] * 100, "meshes_load": 10}}}
         args = argparse.Namespace(offscreen=False, settle=2.0, label="x")
-        r = pb.report(args, 8, [run], {"name": "horizon-client"})
+        r = pb.report(args, 8, [run], {"name": "sunrise-client"})
         self.assertNotIn("load_avg_1m", r["conditions"])
         self.assertEqual(r["metrics"]["fps.village.avg_fps"]["mean"], 200.0)
         self.assertEqual(pb.report(args, 8, [dict(run, load_before=1.25)], {})["conditions"]["load_avg_1m"], 1.25)
@@ -313,12 +313,12 @@ class PortabilityTests(unittest.TestCase):
         from pathlib import Path
         from tools.perf_bench import release_version
         with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "horizon-rd8.log"
-            log.write_text("Horizon v0.2.97\nload assets: 1.29s\n")
+            log = Path(tmp) / "sunrise-rd8.log"
+            log.write_text("Sunrise v0.2.97\nload assets: 1.29s\n")
             self.assertEqual(release_version(log), "v0.2.97")
-            log.write_text("Horizon nightly-2026-10-28-0c02067\n")
+            log.write_text("Sunrise nightly-2026-10-28-0c02067\n")
             self.assertEqual(release_version(log), "nightly-2026-10-28-0c02067")
-            for dev in ("Horizon 0.1.0\n", "Horizon v0.2.97 (client 0.1.0)\n"):
+            for dev in ("Sunrise 0.1.0\n", "Sunrise v0.2.97 (client 0.1.0)\n"):
                 log.write_text(dev)
                 self.assertIsNone(release_version(log))
             self.assertIsNone(release_version(Path(tmp) / "missing.log"))

@@ -28,13 +28,13 @@ def main():
     _, game_dir = lab.config()
     libraries += sorted((game_dir / 'libraries/client').rglob('*.jar'))
     classpath = os.pathsep.join(map(str, [jars['client'], *libraries]))
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaHeldDropOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaHeldDropOracle.java'
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none',
                     '-cp', classpath, '-d', str(classes), str(oracle)], check=True)
     subprocess.run(['java', '-Xmx512M', '-cp', str(classes) + os.pathsep + classpath,
-                    'dev.horizonlab.parity.VanillaHeldDropOracle', str(build / 'vanilla.txt')], check=True)
+                    'dev.sunriselab.parity.VanillaHeldDropOracle', str(build / 'vanilla.txt')], check=True)
     with (build / 'rust.txt').open('w') as out:
-        subprocess.run(['cargo', 'run', '--quiet', '-p', 'horizon-client-lib', '--example',
+        subprocess.run(['cargo', 'run', '--quiet', '-p', 'sunrise-client-lib', '--example',
                         'client_probe', '--', 'held_drop_fixture'], cwd=lab.ROOT, stdout=out, check=True)
     matched = base.compare(build / 'vanilla.txt', build / 'rust.txt')
     print(f'Held drop parity passed: {matched} inventory/drop/swing/packet snapshots match vanilla')

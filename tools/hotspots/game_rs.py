@@ -14,8 +14,8 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME = "crates/horizon-client/src/game.rs"
-TREES = ("crates/horizon-client/src", "crates/horizon-client-render/src")
+GAME = "crates/sunrise-client/src/game.rs"
+TREES = ("crates/sunrise-client/src", "crates/sunrise-client-render/src")
 FN = re.compile(r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:const |async |unsafe )*fn (\w+)")
 
 

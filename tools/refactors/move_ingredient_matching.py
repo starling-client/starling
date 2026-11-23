@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/crafting/ingredient.rs"
+source = root / "crates/sunrise-client/src/crafting/ingredient.rs"
 text = source.read_text()
 start = text.index("    /// `test` with the loop context the game already holds")
 end = text.index("\n}\n\n#[cfg(test)]", start)

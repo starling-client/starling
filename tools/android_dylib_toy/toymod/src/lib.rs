@@ -7,7 +7,7 @@ impl toygame::Hooks for Mod {
     }
 }
 
-/// The mod's entry, a Rust function as `horizon_native_mod_v1` is.
+/// The mod's entry, a Rust function as `sunrise_native_mod_v1` is.
 #[unsafe(no_mangle)]
 pub fn toy_mod_v1() -> toygame::Entry {
     toygame::bump();

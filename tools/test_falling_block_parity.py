@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare FallingBlockEntity's landing branch with Horizon's.
+"""Compare FallingBlockEntity's landing branch with Sunrise's.
 
 Java (`VanillaFallingBlockOracle`) puts a real `FallingBlockEntity` on the
 block update oracle's level, restores the destination block the entity removed
@@ -102,23 +102,23 @@ def main():
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     cases = list(base_cases(facts))
     if not args.no_contact:
         cases += list(contact_cases(facts))
     inputs = build / 'cases.jsonl'
     inputs.write_text(''.join(json.dumps(c) + '\n' for c in cases), encoding='utf-8')
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaFallingBlockOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaFallingBlockOracle.java'
     sources = [oracle, Path(__file__), lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/block_update_harness.py', lab.ROOT / 'tools/test_dispenser_parity.py',
-               lab.ROOT / 'crates/horizon-client/examples/probe/falling_block_fixture.rs',
-               lab.ROOT / 'crates/horizon-client/src/falling_block.rs',
-               lab.ROOT / 'crates/horizon-world/src/level/falling.rs']
+               lab.ROOT / 'crates/sunrise-client/examples/probe/falling_block_fixture.rs',
+               lab.ROOT / 'crates/sunrise-client/src/falling_block.rs',
+               lab.ROOT / 'crates/sunrise-world/src/level/falling.rs']
     tested = base.source_hashes(sources)
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
 
     def run(command, name, timeout=900):
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
@@ -128,8 +128,8 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', str(java_root),
          '-cp', dependencies, '-d', classes, oracle], 'compile-java')
     run(['java', '-Xmx2g', '-cp', str(classes) + os.pathsep + dependencies,
-         'dev.horizonlab.parity.VanillaFallingBlockOracle', resources, inputs, build / 'client.txt'], 'client')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust', timeout=3600)
+         'dev.sunriselab.parity.VanillaFallingBlockOracle', resources, inputs, build / 'client.txt'], 'client')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust', timeout=3600)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'fast/examples/client_probe'

@@ -1,4 +1,4 @@
-"""Runtime transfer proof in an exclusive checkout; set HORIZON_TEST_RESOURCES.
+"""Runtime transfer proof in an exclusive checkout; set SUNRISE_TEST_RESOURCES.
 
 Compile errors are not kills. Each mutant changes one production site; originals
 are restored even on interruption. Logs are private build output under target.
@@ -15,15 +15,15 @@ def terminate(signum, _frame):
 
 
 signal.signal(signal.SIGTERM, terminate)
-if not os.environ.get('HORIZON_TEST_RESOURCES'):
-    raise SystemExit('Set HORIZON_TEST_RESOURCES')
-join = Path('crates/horizon-client/src/join_seq.rs')
-travel = Path('crates/horizon-client/src/game/world/server_travel.rs')
-levels = Path('crates/horizon-client/src/game/world/levels.rs')
+if not os.environ.get('SUNRISE_TEST_RESOURCES'):
+    raise SystemExit('Set SUNRISE_TEST_RESOURCES')
+join = Path('crates/sunrise-client/src/join_seq.rs')
+travel = Path('crates/sunrise-client/src/game/world/server_travel.rs')
+levels = Path('crates/sunrise-client/src/game/world/levels.rs')
 originals = {p: p.read_text() for p in (join, travel, levels)}
 logs = Path('target/transfer-lifetime-proof')
 logs.mkdir(parents=True, exist_ok=True)
-command = ['cargo', 'test', '-p', 'horizon-client', '--lib', '--no-default-features']
+command = ['cargo', 'test', '-p', 'sunrise-client', '--lib', '--no-default-features']
 removal = 'transfer_removal_retires_before_returning_the_vehicle'
 arrival = 'transfer_arrival_rebinds_only_bound_owners_with_the_same_id'
 cases = [
@@ -33,7 +33,7 @@ cases = [
     ('wrong-destination-index', levels, 'self.attachment_indexes.entry(self.dim)',
      'self.attachment_indexes.entry(source)', arrival),
     ('keep-source-join', travel,
-     'v.set_join_seq(horizon_client::join_seq::JoinSeq::UNJOINED);', ';', arrival),
+     'v.set_join_seq(sunrise_client::join_seq::JoinSeq::UNJOINED);', ';', arrival),
 ]
 for name, family in [('b', 'boats'), ('c', 'carts'), ('m', 'mobs')]:
     line = f'self.rebind_transferred_entity(source, id, &mut {name});'

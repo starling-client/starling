@@ -1,6 +1,6 @@
 [book]
-title = "Modding Horizon"
-description = "Guide and reference for making Horizon mods: content, native and WebAssembly"
+title = "Modding Sunrise"
+description = "Guide and reference for making Sunrise mods: content, native and WebAssembly"
 language = "en"
 src = "src"
 
@@ -65,7 +65,7 @@ before = ["links"]
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "coal"
-additional-css = ["theme/horizon.css"]
+additional-css = ["theme/sunrise.css"]
 git-repository-url = "https://github.com/arismoko/horizon"
 edit-url-template = "https://github.com/arismoko/horizon/edit/main/docs/modding/{path}"
 

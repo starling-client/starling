@@ -1,10 +1,10 @@
 # The native package
 
-The project and its `.hmod` have the same flat layout, with no mod-id directory level inside the archive:
+The project and its `.smod` have the same flat layout, with no mod-id directory level inside the archive:
 
 ```text
 my_mod/
-  horizon-mod.toml        # the only manifest; mod identity and build pins
+  sunrise-mod.toml        # the only manifest; mod identity and build pins
   icon.png               # optional launcher icon
   assets/my_mod/
   data/my_mod/
@@ -16,10 +16,10 @@ my_mod/
 
 A native source package requires both `Cargo.toml` and `[native]`; inconsistent declarations
 are refused. A content-only package declares neither `[native]` nor `[wasm]`.
-[Wasm packages](../wasm-mods.md) declare `[wasm]` and contain `mod.wasm`. The mod's id and version come only from `horizon-mod.toml`,
+[Wasm packages](../wasm-mods.md) declare `[wasm]` and contain `mod.wasm`. The mod's id and version come only from `sunrise-mod.toml`,
 not Cargo's package name or version. An id is a plain `[a-z0-9_]{1,64}` name, also used as its resource namespace.
-A native mod has no `rust-toolchain.toml`: the pinned Horizon commit decides the toolchain that builds it.
-There is no input `native/` or `rust/` directory, `horizon-native.json` or hand-written `horizon-mixin.toml`.
+A native mod has no `rust-toolchain.toml`: the pinned Sunrise commit decides the toolchain that builds it.
+There is no input `native/` or `rust/` directory, `sunrise-native.json` or hand-written `horizon-mixin.toml`.
 The launcher writes the tool's manifest and stages the crate itself; those internal paths are not package layouts.
 
 The manifest keeps the [content fields](../content-mods.md#the-manifest), including the exact `api = "0.2"`
@@ -28,7 +28,7 @@ contract and `capabilities = ["registries"]`. A native mod adds:
 ```toml
 [native]
 game = "26.3"
-horizon = "<exact 40-character lowercase Horizon commit>"
+sunrise = "<exact 40-character lowercase Sunrise commit>"
 mixins = "<exact 40-character lowercase horizon-mixins commit>"
 ```
 

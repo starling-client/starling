@@ -35,9 +35,9 @@ def main():
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/integration_env.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/game/items/fishing.rs',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBreezeHookOracle.java',
-               lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java']
+               lab.ROOT / 'crates/sunrise-client/src/game/items/fishing.rs',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaBreezeHookOracle.java',
+               lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java']
     hashes = base.source_hashes(sources)
     rows = list(cases())
     inputs = build / 'inputs.txt'
@@ -47,10 +47,10 @@ def main():
                                                      {'client': client}, libraries, lock['minecraft']['java_major'])
     harness.java_run(build, classes, dependencies, 'VanillaBreezeHookOracle',
                      [inputs, build / 'client.txt'], 'client')
-    with tempfile.TemporaryDirectory(prefix='horizon-breeze-hook-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='sunrise-breeze-hook-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
-        env.update(HORIZON_BREEZE_HOOK_INPUT=str(inputs), HORIZON_BREEZE_HOOK_OUTPUT=str(build / 'rust.txt'))
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib',
+        env.update(SUNRISE_BREEZE_HOOK_INPUT=str(inputs), SUNRISE_BREEZE_HOOK_OUTPUT=str(build / 'rust.txt'))
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
                             'game::fishing::tests::breeze_hook_parity_fixture', '--', '--exact', '--ignored'],
                            build, 'rust', env=env)
     matched = harness.compare(build / 'client.txt', build / 'rust.txt', len(rows))

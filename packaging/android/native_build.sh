@@ -6,7 +6,7 @@
 #   native_build.sh SOURCE OUT BUNDLE...
 #
 # SOURCE is a Starling checkout at the commit to build, only read (git archive). Each BUNDLE is a
-# folder holding a horizon-mixin.toml. OUT gets libhorizon_android.so (stripped), the APK with the
+# folder holding a horizon-mixin.toml. OUT gets libsunrise_android.so (stripped), the APK with the
 # mods in, and build.json: the key, the version, the commit, the mods (each with the Android
 # permissions its source shows it needs, native_mod_permissions.py), all those permissions, and
 # the library's SHA-256.
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 MIXINS_GIT=https://github.com/horizon-rust/horizon-mixins
-# Horizon's launcher's (launcher/src/native_mods.rs, MIXINS_REV).
+# Sunrise's launcher's (launcher/src/native_mods.rs, MIXINS_REV).
 MIXINS_REV=5a64af938ec86b00d53d16a408aabc0038fb3e57
 
 fail() { echo "native_build: $*" >&2; exit 1; }
@@ -47,9 +47,9 @@ if [ ! -x "$tools/bin/horizon-mixins" ]; then
 fi
 
 commit=$(git -C "$source" rev-parse HEAD)
-# horizon-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
+# sunrise-mod-host's build script names the game build by `git rev-parse HEAD` unless this says it:
 # the build folder below is a copy without the repository.
-export HORIZON_GAME_BUILD_ID=$commit
+export SUNRISE_GAME_BUILD_ID=$commit
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -59,31 +59,31 @@ git -C "$source" archive --format=tar HEAD | tar -x -C "$work/source"
 find "$work/source" -type l -delete
 echo "$commit" > "$work/source/.horizon-revision"
 
-# The game module is compiled by two crates (horizon-client's binary, and horizon-android from
+# The game module is compiled by two crates (sunrise-client's binary, and sunrise-android from
 # android_lib.rs), and horizon-mixins refuses a module destination it reaches under two names:
-# while it plans, horizon-android's library is an empty file. The lockfile stays as it is
+# while it plans, sunrise-android's library is an empty file. The lockfile stays as it is
 # (horizon-mixins reads the workspace --locked --offline).
-manifest=crates/horizon-android/Cargo.toml
-lib_line='path = "../horizon-client/src/android_lib.rs"'
+manifest=crates/sunrise-android/Cargo.toml
+lib_line='path = "../sunrise-client/src/android_lib.rs"'
 grep -qxF "$lib_line" "$work/source/$manifest" || fail "$manifest no longer has: $lib_line"
-sed -i "s|^path = \"../horizon-client/src/android_lib.rs\"\$|path = \"plan-stub.rs\"|" \
+sed -i "s|^path = \"../sunrise-client/src/android_lib.rs\"\$|path = \"plan-stub.rs\"|" \
   "$work/source/$manifest"
-: > "$work/source/crates/horizon-android/plan-stub.rs"
+: > "$work/source/crates/sunrise-android/plan-stub.rs"
 # horizon-mixins does not look under a file with a conditional attribute of its own, and the game
 # module hangs from this one. The attribute does nothing on Android.
 lib_attr='#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]'
-grep -qxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" \
-  || fail "crates/horizon-client/src/lib.rs no longer has: $lib_attr"
-grep -vxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" > "$work/lib.rs"
-cp "$work/lib.rs" "$work/source/crates/horizon-client/src/lib.rs"
+grep -qxF "$lib_attr" "$work/source/crates/sunrise-client/src/lib.rs" \
+  || fail "crates/sunrise-client/src/lib.rs no longer has: $lib_attr"
+grep -vxF "$lib_attr" "$work/source/crates/sunrise-client/src/lib.rs" > "$work/lib.rs"
+cp "$work/lib.rs" "$work/source/crates/sunrise-client/src/lib.rs"
 
-# Horizon declares the game's modules in files its build script writes (`include!` of OUT_DIR),
+# Sunrise declares the game's modules in files its build script writes (`include!` of OUT_DIR),
 # which horizon-mixins cannot follow: they are written out as plain module lines in this copy
-# first, as Horizon's launcher does (horizon-materialize, crates/horizon-mod-api-gen). Before the
+# first, as Sunrise's launcher does (sunrise-materialize, crates/sunrise-mod-api-gen). Before the
 # mods are adapted: native_mod_adapt.py finds where things went in the module tree it leaves.
 cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
 CARGO_TARGET_DIR=$cache/materialize-target cargo run --quiet --locked --offline \
-  --manifest-path "$work/source/Cargo.toml" -p horizon-mod-api-gen --bin horizon-materialize \
+  --manifest-path "$work/source/Cargo.toml" -p sunrise-mod-api-gen --bin sunrise-materialize \
   -- "$work/source"
 # What horizon-mixins refuses in the fork's source, made readable in this copy (native_mixins_source.py): modules
 # named through a parent folder (`#[path = "../x.rs"]`) move next to their module, and the prebuilt game's
@@ -91,7 +91,7 @@ CARGO_TARGET_DIR=$cache/materialize-target cargo run --quiet --locked --offline 
 python3 "$source/packaging/android/native_mixins_source.py" "$work/source"
 
 # The bundles, each pinned to the commit built here when it pins one (Starling's commits are not
-# Horizon's; a mod that calls what Starling changed fails in the compiler).
+# Sunrise's; a mod that calls what Starling changed fails in the compiler).
 mkdir "$work/mods"
 for bundle in "$@"; do
   [ -f "$bundle/horizon-mixin.toml" ] || fail "$bundle has no horizon-mixin.toml"
@@ -117,11 +117,11 @@ echo "native_build: build $key of $commit with $(ls "$work/mods" | tr '\n' ' ')"
 
 # Into the build folder: a file whose bytes changed gets the time of now (no -t), one that did not
 # keeps its time, so Cargo recompiles what changed even when the commit is older than the last
-# build. horizon-android's manifest goes back to building android_lib.rs.
+# build. sunrise-android's manifest goes back to building android_lib.rs.
 build=$cache/build-$abi
 mkdir -p "$build"
 rsync -r --checksum --delete --exclude /target/ --exclude "/$manifest" \
-  --exclude /crates/horizon-android/plan-stub.rs --exclude /native-hooks.json "$work/stage/" "$build/"
+  --exclude /crates/sunrise-android/plan-stub.rs --exclude /native-hooks.json "$work/stage/" "$build/"
 git -C "$source" show "HEAD:$manifest" > "$work/manifest"
 cmp -s "$work/manifest" "$build/$manifest" || cp "$work/manifest" "$build/$manifest"
 
@@ -130,8 +130,8 @@ rm -f "$build"/target/android/starling-*.apk
 (cd "$build" && python3 packaging/android/build_apk.py --abi "$abi" --profile "$profile" $variant \
   ${NATIVE_LIBRARY_ONLY:+--library-only})
 
-library=$build/target/android/libhorizon_android.so
-cp "$library" "$out/libhorizon_android.so"
+library=$build/target/android/libsunrise_android.so
+cp "$library" "$out/libsunrise_android.so"
 [ -n "${NATIVE_LIBRARY_ONLY:-}" ] || cp "$build"/target/android/starling-*-"$abi".apk "$out/"
 python3 - "$build" "$work/mods" "$out" "$key" "$commit" "$profile" "$MIXINS_REV" "$abi" <<'EOF'
 import hashlib, json, pathlib, re, sys, tomllib
@@ -141,7 +141,7 @@ from native_mod_permissions import needs
 version = re.search(r'^VERSION_NAME = "([^"]+)"',
                     (pathlib.Path(build) / "packaging/android/build_apk.py").read_text(),
                     re.M).group(1)
-library = pathlib.Path(out) / "libhorizon_android.so"
+library = pathlib.Path(out) / "libsunrise_android.so"
 listed = []
 for folder in sorted(pathlib.Path(mods).iterdir()):
     mod = tomllib.loads((folder / "horizon-mixin.toml").read_text())["mod"]

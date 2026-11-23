@@ -11,8 +11,8 @@ except ImportError:
     import lab
     import test_rust_parity as base
 
-# Entity types that are not mobs (or are players): Horizon models them outside the mob table.
-# Horizon models these differently on purpose: slimes/magma/sulfur cubes are created already sized (size 1,
+# Entity types that are not mobs (or are players): Sunrise models them outside the mob table.
+# Sunrise models these differently on purpose: slimes/magma/sulfur cubes are created already sized (size 1,
 # vanilla applies setSize at spawn), and the phantom keeps its move control speed in attrs.speed.
 KNOWN = {('minecraft:slime', k) for k in ('max_health', 'movement_speed', 'attack_damage')} | \
     {('minecraft:magma_cube', k) for k in ('max_health', 'movement_speed', 'attack_damage')} | \
@@ -52,7 +52,7 @@ def main():
     if args.prepare:
         lab.prepare()
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobAttributesOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMobAttributesOracle.java'
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     deps = os.pathsep.join(map(str, libraries))
@@ -61,8 +61,8 @@ def main():
         with (build / (name + '.log')).open('w', encoding='utf-8') as log:
             subprocess.run(list(map(str, cmd)), cwd=lab.ROOT, check=True, timeout=3600, stdout=log, stderr=subprocess.STDOUT)
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + deps, '-d', classes, oracle], 'compile-java')
-    run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), deps]), 'dev.horizonlab.parity.VanillaMobAttributesOracle', build / 'vanilla.txt'], 'java')
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
+    run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), deps]), 'dev.sunriselab.parity.VanillaMobAttributesOracle', build / 'vanilla.txt'], 'java')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe'], 'compile-rust')
     binary = lab.cargo_target() / 'fast/examples/client_probe'
     resources = lab.RESOURCES
     run([binary, 'mob_attributes_fixture', resources, build / 'rust.txt'], 'rust')
@@ -83,7 +83,7 @@ def main():
         for k, x in v.get('attrs', {}).items():
             if (id, k) not in KNOWN and k in r['attrs'] and not close(x, r['attrs'][k]):
                 problems.append(f'{id}: {k} vanilla={x} rust={r["attrs"][k]}')
-    print(f'vanilla types {len(vanilla)} (living {len(living)}), Horizon mob types {len(rust)}, not in mob table {len(missing)}: {" ".join(m.split(":")[1] for m in missing)}')
+    print(f'vanilla types {len(vanilla)} (living {len(living)}), Sunrise mob types {len(rust)}, not in mob table {len(missing)}: {" ".join(m.split(":")[1] for m in missing)}')
     print('oracle could not instantiate:', ' '.join(f.split(':')[1] for f in failed))
     if problems:
         print('\n'.join(problems))

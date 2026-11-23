@@ -44,9 +44,9 @@ in such beds wake up from some yaw (`Villager.stopSleeping`: the same search for
 a villager's box, with shelves among the blocks around, #9502). Beds and straw
 beds clicked (head or foot, whole or broken) in the Nether and the End blow up
 or fall apart (`AbstractBedBlock.useWithoutItem` under the dimension's
-`bed_rule`: `BedBlock.destroyOnUse`, `StrawBedBlock.destroyBed`). Horizon runs
+`bed_rule`: `BedBlock.destroyOnUse`, `StrawBedBlock.destroyBed`). Sunrise runs
 `use_item_as_player` on that hit in a headless game
-(`HORIZON_DISPENSE_FIXTURE`). Both print block changes, dropped items, level
+(`SUNRISE_DISPENSE_FIXTURE`). Both print block changes, dropped items, level
 events, sounds, game events, the used statistic, the held stack, the item the
 player started using, spawners' next spawn data, potentials and delay, the
 off hand's stack,
@@ -341,7 +341,7 @@ def statue_case(rng, states, case):
              'copper_golem_statue']
     if statue != 'copper_golem_statue':
         # An axe scrapes or unwaxes the others; on the unaffected one it brings the golem back
-        # (`CopperGolemStatueBlockEntity.removeStatue`), which Horizon does not do yet.
+        # (`CopperGolemStatueBlockEntity.removeStatue`), which Sunrise does not do yet.
         items.append('iron_axe')
     item = rng.choice(items)
     use = {'item': '-' if item == '-' else d_plain(item, rng.choice([1, 16])), 'creative': rng.random() < 0.2,
@@ -1016,7 +1016,7 @@ def main():
         args.count = 4000
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'use-item-on-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = [*cases(facts, args.count, args.seed, not args.no_transformers),
@@ -1027,15 +1027,15 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     d.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaDispenserOracle.java')])
-    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaDispenserOracle',
+           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaDispenserOracle.java')])
+    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaDispenserOracle',
            str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
           env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    d.run([str(lab.cargo_target() / 'fast/horizon-client'), '--resources', str(resources)], cwd=work,
-          env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+    d.run([str(lab.cargo_target() / 'fast/sunrise-client'), '--resources', str(resources)], cwd=work,
+          env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)

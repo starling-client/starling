@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::glass_ui::{self as ui, white};
-use horizon_theme::glass::ink;
+use sunrise_theme::glass::ink;
 use std::path::Path;
 use std::sync::Mutex;
 

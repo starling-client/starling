@@ -55,8 +55,8 @@ class PreparationStepTests(unittest.TestCase):
                                   (".local/minecraft/secret", "unavailable-or-invalid"),
                                   ("", "unavailable-or-invalid")]:
                 result = self.invoke(root, "import sys; print('Permission denied'); sys.exit(2)",
-                                     HORIZON_DIAGNOSTIC_EXPECTED_KEY=key,
-                                     HORIZON_DIAGNOSTIC_CACHE_STATE="missing-entry-list")
+                                     SUNRISE_DIAGNOSTIC_EXPECTED_KEY=key,
+                                     SUNRISE_DIAGNOSTIC_CACHE_STATE="missing-entry-list")
                 self.assertEqual(result.returncode, 2)
                 self.assertTrue(result.stdout.endswith("\nPermission denied\n"))
                 data = json.loads((root / "private.diagnostic.json").read_text())
@@ -98,11 +98,11 @@ class PreparationStepTests(unittest.TestCase):
             cargo.write_text('#!/bin/sh\nexit 0\n')
             cargo.chmod(0o755)
             (root / "target/release").mkdir(parents=True)
-            prepare = root / "target/release/horizon-prepare"
+            prepare = root / "target/release/sunrise-prepare"
             prepare.write_text('#!/bin/sh\nmkdir .local/scratch\necho "SECRET No space left on device"\nexit 23\n')
             prepare.chmod(0o755)
-            env = dict(os.environ, HORIZON_DYNA_CACHE="true", HORIZON_PREPARED_CACHE=str(root / "cache"),
-                       HORIZON_SHARED_SOURCE=str(root / "source"), HORIZON_PREPARE_KEY="0123456789abcdef",
+            env = dict(os.environ, SUNRISE_DYNA_CACHE="true", SUNRISE_PREPARED_CACHE=str(root / "cache"),
+                       SUNRISE_SHARED_SOURCE=str(root / "source"), SUNRISE_PREPARE_KEY="0123456789abcdef",
                        RUNNER_TEMP=str(root), CARGO_TARGET_DIR=str(root / "target"),
                        PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
             result = subprocess.run(["bash", "tools/ci/vanilla-data.sh"], cwd=root, env=env,
@@ -119,7 +119,7 @@ class PreparationStepTests(unittest.TestCase):
             again = subprocess.run(["bash", "tools/ci/vanilla-data.sh"], cwd=root, env=env,
                                    capture_output=True, text=True)
             self.assertEqual(again.returncode, 23, again.stderr)
-            self.assertIn('cache_state=missing-horizon-client', again.stdout)
+            self.assertIn('cache_state=missing-sunrise-client', again.stdout)
             self.assertNotIn('SECRET', again.stdout + again.stderr)
             self.assertTrue((root / 'source/minecraft/26.3/prepared.json').exists())
 
@@ -133,18 +133,18 @@ class PreparationStepTests(unittest.TestCase):
             (root / "research-lock.json").write_text('{"version": "26.3"}\n')
             (root / "source/minecraft/26.3").mkdir(parents=True)
             (root / "source/minecraft/26.3/prepared.json").write_text('{}')
-            (root / "source/horizon-client/26.3").mkdir(parents=True)
+            (root / "source/sunrise-client/26.3").mkdir(parents=True)
             (root / "bin").mkdir()
             cargo = root / "bin/cargo"
             cargo.write_text('#!/bin/sh\nexit 0\n')
             cargo.chmod(0o755)
             (root / "target/release").mkdir(parents=True)
-            prepare = root / "target/release/horizon-prepare"
-            prepare.write_text('#!/bin/sh\nmkdir -p .local/horizon-client/26.3\necho one > .local/horizon-client/26.3/a\n'
+            prepare = root / "target/release/sunrise-prepare"
+            prepare.write_text('#!/bin/sh\nmkdir -p .local/sunrise-client/26.3\necho one > .local/sunrise-client/26.3/a\n'
                                'echo "prepared" >> "$PREPARED_RUNS"\n')
             prepare.chmod(0o755)
-            env = dict(os.environ, HORIZON_DYNA_CACHE="true", HORIZON_PREPARED_CACHE=str(root / "cache"),
-                       HORIZON_SHARED_SOURCE=str(root / "source"), HORIZON_PREPARE_KEY="0123456789abcdef",
+            env = dict(os.environ, SUNRISE_DYNA_CACHE="true", SUNRISE_PREPARED_CACHE=str(root / "cache"),
+                       SUNRISE_SHARED_SOURCE=str(root / "source"), SUNRISE_PREPARE_KEY="0123456789abcdef",
                        RUNNER_TEMP=str(root), CARGO_TARGET_DIR=str(root / "target"),
                        PREPARED_RUNS=str(root / "runs"), PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
 
@@ -158,19 +158,19 @@ class PreparationStepTests(unittest.TestCase):
             run()
             self.assertEqual((root / "runs").read_text().count("prepared"), 1)
             # The job reads its own copy, never the kept tree.
-            self.assertEqual((root / ".local/horizon-client").resolve(), (root / "cache/job/horizon-client").resolve())
-            (root / ".local/horizon-client/26.3/written-by-a-test").write_text("x")
-            self.assertFalse((kept / "horizon-client/26.3/written-by-a-test").exists())
+            self.assertEqual((root / ".local/sunrise-client").resolve(), (root / "cache/job/sunrise-client").resolve())
+            (root / ".local/sunrise-client/26.3/written-by-a-test").write_text("x")
+            self.assertFalse((kept / "sunrise-client/26.3/written-by-a-test").exists())
             self.assertIn("fresh", run())
             self.assertEqual((root / "runs").read_text().count("prepared"), 1)
-            self.assertFalse((root / ".local/horizon-client/26.3/written-by-a-test").exists())
+            self.assertFalse((root / ".local/sunrise-client/26.3/written-by-a-test").exists())
             # A kept tree changed behind the script's back (or kept from before manifests) is prepared again.
-            (kept / "horizon-client/26.3/extra").write_text("x")
+            (kept / "sunrise-client/26.3/extra").write_text("x")
             again = run()
             self.assertIn("does not match its manifest", again)
             self.assertIn("files added 1, removed 0, changed 0", again)
             self.assertEqual((root / "runs").read_text().count("prepared"), 2)
-            self.assertFalse((kept / "horizon-client/26.3/extra").exists())
+            self.assertFalse((kept / "sunrise-client/26.3/extra").exists())
             (kept / ".manifest").unlink()
             (kept / ".manifest-files").unlink()
             self.assertIn("expected none", run())

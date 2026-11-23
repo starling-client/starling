@@ -23,10 +23,10 @@ event and the knockback around the target), the post-attack enchantments
 (the target's Thorns first: the player's hurt, its knockback and sounds, the
 piece's wear, then Wind Burst's `ExplodeEffect` on the player) and
 `postHurtEnemy` (the fall reset and the weapon's wear with Unbreaking).
-Horizon runs the same steps
+Sunrise runs the same steps
 through the helpers `Game::attack` uses (`smash_damage_bonus`,
 `hurt_by_player`, `weapon_hit`) in a headless game
-(`HORIZON_DISPENSE_FIXTURE`). Both print every target's health and
+(`SUNRISE_DISPENSE_FIXTURE`). Both print every target's health and
 velocity, the first target's worn pieces, the player's health, velocity,
 fall distance, impulse impact and grace time and its landing-particle flag,
 sounds, level and game events, the used and damage_taken statistics, the held
@@ -208,7 +208,7 @@ def weapon_part(lines):
 
     The weapon's part is what this harness compares: the smash, Wind Burst
     and the wear. The stand's wobble and break have their own effects, which
-    Horizon does not copy yet: the `entity_damage` / `entity_die` game events,
+    Sunrise does not copy yet: the `entity_damage` / `entity_die` game events,
     the hit sound (vanilla's client plays it for entity event 32), the stand
     item the break pops (place, motion and random draws) and so the random
     stream after a break, which Unbreaking's roll for the weapon's wear
@@ -236,7 +236,7 @@ def main():
         args.count = 3000
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'mace-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = list(cases(facts, args.count, args.seed))
@@ -244,15 +244,15 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     d.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaDispenserOracle.java')])
-    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaDispenserOracle',
+           '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaDispenserOracle.java')])
+    d.run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaDispenserOracle',
            str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    d.run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
           env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    d.run([str(lab.cargo_target() / 'fast/horizon-client'), '--resources', str(resources)], cwd=work,
-          env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+    d.run([str(lab.cargo_target() / 'fast/sunrise-client'), '--resources', str(resources)], cwd=work,
+          env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
     rust = h.split_cases((work / 'rust.txt').read_text(), ignore)

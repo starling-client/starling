@@ -28,22 +28,22 @@ GUIDE = "https://github.com/horizon-rust/horizon/blob/main/docs/operations.md#se
 # What stops while no runner with this label takes jobs, and what the Team does meanwhile. A job asks for a set of
 # labels; the first of these it asks for names it.
 EFFECTS = [
-    ("horizon-light", "Small jobs (triage and claim commands, pull request labels, overlap notes, the Mojang "
+    ("sunrise-light", "Small jobs (triage and claim commands, pull request labels, overlap notes, the Mojang "
                       "republish check, a pull request's parity scope) wait instead of running.",
      "An organisation owner sets the repository variable `SELF_HOSTED_CI` to `off`: they run on GitHub's runners."),
-    ("horizon-checks", "`verify` and `launcher` of the pull requests whose number ends in 0 or 1 wait, so those pull "
+    ("sunrise-checks", "`verify` and `launcher` of the pull requests whose number ends in 0 or 1 wait, so those pull "
                        "requests can't merge.",
      "An organisation owner sets `SELF_HOSTED_CI` to `off` (or `light`), then the authors push again or a Team "
      "member re-runs the checks."),
-    ("horizon-parity-main", "parity-main doesn't run, so no newer commit of main is green for the Nightly: Nightlies "
+    ("sunrise-parity-main", "parity-main doesn't run, so no newer commit of main is green for the Nightly: Nightlies "
                             "keep shipping the last green commit or nothing.",
      "Nothing to do on GitHub: the harnesses need the maintainer's Minecraft. Merge on `verify` as usual; label "
      "risky pull requests `needs-proof`."),
-    ("horizon-nightly", "The Nightly's macOS builds wait, so no Nightly is published.",
+    ("sunrise-nightly", "The Nightly's macOS builds wait, so no Nightly is published.",
      "Players keep the last Nightly. Nothing to do on GitHub until a Mac runner is back."),
-    ("horizon-release", "The launcher's macOS builds wait, so no launcher release is published.",
+    ("sunrise-release", "The launcher's macOS builds wait, so no launcher release is published.",
      "Players keep their launcher. Nothing to do on GitHub until a Mac runner is back."),
-    ("horizon-game", "A pull request's own parity job waits (it isn't required: merging still works).",
+    ("sunrise-game", "A pull request's own parity job waits (it isn't required: merging still works).",
      "Merge on `verify` after reading the diff; label pull requests that touch gameplay `needs-proof`."),
 ]
 

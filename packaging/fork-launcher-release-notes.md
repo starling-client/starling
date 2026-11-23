@@ -1,6 +1,6 @@
-# Horizon Fork Launcher (arismoko)
+# Sunrise Fork Launcher (arismoko)
 
-This is the arismoko fork, not the official Horizon launcher. It uses separate
+This is the arismoko fork, not the official Sunrise launcher. It uses separate
 settings, game data and account storage and installs and updates only from
 [arismoko/horizon](https://github.com/arismoko/horizon).
 
@@ -10,10 +10,10 @@ Account and token storage remain separate from the official launcher.
 
 ## Downloads
 
-- **Linux x86_64:** download `horizon-fork-launcher-linux-x86_64.AppImage`, make it
+- **Linux x86_64:** download `sunrise-fork-launcher-linux-x86_64.AppImage`, make it
   executable and run it. The `.tar.gz` archive is also available.
-- **Windows x64:** download `horizon-fork-launcher-setup.exe`, or extract
-  `horizon-fork-launcher-windows-x64.zip` and run `horizon-fork-launcher.exe`.
+- **Windows x64:** download `sunrise-fork-launcher-setup.exe`, or extract
+  `sunrise-fork-launcher-windows-x64.zip` and run `sunrise-fork-launcher.exe`.
   This fork is **not Authenticode-signed**. Expect a SmartScreen or unknown-publisher
   warning; signed checksums do not remove Windows warnings.
 
@@ -30,9 +30,9 @@ release tag; comparing a checksum alone does not authenticate the download.
 With Rust installed, use the verifier from the fork's tagged source checkout:
 
 ```sh
-git clone --branch '{tag}' --depth 1 https://github.com/arismoko/horizon.git horizon-fork-source
-cd horizon-fork-source
-cargo run --locked -p horizon-release-sign -- verify --repository arismoko/horizon --tag '{tag}' --publishing /absolute/path/to/downloads
+git clone --branch '{tag}' --depth 1 https://github.com/arismoko/horizon.git sunrise-fork-source
+cd sunrise-fork-source
+cargo run --locked -p sunrise-release-sign -- verify --repository arismoko/horizon --tag '{tag}' --publishing /absolute/path/to/downloads
 ```
 
 The verifier uses the fork's built-in public keys and checks all four packages

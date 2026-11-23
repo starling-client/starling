@@ -1,11 +1,11 @@
 //! Native mods installed from a GitHub link (docs/modding/src/how-to/native-mods.md, "Install from GitHub"), so an
 //! author can ship a version without a registry pull request. The link names a repository (its
 //! latest release), a release tag, a branch or tag (`tree/`) or a commit. It is resolved through
-//! GitHub's public API to an exact **release asset** (a `.hmod`, kept by its SHA-256) or an exact
-//! **commit** (the archive of that commit, whose mod folder is packed into a `.hmod`), never to a
-//! branch that moves. The result passes the checks the registry's `.hmod`s pass
-//! (`horizon_mod_package::index::native::Bundle::read`) before anything is installed, and the origin is
-//! kept beside the file (`horizon-native-mods/<id>.origin.json`) for "check for updates".
+//! GitHub's public API to an exact **release asset** (a `.smod`, kept by its SHA-256) or an exact
+//! **commit** (the archive of that commit, whose mod folder is packed into a `.smod`), never to a
+//! branch that moves. The result passes the checks the registry's `.smod`s pass
+//! (`sunrise_mod_package::index::native::Bundle::read`) before anything is installed, and the origin is
+//! kept beside the file (`sunrise-native-mods/<id>.origin.json`) for "check for updates".
 //!
 //! Nothing here runs the mod's code, and nothing here trusts it: the registry has not reviewed it.
 //! Callers show [`WARNING`] and ask first (`--trust-native-code`).
@@ -19,7 +19,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// What a player is told before a mod from GitHub is installed.
-pub const WARNING: &str = "Not reviewed by the Horizon registry. Native mods run with full access to this computer. Read the source first.";
+pub const WARNING: &str = "Not reviewed by the Sunrise registry. Native mods run with full access to this computer. Read the source first.";
 
 /// The most a release asset or a mod's archive may be.
 const MAX_ASSET: u64 = 64 << 20;
@@ -143,7 +143,7 @@ pub struct Resolved {
     pub tag: Option<String>,
     /// The full commit: what the source link names, and what a commit install fetches.
     pub commit: String,
-    /// The release's `.hmod`, installed as it is when there is one.
+    /// The release's `.smod`, installed as it is when there is one.
     pub asset: Option<Asset>,
 }
 
@@ -177,7 +177,7 @@ pub fn source_url(owner: &str, repo: &str, commit: &str) -> String {
 /// GitHub's JSON for an API path (`repos/...`); `None` when it answers 404.
 pub type Api<'a> = &'a dyn Fn(&str) -> Result<Option<serde_json::Value>, String>;
 
-/// The real API, unauthenticated (`HORIZON_GITHUB_TOKEN` is used when set, for CI).
+/// The real API, unauthenticated (`SUNRISE_GITHUB_TOKEN` is used when set, for CI).
 pub fn api(path: &str) -> Result<Option<serde_json::Value>, String> {
     let url = format!("https://api.github.com/{path}");
     match backend::get_unless_missing(&url) {
@@ -218,7 +218,7 @@ fn commit_of(api: Api, link: &Link, reference: &str) -> Result<String, String> {
     })?;
     found["sha"]
         .as_str()
-        .filter(|s| horizon_mod_package::manifest::revision(s))
+        .filter(|s| sunrise_mod_package::manifest::revision(s))
         .map(str::to_owned)
         .ok_or_else(|| format!("GitHub did not name the commit of {reference}."))
 }
@@ -243,7 +243,7 @@ fn assets(release: &serde_json::Value, link: &Link) -> Option<Asset> {
         .map(Vec::as_slice)
         .unwrap_or_default();
     list.iter()
-        .filter(|a| a["name"].as_str().is_some_and(|n| n.ends_with(".hmod")))
+        .filter(|a| a["name"].as_str().is_some_and(|n| n.ends_with(".smod")))
         .find_map(|a| {
             let url = a["browser_download_url"].as_str()?.to_owned();
             let name = a["name"].as_str()?.to_owned();
@@ -316,7 +316,7 @@ pub struct Origin {
     /// The release asset's name, when it came from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
-    /// The SHA-256 of the installed `.hmod`.
+    /// The SHA-256 of the installed `.smod`.
     pub sha256: String,
 }
 
@@ -358,7 +358,7 @@ pub fn is_update(origin: &Origin, latest: &Resolved) -> bool {
     }
 }
 
-/// A mod ready to install: its `.hmod` was read and checked, nothing run.
+/// A mod ready to install: its `.smod` was read and checked, nothing run.
 #[derive(Clone, Debug)]
 pub struct Packed {
     pub id: String,
@@ -378,14 +378,14 @@ fn scratch(name: &str) -> PathBuf {
     native_mods::root().join("github").join(name)
 }
 
-/// Reads `bytes` as `.hmod`, with the registry's checks, into a file `Packed` names.
+/// Reads `bytes` as `.smod`, with the registry's checks, into a file `Packed` names.
 fn checked(bytes: &[u8], dir: &Path) -> Result<Packed, String> {
     let sum = sha256(bytes);
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let file = dir.join(format!("{}.hmod", &sum[..16]));
+    let file = dir.join(format!("{}.smod", &sum[..16]));
     fs::write(&file, bytes).map_err(|e| format!("{}: {e}", file.display()))?;
     let facts =
-        horizon_mod_package::index::inspect(&horizon_mod_package::index::Kind::NativeMod, &file)
+        sunrise_mod_package::index::inspect(&sunrise_mod_package::index::Kind::NativeMod, &file)
             .inspect_err(|_| {
                 let _ = fs::remove_file(&file);
             })?;
@@ -433,7 +433,7 @@ pub fn find_mods(root: &Path) -> Result<Vec<Bundle>, String> {
 
 /// Deterministically package a validated flat mod project.
 pub fn pack(bundle: &Bundle) -> Result<Vec<u8>, String> {
-    horizon_mod_package::Package::pack_directory(&bundle.dir)
+    sunrise_mod_package::Package::pack_directory(&bundle.dir)
 }
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
@@ -449,7 +449,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-/// Downloads what `found` names and checks it: the release's `.hmod` (its SHA-256 compared with
+/// Downloads what `found` names and checks it: the release's `.smod` (its SHA-256 compared with
 /// GitHub's when it reports one), else the mods of the commit's archive, each packed. A repository
 /// of several mods gives several `Packed`. Nothing is installed.
 pub fn fetch(found: &Resolved) -> Result<Vec<Packed>, String> {
@@ -474,7 +474,7 @@ pub fn fetch(found: &Resolved) -> Result<Vec<Packed>, String> {
     let mods = find_mods(&top)?;
     if mods.is_empty() {
         return Err(format!(
-            "{} holds no native mod (horizon-mod.toml and Cargo.toml).",
+            "{} holds no native mod (sunrise-mod.toml and Cargo.toml).",
             found.label()
         ));
     }
@@ -552,7 +552,7 @@ pub fn origins(home: &Path) -> Vec<Origin> {
 /// is (that is how it updates).
 pub fn install(home: &Path, found: &Resolved, packed: &Packed) -> Result<Origin, String> {
     let _lock = crate::browser::lock_home(home).map_err(|e| e.to_string())?;
-    let target = home.join(INSTALLED).join(format!("{}.hmod", packed.id));
+    let target = home.join(INSTALLED).join(format!("{}.smod", packed.id));
     if target.exists() && origin(home, &packed.id).is_none() {
         return Err(format!(
             "{} is already installed and not from GitHub: remove it first.",
@@ -587,7 +587,7 @@ pub fn remove(home: &Path, id: &str) -> Result<bool, String> {
     }
     for path in [
         origin_path(home, id),
-        home.join(INSTALLED).join(format!("{id}.hmod")),
+        home.join(INSTALLED).join(format!("{id}.smod")),
     ] {
         if let Err(e) = fs::remove_file(&path) {
             if e.kind() != std::io::ErrorKind::NotFound {

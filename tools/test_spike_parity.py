@@ -77,7 +77,7 @@ def corpus(facts, placement):
     for legacy, fail, reject in itertools.product([False, True], [-1, 0, 9, 101], [0, 3]):
         placed = {'feature': spike(), 'placement': [{'type': 'count', 'count': 2}]}
         yield case(placed, mode='placed', legacy=legacy, fail=fail, reject=reject, repeats=2)
-        yield case({'type': 'overlay', 'features': [placed, {'feature': 'horizon:moss', 'placement': []}]},
+        yield case({'type': 'overlay', 'features': [placed, {'feature': 'sunrise:moss', 'placement': []}]},
                    legacy=legacy, fail=fail, reject=reject)
 
 

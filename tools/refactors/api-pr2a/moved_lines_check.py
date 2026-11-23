@@ -29,9 +29,9 @@ def original(base, path):
 
 
 def lines(source):
-    source = source.replace("horizon_mod_runtime::attachments", "horizon_world::attachments")
-    source = source.replace("horizon_mod_runtime::impl_attachment_lifetime", "horizon_world::impl_attachment_lifetime")
-    source = source.replace("horizon_mod_runtime::registry_keys::", "super::registry_keys::")
+    source = source.replace("sunrise_mod_runtime::attachments", "sunrise_world::attachments")
+    source = source.replace("sunrise_mod_runtime::impl_attachment_lifetime", "sunrise_world::impl_attachment_lifetime")
+    source = source.replace("sunrise_mod_runtime::registry_keys::", "super::registry_keys::")
     # Strip whole imports, including grouped multiline imports, not implementation.
     source = re.sub(r"(?m)^\s*(?:pub(?:\([^)]*\))? )?use [^;]+;", "\nconst _: () = ();", source)
     source = re.sub(r"(?m)^\s*(?:pub(?:\([^)]*\))? )?mod \w+;", "\nconst _: () = ();", source)
@@ -42,13 +42,13 @@ def lines(source):
 
 def main():
     base = sys.argv[1]
-    manifest = tomllib.loads((ROOT / "crates/horizon-mod-runtime/Cargo.toml").read_text())
-    assert manifest["dependencies"] == {"horizon-core": {"path": "../horizon-core"}}
+    manifest = tomllib.loads((ROOT / "crates/sunrise-mod-runtime/Cargo.toml").read_text())
+    assert manifest["dependencies"] == {"sunrise-core": {"path": "../sunrise-core"}}
     assert "target" not in manifest and "build-dependencies" not in manifest
     paths = set(subprocess.check_output(["git", "diff", "--no-renames", "--name-only", base], cwd=ROOT, text=True).splitlines())
-    paths |= {str(p.relative_to(ROOT)) for p in (ROOT / "crates/horizon-mod-runtime/src").rglob("*.rs")}
-    paths = sorted(p for p in paths if p.endswith(".rs") and not p.startswith("tools/") and p not in {"crates/horizon-mod-runtime/src/lib.rs", "crates/horizon-mod-runtime/tests/registry_keys.rs"})
-    assert (ROOT / "crates/horizon-mod-runtime/tests/registry_keys.rs").read_text() == (HERE / "registry_tests.rs").read_text()
+    paths |= {str(p.relative_to(ROOT)) for p in (ROOT / "crates/sunrise-mod-runtime/src").rglob("*.rs")}
+    paths = sorted(p for p in paths if p.endswith(".rs") and not p.startswith("tools/") and p not in {"crates/sunrise-mod-runtime/src/lib.rs", "crates/sunrise-mod-runtime/tests/registry_keys.rs"})
+    assert (ROOT / "crates/sunrise-mod-runtime/tests/registry_keys.rs").read_text() == (HERE / "registry_tests.rs").read_text()
     before, after = Counter(), Counter()
     for path in paths:
         before.update(lines(original(base, path)))
@@ -65,11 +65,11 @@ def main():
     # moved byte-for-byte, except for the one declared generic bind method.
     total = 0
     for name in MOVED:
-        old = original(base, "crates/horizon-world/src/" + name)
+        old = original(base, "crates/sunrise-world/src/" + name)
         if not old:
             assert name == "attachments/resident.rs"
             continue
-        new = (ROOT / "crates/horizon-mod-runtime/src" / name).read_text()
+        new = (ROOT / "crates/sunrise-mod-runtime/src" / name).read_text()
         if name == "attachments/lifetime.rs":
             new = re.sub(r"    /// Bind an authoritative entity's map.*?(?=    /// Whether this entity owns)", "", new, flags=re.S)
         assert old == new, f"attachment implementation changed: {name}"
@@ -79,7 +79,7 @@ def main():
     print(f"PASS: {total} attachment lines moved unchanged (excluding declared bind seam)")
     print(f"PASS: removed/added Rust-line multisets match across {len(paths)} files after path, visibility, import/mod normalization and the declared seam")
     print(f"Declared seam: {sum(removed.values())} removed + {sum(added.values())} added = {changed} normalized lines; new registry tests excluded")
-    print("New runtime depends only on horizon-core; manifests, documentation and refactor tooling are reviewed separately.")
+    print("New runtime depends only on sunrise-core; manifests, documentation and refactor tooling are reviewed separately.")
 
 
 if __name__ == "__main__":

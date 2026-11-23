@@ -1,37 +1,37 @@
 # Your first native mod
 
 A native mod is a Rust crate that implements hooks from the mod API. The launcher compiles it on your machine
-against the exact Horizon build an instance plays, then runs that instance with your mod in it. In this page you
+against the exact Sunrise build an instance plays, then runs that instance with your mod in it. In this page you
 make a mod that greets every player who joins.
 
-You need the Horizon launcher (`horizon-launcher`) with an instance, and the `cargo horizon-mod` tool, which you
+You need the Sunrise launcher (`sunrise-launcher`) with an instance, and the `cargo sunrise-mod` tool, which you
 install with Rust's `cargo` ([as in the content mod tutorial](first-content-mod.md#1-install-the-mod-tool)). The
 native build itself uses the launcher's own pinned Rust toolchain, not yours.
 
 ## 1. Make the project
 
 ```sh
-cargo horizon-mod new greeter --template native
+cargo sunrise-mod new greeter --template native
 cd greeter
 ```
 
-This writes a flat project, pinned to the build of the current Nightly (or to `--horizon <build>`), and fetches
+This writes a flat project, pinned to the build of the current Nightly (or to `--sunrise <build>`), and fetches
 that build's [SDK](../reference/sdk.md):
 
 ```text
 greeter/
-├── horizon-mod.toml     # the manifest; [native] pins the exact Horizon build
-├── Cargo.toml           # depends on horizon-mod-api in .horizon/sdk/, never on the game
+├── sunrise-mod.toml     # the manifest; [native] pins the exact Sunrise build
+├── Cargo.toml           # depends on sunrise-mod-api in .sunrise/sdk/, never on the game
 ├── src/lib.rs           # the hooks
 ├── assets/
 ├── data/
-└── .horizon/sdk/        # the pinned SDK: fetched by the tool, never committed or packed
+└── .sunrise/sdk/        # the pinned SDK: fetched by the tool, never committed or packed
 ```
 
-After a fresh clone, run any `cargo horizon-mod` command once before opening the project in an editor: it fetches
-`.horizon/sdk/` again.
+After a fresh clone, run any `cargo sunrise-mod` command once before opening the project in an editor: it fetches
+`.sunrise/sdk/` again.
 
-`cargo horizon-mod update` moves the pin to a newer Horizon later.
+`cargo sunrise-mod update` moves the pin to a newer Sunrise later.
 
 ## 2. Read the hook
 
@@ -43,7 +43,7 @@ After a fresh clone, run any `cargo horizon-mod` command once before opening the
 
 - Each method of `Hooks` is one moment in the game. You implement only the ones you need; the game calls
   your mod only for those.
-- `#[mod_api::horizon_mod]` marks the one `impl Hooks` at the crate root and subscribes the mod to exactly the
+- `#[mod_api::sunrise_mod]` marks the one `impl Hooks` at the crate root and subscribes the mod to exactly the
   methods it implements.
 - The `host` is your handle on the game. A server hook gets a `ServerHost`, a client hook a `ClientHost`, so a call
   on the wrong side does not compile.
@@ -54,10 +54,10 @@ After a fresh clone, run any `cargo horizon-mod` command once before opening the
 ## 3. Build and play
 
 ```sh
-horizon-launcher native-build . --instance "My Instance" --trust-native-code
+sunrise-launcher native-build . --instance "My Instance" --trust-native-code
 ```
 
-The launcher downloads the prebuilt game for the pinned Horizon build, compiles your crate against it, and makes
+The launcher downloads the prebuilt game for the pinned Sunrise build, compiles your crate against it, and makes
 that build the one the instance plays. `--trust-native-code` records that you allow native code on this
 install: a native mod runs with your rights, outside any sandbox. Start the instance and join a world; the
 greeting appears in chat.

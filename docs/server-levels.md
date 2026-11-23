@@ -1,7 +1,7 @@
 # A server's levels: one per dimension
 
 Vanilla's `MinecraftServer` holds a `ServerLevel` per dimension, and each player is in one of them.
-Horizon's server does the same. That covers the dedicated server and single player's server thread
+Sunrise's server does the same. That covers the dedicated server and single player's server thread
 (`Game::serving`, the default since #1114). So a LAN world's host and each guest can be in different
 dimensions at the same time.
 
@@ -23,7 +23,7 @@ and save, block ticks, entities, block entities and their per-level queues). `ga
 the other dimensions' levels as `Parked` values and swaps one into place (`enter_level`). The swap is
 `mem::swap` of each per-level field, so the tick code runs unchanged, one level at a time.
 
-| Vanilla | Horizon |
+| Vanilla | Sunrise |
 | --- | --- |
 | `MinecraftServer.levels` | the level in place plus `Levels::parked` |
 | `MinecraftServer.tickChildren`, every level | `tick_server`: each level with a player in it, in Overworld, Nether, End order. The first pass reads the network and runs the shared parts (clock, weather, functions, autosave). |
@@ -48,7 +48,7 @@ Connecting or disconnecting changes `remote`, independently of the execution rol
 The server thread has a hub without a host player. The window joins it through memory as one
 more player. It still sets `options.dedicated` for gameplay checks outside the role migration's
 startup/world-loading scope. Everything above serves both servers, and `server_dimension_players`
-(vanilla clients on Horizon's dedicated server) and `lan_e2e` (Horizon clients on the
+(vanilla clients on Sunrise's dedicated server) and `lan_e2e` (Sunrise clients on the
 server thread) check it from the two sides.
 
 ## Cost of an extra level
@@ -115,8 +115,8 @@ portals. The spec is #3716. Built so far: the channel, the client's capability a
 
 | Side | Where | What it does |
 |---|---|---|
-| Both | `horizon-protocol/src/viewed_levels.rs` | The codec of `horizon:levels`, an engine channel mods cannot register (`is_reserved_channel`). Configuration: the query and the answer. Play, clientbound only: `open`, `run` (packets of one level, each of a level-scoped kind, or from revision 3 a sound) and `close`; below revision 3 a sound is a protocol error. |
-| Server | `lan/viewed_levels/capability.rs`, called from `lan/conn.rs` | Asks a client whose brand is Horizon's, in configuration, how many other levels it can view, and keeps the answer, its revision and level count, in `PlayerSender::viewed_levels`. The server asks with revision 3 and serves revisions 1 to 3; no answer, or another revision, is 0 levels. Revision 2 adds the travel into a viewed level (`switch.rs`), revision 3 the levels' sounds (`sounds.rs`), which a client of revision 1 or 2 is not sent. A second answer, or one it did not ask for, closes the connection. |
+| Both | `sunrise-protocol/src/viewed_levels.rs` | The codec of `sunrise:levels`, an engine channel mods cannot register (`is_reserved_channel`). Configuration: the query and the answer. Play, clientbound only: `open`, `run` (packets of one level, each of a level-scoped kind, or from revision 3 a sound) and `close`; below revision 3 a sound is a protocol error. |
+| Server | `lan/viewed_levels/capability.rs`, called from `lan/conn.rs` | Asks a client whose brand is Sunrise's, in configuration, how many other levels it can view, and keeps the answer, its revision and level count, in `PlayerSender::viewed_levels`. The server asks with revision 3 and serves revisions 1 to 3; no answer, or another revision, is 0 levels. Revision 2 adds the travel into a viewed level (`switch.rs`), revision 3 the levels' sounds (`sounds.rs`), which a client of revision 1 or 2 is not sent. A second answer, or one it did not ask for, closes the connection. |
 | Client | `viewed_levels_net.rs`, called from `net.rs` | Answers the query before acknowledging `FinishConfiguration`, with revision 3: 2 levels, the other two of vanilla's three dimensions. |
 | Client | `game/network/viewed_worlds/` | On `open`, a world for the level, built from the dimension type the server synced for it. A `run`'s packets change that world: its chunks, light, biomes, blocks, time (an update with no clocks moves its clock on by the game time since, at its rate), weather and entities (`entities.rs`, apart from the player's own). `close` drops it. An `open` past the client's 2, a `run` or `close` of a level not open, a new column past 2048 in one world (the server's default `Loaded` cap per player and level), a new entity past 8192 (`viewed_levels::MAX_ENTITIES`) or an entity's effect or attribute past 256 closes the connection. A travel's Respawn (keep 3) into one of them swaps it with the player's world (`switch.rs`): its columns, light and block entities become the player's, the player's world becomes the viewed world of the level left, and no loading screen starts. A Login, any other Respawn (a death's, an End exit's) or a new configuration drops them all. The player's own level (`host.level`) is never one of them, and nothing is drawn yet. |
 | Server | `lan/viewed_levels/{areas,view,send}.rs` | A mod's areas for one player (`Hub::set_viewed_areas`), each `Loaded` or `Ticking`, within the caps (`max_viewed_*`, [hosting](hosting.md)), with centres at most 1,875,000 chunks (the world border's limit) from (0, 0). A client that can view the level is sent `open`, its chunks in runs inside a plain batch, its block, light and block-entity changes, block and level events, its time every 20 ticks, its clocks when they jump or change rate (`time set`, `time add`, `advance_time`) and its weather; chunks no area covers are forgotten 52 ticks later, then `close`. A view holds at most 2048 columns, fixed for this protocol revision (#3894 tracks sending the cap in `open`). |
@@ -131,7 +131,7 @@ portals. The spec is #3716. Built so far: the channel, the client's capability a
 
 An area is not a player: it stays out of `Guest::placed_in` and `Guest::watches_level`, so spawning,
 sleeping, raids, spawners and the dragon fight count real players only. A vanilla client is never asked,
-and an older Horizon client ignores the query, so both view none and are sent nothing.
+and an older Sunrise client ignores the query, so both view none and are sent nothing.
 
 ## Not done yet
 

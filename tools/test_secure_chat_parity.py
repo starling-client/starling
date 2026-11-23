@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Secure chat on vanilla's dedicated server and Horizon's, with no real account.
+"""Secure chat on vanilla's dedicated server and Sunrise's, with no real account.
 
 A mock of the Minecraft services stands in for Mojang's: its key set (the
 `authentication` / `getPublicKeys` endpoint) holds a key pair the harness
 makes, so the profile keys it signs are as good as Mojang's to both servers.
 Vanilla finds the mock through authlib's `-Dminecraft.api.discovery.host`,
-Horizon through `HORIZON_API_DISCOVERY`. SecureChatClient (vanilla's own
+Sunrise through `SUNRISE_API_DISCOVERY`. SecureChatClient (vanilla's own
 codecs and chat classes) plays several players at once: each signs its chat
 with a profile key the mock signed, acknowledges what it saw, and checks the
 signature of every chat it receives against the sender's session from the
 player list, as vanilla's client does.
 
-Two servers, each run on vanilla then on Horizon:
+Two servers, each run on vanilla then on Sunrise:
 - offline mode (enforce-secure-profile is then off): signed chat with the
   last-seen window and the signature cache, unsigned chat beside it, /say,
   /me and /msg with signed and unsigned arguments, a signed argument under
@@ -250,25 +250,25 @@ def main():
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/SecureChatClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/SecureChatClient.java'
     oh.run_logged(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-sourcepath',
-                   lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                   lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                   build, 'compile-java')
-    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], build,
+    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], build,
                   'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     java = ['java', '-Xmx1g', '-Duser.timezone=UTC', '-cp', str(classes) + os.pathsep + dependencies,
-            'dev.horizonlab.parity.SecureChatClient']
+            'dev.sunriselab.parity.SecureChatClient']
     oh.run_logged([*java, 'keys', build], build, 'keys')
     services = Services(json.loads((build / 'publickeys.json').read_text()))
     discovery = services.url + '/minecraft/client'
-    os.environ.update(lab.game_env(HORIZON_API_DISCOVERY=discovery))
+    os.environ.update(lab.game_env(SUNRISE_API_DISCOVERY=discovery))
     servers = {
         'vanilla': ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={discovery}',
                     '-cp', dependencies, 'net.minecraft.server.Main', 'nogui'],
-        'horizon': [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui'],
+        'sunrise': [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui'],
     }
 
     def client(port, scenario, out):
@@ -286,8 +286,8 @@ def main():
                                                                    encoding='utf-8')
             import difflib
             for part, index in (('transcript', 0), ('log', 1)):
-                diff = [l for l in difflib.unified_diff(results['vanilla'][index], results['horizon'][index],
-                                                        'vanilla', 'horizon', n=0, lineterm='')
+                diff = [l for l in difflib.unified_diff(results['vanilla'][index], results['sunrise'][index],
+                                                        'vanilla', 'sunrise', n=0, lineterm='')
                         if l[:1] in '+-' and l[:3] not in ('+++', '---')]
                 if diff:
                     differences.append(f'{scenario} {part}:\n  ' + '\n  '.join(diff[:60]))

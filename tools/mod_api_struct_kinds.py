@@ -1,6 +1,6 @@
 """Census of the mod API's public structs by construction kind (#2862).
 
-Every mod-facing public struct in `horizon-mod-api` and `horizon-mod-vocab` is
+Every mod-facing public struct in `sunrise-mod-api` and `sunrise-mod-vocab` is
 one of two kinds:
 
 1. built by mods: public fields and `Default`, or a constructor taking the
@@ -27,12 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.check_mod_api_wire import code_tokens  # noqa: E402
 
-CRATES = ('horizon-mod-api', 'horizon-mod-vocab')
+CRATES = ('sunrise-mod-api', 'sunrise-mod-vocab')
 
 # Closed engine socket boundaries, not arbitrary mod-authoring modules. A file
 # match alone never exempts a declaration: both annotations below are required.
 PLATFORM_SOCKET_FILES = frozenset(
-    'crates/horizon-mod-vocab/src/' + file for file in (
+    'crates/sunrise-mod-vocab/src/' + file for file in (
         'dispatch_scope.rs',
         'parts/registration_access.rs',
         'content/crash.rs',
@@ -254,7 +254,7 @@ def sources(root=ROOT):
         for path in sorted((root / 'crates' / crate / 'src').rglob('*.rs')):
             if path.name.endswith('_tests.rs'):
                 continue
-            if crate == 'horizon-mod-vocab' and path.parent.name == 'src' and path.name == 'built.rs':
+            if crate == 'sunrise-mod-vocab' and path.parent.name == 'src' and path.name == 'built.rs':
                 continue  # the `__private::built` mirrors, as `mod built` blocks are
             found[str(path.relative_to(root)).replace('\\', '/')] = path.read_text(encoding='utf-8')
     return found

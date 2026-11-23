@@ -5,18 +5,18 @@ name: launcher
 # for the game.
 # A release is launcher@X.Y.Z on the release line in .github/release-line.txt (docs/versioning.md); without it
 # launcher-vX.Y.Z, the patch after the last launcher tag or the next minor when a merged pull request is labelled
-# feature. The version and the tag are given to the build (HORIZON_LAUNCHER_VERSION, HORIZON_LAUNCHER_TAG): no bump
+# feature. The version and the tag are given to the build (SUNRISE_LAUNCHER_VERSION, SUNRISE_LAUNCHER_TAG): no bump
 # commits.
 # Never marked latest. Pushes to launcher branches only build. RELEASES_PAUSED=1 stops releases.
 # Linux ships two archives of one binary: the .tar.gz the launcher updates itself from, and an
 # AppImage (packaging/linux/appimage.sh) for players without a distribution package, which replaces
 # itself instead (launcher/src/backend.rs).
 # macOS: Apple Silicon, and Intel cross-built for x86_64-apple-darwin on the same runner, its tests and smoke test
-# under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
+# under Rosetta 2 (#1161). With the repository variable MACOS_SIGN_IDENTITY set, Sunrise.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
 # unset (forks), they are signed ad hoc.
 # Windows ships each architecture's launcher in its ZIP (what a launcher updates itself from) and as
-# horizon-launcher-setup.exe or horizon-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
+# sunrise-launcher-setup.exe or sunrise-launcher-setup-arm64.exe, which opens the per-user installer instead of Home
 # (launcher/src/installer.rs).
 #   gh workflow run launcher --ref <branch>                    # dry run: builds everything, publishes nothing
 #   gh workflow run launcher --ref main -f dry_run=false -f force=true
@@ -27,15 +27,15 @@ on:
     paths:
       # Everything the launcher is built and packaged from, as tools/release_train.py's LAUNCHER_PATHS.
       - 'launcher/**'
-      - 'crates/horizon-bench/**'
-      - 'crates/horizon-friends/**'
-      - 'crates/horizon-mcp/**'
-      - 'crates/horizon-mod-package/**'
-      - 'crates/horizon-port-pack/**'
-      - 'crates/horizon-prepare/**'
-      - 'crates/horizon-release-sign/**'
-      - 'crates/horizon-system/**'
-      - 'crates/horizon-theme/**'
+      - 'crates/sunrise-bench/**'
+      - 'crates/sunrise-friends/**'
+      - 'crates/sunrise-mcp/**'
+      - 'crates/sunrise-mod-package/**'
+      - 'crates/sunrise-port-pack/**'
+      - 'crates/sunrise-prepare/**'
+      - 'crates/sunrise-release-sign/**'
+      - 'crates/sunrise-system/**'
+      - 'crates/sunrise-theme/**'
       - 'packaging/linux/**'
       - 'packaging/icons/**'
       - '.github/workflows/launcher.yml'
@@ -61,7 +61,7 @@ concurrency:
 
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
-  HORIZON_TELEMETRY_URL: "off"
+  SUNRISE_TELEMETRY_URL: "off"
 jobs:
   decide:
     runs-on: ubuntu-latest
@@ -112,35 +112,35 @@ jobs:
         include:
           - name: linux
             os: ubuntu-22.04
-            asset: horizon-launcher-linux-x86_64.tar.gz
-            binary: horizon-launcher
+            asset: sunrise-launcher-linux-x86_64.tar.gz
+            binary: sunrise-launcher
           - name: macos
             mac: true
-            asset: horizon-launcher-macos-arm64.zip
-            binary: horizon-launcher
+            asset: sunrise-launcher-macos-arm64.zip
+            binary: sunrise-launcher
             mac_arch: arm64
           - name: macos-x64
             mac: true
             target: x86_64-apple-darwin
-            asset: horizon-launcher-macos-x64.zip
-            binary: horizon-launcher
+            asset: sunrise-launcher-macos-x64.zip
+            binary: sunrise-launcher
             mac_arch: x64
           - name: windows
             os: windows-latest
-            asset: horizon-launcher-windows-x64.zip
-            binary: horizon-launcher.exe
+            asset: sunrise-launcher-windows-x64.zip
+            binary: sunrise-launcher.exe
             pe_arch: x64
-            setup_asset: horizon-launcher-setup.exe
+            setup_asset: sunrise-launcher-setup.exe
             # The C runtime linked in: without it the launcher asks for VCRUNTIME140.dll,
             # which only the Visual C++ redistributable installs.
             rustflags: -C target-feature=+crt-static
           - name: windows-arm64
             os: windows-11-vs2026-arm
             target: aarch64-pc-windows-msvc
-            asset: horizon-launcher-windows-arm64.zip
-            binary: horizon-launcher.exe
+            asset: sunrise-launcher-windows-arm64.zip
+            binary: sunrise-launcher.exe
             pe_arch: arm64
-            setup_asset: horizon-launcher-setup-arm64.exe
+            setup_asset: sunrise-launcher-setup-arm64.exe
             # The C runtime linked in, so the standalone ARM64 launcher needs no redistributable.
             rustflags: -C target-feature=+crt-static
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
@@ -150,16 +150,16 @@ jobs:
       RUSTFLAGS: ${{ matrix.rustflags }}
       # Where cargo puts the launcher: target/release, or target/<target>/release for another target.
       BIN: ${{ matrix.target && format('target/{0}/release', matrix.target) || 'target/release' }}
-      # Horizon's Azure app for Microsoft sign-in (docs/microsoft-account.md): a repository
+      # Sunrise's Azure app for Microsoft sign-in (docs/microsoft-account.md): a repository
       # variable, not a secret. Unset, the launcher says sign-in is not configured.
-      HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+      SUNRISE_MSA_CLIENT_ID: ${{ vars.SUNRISE_MSA_CLIENT_ID }}
       # The mod browser's CurseForge source (docs/mod-browser.md#curseforge): a repository secret. Unset, the
       # launcher searches Modrinth only.
-      HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
+      SUNRISE_CURSEFORGE_API_KEY: ${{ secrets.SUNRISE_CURSEFORGE_API_KEY }}
       # The release's version and tag, built in (launcher/src/backend.rs VERSION and own_tag: the tag says which
       # line it is on, docs/versioning.md); a launcher branch's build keeps Cargo.toml's.
-      HORIZON_LAUNCHER_VERSION: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.version || '' }}
-      HORIZON_LAUNCHER_TAG: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.tag || '' }}
+      SUNRISE_LAUNCHER_VERSION: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.version || '' }}
+      SUNRISE_LAUNCHER_TAG: ${{ (github.event_name != 'push' || github.ref == 'refs/heads/main') && needs.decide.outputs.tag || '' }}
     defaults:
       run:
         working-directory: launcher
@@ -207,8 +207,8 @@ jobs:
         run: |
           out=$("$BIN/${{ matrix.binary }}" --version)
           echo "$out"
-          expected="${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
-          [[ "$out" == "horizon-launcher $expected" ]] || { echo "::error::expected horizon-launcher $expected"; exit 1; }
+          expected="${SUNRISE_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}"
+          [[ "$out" == "sunrise-launcher $expected" ]] || { echo "::error::expected sunrise-launcher $expected"; exit 1; }
       - name: Only system libraries
         run: |
           file="$BIN/${{ matrix.binary }}"
@@ -219,13 +219,13 @@ jobs:
           esac
       - name: Smoke test
         env:
-          HORIZON_LAUNCHER_NO_SELF_UPDATE: '1'
-          HORIZON_GITHUB_TOKEN: ${{ github.token }}
+          SUNRISE_LAUNCHER_NO_SELF_UPDATE: '1'
+          SUNRISE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          export HORIZON_LAUNCHER_HOME="${RUNNER_TEMP//\\//}/horizon-launcher-smoke"
-          export HORIZON_HOME="$HORIZON_LAUNCHER_HOME/game"
-          rm -rf "$HORIZON_LAUNCHER_HOME"
+          export SUNRISE_LAUNCHER_HOME="${RUNNER_TEMP//\\//}/sunrise-launcher-smoke"
+          export SUNRISE_HOME="$SUNRISE_LAUNCHER_HOME/game"
+          rm -rf "$SUNRISE_LAUNCHER_HOME"
           launcher="$PWD/$BIN/${{ matrix.binary }}"
           # GitHub's API rate-limits shared runner addresses now and then: try a few times.
           retry() { for i in 1 2 3 4; do "$@" && return 0; sleep $((i * 15)); done; return 1; }
@@ -242,7 +242,7 @@ jobs:
             python3 -c "$no_build" <<<"$versions" || status=$?
             if [[ $status == 3 ]]; then
               echo "::warning::No game build has an asset for ${{ matrix.name }} yet: install not tested"
-              rm -rf "$HORIZON_LAUNCHER_HOME"
+              rm -rf "$SUNRISE_LAUNCHER_HOME"
               exit 0
             fi
             [[ $status == 0 ]] || exit $status
@@ -250,7 +250,7 @@ jobs:
           retry "$launcher" install latest
           "$launcher" versions --installed
           # `install latest` is the Nightly since #3342 (versions/nightly-<date>-<commit>), a vX.Y.Z before.
-          clients=("$HORIZON_LAUNCHER_HOME"/versions/*/horizon-client*)
+          clients=("$SUNRISE_LAUNCHER_HOME"/versions/*/sunrise-client*)
           client="${clients[0]}"
           echo "installed client: $client"
           [[ -f "$client" ]] || { echo "::error::no game installed under versions/"; exit 1; }
@@ -274,15 +274,15 @@ jobs:
           # folder, and the copy it installs uninstalls itself. HKCU of the runner only.
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             setup="$RUNNER_TEMP/setup-smoke"
-            cp "$launcher" "$RUNNER_TEMP/horizon-launcher-setup.exe"
-            "$RUNNER_TEMP/horizon-launcher-setup.exe" setup --quiet --dir "$setup"
-            installed="$setup/Horizon Launcher/horizon-launcher.exe"
+            cp "$launcher" "$RUNNER_TEMP/sunrise-launcher-setup.exe"
+            "$RUNNER_TEMP/sunrise-launcher-setup.exe" setup --quiet --dir "$setup"
+            installed="$setup/Sunrise Launcher/sunrise-launcher.exe"
             [[ -f "$installed" ]] || { echo "::error::the setup copied no launcher"; exit 1; }
             "$installed" uninstall --quiet
             [[ ! -f "$installed" ]] || { echo "::error::uninstall left the launcher"; exit 1; }
             rm -rf "$setup"
           fi
-          rm -rf "$HORIZON_LAUNCHER_HOME"
+          rm -rf "$SUNRISE_LAUNCHER_HOME"
       - name: The signing keychain, unlocked
         if: runner.os == 'macOS' && vars.MACOS_SIGN_IDENTITY != ''
         env:
@@ -294,14 +294,14 @@ jobs:
         run: |
           rm -rf dist out && mkdir -p out
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            # Horizon.app, zipped (self-update) and in a .dmg (installer), signed (and notarized with
+            # Sunrise.app, zipped (self-update) and in a .dmg (installer), signed (and notarized with
             # Developer ID): packaging/macos.
             python3 -m venv "$RUNNER_TEMP/dmg" && "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
-            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+            version=${SUNRISE_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
             DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" ../packaging/macos/package.sh "$BIN/${{ matrix.binary }}" "$version" out ${{ matrix.mac_arch }}
-            rm -rf out/Horizon.app
+            rm -rf out/Sunrise.app
           else
-            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+            version=${SUNRISE_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
             if [[ "$RUNNER_OS" == "Linux" ]]; then
               # The .tar.gz below is what the launcher updates itself from; the AppImage is what a
               # player downloads and double-clicks, and it replaces itself instead
@@ -349,7 +349,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
-          pattern: horizon-launcher-*
+          pattern: sunrise-launcher-*
           merge-multiple: true
       - name: Sign the checksums (SHA256SUMS, SHA256SUMS.sig)
         env:
@@ -357,7 +357,7 @@ jobs:
           RELEASE_SIGNING_KEY_NEXT: ${{ secrets.RELEASE_SIGNING_KEY_NEXT }}
           EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
           TAG: ${{ needs.decide.outputs.tag }}
-        run: bash tools/ci/sign_release.sh "$TAG" dist/horizon-launcher-*
+        run: bash tools/ci/sign_release.sh "$TAG" dist/sunrise-launcher-*
       - uses: actions/upload-artifact@v7
         with:
           name: signature
@@ -398,13 +398,13 @@ jobs:
           EPHEMERAL: ${{ needs.decide.outputs.dry_run == 'true' && 'yes' || '' }}
         run: |
           key=(); [[ -n "$EPHEMERAL" ]] && key=(--key "$(cat dist/ephemeral.pub)")
-          cargo run --locked --quiet -p horizon-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist
-      # Never marked latest: Horizon's own releases stay the repository's latest.
+          cargo run --locked --quiet -p sunrise-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist
+      # Never marked latest: Sunrise's own releases stay the repository's latest.
       - name: The Windows ARM64 launcher, if it built
         # Its build may fail without holding the release (continue-on-error): the release then has no ARM64
         # files, and ARM64 launchers stay on their version until one has (backend::launcher_update_from).
         run: |
-          for file in horizon-launcher-windows-arm64.zip horizon-launcher-setup-arm64.exe; do
+          for file in sunrise-launcher-windows-arm64.zip sunrise-launcher-setup-arm64.exe; do
             [[ -f "dist/$file" ]] || echo "::warning::$file is missing: this release goes out without it"
           done
       - name: Publish ${{ needs.decide.outputs.tag }}
@@ -415,7 +415,7 @@ jobs:
         run: |
           signature=(); [[ -f dist/SHA256SUMS.sig ]] && signature=(dist/SHA256SUMS.sig)
           gh release create "$TAG" --target "${{ needs.decide.outputs.head }}" --title "$(cat notes/title.txt)" \
-            --notes-file notes/body.md --latest=false dist/horizon-launcher-* dist/SHA256SUMS "${signature[@]}"
+            --notes-file notes/body.md --latest=false dist/sunrise-launcher-* dist/SHA256SUMS "${signature[@]}"
       - name: Dry run, the release that would be published
         if: needs.decide.outputs.dry_run == 'true'
         run: |

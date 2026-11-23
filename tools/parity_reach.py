@@ -1,21 +1,21 @@
 """Which of a harness's Rust sources its probes can reach, for `parity.py --changed`.
 
-Cargo's dep-info names every source file of every crate a probe links, so a change anywhere in horizon-client
-selected every harness whose probe links horizon-client. This module narrows a harness's recorded dependencies to
+Cargo's dep-info names every source file of every crate a probe links, so a change anywhere in sunrise-client
+selected every harness whose probe links sunrise-client. This module narrows a harness's recorded dependencies to
 the files holding an item its entry points (the probe modules it ran, the binaries it built) can reach, over a graph
 of the workspace's current sources whose nodes are items:
 
 - everything in an entry is reached, and so is everything in a Rust file the module tree doesn't place (an
   `include!`d source);
 - a module is open when it holds reached code, or is named in a path (`name::`, `use ...name`) by reached code while
-  its parent is open; a library's root once reached code names its crate (`horizon_world`);
+  its parent is open; a library's root once reached code names its crate (`sunrise_world`);
 - a free item (fn, struct, enum, union, trait, type, const, static, an item-level macro call's items) is reached when
   reached code in its own module or below it mentions its name, or when its module is open and reached code names
   it in a path or an import, or when its module is glob-imported (`use m::*`) and its name is mentioned;
 - an inherent impl's methods and constants are reached one by one, by name, once their type is; a trait impl once
   its trait and its type are (a std or outside name always is, a generic parameter needs nothing); a macro once
   invoked; a `pub use` like a free item named by everything it imports;
-- "a crate's reached code" covers the crates it names (`horizon_world::`), directly or through one that does, and
+- "a crate's reached code" covers the crates it names (`sunrise_world::`), directly or through one that does, and
   code under `#[cfg(test)]` or `#[test]` is left out (probes are never test builds).
 
 Names match by spelling, so a file can be kept for a name it never meant: the graph only over-approximates. A
@@ -265,11 +265,11 @@ class SourceGraph:
                           if self.targets(manifest.parent).get(name, (None,))[0] == kind.rstrip("s")]
                 if len(owners) == 1:
                     packages = [*packages, owners[0]]
-            if not name and kind in ("bins", "examples") and "horizon-client" in packages \
-                    and "horizon-client-lib" not in packages \
-                    and (self.root / "crates/horizon-client-lib/Cargo.toml").is_file():
+            if not name and kind in ("bins", "examples") and "sunrise-client" in packages \
+                    and "sunrise-client-lib" not in packages \
+                    and (self.root / "crates/sunrise-client-lib/Cargo.toml").is_file():
                 # Broad records predate the client package split too.
-                packages = [*packages, "horizon-client-lib"]
+                packages = [*packages, "sunrise-client-lib"]
             for package in packages:
                 crate = self.root / "crates" / package
                 targets = self.targets(crate)
@@ -662,7 +662,7 @@ class SourceGraph:
                 label = (item.get("names") or [item["kind"]])[0] if member is None else item["members"][member]["name"]
                 source = sets_of(node, item)
                 why = f"{path} ({label})"
-                # A library's root opens once reached code names the crate (`horizon_world::`, `use horizon_command
+                # A library's root opens once reached code names the crate (`sunrise_world::`, `use sunrise_command
                 # as command`): its items are out of reach until then.
                 for word in (source["mentions"] | source["paths"]) & idents.keys():
                     root = self.library_roots[idents[word]]

@@ -45,7 +45,7 @@ def target(game_dir, name):
     """REA admits JADX targets by their .apk name; JADX reads the class files either way."""
     source = game_dir / "jars" / f"{name}.jar"
     if not source.exists():
-        raise SystemExit(f"{source} is missing; run cargo run --release -p horizon-prepare -- --prepare")
+        raise SystemExit(f"{source} is missing; run cargo run --release -p sunrise-prepare -- --prepare")
     copy = lab.LOCAL / "rea" / f"{name}-{lab.digest(source, 'sha256')[:16]}.apk"
     if not copy.exists():
         copy.parent.mkdir(parents=True, exist_ok=True)

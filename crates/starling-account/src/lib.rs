@@ -1,6 +1,6 @@
 //! Microsoft account sign-in inside the game, for Starling (a phone has no launcher): the OAuth
 //! device-code flow, then Xbox Live, XSTS and the Minecraft services, the game ownership check
-//! and the profile. It follows Horizon's launcher (`launcher/src/account.rs`), which signs in
+//! and the profile. It follows Sunrise's launcher (`launcher/src/account.rs`), which signs in
 //! for the desktop game and hands it a session file; here the game keeps the session itself.
 //!
 //! The Azure app is Starling's, approved by Mojang for these scopes only: `XboxLive.signin` and

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Compare Horizon's environment attributes with the vanilla 26.3 attribute system.
+"""Compare Sunrise's environment attributes with the vanilla 26.3 attribute system.
 
 The Java oracle builds vanilla's `EnvironmentAttributeSystem` from the data pack
 (dimension attributes, one biome's attributes, the dimension timelines and the
 weather layers) and prints every visual/gameplay attribute for a grid of
 dimensions, world times, rain/thunder levels and biomes.
-`examples/probe/environment_fixture` samples the same cases through Horizon's
-`Environment::sample` + `apply_weather`; every attribute Horizon computes must
+`examples/probe/environment_fixture` samples the same cases through Sunrise's
+`Environment::sample` + `apply_weather`; every attribute Sunrise computes must
 agree with vanilla.
 
   test_environment_render_parity.py [--tolerance EPS]
@@ -54,7 +54,7 @@ def main():
     resources = lab.RESOURCES
     inputs = build / 'inputs.txt'; inputs.write_text('\n'.join(cases(resources)) + '\n')
     classes = build / 'classes'; classes.mkdir(exist_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEnvironmentOracle.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaEnvironmentOracle.java'
     deps = os.pathsep.join(map(str, libraries))
 
     def run(command, name):
@@ -62,11 +62,11 @@ def main():
             result = subprocess.run(list(map(str, command)), cwd=lab.ROOT, timeout=3600, stdout=log, stderr=subprocess.STDOUT)
         if result.returncode:
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', lab.ROOT / 'mods/horizon/src/test/java',
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', lab.ROOT / 'mods/sunrise/src/test/java',
          '-cp', str(jars['server']) + os.pathsep + deps, '-d', classes, oracle], 'compile-java')
     run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), deps]),
-         'dev.horizonlab.parity.VanillaEnvironmentOracle', inputs, build / 'vanilla.jsonl'], 'vanilla')
-    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe', '--',
+         'dev.sunriselab.parity.VanillaEnvironmentOracle', inputs, build / 'vanilla.jsonl'], 'vanilla')
+    run(['cargo', 'run', '--quiet', '--profile', 'fast', '-p', 'sunrise-client-lib', '--example', 'client_probe', '--',
          'environment_fixture', resources, inputs, build / 'rust.jsonl'], 'rust')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]
@@ -87,7 +87,7 @@ def main():
     for key, items in sorted(bad.items()):
         print(f'MISMATCH {key}: {len(items)} cases, e.g. {items[0]}')
     if uncovered:
-        print('attributes Horizon does not model:', ', '.join(sorted(uncovered)))
+        print('attributes Sunrise does not model:', ', '.join(sorted(uncovered)))
     if bad:
         sys.exit(f'{len(bad)} attributes differ from vanilla')
     print('environment parity ok')

@@ -2,7 +2,7 @@
 """Keep the canonical mobs::Seen path while moving its source out of mobs.rs."""
 from pathlib import Path
 
-source = Path('crates/horizon-client/src/mobs.rs')
+source = Path('crates/sunrise-client/src/mobs.rs')
 destination = source.parent / 'mobs/seen.rs'
 text = source.read_text()
 start = '/// A snapshot of another entity mobs can see this tick.\n'

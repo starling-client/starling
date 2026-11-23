@@ -7,7 +7,7 @@ throwables (`ThrowableProjectile.tick`), the fireballs and wind charges (`Abstra
 shulker bullets get it through the `applyEffectsFromBlocks` of their tick, a throwable also on its first tick
 before gravity (`handleFirstTickBubbleColumn`).
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Soul sand
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Soul sand
 under two pools of water four deep makes two upward bubble columns, left to form with ticking on. Ticking is then
 frozen and a snowball with no gravity and a small fireball with no acceleration, both still, are summoned at the bottom
 of one column each; the servers are stepped and after every step each projectile's exact Pos and Motion are read with
@@ -104,17 +104,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    sunrise = run('sunrise', sunrise_server, world, build)
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'projectile bubble column: {len(vanilla)} lines identical')
 

@@ -60,17 +60,17 @@ def main():
     lock,jars,libraries=base.verify_artifacts()
     build=lab.LOCAL/'rust-ground-support-parity';build.mkdir(exist_ok=True)
     report_path=build/'report.json';report_path.unlink(missing_ok=True)
-    oracle_dir=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity'
+    oracle_dir=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity'
     oracles=[oracle_dir/(name+'.java') for name in ['VanillaBlockCollisionScanOracle','VanillaGroundStateOracle','VanillaFaceSupportOracle']]
     sources=[*oracles,Path(__file__),lab.ROOT/'tools/test_block_collision_scan_parity.py',lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock']
-    for crate in ['horizon-core','horizon-world']:sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
+    for crate in ['sunrise-core','sunrise-world']:sources += [lab.ROOT/'crates'/crate/'Cargo.toml',*sorted((lab.ROOT/'crates'/crate/'src').rglob('*.rs'))]
     names=['block_collision_scan_fixture','ground_state_fixture']
-    sources += [lab.ROOT/'crates/horizon-world/examples/probe'/(name+'.rs') for name in names]
+    sources += [lab.ROOT/'crates/sunrise-world/examples/probe'/(name+'.rs') for name in names]
     tested=base.source_hashes(sources)
     classes=build/'classes';classes.mkdir(exist_ok=True);dependencies=os.pathsep.join(map(str,libraries))
     def run(command,name):
         with (build/(name+'.log')).open('w') as log:subprocess.run(list(map(str,command)),cwd=lab.ROOT,check=True,timeout=3600,stdout=log,stderr=subprocess.STDOUT)
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependencies,'-d',classes,*oracles],'compile-java')
     counts={};fixture_paths=[]
     for name,corpus in [('selection',selection_corpus),('state',state_corpus)]:
         directory=build/name;directory.mkdir(exist_ok=True);path=directory/'inputs.txt';count=0
@@ -78,7 +78,7 @@ def main():
             for f in corpus():output.write(json.dumps(f,separators=(',',':'))+'\n');count+=1
         counts[name]=count;fixture_paths.append(path)
     fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--locked','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--locked','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version','1'],cwd=lab.ROOT))
     for group,name in zip(['selection','state'],names):
         binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe');run([binary,name,build/group],'rust-'+group)
@@ -87,7 +87,7 @@ def main():
         results=[]
         for group,oracle in zip(['selection','state'],['VanillaBlockCollisionScanOracle','VanillaGroundStateOracle']):
             directory=build/group
-            run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependencies]),'dev.horizonlab.parity.'+oracle,side,directory],side+'-'+group)
+            run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jar),dependencies]),'dev.sunriselab.parity.'+oracle,side,directory],side+'-'+group)
             reference=directory/(side+'.txt');matched=base.compare(reference,directory/'rust.txt')
             results.append(dict(group=group,matched_output_lines=matched,output_sha256=lab.digest(reference,'sha256'),rust_output_sha256=lab.digest(directory/'rust.txt','sha256')))
             print(f'{side}: {matched:,} ground-{group} lines match',flush=True)

@@ -1,4 +1,4 @@
-// Keeps the "Horizon roadmap" board (user project 1) in step with arismoko/horizon.
+// Keeps the "Sunrise roadmap" board (user project 1) in step with arismoko/horizon.
 // Every open issue and PR is on the board; Status follows GitHub state:
 //   merged or closed            -> Done
 //   open PR (draft)             -> In progress
@@ -12,7 +12,7 @@
 // Pinned issues stay off the board.
 module.exports = async ({ github, context, core }) => {
   const FULL = context.eventName === 'schedule' || context.eventName === 'workflow_dispatch';
-  const OWNER = 'arismoko', REPO = 'horizon', NUMBER = 1;
+  const OWNER = 'arismoko', REPO = 'sunrise', NUMBER = 1;
   // GitHub answers 502 on heavy pages now and then; retry those a few times.
   const q = async (query, vars = {}) => {
     for (let i = 0; ; i++) {

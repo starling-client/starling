@@ -8,14 +8,14 @@ files are appended to, never replaced wholesale. A second apply refuses.
 
 Each entry requires a domain (`world`, `block`, `item`, `entity`, `client`,
 `command`, `text`, `content` or `wire`) and a lower-case topic. Values go to
-`crates/horizon-mod-vocab/src/<domain>/<topic>.rs`. New topic files are registered in
+`crates/sunrise-mod-vocab/src/<domain>/<topic>.rs`. New topic files are registered in
 that domain's `mod.rs`; the domain itself must already be registered by the API.
 `lib` and `mod` are not valid topics. Exports, backend areas and game conversion
 modules retain their topic-based filenames. Choose distinct topics for unrelated
 areas, even when they belong to different domains.
 
 Every emitted value, including a handle's hidden fields projection, explicitly
-derives `horizon_mod_api_macros::Wire`. There is no hand-written codec or generator
+derives `sunrise_mod_api_macros::Wire`. There is no hand-written codec or generator
 fallback. Handles use `WorldEpoch`. Default API names remove an engine leaf's
 `Native` prefix; explicit API names with that prefix are refused. Engine paths and
 engine construction expressions are preserved verbatim.

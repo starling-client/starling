@@ -41,7 +41,7 @@ fn nether(biome: &str, temperature: f32, humidity: f32, offset: f32) -> BiomePoi
 #[derive(Default)]
 pub struct RegionsMod;
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for RegionsMod {
     fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
         // A deliberately simplified snowy layout, not vanilla's parameter points: the bands follow

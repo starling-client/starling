@@ -10,7 +10,7 @@ a repeated run after extraction is a no-op. Imports are a separate manual step.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "crates/horizon-client/src/game.rs"
+SOURCE = ROOT / "crates/sunrise-client/src/game.rs"
 TARGET = SOURCE.parent / "game/blocks/level_access.rs"
 MARKER = "impl LevelAccess for GameLevel<'_> {\n"
 

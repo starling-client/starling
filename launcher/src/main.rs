@@ -1,4 +1,4 @@
-//! Horizon launcher: installs Horizon builds, prepares them from the player's own Minecraft,
+//! Sunrise launcher: installs Sunrise builds, prepares them from the player's own Minecraft,
 //! and starts the client or a dedicated server.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
@@ -92,15 +92,15 @@ use gpui::{
     KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions, Pixels, Point,
     SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
 };
-use horizon_launcher::account::{self, Accounts, SignIn, SignInState};
-use horizon_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
-use horizon_launcher::i18n::{self, tr, trf};
-use horizon_launcher::instances;
-use horizon_launcher::native_mods;
-use horizon_launcher::native_status;
-use horizon_launcher::storage;
-use horizon_launcher::telemetry;
-use horizon_launcher::{build_import, identity};
+use sunrise_launcher::account::{self, Accounts, SignIn, SignInState};
+use sunrise_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
+use sunrise_launcher::i18n::{self, tr, trf};
+use sunrise_launcher::instances;
+use sunrise_launcher::native_mods;
+use sunrise_launcher::native_status;
+use sunrise_launcher::storage;
+use sunrise_launcher::telemetry;
+use sunrise_launcher::{build_import, identity};
 use native_consent::PendingConsent;
 use scrollbar::Scrollbar;
 use std::borrow::Cow;
@@ -127,26 +127,26 @@ enum Page {
 }
 
 impl Page {
-    /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`,
+    /// `SUNRISE_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
-        let page = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
+        let page = match std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
-            Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
-            Ok("shop") if horizon_cosmetics::forced() => Page::Shop,
+            Ok("wardrobe") if sunrise_cosmetics::forced() => Page::Wardrobe,
+            Ok("shop") if sunrise_cosmetics::forced() => Page::Shop,
             Ok("versions") => Page::Versions,
             Ok("settings") => Page::Settings,
             _ => Page::Play,
         };
         // The data folder did not open: start on Settings, where the message and the two
-        // recoveries are (an explicit HORIZON_LAUNCHER_PAGE still wins, for screenshots).
+        // recoveries are (an explicit SUNRISE_LAUNCHER_PAGE still wins, for screenshots).
         page_after_startup(
             page,
-            horizon_launcher::data_location::startup_error().is_some(),
+            sunrise_launcher::data_location::startup_error().is_some(),
         )
     }
 
@@ -200,9 +200,9 @@ struct Crash {
 
 /// The opening: the wordmark holds at least `OPENING_HOLD` (until the release
 /// list is in, at most `OPENING_MAX`), then the launcher appears over `OPENING_REVEAL`.
-const OPENING_HOLD: Duration = horizon_theme::OPENING_HOLD;
-const OPENING_MAX: Duration = horizon_theme::OPENING_MAX;
-const OPENING_REVEAL: Duration = horizon_theme::OPENING_REVEAL;
+const OPENING_HOLD: Duration = sunrise_theme::OPENING_HOLD;
+const OPENING_MAX: Duration = sunrise_theme::OPENING_MAX;
+const OPENING_REVEAL: Duration = sunrise_theme::OPENING_REVEAL;
 
 /// The phase of the opening at one moment: how far the reveal has gone, 0 to 1.
 struct Opening {
@@ -213,7 +213,7 @@ struct Opening {
 }
 
 fn ease_out_cubic(x: f32) -> f32 {
-    horizon_theme::ease_out_cubic(x)
+    sunrise_theme::ease_out_cubic(x)
 }
 
 enum Load<T> {
@@ -246,9 +246,9 @@ struct Launcher {
     update_error: Option<String>,
     self_update: SelfUpdate,
     self_update_hidden: bool,
-    /// The Horizon version being installed as an update, and whether it becomes the selected one.
+    /// The Sunrise version being installed as an update, and whether it becomes the selected one.
     update_install: Option<(String, bool)>,
-    /// The Horizon version being installed because an instance was made or saved to play it: it
+    /// The Sunrise version being installed because an instance was made or saved to play it: it
     /// becomes the launcher's version only when the launcher has none.
     instance_install: Option<String>,
     /// One for an instance waiting for the install running now to end.
@@ -317,8 +317,8 @@ struct Launcher {
     account_menu: bool,
     /// The glass sidebar's ⋮ menu (`frame.rs`).
     row_menu: frame::RowMenu,
-    /// The glass look's colours for the player's accent (`horizon_theme::glass`).
-    look: horizon_theme::glass::Glass,
+    /// The glass look's colours for the player's accent (`sunrise_theme::glass`).
+    look: sunrise_theme::glass::Glass,
     /// Where the mouse went down to close a menu by pressing outside it, so that the
     /// same press, ending on the menu's own button, doesn't open it again.
     menu_closed_at: Option<Point<Pixels>>,
@@ -332,10 +332,10 @@ struct Launcher {
     shop: wardrobe_page::Shop,
     /// The cosmetics service's last word on the founder set's window (`GET /v1/shop`): whether
     /// the top bar has the Wardrobe page with cosmetics off (`wardrobe_shown`).
-    shop_status: Option<horizon_launcher::wardrobe::Claim>,
+    shop_status: Option<sunrise_launcher::wardrobe::Claim>,
     /// The selected account's own answer on it from its last Wardrobe visit, kept on disk (a
     /// preview the service grants it, its claim).
-    shop_kept: Option<horizon_launcher::wardrobe::Claim>,
+    shop_kept: Option<sunrise_launcher::wardrobe::Claim>,
     /// Work the look out again on the next frame (a launcher theme put on or taken off).
     restyle: bool,
     /// Why the last picture for Home's background was refused.
@@ -410,7 +410,7 @@ struct Launcher {
     /// The instance the running game plays and when it started: its play time grows on exit.
     client_run: Option<(String, Instant)>,
     /// The running game's instance variables, for its post-exit command.
-    client_vars: horizon_launcher::launch::Vars,
+    client_vars: sunrise_launcher::launch::Vars,
     /// Settings' Game arguments field: the line, whether it has focus, and its focus handle.
     args_input: line_edit::LineEdit,
     args_focused: bool,
@@ -423,7 +423,7 @@ struct Launcher {
     collection: collection::Collection,
     /// Settings' "Connect an AI agent" (`agents_page`).
     agents: agents_page::AgentsUi,
-    /// How many play Horizon now, while the server answers ("N playing now" on the Play page).
+    /// How many play Sunrise now, while the server answers ("N playing now" on the Play page).
     playing: Option<u64>,
     /// How many play on the official server now, while it answers ("M on the official SMP").
     official_players: Option<u64>,
@@ -459,22 +459,22 @@ struct Launcher {
     /// Modrinth projects' icon URLs (`instance_mods.rs`).
     project_icons: instance_mods::ProjectIcons,
     play_pressed: Option<Instant>,
-    /// `horizon-launcher benchmark` started this window to measure it.
+    /// `sunrise-launcher benchmark` started this window to measure it.
     bench: Option<perf::Bench>,
     /// The Modpacks page: the imported packs (read when the page first opens), the one shown,
     /// the report's filter, and the pipeline step running now with its log.
-    packs: Vec<horizon_launcher::modpacks::Imported>,
-    /// Modpacks installed from Horizon's registry, each its own profile.
-    registry_packs: Vec<horizon_launcher::browser::horizon::pack::Installed>,
+    packs: Vec<sunrise_launcher::modpacks::Imported>,
+    /// Modpacks installed from Sunrise's registry, each its own profile.
+    registry_packs: Vec<sunrise_launcher::browser::sunrise::pack::Installed>,
     packs_loaded: Option<Instant>,
     pack_open: Option<String>,
-    pack_filter: Option<horizon_port_pack::report::Status>,
+    pack_filter: Option<sunrise_port_pack::report::Status>,
     pack_busy: bool,
     pack_log: VecDeque<String>,
     pack_error: Option<String>,
     /// Other launchers' modpacks on this computer, offered above the imported ones, and whether
     /// the scan for them runs now.
-    found_packs: Vec<horizon_launcher::other_launchers::Found>,
+    found_packs: Vec<sunrise_launcher::other_launchers::Found>,
     found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
@@ -503,7 +503,7 @@ struct Launcher {
     /// The selected instance's desktop shortcut (`shortcut_page.rs`).
     shortcuts: shortcut_page::Shortcuts,
     /// The player's servers, for the sidebar until the Servers page has read them.
-    side_servers: Vec<horizon_launcher::servers::Entry>,
+    side_servers: Vec<sunrise_launcher::servers::Entry>,
     /// The pixel art made for this window (`art.rs`), and pictures downloaded by URL.
     sky: sky::Sky,
     /// The pixel sunset of the new design (dark appearance): its own view, so a frame of it
@@ -517,7 +517,7 @@ struct Launcher {
 
 impl Launcher {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        horizon_launcher::storage::eviction::cleanup_after_start();
+        sunrise_launcher::storage::eviction::cleanup_after_start();
         let (tx, rx) = channel();
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
             this.theme = this.settings_theme(window);
@@ -570,14 +570,14 @@ impl Launcher {
         }
         // Release builds on Linux put their entry back in the applications menu when there is
         // none or it starts a program that is gone (a moved or deleted binary), never over one
-        // that works; `HORIZON_LAUNCHER_DESKTOP_ENTRY=1` does it in a development build.
+        // that works; `SUNRISE_LAUNCHER_DESKTOP_ENTRY=1` does it in a development build.
         if cfg!(target_os = "linux")
             && settings.desktop_entry()
             && (!cfg!(debug_assertions)
-                || std::env::var_os("HORIZON_LAUNCHER_DESKTOP_ENTRY").is_some())
+                || std::env::var_os("SUNRISE_LAUNCHER_DESKTOP_ENTRY").is_some())
         {
             std::thread::spawn(|| {
-                let _ = horizon_launcher::desktop::repair(backend::exe_path());
+                let _ = sunrise_launcher::desktop::repair(backend::exe_path());
             });
         }
         let installed = backend::installed();
@@ -614,7 +614,7 @@ impl Launcher {
             checked: None,
             update_error: None,
             // The installer the last Update started could not put the new launcher in place.
-            self_update: horizon_launcher::update_handoff::take_failure()
+            self_update: sunrise_launcher::update_handoff::take_failure()
                 .map_or(SelfUpdate::Idle, |e| SelfUpdate::Stuck(Some(e))),
             self_update_hidden: false,
             update_install: None,
@@ -654,7 +654,7 @@ impl Launcher {
             language_menu: false,
             account_menu: false,
             row_menu: Default::default(),
-            look: horizon_theme::glass::Glass::default_look(),
+            look: sunrise_theme::glass::Glass::default_look(),
             menu_closed_at: None,
             wardrobe: None,
             wardrobe_marks: Default::default(),
@@ -770,7 +770,7 @@ impl Launcher {
             console: Default::default(),
             aside: while_playing::Aside::new(window.window_handle()),
             shortcuts: Default::default(),
-            side_servers: horizon_launcher::servers::list(),
+            side_servers: sunrise_launcher::servers::list(),
             sky: sky::Sky::default(),
             scene: cx.new(|_| scene::Scene::new()),
             sky_wake: None,
@@ -808,11 +808,11 @@ impl Launcher {
             this.preparing = true;
             this.play_when_prepared = this.selected().cloned();
         }
-        // `HORIZON_LAUNCHER_PAGE=new-instance`: the dialog open on Modded, for screenshots
-        // (`new-instance-horizon`, `new-instance-vanilla`: on those).
-        let kind = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
+        // `SUNRISE_LAUNCHER_PAGE=new-instance`: the dialog open on Modded, for screenshots
+        // (`new-instance-sunrise`, `new-instance-vanilla`: on those).
+        let kind = match std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref() {
             Ok("new-instance") => Some(new_instance::NewKind::Modded),
-            Ok("new-instance-horizon") => Some(new_instance::NewKind::Horizon),
+            Ok("new-instance-sunrise") => Some(new_instance::NewKind::Sunrise),
             Ok("new-instance-vanilla") => Some(new_instance::NewKind::Vanilla),
             _ => None,
         };
@@ -820,12 +820,12 @@ impl Launcher {
             this.open_instance_dialog(None);
             this.pick_kind(kind, cx);
         }
-        if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
+        if std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
             this.open_instance_dialog(this.selected_instance().cloned());
         }
         if cfg!(debug_assertions)
             && matches!(
-                std::env::var("HORIZON_LAUNCHER_PAGE").as_deref(),
+                std::env::var("SUNRISE_LAUNCHER_PAGE").as_deref(),
                 Ok("wardrobe" | "shop")
             )
         {
@@ -976,7 +976,7 @@ impl Launcher {
     /// Update: the window closes, the installer puts the new launcher in place and starts it.
     /// When another launcher already put it there, this one only restarts.
     fn apply_launcher_update(&mut self, cx: &mut App) {
-        match horizon_launcher::update_handoff::start_now() {
+        match sunrise_launcher::update_handoff::start_now() {
             Ok(true) => {
                 servers_page::keep_running_through_update();
                 shut_down(cx)
@@ -986,10 +986,10 @@ impl Launcher {
         }
     }
 
-    /// Installs the Horizon version the last check found, keeping the player's choice of
+    /// Installs the Sunrise version the last check found, keeping the player's choice of
     /// version unless they were on the newest one.
     fn install_update(&mut self) {
-        let Some(release) = self.updates.horizon.clone() else {
+        let Some(release) = self.updates.sunrise.clone() else {
             return;
         };
         if self.installing.is_some() || self.removing.contains(&release.tag) {
@@ -1202,14 +1202,14 @@ impl Launcher {
                     match result {
                         Ok(()) => {
                             if as_update.is_some()
-                                && horizon_launcher::nightly::date_of(&tag).is_some()
+                                && sunrise_launcher::nightly::date_of(&tag).is_some()
                             {
                                 if let Err(e) = backend::mark_auto_installed(&tag) {
                                     eprintln!("Could not mark updated Nightly {tag}: {e}");
                                 }
                             }
-                            if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
-                                self.updates.horizon = None;
+                            if self.updates.sunrise.as_ref().is_some_and(|r| r.tag == tag) {
+                                self.updates.sunrise = None;
                             }
                             // An instance's own version leaves the other instances on theirs.
                             let select = as_update.is_none_or(|(_, select)| select)
@@ -1315,7 +1315,7 @@ impl Launcher {
                     };
                     self.self_update = match result {
                         Ok(staged) => {
-                            horizon_launcher::update_handoff::set_pending(staged);
+                            sunrise_launcher::update_handoff::set_pending(staged);
                             SelfUpdate::Ready(version)
                         }
                         Err(e) => SelfUpdate::Failed(e),
@@ -1396,7 +1396,7 @@ impl Launcher {
                                 }
                                 if let Some(i) = instances::list().into_iter().find(|i| i.id == id)
                                 {
-                                    horizon_launcher::launch::run_after_exit(
+                                    sunrise_launcher::launch::run_after_exit(
                                         &i.launch, &i.home, &vars,
                                     );
                                 }
@@ -1415,7 +1415,7 @@ impl Launcher {
                             };
                             if let Some(api) = switched {
                                 self.client_error = Some(trf(
-                                    "Horizon's Vulkan renderer crashed while starting on this \
+                                    "Sunrise's Vulkan renderer crashed while starting on this \
                                      graphics card, so the game now uses {api}. Press Play to \
                                      start it again. Video Settings > Graphics API switches back.",
                                     &[("api", api)],
@@ -1501,7 +1501,7 @@ impl Launcher {
         for home in homes {
             match backend::switch_from_auto(&home, api) {
                 Ok(changed) => switched |= changed,
-                Err(e) => eprintln!("Horizon launcher: could not switch to {label}: {e}"),
+                Err(e) => eprintln!("Sunrise launcher: could not switch to {label}: {e}"),
             }
         }
         switched.then_some(label)
@@ -1628,12 +1628,12 @@ impl Launcher {
         let Some(tag) = self.selected().cloned() else {
             return;
         };
-        horizon_launcher::mojang::CANCEL.store(false, Ordering::Relaxed);
+        sunrise_launcher::mojang::CANCEL.store(false, Ordering::Relaxed);
         let minecraft = self
             .settings
             .minecraft_dir
             .clone()
-            .unwrap_or_else(|| horizon_platform::prepare::artifacts::minecraft_dir(None));
+            .unwrap_or_else(|| sunrise_platform::prepare::artifacts::minecraft_dir(None));
         self.prepare_log.clear();
         self.prepare_error = None;
         self.prepare_log
@@ -1680,8 +1680,8 @@ impl Launcher {
             .filter(|i| i.java.is_some())
             .cloned();
         if let Some(instance) = java {
-            // Mojang's game: no Horizon version or preparation, only no game already running.
-            // It joins a server; a friend's code and opening a world are Horizon's.
+            // Mojang's game: no Sunrise version or preparation, only no game already running.
+            // It joins a server; a friend's code and opening a world are Sunrise's.
             self.joining = None;
             let server = self
                 .quick_play
@@ -1723,7 +1723,7 @@ impl Launcher {
             let cmd = backend::java_game(&instance, server.as_deref(), &log).map(|mut cmd| {
                 let vars = instance.vars(cmd.get_program());
                 cmd.envs(vars.iter().map(|(k, v)| (k, v)));
-                (horizon_launcher::launch::wrap(cmd, &instance.launch), vars)
+                (sunrise_launcher::launch::wrap(cmd, &instance.launch), vars)
             });
             let _ = tx.send(Msg::JavaGame(instance.id, instance.home, cmd));
         });
@@ -1737,7 +1737,7 @@ impl Launcher {
     }
 
     /// Whether the selected instance's version can start now, from a shortcut (a server's Join,
-    /// a world's Play, a friend's code): Horizon's only, never a Java instance.
+    /// a world's Play, a friend's code): Sunrise's only, never a Java instance.
     pub(crate) fn can_start_selected(&self) -> bool {
         self.selected_instance().is_none_or(|i| i.java.is_none())
             && self.selected().is_some_and(|tag| self.can_start(tag))
@@ -1787,7 +1787,7 @@ impl Launcher {
                 }
             }
             backend::play_step("reading the sign-in");
-            let session = if horizon_launcher::developer_offline::enabled(&tag) {
+            let session = if sunrise_launcher::developer_offline::enabled(&tag) {
                 Ok(None)
             } else {
                 account::session_for_game(&backend::game_home()).map(Some)
@@ -1894,7 +1894,7 @@ impl Launcher {
         self.cancel_sign_in();
         // The code page offers a private window: find the default browser meanwhile.
         std::thread::spawn(|| {
-            horizon_launcher::private_window::detected();
+            sunrise_launcher::private_window::detected();
         });
         self.sign_in = Some(match &target {
             Some(account) => SignIn::start_for(account.clone()),
@@ -2014,7 +2014,7 @@ fn hover_fade(
     let key = |dir: &str, at: Instant| {
         ElementId::named_usize(format!("{id}-{dir}"), (at - start).as_micros() as usize)
     };
-    let ease = || motion::eased(horizon_theme::QUICK);
+    let ease = || motion::eased(sunrise_theme::QUICK);
     if let Some((_, at)) = state.on.as_ref().filter(|(h, _)| h == id) {
         return layer()
             .with_animation(key("in", *at), ease(), paint)
@@ -2058,13 +2058,13 @@ fn version_tag(tag: &str) -> Div {
         .line_height(px(28.))
         .font_weight(FontWeight::MEDIUM)
         .child(
-            horizon_launcher::nightly::label(tag)
+            sunrise_launcher::nightly::label(tag)
                 .or_else(|| build_import::label(tag))
                 .unwrap_or_else(|| tag.trim_start_matches('v').to_string()),
         )
 }
 
-/// Horizon's mark: two stems, their reflection below, and the horizon across in the accent.
+/// Sunrise's mark: two stems, their reflection below, and the horizon across in the accent.
 fn mark(size: f32, t: &Theme) -> Div {
     let u = size / 16.;
     let stem = |x: f32, y: f32, color: Hsla| {
@@ -2184,14 +2184,14 @@ fn button(
     keyboard(track_hover(base, id), &t).active(|s| s.opacity(theme::PRESSED).top(px(1.)))
 }
 
-/// Copies to the clipboard, or into `HORIZON_LAUNCHER_CLIPBOARD` when a test run sets it
-/// (`horizon_launcher::desktop_seams`).
+/// Copies to the clipboard, or into `SUNRISE_LAUNCHER_CLIPBOARD` when a test run sets it
+/// (`sunrise_launcher::desktop_seams`).
 fn copy_to_clipboard(cx: &mut App, item: gpui::ClipboardItem) {
     match item.text() {
         Some(text) => glass_toast::say(trf("Copied {text}", &[("text", &text)])),
         None => glass_toast::say(tr("Copied the picture")),
     }
-    if let Some(file) = horizon_launcher::desktop_seams::clipboard_file() {
+    if let Some(file) = sunrise_launcher::desktop_seams::clipboard_file() {
         let bytes = match item.entries().first() {
             Some(gpui::ClipboardEntry::Image(image)) => image.bytes.clone(),
             _ => item.text().unwrap_or_default().into_bytes(),
@@ -2649,7 +2649,7 @@ fn thousands(n: u64) -> String {
 fn caps(s: impl AsRef<str>) -> Div {
     // The glass look writes these as the mockup's small headings (`h3`): 13 px, medium.
     if glass_ui::on() {
-        return glass_ui::text(13., FontWeight::MEDIUM, horizon_theme::glass::ink::BODY)
+        return glass_ui::text(13., FontWeight::MEDIUM, sunrise_theme::glass::ink::BODY)
             .line_height(px(19.5))
             .child(s.as_ref().to_string());
     }
@@ -2797,7 +2797,7 @@ impl Launcher {
             )
     }
 
-    /// The sidebar, from the top of the window: the wordmark, Horizon and the imported modpacks,
+    /// The sidebar, from the top of the window: the wordmark, Sunrise and the imported modpacks,
     /// the player's servers, then the launcher's own update, the community links and its version.
     fn sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = self.theme;
@@ -3093,7 +3093,7 @@ impl Launcher {
         let label = self.selected().map_or_else(
             || tr("No version").into(),
             |tag| {
-                horizon_launcher::nightly::label(tag)
+                sunrise_launcher::nightly::label(tag)
                     .or_else(|| build_import::label(tag))
                     .unwrap_or_else(|| tag.clone())
             },
@@ -3220,7 +3220,7 @@ impl Launcher {
 
     fn play_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        // A Java instance plays Mojang's game: no Horizon version, nothing of Horizon's to prepare.
+        // A Java instance plays Mojang's game: no Sunrise version, nothing of Sunrise's to prepare.
         let java = self.selected_instance().and_then(|i| i.java.clone());
         let Some(tag) = self
             .selected()
@@ -3263,7 +3263,7 @@ impl Launcher {
         let left = self.download_left();
         let steps = self.preparing.then(|| self.steps(&version, left));
 
-        // Not prepared: an owner can have Horizon download Minecraft from Mojang; without an
+        // Not prepared: an owner can have Sunrise download Minecraft from Mojang; without an
         // owner there is nothing to play, so signing in comes first.
         let first = (!prepared && !self.preparing)
             .then_some(self.owner)
@@ -3277,7 +3277,7 @@ impl Launcher {
                 &[("version", &version)],
             ),
             Some(true) => trf(
-                "Not prepared. Horizon can download Minecraft {version} from Mojang for your account, or use your own install.",
+                "Not prepared. Sunrise can download Minecraft {version} from Mojang for your account, or use your own install.",
                 &[("version", &version)],
             ),
             Some(false) => trf(
@@ -3353,7 +3353,7 @@ impl Launcher {
             || {
                 div()
                     .child(if owner {
-                        tr("None needed: Horizon downloads Minecraft from Mojang for your account.")
+                        tr("None needed: Sunrise downloads Minecraft from Mojang for your account.")
                     } else {
                         tr("Not found. Choose the folder where your launcher keeps Minecraft.")
                     })
@@ -3469,7 +3469,7 @@ impl Launcher {
                 .children(steps)
         } else {
             let hero = match &java {
-                // Its own game: the Minecraft version and the loader, never Horizon's.
+                // Its own game: the Minecraft version and the loader, never Sunrise's.
                 Some(j) => {
                     let game = match &j.loader {
                         Some(l) => format!("{version} · {} {}", l.kind.name(), l.version),
@@ -3544,7 +3544,7 @@ impl Launcher {
                                 // after pressing it, not below the fold (#666).
                                 .children(steps),
                         )
-                        // Notes and friends are Horizon's.
+                        // Notes and friends are Sunrise's.
                         .children(java.is_none().then(|| self.home_card(&tag, cx))),
                 )
         };
@@ -3566,7 +3566,7 @@ impl Launcher {
         page
     }
 
-    /// "Horizon crashed": the report and the logs, and where to report it.
+    /// "Sunrise crashed": the report and the logs, and where to report it.
     fn crash_notice(&self, crash: Crash, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let mut actions = div().flex().flex_wrap().gap(px(8.)).mt(px(8.));
@@ -3642,7 +3642,7 @@ impl Launcher {
             .child(
                 text(theme::HEADING)
                     .text_color(t.ink)
-                    .child(tr("Horizon crashed")),
+                    .child(tr("Sunrise crashed")),
             );
         if !crash.summary.is_empty() {
             body = body.child(div().text_color(t.ink_soft).child(crash.summary));
@@ -3698,29 +3698,29 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        // Linux: the launcher's entry in the applications menu (`horizon_launcher::desktop`).
+        // Linux: the launcher's entry in the applications menu (`sunrise_launcher::desktop`).
         let menu_entry = switch("desktop-entry", self.settings.desktop_entry(), &t).on_click(
             cx.listener(|this, _: &ClickEvent, _, cx| {
                 let on = !this.settings.desktop_entry();
                 this.settings.desktop_entry = Some(on);
                 this.save_settings();
                 let _ = if on {
-                    horizon_launcher::desktop::install(backend::exe_path()).map(|_| ())
+                    sunrise_launcher::desktop::install(backend::exe_path()).map(|_| ())
                 } else {
-                    horizon_launcher::desktop::remove()
+                    sunrise_launcher::desktop::remove()
                 };
                 cx.notify();
             }),
         );
-        let horizon = match (&self.updates.horizon, &self.update_error) {
+        let sunrise = match (&self.updates.sunrise, &self.update_error) {
             (Some(r), _) => trf("{version} available", &[("version", update_name(r))]),
             (None, Some(e)) => e.clone(),
             (None, None) if self.checked.is_some() => tr("Up to date").to_string(),
             _ => tr("Checking…").to_string(),
         };
-        let horizon_action = self
+        let sunrise_action = self
             .updates
-            .horizon
+            .sunrise
             .as_ref()
             .filter(|_| self.installing.is_none())
             .map(|_| {
@@ -3847,8 +3847,8 @@ impl Launcher {
                     opening,
                     menu_entry,
                     appearance: appearance.into_any_element(),
-                    horizon,
-                    horizon_action,
+                    sunrise,
+                    sunrise_action,
                     launcher,
                     launcher_action,
                 },
@@ -3875,7 +3875,7 @@ impl Launcher {
                     .child(group("Account", "user").mt_0())
                     .child(accounts)
                     .child(group("Updates", "reload"))
-                    .child(index_row(n + 1, "Horizon", Some(plain(&horizon)), horizon_action, &t))
+                    .child(index_row(n + 1, "Sunrise", Some(plain(&sunrise)), sunrise_action, &t))
                     .child(index_row(
                         n + 1,
                         tr("Launcher"),
@@ -3959,7 +3959,7 @@ impl Launcher {
                             n + 11,
                             tr("Applications menu"),
                             Some(plain(if self.settings.desktop_entry() {
-                                "Horizon and its icon are in your desktop's menu."
+                                "Sunrise and its icon are in your desktop's menu."
                             } else {
                                 "Not in your desktop's menu."
                             })),
@@ -4004,7 +4004,7 @@ impl Launcher {
             .as_ref()
             .map(PendingConsent::name)
             .filter(|name| !name.is_empty());
-        let bytes = horizon_launcher::rust_toolchain::host().map(|host| host.download_bytes());
+        let bytes = sunrise_launcher::rust_toolchain::host().map(|host| host.download_bytes());
         let size = bytes
             .map(megabytes)
             .unwrap_or_else(|| tr("Unavailable on this platform").into());
@@ -4020,7 +4020,7 @@ impl Launcher {
                     }
                     None => div().child(tr("Native mods are native code that runs inside your game, with your rights: like any program you install, they can read and change your files. Allow them only if you trust their authors.")),
                 })
-                .child(trf("Horizon will download the Rust compiler ({size}) to build them. You can turn this off in Settings, Storage.", &[("size", &size)]))
+                .child(trf("Sunrise will download the Rust compiler ({size}) to build them. You can turn this off in Settings, Storage.", &[("size", &size)]))
                 .children(self.consent_error.clone().map(|error| div().text_color(t.danger).child(error)))
                 .children(bytes.is_none().then(|| div().text_color(t.danger).child(tr("Native mods can't be built on this computer, so they can't be allowed here."))))
                 .child(div().flex().justify_end().gap(px(12.))
@@ -4042,7 +4042,7 @@ impl Launcher {
                                 PendingConsent::Install(source, id, known) => this.mods_install(source, id, known),
                                 PendingConsent::Github(found, only) => this.github_install(found, only),
                                 PendingConsent::Local(id) => {
-                                    this.mods.message = horizon_launcher::browser::java::set_enabled(&this.mods.home(), &id, true).err().map(Err);
+                                    this.mods.message = sunrise_launcher::browser::java::set_enabled(&this.mods.home(), &id, true).err().map(Err);
                                     this.instance_mods_changed();
                                 }
                             } }
@@ -4218,7 +4218,7 @@ impl Launcher {
         // A half-typed address is no reason to complain; one left behind is.
         let detail = match (
             focused,
-            horizon_launcher::proxy::refuse(self.proxy_input.text()),
+            sunrise_launcher::proxy::refuse(self.proxy_input.text()),
         ) {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
@@ -4246,12 +4246,12 @@ impl Launcher {
     }
 
     /// Keeps the Proxy field in `settings.json`, and tells the parts that build their own agents
-    /// (`horizon-port-pack`) which proxy to use.
+    /// (`sunrise-port-pack`) which proxy to use.
     fn save_proxy(&mut self) {
         let value = self.proxy_input.text().trim().to_owned();
         self.settings.proxy = (!value.is_empty()).then_some(value);
         self.save_settings();
-        horizon_launcher::proxy::announce(self.settings.proxy.clone());
+        sunrise_launcher::proxy::announce(self.settings.proxy.clone());
     }
 
     /// Settings' Microsoft accounts: who is signed in and plays, the sign-in with its code. The
@@ -4445,7 +4445,7 @@ impl Launcher {
             }
             Some(SignInState::Done(Err(e))) => div().text_color(t.danger).child(e.clone()),
             None if self.accounts.accounts.is_empty() => div().child(tr(
-                "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
+                "Sunrise needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
             )),
             None => div().child(tr("Add another account.")),
         };
@@ -4572,7 +4572,7 @@ impl Launcher {
     /// Join a friend: a code field and Join, which starts the game straight
     /// into the friend's world (errors show in the game).
     /// Plays the selected instance straight into a world (`--world`) or a server (`--server`):
-    /// flags every Horizon release takes.
+    /// flags every Sunrise release takes.
     pub(crate) fn quick_play(&mut self, flag: &'static str, value: String) {
         self.quick_play = Some((flag, value));
         self.play();
@@ -4582,7 +4582,7 @@ impl Launcher {
     }
 
     fn join_friend(&mut self) {
-        if horizon_friends::invite::parse(self.friend_code.text()).is_none() {
+        if sunrise_friends::invite::parse(self.friend_code.text()).is_none() {
             return;
         }
         self.joining = Some(self.friend_code.text().to_string());
@@ -4654,7 +4654,7 @@ impl Launcher {
             meta.push(trf("Built on {base}", &[("base", &about.base)]));
         }
         if let Some(about) = build_import::about(tag) {
-            let base = horizon_launcher::nightly::label(&about.base).unwrap_or(about.base);
+            let base = sunrise_launcher::nightly::label(&about.base).unwrap_or(about.base);
             meta.push(trf("Game files from {base}", &[("base", &base)]));
             meta.push(about.file);
         }
@@ -4813,7 +4813,7 @@ impl Launcher {
                                 .child(tr("Support the work below")),
                         )
                         .child(text(theme::UI).text_color(t.muted).child(tr(
-                            "Horizon is built in the open. Sponsors fund the next release.",
+                            "Sunrise is built in the open. Sponsors fund the next release.",
                         ))),
                 )
                 .child(
@@ -4859,7 +4859,7 @@ impl Launcher {
                 "Imported builds",
                 build_import::is_imported,
                 Some(tr(
-                    "Unsigned: you picked these programs yourself, and Horizon can't \
+                    "Unsigned: you picked these programs yourself, and Sunrise can't \
                     check where they came from. Updates never replace them.",
                 )),
                 &on_disk,
@@ -5074,7 +5074,7 @@ fn progress_bar(fraction: Option<(f32, f32)>, t: &Theme) -> Div {
         .when(t.glass, |d| {
             d.h(px(4.))
                 .rounded_full()
-                .bg(glass_ui::white(horizon_theme::glass::fill::ACTIVE))
+                .bg(glass_ui::white(sunrise_theme::glass::fill::ACTIVE))
         });
     match fraction {
         Some((from, to)) => {
@@ -5119,8 +5119,8 @@ impl Render for Launcher {
         glass_ui::set_look(self.look);
         glass::set_look(self.look);
         // The mockup tints the scene with any accent but its violet.
-        let tint = (self.theme.dark && self.look.accent != horizon_theme::glass::ACCENT)
-            .then(|| horizon_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
+        let tint = (self.theme.dark && self.look.accent != sunrise_theme::glass::ACCENT)
+            .then(|| sunrise_theme::glass::mix_oklab(self.look.accent, 0x767676, 0.58));
         let blur = self.look.blur;
         let performance = self.settings.performance();
         // Performance mode's plates are solid: no glass, no blur, nothing sampled from the scene.
@@ -5384,7 +5384,7 @@ impl Render for Launcher {
                 .line_height(px(theme::WORDMARK.px * 0.5))
                 .font_weight(FontWeight::BOLD)
                 .text_color(t.ink)
-                .children("HORIZON".chars().enumerate().map(|(i, c)| {
+                .children("SUNRISE".chars().enumerate().map(|(i, c)| {
                     let at = held - i as f32 * theme::STAGGER.as_secs_f32() * 1.5;
                     let p = ease_out_cubic(at / theme::ENTER.as_secs_f32());
                     div()
@@ -5464,7 +5464,7 @@ impl Launcher {
         (reveal, held.as_secs_f32())
     }
 
-    /// `horizon-launcher benchmark`: scroll the page a little on every frame, back to the top at
+    /// `sunrise-launcher benchmark`: scroll the page a little on every frame, back to the top at
     /// the bottom, so the frame times measure scrolling.
     fn bench_scroll(&mut self, window: &mut Window) {
         let handle = &self.content_scroll.handle;
@@ -5500,7 +5500,7 @@ impl Launcher {
     }
 }
 
-actions!(horizon_launcher, [Quit, CloseWindow]);
+actions!(sunrise_launcher, [Quit, CloseWindow]);
 
 /// What closing the last window does: stop the servers this launcher started, send the telemetry,
 /// exit. A game that is running keeps running. Cmd+Q goes through here too.
@@ -5508,7 +5508,7 @@ fn shut_down(cx: &mut App) {
     servers_page::stop_on_quit();
     telemetry::send_before_exit();
     // A staged launcher update goes in once this process has exited.
-    horizon_launcher::update_handoff::on_quit();
+    sunrise_launcher::update_handoff::on_quit();
     cx.quit()
 }
 
@@ -5632,21 +5632,21 @@ mod tests {
     fn a_press_on_a_sidebar_row_opens_its_menu_or_closes_it() {
         let open = |id: &str| Some((id.to_string(), false));
         assert_eq!(
-            super::row_menu_after_press(None, "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(None, "Sunrise"),
+            open("Sunrise")
         );
         assert_eq!(
-            super::row_menu_after_press(open("Other"), "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(open("Other"), "Sunrise"),
+            open("Sunrise")
         );
         assert_eq!(
-            super::row_menu_after_press(open("Horizon"), "Horizon"),
+            super::row_menu_after_press(open("Sunrise"), "Sunrise"),
             None
         );
         // A Delete… already pressed on another row does not carry over.
         assert_eq!(
-            super::row_menu_after_press(Some(("Other".into(), true)), "Horizon"),
-            open("Horizon")
+            super::row_menu_after_press(Some(("Other".into(), true)), "Sunrise"),
+            open("Sunrise")
         );
     }
 
@@ -5683,7 +5683,7 @@ mod tests {
     }
 
     /// A server's Join (and every other shortcut) waits like Play: not while the version's
-    /// first download and preparation run (#horizon-bugs, 0.2.23: a white window opened).
+    /// first download and preparation run (#sunrise-bugs, 0.2.23: a white window opened).
     #[test]
     fn shortcuts_start_only_when_play_would() {
         use super::starts_now;
@@ -5701,7 +5701,7 @@ mod tests {
     fn a_completed_sign_in_is_handled_once_across_ui_polls() {
         use super::{sign_in_change, SignInState};
         let mut shown = None;
-        let completed = SignInState::Done(Ok(horizon_launcher::account::Account {
+        let completed = SignInState::Done(Ok(sunrise_launcher::account::Account {
             uuid: "11111111111111111111111111111111".into(),
             name: "TestAccount".into(),
             skin: None,
@@ -5732,15 +5732,15 @@ mod tests {
         let menus = super::menus();
         assert_eq!(
             menus[0].name,
-            if cfg!(horizon_fork_launcher) {
-                "Horizon Fork Launcher (arismoko)"
+            if cfg!(sunrise_fork_launcher) {
+                "Sunrise Fork Launcher (arismoko)"
             } else {
-                "Horizon Launcher"
+                "Sunrise Launcher"
             }
         );
         assert!(matches!(
             &menus[0].items[0],
-            gpui::MenuItem::Action { name, .. } if name == horizon_launcher::identity::QUIT_LABEL
+            gpui::MenuItem::Action { name, .. } if name == sunrise_launcher::identity::QUIT_LABEL
         ));
     }
 

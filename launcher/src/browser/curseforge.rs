@@ -1,6 +1,6 @@
 //! CurseForge's API (api.curseforge.com/v1). It needs a key from CurseForge's developer console,
 //! so this source stays off until one is given (docs/mod-browser.md#curseforge):
-//! `HORIZON_CURSEFORGE_API_KEY` in the environment, else the same variable when the launcher was
+//! `SUNRISE_CURSEFORGE_API_KEY` in the environment, else the same variable when the launcher was
 //! built (the release workflow passes the repository secret). Files carry SHA-1 and MD5; the
 //! download is checked against the SHA-1.
 use super::{modrinth::encode, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME};
@@ -49,8 +49,8 @@ impl CurseForge {
     /// The source, when a key exists; else None and CurseForge isn't offered.
     pub fn from_env() -> Option<Self> {
         key(
-            std::env::var("HORIZON_CURSEFORGE_API_KEY").ok(),
-            option_env!("HORIZON_CURSEFORGE_API_KEY"),
+            std::env::var("SUNRISE_CURSEFORGE_API_KEY").ok(),
+            option_env!("SUNRISE_CURSEFORGE_API_KEY"),
         )
         .map(|key| Self { key })
     }
@@ -203,7 +203,7 @@ impl Source for CurseForge {
 
     fn search(&self, query: &Query) -> Result<Vec<Project>, String> {
         if query.kind == Kind::Shader {
-            return Err(super::SHADERS_ON_HORIZON.into());
+            return Err(super::SHADERS_ON_SUNRISE.into());
         }
         let found = self.get(&search_url(query))?;
         Ok(found["data"]
@@ -217,7 +217,7 @@ impl Source for CurseForge {
     fn project(&self, id: &str) -> Result<Project, String> {
         let m = self.get(&format!("{API}/mods/{}", encode(id)))?;
         parse_mod(&m["data"])
-            .ok_or_else(|| format!("CurseForge: {id} is not a pack Horizon loads."))
+            .ok_or_else(|| format!("CurseForge: {id} is not a pack Sunrise loads."))
     }
 
     fn versions(&self, project: &Project) -> Result<Vec<Version>, String> {

@@ -1,12 +1,12 @@
 //! The GUI bridge: preparation off the UI thread, one consent for the complete missing set.
 use gpui::{AnyWindowHandle, AppContext, Context, PromptLevel};
-use horizon_launcher::{
+use sunrise_launcher::{
     backend::Msg,
     i18n::{tr, trf},
     jars::{self, Permission},
     launch::{self, Launch},
 };
-use horizon_mod_package::manifest::JarRef;
+use sunrise_mod_package::manifest::JarRef;
 use std::{
     process::Command,
     sync::mpsc::{self, Sender},

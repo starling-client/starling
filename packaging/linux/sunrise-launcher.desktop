@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sunrise
+GenericName=Game launcher
+Comment=Install, prepare and play Sunrise, Minecraft: Java Edition 26.3 rewritten in Rust
+Exec=sunrise-launcher
+Icon=sunrise
+Terminal=false
+Categories=Game;
+StartupWMClass=sunrise-launcher

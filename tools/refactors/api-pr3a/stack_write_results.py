@@ -13,7 +13,7 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[3]
 log = []
 pattern = re.compile(r'fn\s+(\w+)\s*\((.*?)\)\s*(?:->\s*([^;{]+))?[;{]', re.S)
-for path in sorted((root / 'crates/horizon-mod-api/src/host').glob('*.rs')):
+for path in sorted((root / 'crates/sunrise-mod-api/src/host').glob('*.rs')):
     if path.name == 'draw.rs':
         continue
     source = path.read_text()

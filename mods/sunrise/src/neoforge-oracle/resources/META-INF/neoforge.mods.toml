@@ -1,0 +1,11 @@
+# Dev-only: the NeoForge oracle for Sunrise's mod-port harnesses (docs/modpacks.md).
+# Built and run by tools/neoforge_oracle.py; never shipped.
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "Apache-2.0"
+
+[[mods]]
+modId = "sunrise_oracle"
+version = "1"
+displayName = "Sunrise oracle (dev only)"
+description = "Exports block, item, recipe and tag facts for Sunrise's parity harnesses."

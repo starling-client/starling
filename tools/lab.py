@@ -38,9 +38,9 @@ def pinned_version():
 
 VERSION = pinned_version()
 # The pinned version's imported jars, libraries and sources (tools/lab.py prepare), and the resources
-# horizon-prepare made from them.
+# sunrise-prepare made from them.
 GAME = LOCAL / "minecraft" / VERSION
-RESOURCES = LOCAL / "horizon-client" / VERSION
+RESOURCES = LOCAL / "sunrise-client" / VERSION
 
 
 def version_info(client_jar=None):
@@ -79,20 +79,20 @@ def _remove_scratch_dirs():
 
 
 def game_env(base=None, **extra):
-    """The environment for every run of the game, the launcher or horizon-ctl from a tool or a harness: no audio,
+    """The environment for every run of the game, the launcher or sunrise-ctl from a tool or a harness: no audio,
     fresh scratch folders for the game's home (logs, saves, options), the launcher's home and the XDG folders,
-    so a run never writes into a real player's folders (the game falls back to them when HORIZON_HOME is unset).
+    so a run never writes into a real player's folders (the game falls back to them when SUNRISE_HOME is unset).
     A folder the caller already has in `base` (default os.environ) or passes in `extra` is kept. The scratch folders
     are removed when this process exits."""
     env = dict(os.environ if base is None else base)
     env.update({key: str(value) for key, value in extra.items()})
-    env["HORIZON_NO_AUDIO"] = "1"
-    env["HORIZON_LAUNCHER_NO_SELF_UPDATE"] = "1"
+    env["SUNRISE_NO_AUDIO"] = "1"
+    env["SUNRISE_LAUNCHER_NO_SELF_UPDATE"] = "1"
     # Local fixtures use real TCP, but need no inbound access from other machines.
-    # Network/discovery suites can explicitly set HORIZON_TEST_LOOPBACK=0.
-    env.setdefault("HORIZON_TEST_LOOPBACK", "1")
-    for key, prefix in (("HORIZON_HOME", "horizon-home-"), ("HORIZON_LAUNCHER_HOME", "horizon-launcher-home-"),
-                        ("XDG_DATA_HOME", "horizon-xdg-data-"), ("XDG_CONFIG_HOME", "horizon-xdg-config-")):
+    # Network/discovery suites can explicitly set SUNRISE_TEST_LOOPBACK=0.
+    env.setdefault("SUNRISE_TEST_LOOPBACK", "1")
+    for key, prefix in (("SUNRISE_HOME", "sunrise-home-"), ("SUNRISE_LAUNCHER_HOME", "sunrise-launcher-home-"),
+                        ("XDG_DATA_HOME", "sunrise-xdg-data-"), ("XDG_CONFIG_HOME", "sunrise-xdg-config-")):
         if not env.get(key):
             env[key] = _scratch_dir(prefix)
     return env
@@ -136,7 +136,7 @@ def free_port():
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
     import fcntl
-    locks = Path(tempfile.gettempdir()) / f"horizon-harness-ports-{os.getuid()}"
+    locks = Path(tempfile.gettempdir()) / f"sunrise-harness-ports-{os.getuid()}"
     locks.mkdir(exist_ok=True)
     for _ in range(100):
         with socket.socket() as s:
@@ -215,7 +215,7 @@ def download(url, destination, checksum, algorithm="sha1"):
     try:
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
             temporary = Path(stream.name)
-            request = urllib.request.Request(url, headers={"User-Agent": "horizon/0.1"})
+            request = urllib.request.Request(url, headers={"User-Agent": "sunrise/0.1"})
             with urllib.request.urlopen(request, timeout=120) as response:
                 shutil.copyfileobj(response, stream)
         actual = digest(temporary, algorithm)
@@ -228,18 +228,18 @@ def download(url, destination, checksum, algorithm="sha1"):
     return destination
 
 
-LAUNCHER_HINT = ("Horizon does not download the game: install Minecraft Java Edition with the official "
+LAUNCHER_HINT = ("Sunrise does not download the game: install Minecraft Java Edition with the official "
                  "launcher, play {version} once, then rerun. If the launcher uses another game directory, "
-                 "pass --minecraft-dir or set HORIZON_MINECRAFT_DIR.")
-SERVER_HINT = ("Horizon does not download the game: download the {version} server jar yourself (minecraft.net/download/server "
+                 "pass --minecraft-dir or set SUNRISE_MINECRAFT_DIR.")
+SERVER_HINT = ("Sunrise does not download the game: download the {version} server jar yourself (minecraft.net/download/server "
                "while {version} is the current release, otherwise the downloads.server.url in your launcher's "
-               "versions/{version}/{version}.json), then pass --server-jar PATH or set HORIZON_SERVER_JAR.")
+               "versions/{version}/{version}.json), then pass --server-jar PATH or set SUNRISE_SERVER_JAR.")
 
 
 def minecraft_dir(override=None):
     """The official launcher's game directory, which holds the user's own copy of the game."""
-    if override or os.environ.get("HORIZON_MINECRAFT_DIR"):
-        return Path(override or os.environ["HORIZON_MINECRAFT_DIR"]).expanduser()
+    if override or os.environ.get("SUNRISE_MINECRAFT_DIR"):
+        return Path(override or os.environ["SUNRISE_MINECRAFT_DIR"]).expanduser()
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "minecraft"
     if sys.platform == "win32":
@@ -291,8 +291,8 @@ def import_manifest(lock, directory, minecraft=None):
             raise ValueError(f"{source} does not describe the pinned {version} release")
         checksum = digest(source, "sha1")
         if not manifest_accepted(lock, checksum):
-            raise ValueError(f"{source} is a {version} version file Horizon does not know yet (sha1 {checksum}); "
-                             f"Mojang may have republished it. Update Horizon, or report it if this is the latest release.")
+            raise ValueError(f"{source} is a {version} version file Sunrise does not know yet (sha1 {checksum}); "
+                             f"Mojang may have republished it. Update Sunrise, or report it if this is the latest release.")
         if not (destination.exists() and digest(destination, "sha1") == checksum):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
@@ -319,7 +319,7 @@ def import_server(lock, directory, server_jar=None):
     version = lock["minecraft"]["version"]
     destination = directory / "jars" / "server.jar"
     checksum = lock["minecraft"]["server_sha1"]
-    source = server_jar or os.environ.get("HORIZON_SERVER_JAR")
+    source = server_jar or os.environ.get("SUNRISE_SERVER_JAR")
     hint = SERVER_HINT.format(version=version)
     if source is None:
         if destination.exists() and digest(destination, "sha1") == checksum:
@@ -414,7 +414,7 @@ def launcher_assets(manifest, minecraft=None):
     known = json.loads(LOCK.read_text(encoding="utf-8"))["minecraft"].get("accepted_asset_index_sha1", [])
     if checksum != info["sha1"] and checksum not in known:
         # Mojang republishes an index under the same id (#1076); each object is still verified.
-        print(f"{index} is an asset index Horizon does not know yet (sha1 {checksum}); "
+        print(f"{index} is an asset index Sunrise does not know yet (sha1 {checksum}); "
               "using it, every file is still checked against its own SHA-1", file=sys.stderr)
     return assets, index
 

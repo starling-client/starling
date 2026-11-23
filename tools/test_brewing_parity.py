@@ -126,7 +126,7 @@ def tick_cases():
 
 
 def make_cases(build):
-    resources = lab.LOCAL / 'horizon-client' / '26.3'
+    resources = lab.LOCAL / 'sunrise-client' / '26.3'
     catalog = json.loads((resources / 'items.json').read_text())
     all_recipes = recipes(resources)
     potions = sorted({p for r in all_recipes
@@ -183,6 +183,6 @@ if __name__ == '__main__':
         'bundled recipe, potion type/id and item candidate, plus the brewing-stand tick: brew time and '
         'speed multiplier, fuel uses and loading, ingredient shrink, outputs and bottle bits. --baseline '
         'leaves out the cross-product and whole-registry slot candidates; --no-tick leaves out the tick cases.',
-        sources=[lab.ROOT / 'crates/horizon-client-render/src/brewing.rs',
-                 lab.ROOT / 'crates/horizon-items/src/item_data.rs',
-                 lab.ROOT / 'crates/horizon-items/src/items.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-client-render/src/brewing.rs',
+                 lab.ROOT / 'crates/sunrise-items/src/item_data.rs',
+                 lab.ROOT / 'crates/sunrise-items/src/items.rs'])

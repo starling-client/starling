@@ -14,7 +14,7 @@ except ImportError:
 def game_environment(base, root):
     root = Path(root)
     env = dict(base)
-    for key, folder in [('HORIZON_HOME', 'home'), ('HORIZON_LAUNCHER_HOME', 'launcher'),
+    for key, folder in [('SUNRISE_HOME', 'home'), ('SUNRISE_LAUNCHER_HOME', 'launcher'),
                         ('XDG_DATA_HOME', 'data'), ('XDG_CONFIG_HOME', 'config')]:
         path = root / folder
         path.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def suite_lock():
         from . import file_lock
     except ImportError:
         import file_lock
-    with (Path(tempfile.gettempdir()) / 'horizon-integration-gpu.lock').open('a') as handle:
+    with (Path(tempfile.gettempdir()) / 'sunrise-integration-gpu.lock').open('a') as handle:
         file_lock.lock(handle)
         yield
 

@@ -13,7 +13,7 @@ class ProtocolVersionTests(unittest.TestCase):
     """The probe announces the protocol the game speaks, read from the one place it is written down."""
 
     def test_it_reads_the_pinned_protocol(self):
-        version = (ROOT / "crates/horizon-core/src/version.rs").read_text()
+        version = (ROOT / "crates/sunrise-core/src/version.rs").read_text()
         pinned = int(re.search(r"PROTOCOL_VERSION: i32 = (\d+);", version)[1])
         self.assertEqual(probe.protocol_version(), pinned)
 

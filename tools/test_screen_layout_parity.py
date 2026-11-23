@@ -7,7 +7,7 @@ selectable patterns, the selected one, the scroller, the result banner or
 the six-layer error, the mouse over a pattern button) and CrafterScreen's
 background, disabled slots and redstone arrow, recording every
 GuiGraphicsExtractor call; examples/probe/screen_layout_fixture lays out the same
-state with horizon_client::screen_layout, which the game paints. The ordered
+state with sunrise_client::screen_layout, which the game paints. The ordered
 call lists must agree.
 """
 import argparse
@@ -86,12 +86,12 @@ def main():
     if done.returncode:
         print(done.stderr[-4000:])
         sys.exit('javac failed')
-    run = subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + deps, 'dev.horizonlab.parity.VanillaLoomScreenOracle',
+    run = subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + deps, 'dev.sunriselab.parity.VanillaLoomScreenOracle',
                           str(work / 'cases.jsonl'), str(work / 'native.jsonl')], capture_output=True, text=True)
     if run.returncode:
         print(run.stderr[-4000:])
         sys.exit('oracle failed')
-    lib.cargo_example('horizon-client', 'screen_layout_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.jsonl')
+    lib.cargo_example('sunrise-client', 'screen_layout_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.jsonl')
     native = [json.loads(l) for l in (work / 'native.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (work / 'rust.jsonl').read_text().splitlines()]
     assert len(native) == len(rust) == len(chosen)

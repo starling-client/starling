@@ -118,15 +118,15 @@ def main():
     build.mkdir(exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     resources_before = client.resource_fingerprint(resources)
     oracle = 'VanillaAutoJumpOracle'
-    parity = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+    parity = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
     sources = [Path(__file__).resolve(), lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
                parity / (oracle + '.java'), parity / 'VanillaSceneCollisionOracle.java',
                parity / 'VanillaRegistryCollisionScanOracle.java', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/examples/probe/auto_jump_probe.rs',
-               lab.ROOT / 'crates/horizon-client/src/auto_jump.rs', lab.ROOT / 'crates/horizon-client/src/motion.rs']
+               lab.ROOT / 'crates/sunrise-client/examples/probe/auto_jump_probe.rs',
+               lab.ROOT / 'crates/sunrise-client/src/auto_jump.rs', lab.ROOT / 'crates/sunrise-client/src/motion.rs']
     tested = base.source_hashes(sources)
     fixtures = list(cases(random.Random(0x4155544f)))
     inputs = build / 'cases.jsonl'

@@ -6,7 +6,7 @@ BlockEntity.loadStatic and runs ServerGamePacketListenerImpl.addBlockDataToItem
 (Ctrl + Pick Block in creative) on the block's item, then places an item as a
 block entity: BlockItem.updateCustomBlockEntityTag (op-only types only for a
 game master) and BlockEntity.applyComponentsFromItemStack. The Rust example
-(pick_block_data_fixture) runs horizon_client::block_entity_item on the
+(pick_block_data_fixture) runs sunrise_client::block_entity_item on the
 canonical saved NBT. The picked component patch and the placed block entity's
 saveWithFullMetadata are compared for every block entity type that carries data:
 containers with items, names, locks and loot tables, signs, banners, command
@@ -139,7 +139,7 @@ def main():
     all_cases = cases()
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in all_cases))
     vanilla.run('VanillaPickBlockDataOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'pick_block_data_fixture', work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'pick_block_data_fixture', work / 'cases.jsonl', work / 'rust.txt')
     errors = sum(line == 'error' for line in (work / 'native.txt').read_text().split('\n'))
     if errors:
         print(f'{errors} cases fail in vanilla')

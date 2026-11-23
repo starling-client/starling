@@ -28,7 +28,7 @@ def gateway_passengers(cmd, setup):
     ops.append(cmd('/execute unless entity @s[advancements={minecraft:end/enter_end_gateway=true}]', expect_result=1))
     for step in range(5):
         # Unlike a world-only tick, this also runs the standalone Java player's
-        # network-listener tick. Its enter_block trigger must run as Horizon's does.
+        # network-listener tick. Its enter_block trigger must run as Sunrise's does.
         ops.append({'op': 'player_loop', 'n': 1, 'label': f'gateway passenger {step}'})
         ops.append(cmd('/execute if entity @s[advancements={minecraft:end/enter_end_gateway=true}]', expect_result=1))
         ops.append(cmd('/execute on vehicle run data get entity @s Pos', expect_result=3))

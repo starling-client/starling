@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Take upstream's extraction of the renderer's census into gfx/census.rs (83703c28b2f).
 
-Upstream moved nine `impl Renderer` methods out of horizon-client-render's gfx.rs into
+Upstream moved nine `impl Renderer` methods out of sunrise-client-render's gfx.rs into
 gfx/census.rs and declared `mod census;`. An earlier sync took the file without the rest. This
 script does both halves with the lexical helpers of take_upstream_game_moves.py: it writes
 upstream's gfx/census.rs, declares the module where upstream does (after `pub mod capture;`) and
@@ -13,8 +13,8 @@ import argparse
 
 import take_upstream_game_moves as moves
 
-GFX = "crates/horizon-client-render/src/gfx.rs"
-CENSUS = "crates/horizon-client-render/src/gfx/census.rs"
+GFX = "crates/sunrise-client-render/src/gfx.rs"
+CENSUS = "crates/sunrise-client-render/src/gfx/census.rs"
 METHODS = {
     "resident_sections",
     "lod_quads",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential scenario fuzzer: generated command scripts run in vanilla and Horizon, compared exactly (#12498).
+"""Differential scenario fuzzer: generated command scripts run in vanilla and Sunrise, compared exactly (#12498).
 
 Each scenario comes from a seed: an area far from the player, forceloaded; a setup and an actor (summon with NBT,
 a block entity with NBT, a dispenser, a drop, an explosion, a piston); time steps; optionally an unload and reload of
@@ -128,7 +128,7 @@ def allowed(path):
 
 
 def compare(vanilla, rust):
-    """The differences between two records of one read, as [(field, vanilla, horizon)], allowlisted ones left out."""
+    """The differences between two records of one read, as [(field, vanilla, sunrise)], allowlisted ones left out."""
     if vanilla['cmd'].startswith('/data get '):
         left, right = read_data(vanilla), read_data(rust)
         if left is None or right is None:
@@ -255,7 +255,7 @@ class Runner:
             command += ['--binary', str(self.binary)]
         result = subprocess.run(command, cwd=ROOT, capture_output=True, encoding='utf-8', errors='replace',
                                 # The game's script deadline (600 s by default) is for the fixed corpus.
-                                env={**os.environ, 'HORIZON_HARNESS_TIMEOUT': str(30 * len(scenarios) + 600)})
+                                env={**os.environ, 'SUNRISE_HARNESS_TIMEOUT': str(30 * len(scenarios) + 600)})
         (batch / 'harness.log').write_text(result.stdout + result.stderr, encoding='utf-8')
         if result.returncode:
             if len(scenarios) == 1:
@@ -387,7 +387,7 @@ def main():
     source.add_argument('--smoke', action='store_true', help='fixed scenarios that must match: the tool works')
     parser.add_argument('--batch', type=int, default=40, help='scenarios per harness run')
     parser.add_argument('--shrink-rounds', type=int, default=6)
-    parser.add_argument('--binary', type=Path, help='an already built Horizon game')
+    parser.add_argument('--binary', type=Path, help='an already built Sunrise game')
     parser.add_argument('--work-dir', type=Path, default=lab.LOCAL / 'parity-fuzz')
     args = parser.parse_args()
     work = args.work_dir.resolve()

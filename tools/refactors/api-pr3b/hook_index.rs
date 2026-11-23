@@ -1,5 +1,5 @@
 // Standalone execution of the production numeric index; registry fixtures resolve known ordinals.
-extern crate self as horizon_world;
+extern crate self as sunrise_world;
 extern crate self as mod_api;
 use std::sync::atomic::{AtomicUsize, Ordering};
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);

@@ -10,8 +10,8 @@ or getDefaultName, and for a double chest ChestBlock's MENU_PROVIDER_COMBINER
 (the right half's name, else the left's, else container.chestDouble). That is
 the title of the ClientboundOpenScreenPacket a server sends, which the
 client's screen draws. The Rust example (container_title_fixture) places the
-item with horizon_client::block_entity_item as the game does and names the
-menu with horizon_client::containers, which the server's
+item with sunrise_client::block_entity_item as the game does and names the
+menu with sunrise_client::containers, which the server's
 `lan_open_container` sends. Compared for every container block: chests,
 trapped and copper chests (every weathering state, waxed too), barrels,
 shulker boxes of any colour, dispensers, droppers, hoppers, the three
@@ -85,7 +85,7 @@ def main():
     all_cases = cases()
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in all_cases), encoding='utf-8')
     vanilla.run('VanillaContainerTitleOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'container_title_fixture', work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'container_title_fixture', work / 'cases.jsonl', work / 'rust.txt')
     errors = sum(line == 'error' for line in (work / 'native.txt').read_text(encoding='utf-8').split('\n'))
     if errors:
         print(f'{errors} cases fail in vanilla')

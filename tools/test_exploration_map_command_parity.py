@@ -36,8 +36,8 @@ def clients(build):
     classes=build/'classes'
     if not classes.exists():
         classes.mkdir()
-        subprocess.run(['javac','--release',str(lock['minecraft']['java_major']),'-proc:none','-nowarn','-sourcepath',str(net.lab.ROOT/'mods/horizon/src/test/java'),'-cp',cp,'-d',str(classes),str(net.lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java')],check=True)
-    return ['java','-Xmx2g','-Duser.timezone=UTC','-cp',cp,'net.minecraft.server.Main','nogui'],['java','-Xmx1g','-cp',str(classes)+os.pathsep+cp,'dev.horizonlab.parity.LocatorBarClient']
+        subprocess.run(['javac','--release',str(lock['minecraft']['java_major']),'-proc:none','-nowarn','-sourcepath',str(net.lab.ROOT/'mods/sunrise/src/test/java'),'-cp',cp,'-d',str(classes),str(net.lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java')],check=True)
+    return ['java','-Xmx2g','-Duser.timezone=UTC','-cp',cp,'net.minecraft.server.Main','nogui'],['java','-Xmx1g','-cp',str(classes)+os.pathsep+cp,'dev.sunriselab.parity.LocatorBarClient']
 
 def generate(java,build):
     directory=build/'generate';net.server_dir(directory);server=net.Server(java,directory,'generate')
@@ -144,7 +144,7 @@ def side(name,binary,build):
     java,client=clients(build)
     if name=='java':
         generate(java,build);f=run('java',java,client,build);admit(f);(build/'reference.json').write_text(json.dumps(f,indent=2)+'\n');print('JAVA ADMITTED',len(f));return 0
-    f=run('native',[str(Path(binary).resolve()),'--resources',str(net.lab.LOCAL/'horizon-client/26.3'),'--dedicated','--nogui'],client,build)
+    f=run('native',[str(Path(binary).resolve()),'--resources',str(net.lab.LOCAL/'sunrise-client/26.3'),'--dedicated','--nogui'],client,build)
     ref=json.loads((build/'reference.json').read_text());diff={k:{'java':v,'native':f.get(k)} for k,v in ref.items() if f.get(k)!=v};report={'facts':len(ref),'matched':len(ref)-len(diff),'differences':diff,'reference_sha256':hashlib.sha256((build/'reference.json').read_bytes()).hexdigest()};(build/'strict-report.json').write_text(json.dumps(report,indent=2)+'\n');print('NATIVE',report['matched'],'/',report['facts'],list(diff));return int(bool(diff))
 
 def main():
@@ -155,7 +155,7 @@ def main():
         a.build.mkdir(parents=True,exist_ok=True);return side(a.side,a.binary,a.build)
     build=net.lab.LOCAL/'exploration_map_command';shutil.rmtree(build,ignore_errors=True)
     # Builds the classes into build/classes and the game binary; each phase writes fresh folders under build.
-    _,build,_,horizon,_=net.sides('exploration_map_command',a.binary)
-    return side('java',None,build) or side('native',horizon[0],build)
+    _,build,_,sunrise,_=net.sides('exploration_map_command',a.binary)
+    return side('java',None,build) or side('native',sunrise[0],build)
 
 if __name__=='__main__':raise SystemExit(main())

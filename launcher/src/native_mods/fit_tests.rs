@@ -24,11 +24,11 @@ fn project_dir(name: &str, uses: Option<&[(&str, &str)]>, made_for: Option<&str>
     write_bundle(&dir, "greeter", "");
     std::fs::write(
         dir.join("Cargo.toml"),
-        "[package]\nname='greeter'\nversion='0.1.0'\n[dependencies]\nhorizon-mod-api={ path = '.horizon/sdk/api/crates/horizon-mod-api' }\n",
+        "[package]\nname='greeter'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={ path = '.sunrise/sdk/api/crates/sunrise-mod-api' }\n",
     )
     .unwrap();
     let bundle = crate::native_mods::bundle_in(&dir).unwrap().unwrap();
-    let pin = bundle.native().horizon.clone();
+    let pin = bundle.native().sunrise.clone();
     if let Some(uses) = uses {
         let entries: Vec<_> = uses
             .iter()
@@ -60,7 +60,7 @@ fn judged(dir: &Path, build: &str, target: &mod_surface::Surface) -> Verdict {
 
 fn pin(dir: &Path) -> String {
     let bundle = crate::native_mods::bundle_in(dir).unwrap().unwrap();
-    bundle.native().horizon.clone()
+    bundle.native().sunrise.clone()
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 ## Pins and scope
 
-Integrate upstream `441f49d57e344bd56b90fd4af5c4e443ff3937c9` directly from fork main `b8af9dedf5adcb752661016d169141e4641c5c57`. Upstream's own main-push checks passed in run 43393547822. The integration includes upstream's Horizon layer and older-client protocol, graphics, upload pacing, item-use and gameplay fixes. The target is not chased after the first push.
+Integrate upstream `441f49d57e344bd56b90fd4af5c4e443ff3937c9` directly from fork main `b8af9dedf5adcb752661016d169141e4641c5c57`. Upstream's own main-push checks passed in run 43393547822. The integration includes upstream's Sunrise layer and older-client protocol, graphics, upload pacing, item-use and gameplay fixes. The target is not chased after the first push.
 
 ## Conflict decisions
 

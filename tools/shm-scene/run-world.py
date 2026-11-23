@@ -3,11 +3,11 @@ Run only after the standalone optimized production-feature runner has built. No 
 
 Environment, all required:
   BENCH_BINARY        the game executable to run (its folder gets the native mod and the wasm std)
-  BENCH_BINARY_HEAD   the Horizon commit that executable was built from
+  BENCH_BINARY_HEAD   the Sunrise commit that executable was built from
   BENCH_SAMPLE        the machine sample's source folder
   BENCH_SAMPLE_HEAD   the sample's commit
-  BENCH_PACKAGE       the sample's wasm package (.hmod)
-  BENCH_STD           the matching horizon-wasm-std.wasm
+  BENCH_PACKAGE       the sample's wasm package (.smod)
+  BENCH_STD           the matching sunrise-wasm-std.wasm
 Optional: BENCH_WORLD_OUTPUT, where results are written (default /box/shared/wasm-bench).
 """
 import argparse, os, pathlib, shutil, subprocess, sys, tempfile, time, threading, json, tomllib
@@ -25,34 +25,34 @@ BIN = pathlib.Path(os.environ['BENCH_BINARY'])
 SAMPLE = pathlib.Path(os.environ['BENCH_SAMPLE'])
 PACKAGE = pathlib.Path(os.environ['BENCH_PACKAGE'])
 # Native package validated by the same loader as a launcher build.
-adj = BIN.parent / 'horizon-native-mods/machine_sample'
+adj = BIN.parent / 'sunrise-native-mods/machine_sample'
 adj.mkdir(parents=True, exist_ok=True)
 for folder in ['assets', 'data', 'src']:
     shutil.copytree(SAMPLE / folder, adj / folder, dirs_exist_ok=True)
 shutil.copy(SAMPLE / 'Cargo.toml', adj / 'Cargo.toml')
-manifest = (SAMPLE/'horizon-mod.toml').read_text().split('\n[wasm]')[0]
+manifest = (SAMPLE/'sunrise-mod.toml').read_text().split('\n[wasm]')[0]
 # The sample's native-only demo injection has no wasm guest export. Neither
 # benchmark installs it; machine logic and the rest of the source remain unchanged.
 # A sample that already declares [native] keeps its own table: a second one is not a manifest.
 if 'native' not in tomllib.loads(manifest):
-    manifest += '\n[native]\ngame = "26.3"\nhorizon = "' + os.environ['BENCH_BINARY_HEAD'] + '"\nmixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"\n'
+    manifest += '\n[native]\ngame = "26.3"\nsunrise = "' + os.environ['BENCH_BINARY_HEAD'] + '"\nmixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"\n'
 manifest = manifest.replace('b5d6f467dc78deda3b072e700f767adb456cd349', '1975cf5a9033a3057e439c62b07af0683254e6fb')
-(adj / 'horizon-mod.toml').write_text(manifest)
-shutil.copy(pathlib.Path(os.environ['BENCH_STD']), BIN.parent / 'horizon-wasm-std.wasm')
+(adj / 'sunrise-mod.toml').write_text(manifest)
+shutil.copy(pathlib.Path(os.environ['BENCH_STD']), BIN.parent / 'sunrise-wasm-std.wasm')
 
 def run(mode, count):
     (ROOT / 'target').mkdir(exist_ok=True)
     home = pathlib.Path(tempfile.mkdtemp(prefix='wasm-world-', dir=ROOT / 'target'))
-    env = lab.game_env(HORIZON_HOME=home/'home', HORIZON_LAUNCHER_HOME=home/'launcher', XDG_DATA_HOME=home/'data', XDG_CONFIG_HOME=home/'config')
+    env = lab.game_env(SUNRISE_HOME=home/'home', SUNRISE_LAUNCHER_HOME=home/'launcher', XDG_DATA_HOME=home/'data', XDG_CONFIG_HOME=home/'config')
     if mode == 'native': env['BENCH_NATIVE'] = '1'
     (home/'eula.txt').write_text('eula=true\n')
     (home/'server.properties').write_text('online-mode=false\nserver-ip=127.0.0.1\nserver-port=25578\nlevel-seed=1\nlevel-type=minecraft:flat\ngenerator-settings={"biome":"minecraft:plains","layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}]}\nview-distance=3\nsimulation-distance=3\nspawn-protection=0\npause-when-empty-seconds=-1\n')
     if mode.startswith('wasm'):
-        mods = home / 'horizon-mods'; mods.mkdir()
-        shutil.copy(PACKAGE, mods/'machine_sample.hmod')
-        (home/'horizon-mods.txt').write_text('mod.machine_sample:true\n')
+        mods = home / 'sunrise-mods'; mods.mkdir()
+        shutil.copy(PACKAGE, mods/'machine_sample.smod')
+        (home/'sunrise-mods.txt').write_text('mod.machine_sample:true\n')
     log = open(home/'benchmark.log', 'w')
-    args = [str(BIN), '--resources', '/box/shared/vanilla/horizon-client/26.3']
+    args = [str(BIN), '--resources', '/box/shared/vanilla/sunrise-client/26.3']
     if mode == 'wasm-pulley': args += ['--wasm-interpreter']
     if mode == 'wasm-fuel': args += ['--wasm-fuel']
     args += ['--dedicated', '--nogui']
@@ -89,7 +89,7 @@ def run(mode, count):
         if count > 1:
             send(f'data get block {(count-1)%32} 65 {(count-1)//32}')
         seconds = 60 if mode == 'wasm-pulley' and count == 1000 else 20
-        send(f'horizon-report {seconds}')
+        send(f'sunrise-report {seconds}')
         deadline = time.monotonic() + seconds + 120
         while not any(home.glob('reports/perf-*.json')):
             if p.poll() is not None or time.monotonic() > deadline:

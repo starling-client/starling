@@ -13,7 +13,7 @@ Options:
   --typed     suffix numbers with their NBT type (b, s, l, f, d; plain ints are TAG_Int)
   -h, --help  print this help and exit
 
-Used to compare Horizon saves with worlds written by the vanilla server.
+Used to compare Sunrise saves with worlds written by the vanilla server.
 """
 import gzip
 import io

@@ -3,7 +3,7 @@
 from pathlib import Path
 import re
 root=Path(__file__).resolve().parents[3]
-p=root/'crates/horizon-mod-api/src/parts/items.rs'
+p=root/'crates/sunrise-mod-api/src/parts/items.rs'
 s=p.read_text()
 s=s.replace('same_item_same_components','is_stackable_with')
 s=re.sub(r'\.(damage|count)\b(?!\s*\(|\s*(?:[+\-]?=))',r'.\1()',s)

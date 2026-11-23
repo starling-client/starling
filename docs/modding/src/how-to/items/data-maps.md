@@ -145,7 +145,7 @@ files on every server data load, merged as your own maps are, and each load repl
 The axe reads the inverse maps before its own transform table: the oxidation inverse scrapes one
 stage back, the waxing inverse takes the wax off. They are derived from the forward maps on every
 load, never declared. Where several blocks share a next stage or a waxed twin, the one with the
-lowest block registry id is the one given back. That is a Horizon choice: NeoForge keeps whichever
+lowest block registry id is the one given back. That is a Sunrise choice: NeoForge keeps whichever
 its map iteration met last.
 
 Random-tick oxidation, honeycomb, dispenser waxing and the axe each move exactly one step, so a

@@ -433,13 +433,13 @@ mod tests {
 
     #[test]
     fn fetch_retains_actual_feature_closure_and_excludes_unreachable_pins() {
-        const ACTOR: &str = "HORIZON_REGISTRY_FETCH_TEST_ACTOR";
+        const ACTOR: &str = "SUNRISE_REGISTRY_FETCH_TEST_ACTOR";
         if std::env::var_os(ACTOR).is_none() {
             let home = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "native_mods::registry_plan::tests::fetch_retains_actual_feature_closure_and_excludes_unreachable_pins", "--nocapture"])
                 .env(ACTOR, "1")
-                .env("HORIZON_LAUNCHER_HOME", home.path())
+                .env("SUNRISE_LAUNCHER_HOME", home.path())
                 .output().unwrap();
             let stdout = String::from_utf8(output.stdout).unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -535,7 +535,7 @@ mod tests {
     fn missing_malformed_and_bad_checksum_locks_refuse_before_fetch() {
         let dir = tempfile::tempdir().unwrap();
         super::super::tests::write_bundle(dir.path(), "example", "");
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname='example'\nversion='1.0.0'\n[dependencies]\nhorizon-mod-api={path='.horizon/sdk/api/crates/horizon-mod-api'}\nitoa='1'\n").unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname='example'\nversion='1.0.0'\n[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\nitoa='1'\n").unwrap();
         let bundle = super::super::bundle_in(dir.path()).unwrap().unwrap();
         let projects = [Project::read(&bundle).unwrap()];
         let wanted = [Wanted {

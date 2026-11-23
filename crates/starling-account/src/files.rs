@@ -2,7 +2,7 @@
 //! manifest gives, as the official launcher does. Starling pins the version JSON itself (`research-lock.json`), so the
 //! chain of hashes starts from Starling's own files. Nothing of the game ships with Starling:
 //! the files land on the player's device, in the official launcher's layout
-//! (`versions/<v>/<v>.jar`, `libraries/…`, `assets/indexes|objects`) that horizon-prepare reads.
+//! (`versions/<v>/<v>.jar`, `libraries/…`, `assets/indexes|objects`) that sunrise-prepare reads.
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::io::{Read, Write};
@@ -228,7 +228,7 @@ fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 
 /// A library applies on the device: Mojang's rules for the OS (a phone counts as Linux, as
-/// horizon-prepare reads it), and no natives classifiers (artifacts only).
+/// sunrise-prepare reads it), and no natives classifiers (artifacts only).
 fn library_applies(library: &Value) -> bool {
     let Some(rules) = library["rules"].as_array() else {
         return true;

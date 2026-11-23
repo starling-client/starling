@@ -1,6 +1,6 @@
 """The mod API surface report: what a pull request changes in what mods can name.
 
-Exports the surface of the merge base and of the checked-out tree with the head's `horizon-stage`, diffs them, and
+Exports the surface of the merge base and of the checked-out tree with the head's `sunrise-stage`, diffs them, and
 writes the classified report to the job summary. The base comes from the event: on `pull_request` the checkout is
 GitHub's merge commit, whose first parent is the base; on a dispatch with `pr`, GitHub's compare API gives the merge
 base of that pull request's head and its base branch. Only that one commit is fetched (`--depth 1`), and only its
@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-NOTES = "crates/horizon-mod-vocab/changes"
+NOTES = "crates/sunrise-mod-vocab/changes"
 # GitHub refuses a step summary over 1 MiB; the full report stays in the step log.
 # Counted in bytes of UTF-8, frame included.
 SUMMARY_LIMIT = 200_000
@@ -93,7 +93,7 @@ def report(tool: str, base: Path, head: Path, work: Path, gate_on: bool) -> tupl
     if exports["head"].returncode != 0:
         return 1, f"The surface export of this tree failed: {last_line(results['head'][1])}.\n"
     if exports["base"].returncode != 0:
-        return 0, f"No surface report: the head's horizon-stage cannot read the base tree ({last_line(results['base'][1])}).\n"
+        return 0, f"No surface report: the head's sunrise-stage cannot read the base tree ({last_line(results['base'][1])}).\n"
     command = [tool, "surface-diff", str(work / "base.json"), str(work / "head.json"),
                "--notes", str(head / NOTES), "--base-notes", str(base / NOTES), "--json", str(work / "diff.json")]
     if gate_on:
@@ -102,7 +102,7 @@ def report(tool: str, base: Path, head: Path, work: Path, gate_on: bool) -> tupl
     # A base surface of another schema is an unreadable base, like a tree the exporter cannot read.
     base_schema = f"{work / 'base.json'}: surface schema "
     if diff.returncode == 2 and base_schema in diff.stderr:
-        return 0, f"No surface report: the head's horizon-stage cannot read the base surface ({last_line(diff.stderr)}).\n"
+        return 0, f"No surface report: the head's sunrise-stage cannot read the base surface ({last_line(diff.stderr)}).\n"
     text = diff.stdout + diff.stderr
     return (0 if diff.returncode == 0 else 1), text
 
@@ -127,7 +127,7 @@ def summary(text: str) -> str:
 
 def main() -> int:
     started = time.monotonic()
-    tool = os.environ["HORIZON_STAGE_TOOL"]
+    tool = os.environ["SUNRISE_STAGE_TOOL"]
     gate_on = gate(ROOT / "tools/ci/surface.toml")
     with tempfile.TemporaryDirectory(dir=os.environ.get("RUNNER_TEMP")) as directory:
         work = Path(directory)

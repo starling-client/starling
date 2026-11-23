@@ -13,9 +13,9 @@ class FeatureCatalogCorpusTests(unittest.TestCase):
         self.assertEqual({f['placed_root'] for f in fixtures}, {False, True})
         self.assertEqual({f['worldgen'] for f in fixtures}, {False, True})
         self.assertEqual({f['legacy'] for f in fixtures}, {False, True})
-        self.assertTrue(any('#horizon:nested' in f['definition'] for f in fixtures))
-        self.assertTrue(any('#horizon:empty' in f['definition'] for f in fixtures))
-        self.assertTrue(any('#horizon:invalid' in f['definition'] for f in fixtures))
+        self.assertTrue(any('#sunrise:nested' in f['definition'] for f in fixtures))
+        self.assertTrue(any('#sunrise:empty' in f['definition'] for f in fixtures))
+        self.assertTrue(any('#sunrise:invalid' in f['definition'] for f in fixtures))
         self.assertEqual({f['fail'] for f in fixtures}, {-1, 0, 7})
         self.assertEqual({f['reject'] for f in fixtures}, {0, 3})
 

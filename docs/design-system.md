@@ -1,14 +1,14 @@
-# Horizon's design system
+# Sunrise's design system
 
 One design language for the launcher, the website and the few overlays the game draws that
 vanilla has no screen for (the on-screen keyboard a controller types with). Every game screen
 and the HUD are not part of it: they are vanilla's, because parity is the point of the game, and
-Horizon's own settings are pages built from vanilla's widgets, the way mods add theirs.
+Sunrise's own settings are pages built from vanilla's widgets, the way mods add theirs.
 
-The tokens live in one place, `crates/horizon-theme`. The launcher (`launcher/src/theme.rs`)
-and the game (`crates/horizon-client/src/ui_theme.rs`) read them as Rust constants, and the
+The tokens live in one place, `crates/sunrise-theme`. The launcher (`launcher/src/theme.rs`)
+and the game (`crates/sunrise-client/src/ui_theme.rs`) read them as Rust constants, and the
 website reads them as CSS custom properties generated from the same crate
-(`cargo run -p xtask -- tokens` writes `crates/horizon-theme/tokens.css`, which the website's build
+(`cargo run -p xtask -- tokens` writes `crates/sunrise-theme/tokens.css`, which the website's build
 reads from main; a test fails when the file is out of date). Change a value in the crate and all three follow.
 
 ## Where it comes from
@@ -36,9 +36,9 @@ almost nothing but type. What we take from it is its restraint rather than its c
 
 ### Colour
 
-Cool, slightly blue neutrals in two appearances with the same restraint, and Horizon's violet.
+Cool, slightly blue neutrals in two appearances with the same restraint, and Sunrise's violet.
 Every text colour passes WCAG AA (4.5:1) on every background it is used on; the tests in
-`horizon-theme` check each pair in both palettes.
+`sunrise-theme` check each pair in both palettes.
 
 | Token        | Light     | Dark      | Use |
 |--------------|-----------|-----------|-----|
@@ -118,7 +118,7 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   written in mono beside the label, not on the track.
 - **Segmented control / tabs**: a `plate_soft` pill; the selected segment is an `ink` pill with
   `page` text that slides over `move`.
-- **Navigation**: text only. Launcher: a top bar with the mark and "Horizon" on the left and
+- **Navigation**: text only. Launcher: a top bar with the mark and "Sunrise" on the left and
   the pages on the right, `label` size, `muted`, the current one `ink` on a soft pill. Game
   menus keep their sidebar layout (it suits a controller), but as a plain column of text items
   under the mark, with no panel tint and no border: the current one `ink` on a soft pill that
@@ -143,19 +143,19 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   grouped panels of rows. Dark by default, Light or System in Settings (Appearance).
 - **Website** (horizon-rust/horizon-site): the Blocks look below. The same page structure as before (what it
   is, screenshots, parity, launcher, patch notes, community), headings in Pixelify Sans, lists as
-  stacks of panels, the stone texture behind the page and Horizon's pixel landscape (a dawn or a
+  stacks of panels, the stone texture behind the page and Sunrise's pixel landscape (a dawn or a
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics, controller, Extras and Shaders
+  colour, the focused key in the accent. Sunrise's graphics, controller, Extras and Shaders
   settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
   the shared `settings_shell.rs`).
 
 ## Blocks
 
-A blocky, Minecraft-like look in Horizon's purple, for the website, the redesigned launcher and
+A blocky, Minecraft-like look in Sunrise's purple, for the website, the redesigned launcher and
 the game's graphics, controller, Extras and Shaders settings screens:
-Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
+Minecraft's inventory rather than a document. Its colours are `sunrise_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
 of the main action. The game's other menus keep `LIGHT` and `DARK`.
@@ -177,8 +177,8 @@ than Pixelify. Hover and focus are vanilla's white edge.
 - **Inventory tabs** switch the kinds in Mods: the open tab joins the panel under it.
 - **Slots** hold pictures: a mod's or pack's own icon and gallery images from its source,
   downloaded when first shown and kept on disk (`launcher/src/browser/images.rs`); the launcher
-  ships no third-party pictures. Plain Minecraft shows Horizon's own grass block
-  (`tools/launcher_grass_block.py`), Horizon the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
+  ships no third-party pictures. Plain Minecraft shows Sunrise's own grass block
+  (`tools/launcher_grass_block.py`), Sunrise the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
   all rights reserved, so it is not shown.
 - **No ads.** The fork's launcher has no partner banners, sponsor links or upstream Discord links.
   This diverges from upstream.
@@ -187,7 +187,7 @@ than Pixelify. Hover and focus are vanilla's white edge.
   the mark, hills and square trees (a sunset in dark, a dawn in light). The launcher bakes them in
   `launcher/src/art.rs` at the window's scale so each texel covers whole device pixels; the website
   draws them in its `scripts/art.mjs`.
-- **Icons**: Pixelarticons (MIT), 24 unit pixel SVGs in `crates/horizon-theme/icons/pixel/`, tinted
+- **Icons**: Pixelarticons (MIT), 24 unit pixel SVGs in `crates/sunrise-theme/icons/pixel/`, tinted
   with the text colour.
 - **Contrast**: every text colour meets WCAG AA (4.5:1) on the panels, the page and the lightest
   stone shade in both palettes (`blocks_text_meets_wcag_aa_in_both_appearances`).
@@ -195,7 +195,7 @@ than Pixelify. Hover and focus are vanilla's white edge.
 ## Night
 
 The launcher's look from 0.3: a pixel night sky that turns to a sunset at the horizon, with the
-content on top. Its tokens are `horizon_theme::night` (`NIGHT`, and `DAWN` for players who pick
+content on top. Its tokens are `sunrise_theme::night` (`NIGHT`, and `DAWN` for players who pick
 Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
 
 - **The sky is the brand, the content is the UI.** The sky, the stepped sun, the banded clouds and
@@ -245,9 +245,9 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
   unfocused; the interface moves only to show cause and effect (a row arrives where it was added,
   progress fills). Reduced motion: nothing moves. The launcher's sky (`launcher/src/sky.rs`) moves
   in whole texels on a half-second beat, so it asks for two frames a second at most;
-  `HORIZON_LAUNCHER_MOTION=off` stills it, `always` keeps it moving unfocused (for recordings).
+  `SUNRISE_LAUNCHER_MOTION=off` stills it, `always` keeps it moving unfocused (for recordings).
 - **Copy says what happens** ("Downloads 26.3 and Java 21, about 600 MB"), never praises.
-- The specimen (`HORIZON_LAUNCHER_PAGE=specimen horizon-launcher`) draws the type and colours in the
+- The specimen (`SUNRISE_LAUNCHER_PAGE=specimen sunrise-launcher`) draws the type and colours in the
   launcher itself.
 - **The frame** (`launcher/src/shell.rs`): the sidebar is one plate from the window's top to its
   bottom (the wordmark, instances by group, servers, the launcher's version); the top bar over the
@@ -257,32 +257,32 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
 - **Home** (`launcher/src/home.rs`): the selected instance's name in the display cut over the bare
   sky, a caption above it naming what it plays and its state (the same square), and when it was
   played below. Play is the main action (`night::PLAY` tall, cut in one step); the version picker
-  is a raised control of the same height; Mods and Folder are quiet buttons. A Horizon instance
+  is a raised control of the same height; Mods and Folder are quiet buttons. A Sunrise instance
   gets a plate on the right: a release's notes in one line (not a Nightly's) and Join a friend.
   While it gets ready, Play names it ("Getting ready… 34%") beside Cancel, and below sit the
   bar, what is happening with the time left, and the steps (game files, Java, sounds, prepare,
   play), the current one lit, those done ticked: steps, never the log
-  (`HORIZON_LAUNCHER_PAGE=getting-ready` shows it for screenshots, nothing runs).
+  (`SUNRISE_LAUNCHER_PAGE=getting-ready` shows it for screenshots, nothing runs).
 - **Instance icons** (`launcher/src/instance_icons.rs`): the sidebar's rows, Home's hero (beside
   the name) and the instance dialog show the same icon. Its own picture first (`icon.png` in its
   game folder: one the player chose with Choose image…, scaled to 128 pixels, or its modpack's
   icon from where it was installed), else the block or colour chosen in the dialog, else its
   mark: the loader's logo (Fabric, Quilt, Forge, NeoForge), the grass block for plain Minecraft,
-  Horizon's for Horizon. The letter tile is the last resort. The New instance dialog's loader
+  Sunrise's for Sunrise. The letter tile is the last resort. The New instance dialog's loader
   cards show the same logos. Pixel-art logos are scaled by whole
   pixels; each is decoded once per size.
 - **The instance's tabs** (`launcher/src/home_tabs.rs`): under Home's hero, one tab at a time
   instead of one long page: Overview (what Play needs: the instance, the game or its resources,
   the account), Worlds, Multiplayer, Packs, then Screenshots and Console once they have something.
   A tab names how many it holds ("Worlds 3"); its own buttons (Add server, Open folder) sit at the
-  strip's end, where a list's header would put them (`HORIZON_LAUNCHER_PAGE=worlds`, `packs`...
+  strip's end, where a list's header would put them (`SUNRISE_LAUNCHER_PAGE=worlds`, `packs`...
   opens one for screenshots).
 - **The Mods tab** (`launcher/src/instance_mods.rs`): the instance's mods on one nearly opaque
-  card, its loader in the header ("Fabric mods", "Horizon mods") beside a filter. A row is the
+  card, its loader in the header ("Fabric mods", "Sunrise mods") beside a filter. A row is the
   mod's own icon (Modrinth's, else its jar's, else a glyph), its name and version, where it comes from (Modrinth,
   "needed by another mod", or a local file by name), an update as an amber pill when the browser
   found one, and a switch (a Java jar turned off is renamed `.disabled`). Update all and Add mods
-  sit at the strip's end (`HORIZON_LAUNCHER_PAGE=instance-mods`).
+  sit at the strip's end (`SUNRISE_LAUNCHER_PAGE=instance-mods`).
 - **Sign in with Microsoft** (`launcher/src/microsoft.rs`): every button that signs in is
   Microsoft's own, drawn as Microsoft publishes it: 41 pixels tall, its four-square symbol, the text
   semibold at 15 pixels, `#2F2F2F` with white text at night, white with `#5E5E5E` text and a
@@ -291,27 +291,27 @@ Light); `tokens.css` carries them as `--night-*`. The game's menus don't use it.
 - **The sign-in sheet** (`launcher/src/owner_page.rs`, the owner gate): an opaque plate over the
   dimmed launcher, never instead of it. It says why (the account that owns Java Edition, no install
   needed), the code in mono on a raised box with Copy, and Open link as the main action; the window
-  goes on by itself once Microsoft answers (`HORIZON_LAUNCHER_PAGE=sign-in` shows it with a made-up
+  goes on by itself once Microsoft answers (`SUNRISE_LAUNCHER_PAGE=sign-in` shows it with a made-up
   code for screenshots).
 - **New instance** (`launcher/src/new_instance.rs`): an opaque plate over the dimmed launcher,
-  tabs for the kind (Horizon, Vanilla, Modded). A Java kind lists Mojang's versions (search,
+  tabs for the kind (Sunrise, Vanilla, Modded). A Java kind lists Mojang's versions (search,
   Snapshots, Old; the newest release chosen), Modded adds the loader (Fabric, Quilt, Forge or NeoForge, with its logo, at its newest
   stable version), and the name follows the choice ("Fabric 1.21.4") until the player types one.
   Create is the main action.
 
 ## Glass
 
-The launcher's next look, designed by Anthony S. (dezer-x) as a web mockup: playhorizon.dev/launcher,
-source in horizon-site `app/launcher/` and `components/launcher/`. The launcher ports it one to one,
+The launcher's next look, designed by Anthony S. (dezer-x) as a web mockup: playsunrise.net/launcher,
+source in sunrise-site `app/launcher/` and `components/launcher/`. The launcher ports it one to one,
 screen by screen, replacing Night where they differ; the mockup is the reference for every size,
-colour, state and motion. Its tokens are `horizon_theme::glass`; `tokens.css` carries the colours
+colour, state and motion. Its tokens are `sunrise_theme::glass`; `tokens.css` carries the colours
 as `--glass-*`.
 
 - **The scene is the background**: a pixel sunset over three ridges with trees, clouds, stars, a
   meteor now and then and fireflies (`launcher/src/scene.rs`), a port of the website's
-  `HorizonScene` with its seeds and sums, so a window shows the picture the mockup shows at the
+  `SunriseScene` with its seeds and sums, so a window shows the picture the mockup shows at the
   same size. It eases with the pointer and stops 10 s after the window loses focus;
-  `HORIZON_LAUNCHER_MOTION` works as for Night. Dark appearance only so far; Light keeps the dawn.
+  `SUNRISE_LAUNCHER_MOTION` works as for Night. Dark appearance only so far; Light keeps the dawn.
 - **Frosted plates, round corners, no borders.** A plate is the scene behind it blurred 24 px and
   saturated 140 %, under white at 6 % and the accent's dark violet (`base`) at 22 %. Menus and
   popovers take the same glass with a shadow (the mockup's darker `hzl-float` read as another
@@ -334,11 +334,11 @@ as `--glass-*`.
   at the optical size a browser picks for them: `Bricolage Grotesque Display` (56) and
   `Bricolage Grotesque Heading` (28), cut by `tools/bake_bricolage.py`.
 - **Icons**: Hugeicons' free set (MIT), the ones the mockup uses, stroked 1.6 in the text colour
-  (`crates/horizon-theme/icons/glass/`, served as `icons/glass/<name>.svg`).
+  (`crates/sunrise-theme/icons/glass/`, served as `icons/glass/<name>.svg`).
 
 ## The mark
 
-**Horizon line.** A sun half set below a horizon, drawn as three horizontal bars of 4, 8 and
+**Sunrise line.** A sun half set below a sunrise, drawn as three horizontal bars of 4, 8 and
 10 units over a 12 unit line, on a 16 unit grid. The bars are the sun cut by the horizon into
 slices, which also reads as layers of terrain and as a nod to voxels without drawing a block. It
 is built on whole units of the 16 px grid so it stays sharp at 16 px, and it scales without

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the native wind-burst block-filter regression without a display or server.
 
-Build `cargo build -p horizon-mod-host --example wind_burst_hook_probe`, then pass
+Build `cargo build -p sunrise-mod-host --example wind_burst_hook_probe`, then pass
 --binary and --resources. Uses only temporary synthetic fixture worlds.
 """
 import argparse
@@ -51,16 +51,16 @@ def check(binary, resources, timeout=600, evidence=None):
         results = {}
         for mode in ['no_mod', 'noop', 'protect']:
             output = work / (mode + '.txt')
-            env = dict(os.environ, HORIZON_DISPENSE_FIXTURE=f'{inputs},{output}')
+            env = dict(os.environ, SUNRISE_DISPENSE_FIXTURE=f'{inputs},{output}')
             env['RUST_MIN_STACK'] = str(64 * 1024 * 1024)
-            env.setdefault('HORIZON_WORKER_THREADS', '2')
-            env.setdefault('HORIZON_JOB_THREADS', '2')
-            env.pop('HORIZON_WIND_NO_MOD', None)
-            env.pop('HORIZON_WIND_PROTECT', None)
+            env.setdefault('SUNRISE_WORKER_THREADS', '2')
+            env.setdefault('SUNRISE_JOB_THREADS', '2')
+            env.pop('SUNRISE_WIND_NO_MOD', None)
+            env.pop('SUNRISE_WIND_PROTECT', None)
             if mode == 'no_mod':
-                env['HORIZON_WIND_NO_MOD'] = '1'
+                env['SUNRISE_WIND_NO_MOD'] = '1'
             elif mode == 'protect':
-                env['HORIZON_WIND_PROTECT'] = '1'
+                env['SUNRISE_WIND_PROTECT'] = '1'
             run_game([str(binary), '--headless', '--resources', str(resources)],
                      cwd=work, env=env, check=True, timeout=timeout)
             text = output.read_text()

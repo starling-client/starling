@@ -163,7 +163,7 @@ def command(args):
         cp = cmd.index("-cp") + 1
         cmd[cp] = os.pathsep.join([str(args.classes), cmd[cp]])
         main = cmd.index("net.minecraft.client.main.Main")
-        cmd[main:main + 1] = [f"-Dhorizon.lanPort={args.lan_port}", "dev.horizonlab.parity.OfflineLanHost"]
+        cmd[main:main + 1] = [f"-Dsunrise.lanPort={args.lan_port}", "dev.sunriselab.parity.OfflineLanHost"]
     if args.backend:
         cmd += ["--graphicsBackend", args.backend]
     return cmd
@@ -189,7 +189,7 @@ def main():
     parser.add_argument("--lan-port", type=int,
                         help="open the --world to LAN on this port without authentication (needs --classes)")
     parser.add_argument("--classes", type=Path, default=ROOT / ".local/mp/oracle",
-                        help="compiled OfflineLanHost (mods/horizon/src/test/java)")
+                        help="compiled OfflineLanHost (mods/sunrise/src/test/java)")
     parser.add_argument("--backend", help="graphics backend (opengl or vulkan)")
     parser.add_argument("--option", action="append", default=[], help="KEY:VALUE for options.txt")
     parser.add_argument("--print", action="store_true", help="print the command and exit")

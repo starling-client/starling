@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The dedicated server's anticheat (docs/anticheat.md), end to end: a real `horizon-client --dedicated`
-and horizon-bots, legit bots beside cheating ones.
+"""The dedicated server's anticheat (docs/anticheat.md), end to end: a real `sunrise-client --dedicated`
+and sunrise-bots, legit bots beside cheating ones.
 
     python3 tools/anticheat_e2e.py --bin-dir target/fast            # every check
     python3 tools/anticheat_e2e.py --bin-dir target/fast --check timer
@@ -20,7 +20,7 @@ Checks:
          ground in every move (no-fall) and one walking on water that does (jesus) are flagged, their claim
          dropped (never sent back), and kicked by the anticheat, warned of the ban the next kick brings, never
          by vanilla's floating kick; bots walking on the ground and standing still are never flagged.
-- prediction: `[anticheat]` on, survival: a real Horizon client, through a relay that holds every packet
+- prediction: `[anticheat]` on, survival: a real Sunrise client, through a relay that holds every packet
          20-120 ms, walks, sprint-jumps, strafes and sneaks, with effects given and cleared, over ice and
          soul sand, swims, walks into cows, has blocks changed around it, flies in creative, glides with an
          elytra and a firework, launches with riptide, rides a boat and hits a cow mid-sprint: it is never
@@ -35,15 +35,15 @@ Checks:
          folder, and the same bot, back and cheating again, is banned.
 - prediction-vanilla (only with --check): the same with the real vanilla 26.3 client (tools/vanilla_client.py, from the owner's
          own files; on macOS from the logged-in screen session, even a locked one), its keys pressed by
-         VanillaMover (mods/horizon/src/test/java): it walks, sprint-jumps, strafes and sneaks, with Speed
+         VanillaMover (mods/sunrise/src/test/java): it walks, sprint-jumps, strafes and sneaks, with Speed
          given and cleared, over packed ice, swims, walks into cows, jumps at a block set in front of it and
          glides with an elytra and a firework, through the same relay: it is never flagged. It hits the
          cow too, and `combat` never flags it.
 
-Each server runs in a fresh folder with fresh HORIZON_HOME and XDG folders (lab.game_env), on a free port,
+Each server runs in a fresh folder with fresh SUNRISE_HOME and XDG folders (lab.game_env), on a free port,
 in a flat world (creative unless the check says otherwise: the bots fly). Build first:
-    cargo build --profile fast -p horizon-game -p horizon-client-lib --bin horizon-client --bin horizon-ctl
-    cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p sunrise-game -p sunrise-client-lib --bin sunrise-client --bin sunrise-ctl
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -105,16 +105,16 @@ def start(bins, folder, anticheat, out, name, **extra):
     (folder / 'eula.txt').write_text('eula=true\n')
     if anticheat is not None:
         (folder / 'server.toml').write_text(anticheat)
-    command = [bins / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / f'sunrise-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / f'{name}-server.log')
     server.wait_for(DONE, 300)
     return server, port
 
 
 def bots(bins, port, out, name, count, behaviour, seconds, *extra):
-    """horizon-bots, run to the end; its report."""
+    """sunrise-bots, run to the end; its report."""
     report = out / f'{name}.json'
-    subprocess.run([bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', str(count),
+    subprocess.run([bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', str(count),
                     '--behaviour', behaviour, '--seconds', str(seconds), '--join-every', '0.2',
                     '--name', name, '--report', report, *extra],
                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=seconds + 180)
@@ -619,15 +619,15 @@ def check_prediction(bins, scratch, out, seconds, name='prediction', play=None):
             '[anticheat.prediction]\nsetback = 5\nalert = 15\nkick = 60\n')
     server, port = start(bins, folder, toml, out, name, gamemode='survival', difficulty='peaceful')
     from lan_e2e import Game  # noqa: E402 (only this check drives a client)
-    game = Game('client', bins / f'horizon-ctl{EXE}', lab.RESOURCES.resolve())
-    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HORIZON_LAUNCHER_HOME'):
+    game = Game('client', bins / f'sunrise-ctl{EXE}', lab.RESOURCES.resolve())
+    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'SUNRISE_LAUNCHER_HOME'):
         game.d.env[key] = str(game.work / key.lower())
-    game.d.env['HORIZON_LAUNCHER_NO_SELF_UPDATE'] = '1'
+    game.d.env['SUNRISE_LAUNCHER_NO_SELF_UPDATE'] = '1'
     relay = Jitter(port)
     try:
         try:
             game('launch', wait=False,
-                     offscreen=sys.platform == 'darwin' or bool(os.environ.get('HORIZON_E2E_HEADLESS')))
+                     offscreen=sys.platform == 'darwin' or bool(os.environ.get('SUNRISE_E2E_HEADLESS')))
             game.raw('connect', f'127.0.0.1:{relay.port}', 'Walker')
             game.raw('wait-for', 'loaded', '--timeout', 300)
             game.wait(60)
@@ -667,7 +667,7 @@ class VanillaClient:
         classes.mkdir(parents=True)
         jars = os.pathsep.join(map(str, vanilla_client.classpath()))
         release = str(lab.config()[0]['minecraft']['java_major'])
-        mover = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMover.java'
+        mover = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMover.java'
         subprocess.run(['javac', '--release', release, '-proc:none', '-nowarn', '-cp', jars, '-d', classes, mover],
                        check=True, capture_output=True)
         args = argparse.Namespace(name=name, join=address, world=None, game_dir=work / 'client', assets=None,
@@ -677,7 +677,7 @@ class VanillaClient:
         command = vanilla_client.command(args)
         cp = command.index('-cp') + 1
         command[cp] = os.pathsep.join([str(classes), command[cp]])
-        command[command.index('net.minecraft.client.main.Main')] = 'dev.horizonlab.parity.VanillaMover'
+        command[command.index('net.minecraft.client.main.Main')] = 'dev.sunriselab.parity.VanillaMover'
         self.log = open(log, 'w')
         self.ready = threading.Event()
         self.positions = []
@@ -859,7 +859,7 @@ def check_combat(bins, scratch, out, seconds):
     for name in ('NoSwing', 'Aura'):
         cheater = again[name]['per_bot'][0]
         ban = banned.get(cheater['name'])
-        if not ban or ban.get('reason') != 'Horizon anticheat: combat' or ban.get('source') != 'Horizon anticheat':
+        if not ban or ban.get('reason') != 'Sunrise anticheat: combat' or ban.get('source') != 'Sunrise anticheat':
             raise Failed(f'combat: {cheater["name"]} came back, cheated again and was not banned: {bans}')
         if 'disconnected' not in (cheater['error'] or ''):
             raise Failed(f'combat: banned {cheater["name"]} was not sent away ({cheater["error"]})')
@@ -906,7 +906,7 @@ def check_combat_restart(bins, scratch, out, seconds):
         raise Failed(f'combat-restart: no first kick with its ban count in the log:\n{log}')
     bans = json.loads((folder / 'banned-players.json').read_text())
     ban = next((b for b in bans if b['name'] == 'RNoSwing0'), None)
-    if not ban or ban.get('reason') != 'Horizon anticheat: combat':
+    if not ban or ban.get('reason') != 'Sunrise anticheat: combat':
         raise Failed(f'combat-restart: back after the restart, the bot cheated again and was not banned: {bans}')
     if 'disconnected' not in (second['error'] or ''):
         raise Failed(f'combat-restart: the banned bot was not sent away ({second["error"]})')
@@ -944,7 +944,7 @@ def main():
     bins, out = Path(args.bin_dir).resolve(), Path(args.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    # One set of scratch HORIZON_HOME and XDG folders for every server below.
+    # One set of scratch SUNRISE_HOME and XDG folders for every server below.
     os.environ.update(lab.game_env())
     failed = []
     with tempfile.TemporaryDirectory(prefix='anticheat-e2e-') as scratch:

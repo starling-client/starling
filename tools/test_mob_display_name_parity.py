@@ -2,7 +2,7 @@
 """How command replies name a mob, a team and a score holder, on a dedicated server, against vanilla's, seen by a
 vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator. She summons a wolf and a pig named Bob, puts the pig on a red team,
 reads its Health with `/data get entity`, kills the wolf, and sets scores for the pig and for herself.
 - `/summon`, `/data` and `/kill` name the mob with `Entity.getDisplayName`: the team's formatting of `getName()`,

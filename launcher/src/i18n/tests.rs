@@ -56,7 +56,7 @@ fn strings() -> (BTreeSet<String>, BTreeSet<String>) {
         &mut files,
     );
     sources(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/horizon-mod-package/src"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/sunrise-mod-package/src"),
         &mut files,
     );
     let (mut asked, mut all) = (BTreeSet::new(), BTreeSet::new());
@@ -138,11 +138,11 @@ fn translations_are_valid_and_coverage_is_reported() {
     for (_, table) in &tables {
         asked.extend(table.keys().filter(|key| all.contains(*key)).cloned());
     }
-    // Show the detailed lists with HORIZON_LAUNCHER_I18N_DETAILS=1 cargo test
+    // Show the detailed lists with SUNRISE_LAUNCHER_I18N_DETAILS=1 cargo test
     // --manifest-path launcher/Cargo.toml --lib i18n::tests::translations_are_valid_and_coverage_is_reported
     use std::fmt::Write as _;
     use std::io::Write as _;
-    let show_details = std::env::var("HORIZON_LAUNCHER_I18N_DETAILS").as_deref() == Ok("1");
+    let show_details = std::env::var("SUNRISE_LAUNCHER_I18N_DETAILS").as_deref() == Ok("1");
     let (mut missing_count, mut stale_count) = (0, 0);
     let mut details = String::new();
     for (language, table) in &tables {
@@ -169,7 +169,7 @@ fn translations_are_valid_and_coverage_is_reported() {
     }
     // Write directly so the single summary is visible even when libtest captures passing tests.
     let mut out = std::io::stdout().lock();
-    writeln!(out, "Launcher locale coverage: {} languages, {missing_count} missing entries, {stale_count} stale entries (HORIZON_LAUNCHER_I18N_DETAILS=1 for lists).", tables.len()).unwrap();
+    writeln!(out, "Launcher locale coverage: {} languages, {missing_count} missing entries, {stale_count} stale entries (SUNRISE_LAUNCHER_I18N_DETAILS=1 for lists).", tables.len()).unwrap();
     if show_details {
         write!(out, "{details}").unwrap();
     }

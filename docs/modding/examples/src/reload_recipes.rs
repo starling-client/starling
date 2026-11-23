@@ -49,7 +49,7 @@ impl Processing {
 // ANCHOR_END: cache
 
 // ANCHOR: publication
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for Processing {
     fn server_about_to_start(&self, _: &mut dyn ServerHost, _: &mut ServerAboutToStartEvent) {
         self.clear();

@@ -34,7 +34,7 @@ pub(super) fn run() {
 }
 
 fn run_launcher() {
-    horizon_mod_package::holder::retain_capability();
+    sunrise_mod_package::holder::retain_capability();
     if let Some(code) = native_mods::internals_rustc_wrapper() {
         std::process::exit(code);
     }
@@ -51,58 +51,58 @@ fn run_launcher() {
     // Windows setup: `setup --quiet` / `uninstall --quiet` run here without a window, and never
     // reach the CLI parser below (so neither the MCP tools nor the completions list them).
     #[cfg(windows)]
-    if let Some(code) = horizon_launcher::installer::run_quiet() {
+    if let Some(code) = sunrise_launcher::installer::run_quiet() {
         std::process::exit(code);
     }
-    if let Some(code) = horizon_launcher::relocation::run_worker() {
+    if let Some(code) = sunrise_launcher::relocation::run_worker() {
         std::process::exit(code);
     }
     // A broken location must still open a window: startup() falls back to the default
     // folders and records the error, which Settings shows with Retry and Use the default folder.
     // It keeps the migration lease for the life of the process.
-    let _location_error = horizon_launcher::data_location::startup();
+    let _location_error = sunrise_launcher::data_location::startup();
     perf::process_started();
     backend::exe_path();
-    if let Some(code) = horizon_launcher::update_handoff::run() {
+    if let Some(code) = sunrise_launcher::update_handoff::run() {
         std::process::exit(code);
     }
     #[cfg(windows)]
     backend::remove_replaced_binaries();
     backend::cleanup_launcher_updates();
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
-    // that build their own agents (`horizon-port-pack`) are told before anything starts.
-    horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
-    // The setup wizard and `horizon-launcher.exe uninstall` (what Control Panel runs) are windows,
+    // that build their own agents (`sunrise-port-pack`) are told before anything starts.
+    sunrise_launcher::proxy::announce(sunrise_launcher::backend::Settings::load().proxy);
+    // The setup wizard and `sunrise-launcher.exe uninstall` (what Control Panel runs) are windows,
     // not CLI commands: asked of the CLI parser first, `uninstall` was refused as an unknown
     // subcommand, with the error going to the console that Control Panel's start doesn't have.
     #[cfg(windows)]
-    let setup_window = horizon_launcher::installer::window_mode();
+    let setup_window = sunrise_launcher::installer::window_mode();
     #[cfg(not(windows))]
-    let setup_window: Option<horizon_launcher::setup_args::Mode> = None;
+    let setup_window: Option<sunrise_launcher::setup_args::Mode> = None;
     if setup_window.is_none() {
         if let Some(code) = cli::run() {
             std::process::exit(code);
         }
     }
     // The GPU's texture limit, which caps the pictures made from disk (`picture_cache`).
-    horizon_launcher::pictures::probe_gpu_limit();
+    sunrise_launcher::pictures::probe_gpu_limit();
     gpui_platform::application()
         .with_assets(blocks::Assets)
         // `move`: the closure owns `setup_window`; `run` wants it to outlive this frame.
         .run(move |cx: &mut App| {
             cx.text_system()
                 .add_fonts(vec![
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_MONO),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_REGULAR),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_MEDIUM),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_BOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_DISPLAY_BOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_DISPLAY_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::BRICOLAGE_HEADING_SEMIBOLD),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_REGULAR),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_MEDIUM),
-                    Cow::Borrowed(horizon_theme::fonts::GEIST_SEMIBOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::GEIST_MONO),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_REGULAR),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_MEDIUM),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_SEMIBOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_BOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_DISPLAY_BOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_DISPLAY_SEMIBOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::BRICOLAGE_HEADING_SEMIBOLD),
+                    Cow::Borrowed(sunrise_theme::fonts::GEIST_REGULAR),
+                    Cow::Borrowed(sunrise_theme::fonts::GEIST_MEDIUM),
+                    Cow::Borrowed(sunrise_theme::fonts::GEIST_SEMIBOLD),
                 ])
                 .expect("bundled fonts");
             cx.bind_keys(key_bindings());
@@ -117,7 +117,7 @@ fn run_launcher() {
                 })
             });
             cx.set_menus(menus());
-            // The setup exe (and `horizon-launcher.exe uninstall`) opens its own window instead.
+            // The setup exe (and `sunrise-launcher.exe uninstall`) opens its own window instead.
             #[cfg(windows)]
             if let Some(mode) = setup_window {
                 setup_page::open(mode, cx);

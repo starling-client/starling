@@ -22,11 +22,11 @@ def corpus(definitions):
         d=dict(default=bits(default))
         if minimum is not None:d.update(min=bits(minimum),max=bits(maximum))
         return d
-    def mod(name='horizon:a',amount=.1,operation=0):return dict(id=name,amount=bits(amount),operation=operation)
+    def mod(name='sunrise:a',amount=.1,operation=0):return dict(id=name,amount=bits(amount),operation=operation)
     def op(mode='value',**kw):
         f=dict(mode=mode,target=0,source=1,modifier=0,modifiers=[],base=bits(0),fail=-1,read=False);f.update(kw);return f
     def row(modifiers,ops,defs=None):return dict(definitions=defs or [definition(),definition(0,-100,100)],modifiers=modifiers,ops=ops)
-    basic=[mod(),mod(amount=.2,operation=1),mod(amount=.3,operation=2),mod(),mod('horizon:b',2,0)]
+    basic=[mod(),mod(amount=.2,operation=1),mod(amount=.3,operation=2),mod(),mod('sunrise:b',2,0)]
     sequence=[op('value'),op('permanent'),op('update',modifier=1),op('update',modifier=1),op('update',modifier=3),op('value'),op('remove'),op('value'),op('clear'),op('value'),op('apply',modifiers=[0,1,2,4]),op('pack'),op('unpack',target=1),op('copy',target=1,source=0),op('copy',target=0,source=0),op('value'),op('value',target=1)]
     for d in definitions:yield row(basic,sequence,defs=[d,definition()])
     values=[-float('inf'),-1e30,-1,-0.,0.,1e-40,.1,1,2,1e16,1e30,float('inf'),float('nan')]
@@ -41,7 +41,7 @@ def corpus(definitions):
             ops=[dict(o,fail=fail,read=read) for o in sequence]
             ops.extend([op('replace',modifier=4,fail=fail,read=read),op('many',modifiers=[0,4,0],fail=fail,read=read),op('value')])
             yield row(basic,ops)
-    names=['a','minecraft:a',':a','','minecraft:',':','horizon:','horizon:/a','a:b.c-_/0']
+    names=['a','minecraft:a',':a','','minecraft:',':','sunrise:','sunrise:/a','a:b.c-_/0']
     yield row([mod(n,i/10,i%3) for i,n in enumerate(names)],[*[op('update',modifier=i) for i in range(len(names))],op('value'),op('clear'),op('value')])
     def java_hash(s):
         h=0
@@ -49,8 +49,8 @@ def corpus(definitions):
         return h
     colliders=[];i=0
     while len(colliders)<128:
-        name='cluster_'+str(i);h=(31*java_hash('horizon')+java_hash(name))&0xffffffff;h=(h*0x9e3779b9)&0xffffffff
-        if (h^(h>>16))&31==31:colliders.append('horizon:'+name)
+        name='cluster_'+str(i);h=(31*java_hash('sunrise')+java_hash(name))&0xffffffff;h=(h*0x9e3779b9)&0xffffffff
+        if (h^(h>>16))&31==31:colliders.append('sunrise:'+name)
         i+=1
     for operation in range(3):
         pool=[mod(n,[1e16,-1e16,1,.01,-.01,7][i%6],operation) for i,n in enumerate(colliders)]
@@ -77,19 +77,19 @@ def main():
     report_path=build/'report.json';report_path.unlink(missing_ok=True)
     if args.prepare:lab.prepare()
     lock,jars,libraries=base.verify_artifacts()
-    oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaAttributeOracle.java'
-    sources=[oracle,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/horizon-core/Cargo.toml',lab.ROOT/'crates/horizon-world/Cargo.toml',*sorted((lab.ROOT/'crates/horizon-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/horizon-world/src').rglob('*.rs')),lab.ROOT/'crates/horizon-world/examples/probe/attribute_fixture.rs']
+    oracle=lab.ROOT/'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaAttributeOracle.java'
+    sources=[oracle,Path(__file__),lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',lab.ROOT/'crates/sunrise-core/Cargo.toml',lab.ROOT/'crates/sunrise-world/Cargo.toml',*sorted((lab.ROOT/'crates/sunrise-core/src').rglob('*.rs')),*sorted((lab.ROOT/'crates/sunrise-world/src').rglob('*.rs')),lab.ROOT/'crates/sunrise-world/examples/probe/attribute_fixture.rs']
     tested_sources=base.source_hashes(sources)
     classes=build/'classes';classes.mkdir(exist_ok=True)
     def run(command,name):
         with (build/(name+'.log')).open('w',encoding='utf-8') as log:base.run(list(map(str,command)),stdout=log,stderr=subprocess.STDOUT)
     dependency_path=os.pathsep.join(map(str,libraries))
-    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle],'compile-java')
+    run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/sunrise/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle],'compile-java')
     def java(side,mode,path):
-        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.horizonlab.parity.VanillaAttributeOracle',mode,path],side+'-'+mode)
+        run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars[side]),dependency_path]),'dev.sunriselab.parity.VanillaAttributeOracle',mode,path],side+'-'+mode)
     java('server','export',build);states=json.loads((build/'attributes.json').read_text());fixtures=list(corpus(states));inputs=build/'inputs.txt';inputs.write_text(''.join(json.dumps(value,separators=(',',':'))+'\n' for value in fixtures),encoding='utf-8')
     fixture_paths=[inputs,build/'attributes.json'];tested_fixtures=base.source_hashes(fixture_paths)
-    run(['cargo','build','--release','-p','horizon-world','--example','world_probe'],'compile-rust')
+    run(['cargo','build','--release','-p','sunrise-world','--example','world_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--no-deps','--format-version','1'],cwd=lab.ROOT,text=True))
     binary=Path(metadata['target_directory'])/'release/examples'/('world_probe.exe' if os.name=='nt' else 'world_probe')
     run([binary,'attribute_fixture',build],'rust');references=[]

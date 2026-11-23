@@ -42,7 +42,7 @@ def corpus(facts, placement):
     for legacy,seed,fail,reject in itertools.product([False,True],[0,-1],[-1,0,5,12],[0,3]):
         placed={'feature':magma(placement_radius_around_floor=1,placement_probability_per_valid_position=0.5),'placement':[{'type':'count','count':2}]}
         yield case(placed,mode='placed',legacy=legacy,seed=seed,fail=fail,reject=reject)
-        yield case({'type':'overlay','features':[placed,{'feature':'horizon:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
+        yield case({'type':'overlay','features':[placed,{'feature':'sunrise:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
 
 
 if __name__=='__main__':

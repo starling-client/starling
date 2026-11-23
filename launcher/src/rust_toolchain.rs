@@ -823,7 +823,7 @@ pub fn smart_app_control() -> String {
 It only lets signed programs run, and a native build runs programs no one has signed: the ones it \
 compiles on this computer and some of the compiler's own. To build native mods, turn it off in \
 Windows Security > App & browser control > Smart App Control settings, then build again. On some \
-Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need \
+Windows versions it can't be turned back on without reinstalling Windows. Content mods (.smod) need \
 no build and work with it on.")
     .to_string()
 }
@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn every_system_horizon_ships_for_can_build_native_mods() {
+    fn every_system_sunrise_ships_for_can_build_native_mods() {
         // An Intel Mac had a game and a launcher but no compiler (#1161): native builds stopped
         // with "the launcher has none for macos x86_64".
         for (os, arch, game, _) in backend::PLATFORMS {
@@ -1327,7 +1327,7 @@ mod tests {
 
     #[test]
     fn a_mingw_zip_unpacks_its_programs_and_not_its_documentation() {
-        let dir = std::env::temp_dir().join(format!("horizon-mingw-unpack-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sunrise-mingw-unpack-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let archive = dir.join("mingw.zip");
@@ -1369,7 +1369,7 @@ mod tests {
     #[test]
     fn an_llvm_mingw_zip_unpacks_to_its_managed_folder() {
         let dir =
-            std::env::temp_dir().join(format!("horizon-llvm-mingw-unpack-{}", std::process::id()));
+            std::env::temp_dir().join(format!("sunrise-llvm-mingw-unpack-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let archive = dir.join("llvm-mingw.zip");
@@ -1400,7 +1400,7 @@ mod tests {
 
     #[test]
     fn arm64_toolchain_is_incomplete_without_each_required_c_and_link_tool() {
-        let dir = std::env::temp_dir().join(format!("horizon-arm64-tools-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sunrise-arm64-tools-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let host = HOSTS
             .iter()
@@ -1430,7 +1430,7 @@ mod tests {
 
     #[test]
     fn the_command_puts_mingw_after_rust_when_the_toolchain_has_it() {
-        let dir = std::env::temp_dir().join(format!("horizon-mingw-path-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sunrise-mingw-path-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let host = HOSTS
             .iter()
@@ -1463,7 +1463,7 @@ mod tests {
     #[test]
     fn the_arm64_command_selects_managed_llvm_c_and_link_tools() {
         let dir = std::env::temp_dir().join(format!(
-            "horizon-arm64-toolchain-{} with spaces",
+            "sunrise-arm64-toolchain-{} with spaces",
             std::process::id()
         ));
         let host = HOSTS
@@ -1608,20 +1608,20 @@ mod tests {
     /// exercises the downloaded host compiler, C dependencies, Windows imports and final linker.
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     #[test]
-    #[ignore = "downloads the managed Windows ARM64 toolchain and builds Horizon"]
+    #[ignore = "downloads the managed Windows ARM64 toolchain and builds Sunrise"]
     fn managed_arm64_toolchain_builds_the_game() {
-        let home = std::env::var_os("HORIZON_LAUNCHER_HOME").map_or_else(
+        let home = std::env::var_os("SUNRISE_LAUNCHER_HOME").map_or_else(
             || {
                 std::env::temp_dir().join(format!(
-                    "horizon-managed-native-arm64-{}",
+                    "sunrise-managed-native-arm64-{}",
                     std::process::id()
                 ))
             },
             PathBuf::from,
         );
         let _ = fs::create_dir_all(&home);
-        std::env::set_var("HORIZON_LAUNCHER_HOME", &home);
-        let target_dir = std::env::var_os("HORIZON_NATIVE_TARGET_DIR").map_or_else(
+        std::env::set_var("SUNRISE_LAUNCHER_HOME", &home);
+        let target_dir = std::env::var_os("SUNRISE_NATIVE_TARGET_DIR").map_or_else(
             || backend::build_dir().join("managed-native-target"),
             PathBuf::from,
         );
@@ -1642,9 +1642,9 @@ mod tests {
                 "--profile",
                 "fast",
                 "-p",
-                "horizon-client",
+                "sunrise-client",
                 "--bin",
-                "horizon-client",
+                "sunrise-client",
             ])
             .env("CARGO_TARGET_DIR", &target_dir)
             .env(

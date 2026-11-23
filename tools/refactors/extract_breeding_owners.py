@@ -8,7 +8,7 @@ separate commits.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CLIENT = ROOT / "crates/horizon-client/src"
+CLIENT = ROOT / "crates/sunrise-client/src"
 
 
 def take_function(text, marker, closing):

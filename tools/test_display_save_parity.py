@@ -116,7 +116,7 @@ def main():
         else:
             matches = want == got
         if not matches:
-            differences.append({'row': index, 'vanilla': want, 'horizon': got})
+            differences.append({'row': index, 'vanilla': want, 'sunrise': got})
     report = {'records': len(vanilla), 'passed': len(vanilla) - len(differences),
               'comparison': 'typed SNBT compounds and exact command records',
               'differences': differences}

@@ -1,15 +1,15 @@
 //! Switching what an instance plays (Edit's kinds, the mockup's `InstanceModal` for an existing
-//! instance): Horizon, or Minecraft: Java Edition of one version with or without a loader. Only
+//! instance): Sunrise, or Minecraft: Java Edition of one version with or without a loader. Only
 //! its entry in `instances.json` changes. Its folder, with its worlds, mods and options, is never
 //! touched, and a Java instance's own settings (memory, Java, arguments, window) are put aside
-//! while it plays Horizon, to come back with Java.
+//! while it plays Sunrise, to come back with Java.
 use super::*;
 use crate::loaders::Loader;
 
 /// What an instance plays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Plays {
-    Horizon,
+    Sunrise,
     Java {
         minecraft: String,
         loader: Option<Loader>,
@@ -20,7 +20,7 @@ impl Plays {
     /// What `instance` plays now.
     pub fn of(instance: &Instance) -> Plays {
         match &instance.java {
-            None => Plays::Horizon,
+            None => Plays::Sunrise,
             Some(j) => Plays::Java {
                 minecraft: j.minecraft.clone(),
                 loader: j.loader.clone(),
@@ -28,18 +28,18 @@ impl Plays {
         }
     }
 
-    /// The Minecraft version its worlds are saved by; `horizon` is the one Horizon plays.
-    fn minecraft<'a>(&'a self, horizon: &'a str) -> &'a str {
+    /// The Minecraft version its worlds are saved by; `sunrise` is the one Sunrise plays.
+    fn minecraft<'a>(&'a self, sunrise: &'a str) -> &'a str {
         match self {
-            Plays::Horizon => horizon,
+            Plays::Sunrise => sunrise,
             Plays::Java { minecraft, .. } => minecraft,
         }
     }
 
-    /// Whose mods it loads: Horizon's, a loader's, or none (Vanilla).
+    /// Whose mods it loads: Sunrise's, a loader's, or none (Vanilla).
     fn mods_for(&self) -> Option<(&'static str, &'static str)> {
         match self {
-            Plays::Horizon => Some(("horizon", "Horizon")),
+            Plays::Sunrise => Some(("sunrise", "Sunrise")),
             Plays::Java { loader, .. } => loader.as_ref().map(|l| (l.kind.id(), l.kind.name())),
         }
     }
@@ -47,7 +47,7 @@ impl Plays {
     /// Whether it loads mods made for `id` (a Quilt instance takes Fabric's too).
     fn loads(&self, id: &str) -> bool {
         match (self, self.mods_for()) {
-            (Plays::Horizon, _) => id == "horizon",
+            (Plays::Sunrise, _) => id == "sunrise",
             (_, Some((own, _))) => own == id || (own == "quilt" && id == "fabric"),
             (_, None) => false,
         }
@@ -58,7 +58,7 @@ impl Plays {
 /// player to read before it applies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unkept {
-    /// `count` mods made for `made_for` (Horizon, Fabric…), which the new game doesn't load.
+    /// `count` mods made for `made_for` (Sunrise, Fabric…), which the new game doesn't load.
     Mods { count: usize, made_for: String },
     /// `count` mods made for Minecraft `from`: some may not load in `to`.
     ModsVersion {
@@ -75,13 +75,13 @@ pub enum Unkept {
     },
 }
 
-/// What switching `instance` to `to` can't keep. `horizon`: the Minecraft version Horizon plays.
-pub fn unkept(instance: &Instance, to: &Plays, horizon: &str) -> Vec<Unkept> {
+/// What switching `instance` to `to` can't keep. `sunrise`: the Minecraft version Sunrise plays.
+pub fn unkept(instance: &Instance, to: &Plays, sunrise: &str) -> Vec<Unkept> {
     let from = Plays::of(instance);
     let mut out = Vec::new();
-    let (was, now) = (from.minecraft(horizon), to.minecraft(horizon));
+    let (was, now) = (from.minecraft(sunrise), to.minecraft(sunrise));
     if let Some((id, name)) = from.mods_for() {
-        let count = mod_files(&instance.home, id == "horizon");
+        let count = mod_files(&instance.home, id == "sunrise");
         if count > 0 && !to.loads(id) {
             out.push(Unkept::Mods {
                 count,
@@ -106,9 +106,9 @@ pub fn unkept(instance: &Instance, to: &Plays, horizon: &str) -> Vec<Unkept> {
     out
 }
 
-/// The mods in `home`: a Horizon instance's content and native `.hmod` packages, a Java
+/// The mods in `home`: a Sunrise instance's content and native `.smod` packages, a Java
 /// one's jars, on or off.
-fn mod_files(home: &Path, horizon: bool) -> usize {
+fn mod_files(home: &Path, sunrise: bool) -> usize {
     let count = |dir: &str, ext: &dyn Fn(&str) -> bool| {
         fs::read_dir(home.join(dir)).map_or(0, |d| {
             d.flatten()
@@ -117,9 +117,9 @@ fn mod_files(home: &Path, horizon: bool) -> usize {
                 .count()
         })
     };
-    if horizon {
-        count(crate::browser::java::MODS_DIR, &|n| n.ends_with(".hmod"))
-            + count(crate::native_mods::INSTALLED, &|n| n.ends_with(".hmod"))
+    if sunrise {
+        count(crate::browser::java::MODS_DIR, &|n| n.ends_with(".smod"))
+            + count(crate::native_mods::INSTALLED, &|n| n.ends_with(".smod"))
     } else {
         count("mods", &|n| {
             n.ends_with(".jar") || n.ends_with(".jar.disabled")
@@ -153,7 +153,7 @@ pub(super) fn switch_in(
         return Err(format!("{} plays what it was made with.", instance.name));
     }
     edit_in(game_home, data, query, |m| match to {
-        Plays::Horizon => {
+        Plays::Sunrise => {
             if let Some(java) = m.java.take() {
                 m.java_kept = Some(java);
             }

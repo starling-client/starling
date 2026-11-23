@@ -14,7 +14,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDENS = ROOT / "tools/fixtures/wire_enum_layouts.json"
-OUTPUT = ROOT / "crates/horizon-mod-vocab/src/wire/fieldless_enum_goldens.rs"
+OUTPUT = ROOT / "crates/sunrise-mod-vocab/src/wire/fieldless_enum_goldens.rs"
 
 
 def discover(source, required=None):

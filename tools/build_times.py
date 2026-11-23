@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""How long Horizon takes to build, measured the same way on any checkout (docs/build-times.md).
+"""How long Sunrise takes to build, measured the same way on any checkout (docs/build-times.md).
 
     python3 tools/build_times.py run                          # cold + incremental, dev and fast profiles
-    python3 tools/build_times.py run --profiles dev --only incremental --crates horizon-items
+    python3 tools/build_times.py run --profiles dev --only incremental --crates sunrise-items
     python3 tools/build_times.py compare before.json after.json
 
-`run` builds the game (`cargo build --locked -p horizon-game --profile P --timings`) and writes a JSON
+`run` builds the game (`cargo build --locked -p sunrise-game --profile P --timings`) and writes a JSON
 report and a Markdown table under .local/build-times/reports/:
 
 - cold: a build from an empty target folder of its own (never target/), per profile. The timings page of
   that build gives the slowest crates and the critical path: the chain of units, each waiting on the one
   before it, that ends last.
 - no-op: the same build again with nothing changed (the floor of every incremental build).
-- incremental: after a one-line change in one file of each large crate (by default horizon-world,
-  horizon-client-render, horizon-client's game.rs and horizon-items), the build that follows, and which
+- incremental: after a one-line change in one file of each large crate (by default sunrise-world,
+  sunrise-client-render, sunrise-client's game.rs and sunrise-items), the build that follows, and which
   crates it recompiled.
 
 The change is a comment line (--edit): it cannot change behaviour, yet cargo and rustc see a changed file.
@@ -48,19 +48,19 @@ except ImportError:
     import lab
 
 ROOT = lab.ROOT
-REPORT_FORMAT, REPORT_VERSION = "horizon-build-times", 1
+REPORT_FORMAT, REPORT_VERSION = "sunrise-build-times", 1
 WORK = Path(".local") / "build-times"
-MARKER = ".horizon-build-times"
-PACKAGE = "horizon-game"
+MARKER = ".sunrise-build-times"
+PACKAGE = "sunrise-game"
 PROFILES = ["dev", "fast"]
-# The files an edit goes to by default: large, often changed, and each in a different layer. horizon-client's
+# The files an edit goes to by default: large, often changed, and each in a different layer. sunrise-client's
 # game.rs belongs to the gameplay library, which the platform binary links. Any other crate in the
 # workspace gets its lib.rs; --file crate=path picks another file.
 EDIT_FILES = {
-    "horizon-world": "crates/horizon-world/src/level/mod.rs",
-    "horizon-client-render": "crates/horizon-client-render/src/gfx.rs",
-    "horizon-client": "crates/horizon-client/src/game.rs",
-    "horizon-items": "crates/horizon-items/src/items.rs",
+    "sunrise-world": "crates/sunrise-world/src/level/mod.rs",
+    "sunrise-client-render": "crates/sunrise-client-render/src/gfx.rs",
+    "sunrise-client": "crates/sunrise-client/src/game.rs",
+    "sunrise-items": "crates/sunrise-items/src/items.rs",
 }
 EDIT_MODES = ["middle", "top", "append", "touch"]
 # Programs that build, link or check Rust; any of them running beside the measurement skews it.

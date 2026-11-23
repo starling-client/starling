@@ -2,11 +2,11 @@
 """First-pass scaffolding of missing mod_api types, written as ordinary hand-editable source.
 
 For each engine type in the allow-list (api_scaffold.toml) it adds, never overwriting:
-  * the API type to crates/horizon-mod-vocab/src/<domain>/<topic>.rs (a mirror, or an `XRef` handle);
+  * the API type to crates/sunrise-mod-vocab/src/<domain>/<topic>.rs (a mirror, or an `XRef` handle);
   * its re-export to src/exports/<topic>.rs;
   * for a handle with methods, a `<Name>Backend` host area to src/host/<topic>.rs;
-  * both conversions to crates/horizon-client/src/game/modding/api_values/<topic>.rs.
-It refuses when the type or its `<Name>Backend` already exists in crates/horizon-mod-vocab/src, and never
+  * both conversions to crates/sunrise-client/src/game/modding/api_values/<topic>.rs.
+It refuses when the type or its `<Name>Backend` already exists in crates/sunrise-mod-vocab/src, and never
 targets lib.rs. Conversions in the client crate are not checked. Every emitted value explicitly derives `Wire`; handles also get a `Fields` impl.
 
   api_scaffold.py --dry-run [--inventory points-inventory-runtime.json] [--report out.md]
@@ -21,8 +21,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-API = Path('crates/horizon-mod-vocab/src')
-CONV = Path('crates/horizon-client/src/game/modding/api_values')
+API = Path('crates/sunrise-mod-vocab/src')
+CONV = Path('crates/sunrise-client/src/game/modding/api_values')
 DOMAINS = ('world', 'block', 'item', 'entity', 'client', 'command', 'text', 'content', 'wire')
 SKIP = set('Option Vec Result R Box Self dyn mut str String Path static Game Host super std path crate fn impl '
            'Fn FnMut FnOnce Cow HashMap HashSet Rc Arc i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 usize isize '
@@ -83,11 +83,11 @@ def mirror_source(e, name):
     exhaustive = e.get('exhaustive')
     if e['kind'] == 'enum':
         body = ''.join(f'    /// `{v}`.\n    {v},\n' for v in e['variants'])
-        return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, horizon_mod_api_macros::Wire)]\n#[non_exhaustive]\n"
+        return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]\n#[non_exhaustive]\n"
                 f'pub enum {name} {{\n{body}}}\n')
     fields = [split_field(f) for f in e['fields']]
     body = ''.join(f'    /// The `{n}` component.\n    pub {n}: {t},\n' for n, t in fields)
-    head = f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, horizon_mod_api_macros::Wire)]\n"
+    head = f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, sunrise_mod_api_macros::Wire)]\n"
     if exhaustive:
         head += f'// exhaustive: {exhaustive}\n'
         tail = ''
@@ -101,13 +101,13 @@ def mirror_source(e, name):
 
 
 def handle_source(e, name):
-    return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, horizon_mod_api_macros::Wire)]\n"
+    return (f"/// {e['doc']}\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]\n"
             '// exhaustive: its fields are private, so mods cannot build or destructure it\n'
             f'pub struct {name} {{\n    pub(crate) epoch: crate::WorldEpoch,\n    pub(crate) id: u64,\n}}\n\n'
             f'impl {name} {{\n    /// Create a handle for the game.\n'
             '    // hidden: a game-side helper, not part of the mod surface\n    #[doc(hidden)]\n'
             '    pub fn new(epoch: crate::WorldEpoch, id: u64) -> Self {\n        Self { epoch, id }\n    }\n}\n\n'
-            f'/// What the game reads of a [`{name}`].\n#[doc(hidden)]\n#[derive(horizon_mod_api_macros::Wire)]\npub struct {name}Fields {{\n'
+            f'/// What the game reads of a [`{name}`].\n#[doc(hidden)]\n#[derive(sunrise_mod_api_macros::Wire)]\npub struct {name}Fields {{\n'
             '    pub epoch: crate::WorldEpoch,\n    pub id: u64,\n}\n\n'
             f'impl crate::__private::game::Fields for {name} {{\n    type Fields<\'a> = {name}Fields;\n'
             f'    fn fields(&self) -> {name}Fields {{\n        {name}Fields {{ epoch: self.epoch, id: self.id }}\n    }}\n}}\n')
@@ -121,7 +121,7 @@ def backend_source(e, name):
         f"    fn {snake(base)}_{m['name']}(&self, handle: {name}) -> {m['ret']};\n" for m in e['methods'])
     return (f'/// The handles\' reads of the `{e["topic"]}` area, implemented by the game and reached through [`Backend`].\n'
             '// hidden: a handle\'s backend, reached through `Backend`; mods call the handle, never this trait\n'
-            f'#[doc(hidden)]\n#[horizon_mod_api_macros::host_area]\npub trait {base}Backend {{\n{body}}}\n')
+            f'#[doc(hidden)]\n#[sunrise_mod_api_macros::host_area]\npub trait {base}Backend {{\n{body}}}\n')
 
 
 def handle_read(e, name, m):

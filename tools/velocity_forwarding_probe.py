@@ -8,7 +8,7 @@ Dev tool, standard library only. Two commands, run against a Velocity in offline
         a stand-in backend: asks the proxy for forwarding with DATA (hex), records the answer, then kicks;
     velocity_forwarding_probe.py join --proxy 25641 [--name Tester] [--protocol N]
         a minimal offline client that logs in through the proxy so that it connects to the backend. Pointed
-        at a Horizon server directly it answers the forwarding request as a client does ("not understood"),
+        at a Sunrise server directly it answers the forwarding request as a client does ("not understood"),
         or with --forge-secret FILE as a stand-in proxy that signs --forge-name/-uuid/-address.
 
 Pass --secret FILE to `backend` to also check the signature (HMAC-SHA256 of the data) against Velocity's
@@ -32,14 +32,14 @@ def parse_protocol(source):
     """The protocol version in a `version.rs` source: the one place it is written down."""
     match = re.search(r"pub const PROTOCOL_VERSION: i32 = (\d+);", source)
     if not match:
-        raise SystemExit("crates/horizon-core/src/version.rs states no PROTOCOL_VERSION")
+        raise SystemExit("crates/sunrise-core/src/version.rs states no PROTOCOL_VERSION")
     return int(match.group(1))
 
 
 def protocol_version():
     """The protocol the game speaks, read from the one place it is written down
-    (crates/horizon-core/src/version.rs), so a version bump reaches this probe too."""
-    return parse_protocol((ROOT / "crates/horizon-core/src/version.rs").read_text())
+    (crates/sunrise-core/src/version.rs), so a version bump reaches this probe too."""
+    return parse_protocol((ROOT / "crates/sunrise-core/src/version.rs").read_text())
 
 
 def varint(n):

@@ -6,7 +6,7 @@ began (`ensureActiveIsNotIterated`): an entity that joins during the pass, such 
 (`Shoot.tick` in the breeze's own tick), first ticks on the next tick and is seen where it was fired. One that joins
 before the pass, such as a dispenser's (`DispenserBlock.dispenseFrom` in the block ticks), ticks in the same tick.
 
-A vanilla dedicated server and Horizon's each load a copy of one flat world vanilla generated first. Ticking is
+A vanilla dedicated server and Sunrise's each load a copy of one flat world vanilla generated first. Ticking is
 frozen and stepped. A breeze shoots at a NoAI iron golem three blocks away; a dispenser, powered once, fires a wind
 charge into open air. After every step the wind charges and the breeze are read with `data get`. For the
 breeze's first shot (fired before the breeze has moved) and for the dispenser's, the harness records whether, on the first tick it is seen, the
@@ -108,17 +108,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    for label, lines in (('vanilla', vanilla), ('horizon', horizon)):
+    sunrise = run('sunrise', sunrise_server, world, build)
+    for label, lines in (('vanilla', vanilla), ('sunrise', sunrise)):
         (build / f'{label}.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        raise AssertionError('differs from vanilla:\nvanilla:\n' + '\n'.join(vanilla) + '\nhorizon:\n' + '\n'.join(horizon))
+    if vanilla != sunrise:
+        raise AssertionError('differs from vanilla:\nvanilla:\n' + '\n'.join(vanilla) + '\nsunrise:\n' + '\n'.join(sunrise))
     print(f'mob shot join tick: {len(vanilla)} lines identical')
 
 

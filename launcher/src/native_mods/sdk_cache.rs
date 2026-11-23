@@ -4,7 +4,7 @@
 //! check; and the small files the fit test and planning read (`surface.json`, `build-data`).
 //!
 //! Where it comes from: `<base>/sdk-<build id>/<file>`, the base being this repository's release
-//! downloads, or `HORIZON_SDK_BASE` ([`BASE_VAR`]): a URL (a mirror) or a folder (a copy for
+//! downloads, or `SUNRISE_SDK_BASE` ([`BASE_VAR`]): a URL (a mirror) or a folder (a copy for
 //! offline use). Every base is checked the same way: `SHA256SUMS` signed by a release key for the
 //! tag `sdk-<build id>`, `sdk.json`'s SHA-256 in it, then each file's size and SHA-256 in
 //! `sdk.json`. A game release carries a copy of its SDK's `sdk.json` under the same signature
@@ -22,9 +22,9 @@ use super::prebuilt::{Package, Route};
 use super::Target;
 use crate::i18n::{tr, trf};
 use crate::rust_toolchain;
-use horizon_mod_package::mod_surface;
-use horizon_mod_package::sdk::{self, Asset, Index, Kind, Side, INDEX};
-use horizon_release_sign::{PublicKey, SIGNATURE, SIGNATURE_V2, SUMS};
+use sunrise_mod_package::mod_surface;
+use sunrise_mod_package::sdk::{self, Asset, Index, Kind, Side, INDEX};
+use sunrise_release_sign::{PublicKey, SIGNATURE, SIGNATURE_V2, SUMS};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
@@ -32,9 +32,9 @@ use std::path::{Path, PathBuf};
 
 /// Replaces the base SDK releases are read from: a URL, or a folder holding `sdk-<build id>/`
 /// folders (and game releases' folders, for their build ids).
-pub const BASE_VAR: &str = "HORIZON_SDK_BASE";
+pub const BASE_VAR: &str = "SUNRISE_SDK_BASE";
 /// Where SDK releases are read from by default.
-const DEFAULT_BASE: &str = horizon_addresses::SDK_RELEASES;
+const DEFAULT_BASE: &str = sunrise_addresses::SDK_RELEASES;
 /// The most an index, checksum list or signature file is read to, in bytes.
 const SMALL: u64 = 1 << 20;
 /// The most a slice or the build data unpacks to: a corrupt or hostile archive stops there.
@@ -79,7 +79,7 @@ impl std::fmt::Display for Refusal {
                 &[("build", build)],
             ),
             Self::Unsigned { build, .. } => trf(
-                "The mod tools for {build} didn't pass Horizon's safety check, so nothing was installed and your game is untouched. Try again later; if it keeps happening, please report it.",
+                "The mod tools for {build} didn't pass Sunrise's safety check, so nothing was installed and your game is untouched. Try again later; if it keeps happening, please report it.",
                 &[("build", build)],
             ),
             Self::UpdateLauncher { build, what } => trf(
@@ -251,7 +251,7 @@ fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    horizon_release_sign::sha256_hex(bytes)
+    sunrise_release_sign::sha256_hex(bytes)
 }
 
 /// One build's verified index.
@@ -322,7 +322,7 @@ fn index_in(root: &Path, base: &Base, commit: &str, keys: &[PublicKey]) -> Resul
     };
     // Signed for exactly `sdk-<build id>`: neither a game release's sums nor another build's SDK
     // pass for it.
-    let signed = horizon_release_sign::sdk_digest(
+    let signed = sunrise_release_sign::sdk_digest(
         commit,
         INDEX,
         sums.as_deref(),
@@ -330,7 +330,7 @@ fn index_in(root: &Path, base: &Base, commit: &str, keys: &[PublicKey]) -> Resul
         keys,
     )
     .map_err(unsigned)?;
-    horizon_release_sign::check(INDEX, &signed, &sha256(&bytes)).map_err(unsigned)?;
+    sunrise_release_sign::check(INDEX, &signed, &sha256(&bytes)).map_err(unsigned)?;
     let sdk = checked(&bytes, commit, dir)?;
     write_whole(&kept, &bytes)?;
     Ok(sdk)
@@ -734,15 +734,15 @@ fn build_of_in(
     }
     // A build of a channel (a Nightly, or a snapshot installed by its tag) is read from its
     // channel only: the version's own prefix, checked whole, names it, never a release's title.
-    let channel = horizon_release_sign::Channel::of(version)
-        .filter(|channel| horizon_release_sign::is_build(*channel, version));
+    let channel = sunrise_release_sign::Channel::of(version)
+        .filter(|channel| sunrise_release_sign::is_build(*channel, version));
     // The Nightly being served is published as `nightly` and renamed `nightly-<date>` when the
     // next one goes out: the current tag is tried first. Its v2 signature binds the exact
     // version, so whichever tag serves it, only that version's index is accepted. A snapshot is
     // served under its version alone.
-    let tags: Vec<String> = match (channel, horizon_release_sign::nightly_date(version)) {
-        (Some(horizon_release_sign::Channel::Nightly), Some(date)) => vec![
-            horizon_release_sign::NIGHTLY.to_owned(),
+    let tags: Vec<String> = match (channel, sunrise_release_sign::nightly_date(version)) {
+        (Some(sunrise_release_sign::Channel::Nightly), Some(date)) => vec![
+            sunrise_release_sign::NIGHTLY.to_owned(),
             format!("nightly-{date}"),
         ],
         _ => vec![version.to_owned()],
@@ -791,7 +791,7 @@ fn signed_game_index(
     base: &Base,
     tag: &str,
     version: &str,
-    channel: Option<horizon_release_sign::Channel>,
+    channel: Option<sunrise_release_sign::Channel>,
     keys: &[PublicKey],
 ) -> Result<Vec<u8>, Refusal> {
     let read = |name: &str| {
@@ -816,7 +816,7 @@ fn signed_game_index(
     };
     let signed = if let Some(channel) = channel {
         let signature = read(SIGNATURE_V2)?.map(|b| String::from_utf8_lossy(&b).into_owned());
-        horizon_release_sign::build_digest(
+        sunrise_release_sign::build_digest(
             channel,
             version,
             INDEX,
@@ -826,10 +826,10 @@ fn signed_game_index(
         )
     } else {
         let signature = read(SIGNATURE)?.map(|b| String::from_utf8_lossy(&b).into_owned());
-        horizon_release_sign::signed_digest(tag, INDEX, sums.as_deref(), signature.as_deref(), keys)
+        sunrise_release_sign::signed_digest(tag, INDEX, sums.as_deref(), signature.as_deref(), keys)
     }
     .map_err(unsigned)?;
-    horizon_release_sign::check(INDEX, &signed, &sha256(&bytes)).map_err(unsigned)?;
+    sunrise_release_sign::check(INDEX, &signed, &sha256(&bytes)).map_err(unsigned)?;
     Ok(bytes)
 }
 

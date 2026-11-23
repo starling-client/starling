@@ -4,7 +4,7 @@ A mod keeps its options in one of two ways:
 
 | | Config files | Settings |
 | --- | --- | --- |
-| Lives in | The game's `config/` folder (on a server, `serverconfig/` per world) | `horizon-mods/.horizon-mod-data/<mod id>/`, one file per key |
+| Lives in | The game's `config/` folder (on a server, `serverconfig/` per world) | `sunrise-mods/.sunrise-mod-data/<mod id>/`, one file per key |
 | Edited by | The player, in a text editor | The player, on the mod's page in **Options > Mods** |
 | You declare it with | `Hooks::register_configs` | `Registrar::register_setting` |
 | You read it in | `config_loading` and `config_reloading` | `Host::setting` and the typed `setting_*` reads |
@@ -38,9 +38,9 @@ is running; you cannot reach another mod's files.
 
 Keep map tiles, waypoints, seeds and exports out of settings and config files:
 
-- `Host::data_files()` is available on both sides, rooted at `<game directory>/horizon-mod-data/<mod id>/`.
+- `Host::data_files()` is available on both sides, rooted at `<game directory>/sunrise-mod-data/<mod id>/`.
   A client-only mod can key its own subfolders by server or save and dimension.
-- `ServerHost::world_data_files()` is server-only, rooted at `<world>/horizon-mod-data/<mod id>/`.
+- `ServerHost::world_data_files()` is server-only, rooted at `<world>/sunrise-mod-data/<mod id>/`.
   Its contents are copied, deleted and backed up with the save. Without a current world it refuses calls with
   `ConfigFileError::NoWorld`; a client has no world-folder service.
 
@@ -49,7 +49,7 @@ and wasm. Bulk paths are relative to your implicit mod root: `tiles/overworld/0.
 `<mod id>/tiles/overworld/0.bin`. The game never scans bulk data as settings or config.
 
 `read`, `write` and `stat` operate on checked `/`-separated paths; traversal (`..`), backslashes and symbolic links
-are refused. Writes replace the whole file atomically, never exposing partial contents. Horizon's own per-file
+are refused. Writes replace the whole file atomically, never exposing partial contents. Sunrise's own per-file
 limits are `DATA_FILE_MAX` (64 MiB) for both bulk areas and `CONFIG_FILE_MAX` (4 MiB) for config files.
 Oversized files and unavailable operations return typed errors, rather than partially writing.
 

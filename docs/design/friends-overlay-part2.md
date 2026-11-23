@@ -6,7 +6,7 @@
 > No implementation, game launch or visual acceptance is implied by this document.
 
 This work is the **vanilla account Friends overlay**: account friends, incoming/outgoing
-requests, presence and notifications. **Play with Friends** is Horizon's separate invite-code
+requests, presence and notifications. **Play with Friends** is Sunrise's separate invite-code
 host/share feature. Its approved migration spec [#14167](https://github.com/horizon-rust/horizon/issues/14167)
 is not approval for this overlay.
 
@@ -22,18 +22,18 @@ the earlier single, open-ended "list and request behaviour" PR scope.
 ## Ownership and entry decisions
 
 Vanilla social service, screens, faces and toast behaviour belong to the **engine**
-([layers](../layers.md#engine)), not to `horizon-friends` or `horizon-official`. They must work
-without registering Horizon's host/share extension. Vanilla `gui.friends.*` and `options.*`
-keys are not the Horizon-only `horizon.friends.*` language files being moved by #14430/#14433.
-No engine dependency on a Horizon crate or new `allowed` exception is introduced.
+([layers](../layers.md#engine)), not to `sunrise-friends` or `sunrise-official`. They must work
+without registering Sunrise's host/share extension. Vanilla `gui.friends.*` and `options.*`
+keys are not the Sunrise-only `sunrise.friends.*` language files being moved by #14430/#14433.
+No engine dependency on a Sunrise crate or new `allowed` exception is introduced.
 
 The local vanilla references show that both `TitleScreen.init` and
 `PauseScreen.createPauseMenu` call `CommonButtons.friends`, then
 `OnlineOptionsScreen.confirmFriendsListEnabled`, then `FriendsOverlayScreen(parent)`.
-However, #14167's migration uses those existing Horizon icon slots for Play with Friends and
+However, #14167's migration uses those existing Sunrise icon slots for Play with Friends and
 Join a Friend. **Maintainers must agree how to preserve the vanilla account entry while keeping
 those extension entries accessible.** This is a UI integration decision, not a reason to move
-the account overlay into the Horizon layer.
+the account overlay into the Sunrise layer.
 
 Until that decision and the relevant migration steps land:
 
@@ -91,10 +91,10 @@ decompilation.
 
 ## Implementation structure and size gates
 
-Prefer small, cohesive files under `crates/horizon-client/src/friends_overlay/`:
+Prefer small, cohesive files under `crates/sunrise-client/src/friends_overlay/`:
 `mod.rs`, `model.rs`, `layout.rs`, `shell.rs`, `add.rs`, `entries.rs`, `requests.rs`,
 `links.rs`, `focus.rs` and `faces.rs`. These are proposed responsibility boundaries, not a
-requirement to create every file. Keep social data in `horizon-client-render/src/social.rs`;
+requirement to create every file. Keep social data in `sunrise-client-render/src/social.rs`;
 use a sibling toast module for account notifications rather than embedding it in screen state.
 
 The split checklist names explicit backend/notification/face steps and **eight UI work
@@ -113,14 +113,14 @@ existing seam exists, first propose a **separate pure-move PR** with before/afte
 never hide a relocation inside a parity fix. Keep `hud.rs`'s legitimate NUL bytes intact using
 Read-before-edit and an anchored binary patch under `.local` if it is eventually modified.
 
-Do not put vanilla behaviour behind the Horizon host/share feature or move vanilla translation
-keys into `horizon-friends`. No new machine translations or "reviewed" language flags.
+Do not put vanilla behaviour behind the Sunrise host/share feature or move vanilla translation
+keys into `sunrise-friends`. No new machine translations or "reviewed" language flags.
 
 ## Validation and evidence
 
 Use the current manifests to choose test targets. On the inspected main,
-`horizon-client/src/lib.rs` declares gameplay and `main.rs` is a thin executable. Therefore
-`cargo test -p horizon-client --bin horizon-client ...` matching zero tests does not validate
+`sunrise-client/src/lib.rs` declares gameplay and `main.rs` is a thin executable. Therefore
+`cargo test -p sunrise-client --bin sunrise-client ...` matching zero tests does not validate
 pause routing. Verify a nonzero match count for the actual library/module filter.
 
 For each implementation PR:

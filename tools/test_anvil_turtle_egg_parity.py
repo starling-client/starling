@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Anvils landing on turtle eggs through real vanilla and Horizon servers.
+"""Anvils landing on turtle eggs through real vanilla and Sunrise servers.
 
 An anvil cannot replace turtle eggs, so `FallingBlockEntity.tick` discards it
 where it came to rest, on top of the eggs: `Fallable.onBrokenAfterFall`
 (AnvilBlock: level event 1029) and `spawnAtLocation`, an item at the entity's
 own position with `new ItemEntity`'s motion (at most 0.1 sideways, 0.2 up).
 The item is added on top of the eggs, right under the anvil's centre, and
-about half the time falls off them. Horizon dropped it like a mined block,
+about half the time falls off them. Sunrise dropped it like a mined block,
 somewhere inside the eggs' cell, where it was pushed out sideways tick after
 tick and ended up to 2.5 blocks away (median 1.5, vanilla's 0.6). Each
 item's position when it is added is compared; its motion is the item's own
-random. Horizon tells clients about an entity added after `tick_lan` (falling
+random. Sunrise tells clients about an entity added after `tick_lan` (falling
 blocks tick later) a tick late, after its first move: 0.2 up less 0.04 of
 gravity, and at most 0.1 sideways. An item added at the anvil's centre on
 top of the eggs, either then or one tick on, shows as `at-anvil`.

@@ -1,13 +1,13 @@
 # Upgrading a 26.2 data pack to 26.3
 
 26.3 reworked the world generation registries, and vanilla 26.3 refuses a
-worldgen data pack written for 26.2 (registry errors on load). Horizon
+worldgen data pack written for 26.2 (registry errors on load). Sunrise
 targets 26.3, so such a pack has to be rewritten first:
 
 ```sh
-cargo run --release -p horizon-port-pack -- upgrade-datapack PACK.zip --world <world folder>
+cargo run --release -p sunrise-port-pack -- upgrade-datapack PACK.zip --world <world folder>
 # or into any folder:
-cargo run --release -p horizon-port-pack -- upgrade-datapack PACK.zip OUT/
+cargo run --release -p sunrise-port-pack -- upgrade-datapack PACK.zip OUT/
 ```
 
 `--world` writes the upgraded pack to `<world>/datapacks/<pack name>-26.3/`.
@@ -15,9 +15,9 @@ The input is a zip or a folder; nothing is downloaded, and the pack stays on
 your machine (packs are often All Rights Reserved: do not commit or share an
 upgraded copy).
 
-Horizon applies most of a data pack's world generation (biomes, features,
+Sunrise applies most of a data pack's world generation (biomes, features,
 structures, dimensions; not world presets), so the upgraded pack can also be
-tried in Horizon (see [the mod browser](mod-browser.md)). The checks below run
+tried in Sunrise (see [the mod browser](mod-browser.md)). The checks below run
 it in vanilla 26.3.
 
 A modpack's mod jars that are only a data pack go through the same upgrade when the launcher

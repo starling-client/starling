@@ -7,7 +7,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[3]
 paths = subprocess.check_output(
-    ["rg", "-l", r"assert!\(!?game\.level_set_block\(", "crates/horizon-client/src", "--glob", "*.rs"],
+    ["rg", "-l", r"assert!\(!?game\.level_set_block\(", "crates/sunrise-client/src", "--glob", "*.rs"],
     cwd=root, text=True,
 ).splitlines()
 report = []

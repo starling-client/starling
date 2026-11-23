@@ -1,6 +1,6 @@
 # Items by kind
 
-Use `STORAGE` (`horizon:storage`) to move items by kind in bulk, rather than by slot.
+Use `STORAGE` (`sunrise:storage`) to move items by kind in bulk, rather than by slot.
 Use `ITEMS` (`Capabilities.Item.BLOCK` in NeoForge) when you need slot-indexed access.
 NeoForge 26.3's transfer API has no by-kind counterpart to `STORAGE`.
 

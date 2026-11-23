@@ -15,7 +15,7 @@ def replace(path, old, new, count=1):
     p.write_text(text.replace(old, new))
 
 
-parts = 'crates/horizon-mod-api/src/parts/'
+parts = 'crates/sunrise-mod-api/src/parts/'
 for file, error in [('attributes.rs', 'AttributeRegistrationError'),
                     ('entity_attributes.rs', 'EntityAttributeError'),
                     ('spawn_placements.rs', 'SpawnPlacementError')]:
@@ -87,6 +87,6 @@ replace(parts + 'fluids.rs', '''        let id = format!("{}:{path}", self.mod_i
         let (namespace, path) = id.split_once(':').expect("validated declaration id");
         let flowing = format!("{namespace}:flowing_{path}");''')
 
-replace('crates/horizon-mod-package/src/content.rs', '''        let in_own =
+replace('crates/sunrise-mod-package/src/content.rs', '''        let in_own =
             |id: &str| namespaced_id(id) && id.split_once(':').is_some_and(|(ns, _)| ns == own);''', '''        let in_own = |id: &str| namespaced_id(id)
             && id.split_once(':').is_some_and(|(ns, _)| self.namespaces.iter().any(|owned| owned == ns));''')

@@ -1,4 +1,4 @@
-//! The Wardrobe's link to Horizon's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
+//! The Wardrobe's link to Sunrise's cosmetics service ([docs/cosmetics.md](../../docs/cosmetics.md)):
 //! the catalogue, the account's own items and purchase history, what each slot wears and whether
 //! others see it, and whether the Wardrobe has anything to show yet (`Service::shop`). Buying and
 //! claiming happen on the website ([`SHOP_URL`]), except the founder set's free claim for players
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Where cosmetics are bought and the founder set is claimed: the website's shop.
-pub const SHOP_URL: &str = horizon_addresses::SHOP;
+pub const SHOP_URL: &str = sunrise_addresses::SHOP;
 
 /// Why a request to the service failed, in words for the player.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl Error {
     pub fn message(&self) -> String {
         match self {
             Self::Offline => {
-                tr("Could not reach Horizon's cosmetics service. Check your internet connection.")
+                tr("Could not reach Sunrise's cosmetics service. Check your internet connection.")
                     .into()
             }
             Self::Account(e) => tr(e).into(),
@@ -56,17 +56,17 @@ impl Error {
                     "The shop isn't selling right now. Nothing was charged."
                 }
                 // Paddle sells where the player is: the founder set is claimed through its free
-                // checkout, which the Shop opens on playhorizon.dev (`Error::use_checkout`).
+                // checkout, which the Shop opens on playsunrise.net (`Error::use_checkout`).
                 "use_checkout" => {
                     "Where you are, the founder set is claimed through a free checkout on \
-                     playhorizon.dev. Claim it from the Shop: it opens the checkout for you."
+                     playsunrise.net. Claim it from the Shop: it opens the checkout for you."
                 }
                 "not_offered_here" => "The founder set can't be claimed from your country.",
                 _ => "Paddle couldn't start the checkout. Nothing was charged.",
             })
             .into(),
             Self::Service(_) => {
-                tr("Horizon's cosmetics service had a problem. Try again later.").into()
+                tr("Sunrise's cosmetics service had a problem. Try again later.").into()
             }
         }
     }
@@ -182,7 +182,7 @@ impl Entry {
     }
 
     /// Whether the id and hash are plain parts of a file name, by the game's rule
-    /// (`horizon_cosmetics::fetch`): the cache's paths are made of them.
+    /// (`sunrise_cosmetics::fetch`): the cache's paths are made of them.
     fn plain(&self) -> bool {
         [&self.id, &self.hash].into_iter().all(|t| {
             !t.is_empty()
@@ -413,7 +413,7 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    /// A made-up session for the launcher's screenshot preview (`HORIZON_LAUNCHER_PAGE=wardrobe`):
+    /// A made-up session for the launcher's screenshot preview (`SUNRISE_LAUNCHER_PAGE=wardrobe`):
     /// it carries no credential, so the service refuses anything sent with it.
     pub fn preview(uuid: &str, name: &str) -> Self {
         Self {
@@ -438,11 +438,11 @@ pub struct Service {
 }
 
 impl Service {
-    /// The service the game asks too (`HORIZON_COSMETICS_API` overrides it).
+    /// The service the game asks too (`SUNRISE_COSMETICS_API` overrides it).
     pub fn live() -> Self {
         Self::at(
-            &std::env::var("HORIZON_COSMETICS_API")
-                .unwrap_or_else(|_| horizon_cosmetics::API.to_owned()),
+            &std::env::var("SUNRISE_COSMETICS_API")
+                .unwrap_or_else(|_| sunrise_cosmetics::API.to_owned()),
         )
     }
 
@@ -486,8 +486,8 @@ impl Service {
     }
 
     /// One item's file, checked against the format's limits.
-    pub fn item(&self, entry: &Entry) -> Result<horizon_cosmetics::Item, Error> {
-        horizon_cosmetics::Item::parse(&self.item_bytes(entry)?).map_err(|_| Error::Service(200))
+    pub fn item(&self, entry: &Entry) -> Result<sunrise_cosmetics::Item, Error> {
+        sunrise_cosmetics::Item::parse(&self.item_bytes(entry)?).map_err(|_| Error::Service(200))
     }
 
     fn item_bytes(&self, entry: &Entry) -> Result<Vec<u8>, Error> {
@@ -645,19 +645,19 @@ impl Service {
         &self,
         entry: &Entry,
         cache: &Path,
-    ) -> Result<horizon_cosmetics::Item, Error> {
+    ) -> Result<sunrise_cosmetics::Item, Error> {
         if !entry.plain() {
             return Err(Error::Service(200));
         }
         let path = cache.join(format!("{}-{}.json", entry.id, entry.hash));
         if let Some(item) = std::fs::read(&path)
             .ok()
-            .and_then(|b| horizon_cosmetics::Item::parse(&b).ok())
+            .and_then(|b| sunrise_cosmetics::Item::parse(&b).ok())
         {
             return Ok(item);
         }
         let bytes = self.item_bytes(entry)?;
-        let item = horizon_cosmetics::Item::parse(&bytes).map_err(|_| Error::Service(200))?;
+        let item = sunrise_cosmetics::Item::parse(&bytes).map_err(|_| Error::Service(200))?;
         if std::fs::create_dir_all(cache).is_ok() {
             let _ = std::fs::write(&path, &bytes);
         }
@@ -717,7 +717,7 @@ fn agent(url: &str) -> ureq::Agent {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(15))
-            .user_agent(&format!("horizon-launcher/{}", crate::backend::VERSION)),
+            .user_agent(&format!("sunrise-launcher/{}", crate::backend::VERSION)),
         url,
     )
     .build()

@@ -4,7 +4,7 @@
 //!
 //! The launcher never signs in for anyone and never uses Funnel: signing in happens in Tailscale's own app
 //! or page, and the access token is one the player makes in the admin console and pastes here (it is
-//! kept in the system keychain). `HORIZON_LAUNCHER_TAILSCALE` (the CLI) and `HORIZON_TAILSCALE_API` (the
+//! kept in the system keychain). `SUNRISE_LAUNCHER_TAILSCALE` (the CLI) and `SUNRISE_TAILSCALE_API` (the
 //! API's address) point the tests at stand-ins.
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -36,7 +36,7 @@ pub const LINUX_LOGIN: &str = "sudo tailscale up --operator=$USER";
 
 /// The `tailscale` command, wherever the installer put it.
 pub fn cli() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("HORIZON_LAUNCHER_TAILSCALE") {
+    if let Some(p) = std::env::var_os("SUNRISE_LAUNCHER_TAILSCALE") {
         return Some(PathBuf::from(p)).filter(|p| p.is_file());
     }
     let mut places: Vec<PathBuf> = std::env::var_os("PATH")
@@ -240,7 +240,7 @@ pub struct Api {
 
 impl Api {
     pub fn new(token: &str) -> Self {
-        let base = std::env::var("HORIZON_TAILSCALE_API")
+        let base = std::env::var("SUNRISE_TAILSCALE_API")
             .unwrap_or_else(|_| "https://api.tailscale.com".into());
         Self::at(&base, token)
     }

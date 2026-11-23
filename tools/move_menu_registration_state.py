@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-source = root / 'crates/horizon-mod-vocab/src/parts/shared.rs'
+source = root / 'crates/sunrise-mod-vocab/src/parts/shared.rs'
 target = source.parent / 'shared/registration_state.rs'
 target.parent.mkdir(exist_ok=True)
 text = source.read_text()

@@ -3,7 +3,7 @@
 Build a dedicated-server runtime with your native mods:
 
 ```sh
-horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code
+sunrise-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code
 ```
 
 `--trust-native-code` saves your consent to run unsandboxed native code. You can omit it when
@@ -12,17 +12,17 @@ consent is saved. Optional flags include `--profile PROFILE` and `--allow-jar-do
 The command exports a standalone dedicated-server engine into `DIR`, which must not exist. `FOLDER` (a mod folder or a
 folder of them) is required. The export does not select, edit or launch an instance.
 It uses the pinned prebuilt dedicated-server SDK and builds only the mods and native
-function-replacement libraries, never the game. `--version` pins the Horizon release/Nightly
+function-replacement libraries, never the game. `--version` pins the Sunrise release/Nightly
 for reproducibility. The export holds the engine executable, prepared resources,
-`horizon-native-mods/<id>/` projects and provenance `native-mods.json`, and prints the exported engine executable's path. Use that value for `engine.path`.
+`sunrise-native-mods/<id>/` projects and provenance `native-mods.json`, and prints the exported engine executable's path. Use that value for `engine.path`.
 It runs on the same OS/architecture as the host and requires an installed launcher base.
-It is copied outside managed cache folders. On Windows use `horizon-engine.exe`.
+It is copied outside managed cache folders. On Windows use `sunrise-engine.exe`.
 
 Wasm packages use API hooks and API injection points, not engine internals. Install and
-enable their `.hmod` packages in the server game folder's `horizon-mods/`. A plain engine
+enable their `.smod` packages in the server game folder's `sunrise-mods/`. A plain engine
 build refuses API listeners by name; listeners require the staged SDK engine.
 
-A mod's crate depends on `horizon-mod-api` and never on the game: a `horizon-client` dependency,
+A mod's crate depends on `sunrise-mod-api` and never on the game: a `sunrise-client` dependency,
 under any name or target, is refused naming the mod and the key, before toolchain work. The mod API
 has no sound or controller features, so server and client builds stage the same crate.
 
@@ -36,8 +36,8 @@ name the required files and cache paths. No Java code from a jar runs.
 
 Point a server at the exported engine:
 
-    horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
-    horizon-server --dir SERVER restart
+    sunrise-server --dir SERVER config set engine.path=/absolute/export/sunrise-engine
+    sunrise-server --dir SERVER restart
 
 Updates do not rebuild a pinned `engine.path`: build a new export folder, set `engine.path` to it, restart, and keep
 the old folder for manual rollback. The supervisor does not auto-update or rebuild a pinned engine path.

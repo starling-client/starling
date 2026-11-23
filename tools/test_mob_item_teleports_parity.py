@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check teleport hooks through real Game actors and the owning mob tick loop.
 
-This is a Horizon hook integration proof, not an independent vanilla oracle.
+This is a Sunrise hook integration proof, not an independent vanilla oracle.
 The teleport_consume, pearl_death, pearl_wind_charge and mob_ai harnesses
 separately cover the shared vanilla algorithms and gameplay consumers.
 """
@@ -40,7 +40,7 @@ def main():
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/test_rust_parity.py']
     sources += sorted((lab.ROOT / 'crates').rglob('*.rs'))
     hashes = base.source_hashes(sources)
-    harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client',
+    harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client',
                         '--lib', '--no-default-features', '--no-run', '--message-format=json'],
                        build, 'compile-rust', timeout=3600)
     artifacts = [json.loads(line) for line in (build / 'compile-rust.log').read_text().splitlines()
@@ -48,7 +48,7 @@ def main():
     executables = {record['executable'] for record in artifacts
                    if record.get('reason') == 'compiler-artifact'
                    and record.get('executable') and record.get('profile', {}).get('test')
-                   and record['target']['name'] == 'horizon_client'
+                   and record['target']['name'] == 'sunrise_client'
                    and 'lib' in record['target']['kind']}
     assert len(executables) == 1, executables
     executable = executables.pop()
@@ -58,9 +58,9 @@ def main():
         matches = [line.removesuffix(': test') for line in listed.splitlines()
                    if line.endswith('::' + case + ': test')]
         assert len(matches) == 1, (case, matches)
-        with tempfile.TemporaryDirectory(prefix='horizon-mob-item-teleports-') as scratch:
+        with tempfile.TemporaryDirectory(prefix='sunrise-mob-item-teleports-') as scratch:
             env = integration_env.game_environment(os.environ, scratch)
-            env['HORIZON_TEST_RESOURCES'] = str(lab.RESOURCES)
+            env['SUNRISE_TEST_RESOURCES'] = str(lab.RESOURCES)
             with (build / (case + '.log')).open('w') as output:
                 subprocess.run([executable, matches[0], '--exact', '--ignored',
                                 '--test-threads=1', '--nocapture'], cwd=scratch, env=env,
@@ -69,7 +69,7 @@ def main():
         assert re.search(r'^test result: ok\. 1 passed;', result, re.MULTILINE), result
         passed.append(matches[0])
     base.ensure_sources_unchanged(sources, hashes)
-    lab.write_json(report, dict(schema=1, horizon_only=True, resource_tests=len(passed),
+    lab.write_json(report, dict(schema=1, sunrise_only=True, resource_tests=len(passed),
         cases=passed, source_hashes=hashes,
         rust_test_executable_sha256=lab.digest(Path(executable), 'sha256'),
         scope='Player captured API stack count, damage and components, cancellation RNG prefix '

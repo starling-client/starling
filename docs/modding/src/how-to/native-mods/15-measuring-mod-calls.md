@@ -10,11 +10,11 @@ permission level 3 and is off until you start it.
 4. `/modprofile report` prints the last finished summary, without saving a file or stopping a running measurement.
 
 Replies go only to the player who ran the command. The same controls work through
-`horizon-ctl command modprofile start` (and `stop` or `report`).
+`sunrise-ctl command modprofile start` (and `stop` or `report`).
 
 ## The profile file
 
-Open the file in [Firefox Profiler](https://profiler.firefox.com) and look at its Marker Table. Horizon never uploads
+Open the file in [Firefox Profiler](https://profiler.firefox.com) and look at its Marker Table. Sunrise never uploads
 it.
 
 - The file is written atomically and is at most 8 MiB. If saving fails, the command says so and the summary stays

@@ -11,6 +11,6 @@ coordinates: x east, y up, z south, bit 0 first), their encoding (`binary`, or o
 position), what it computes, and how it was checked: `status` is `verified`, `partial`, `unverified` or
 `no_schematic`, and `verified` lists the checks run in MCHPRS (cases, exhaustive or not, the switches held on).
 
-`tools/test_redstone_catalog_parity.py` runs these contraptions in vanilla and in Horizon and compares them
+`tools/test_redstone_catalog_parity.py` runs these contraptions in vanilla and in Sunrise and compares them
 tick by tick. The schematics themselves have no licence: the harness downloads them into `.local/lra-catalog/`
 at run time, pinned to `da4dd51` and checked by sha256. Never commit them.

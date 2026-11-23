@@ -11,8 +11,8 @@ are, which ideas they already ruled out, and how to build and try a change on th
 - Numbers are the in-game overlay's (F3-style stats in the corner): fps, frame, `cpu` (render thread's
   work per frame), `gpu` (the frame's GPU time from the timestamp queries), chunks, draw calls, CPU MHz.
 - A YouTube picture-in-picture window was open during most shots: it uses some GPU and CPU.
-- Test APKs installed with the quick profile (`build_apk.py` default) build `horizon-client` and
-  `horizon-android` at **opt-level 1**: never measure with them. Use `--profile fast` (what releases use).
+- Test APKs installed with the quick profile (`build_apk.py` default) build `sunrise-client` and
+  `sunrise-android` at **opt-level 1**: never measure with them. Use `--profile fast` (what releases use).
 
 ## Measurements
 
@@ -85,13 +85,13 @@ spikes, not looked into yet.
 4. **The pixels**: whether the full-screen sky (`sky_along_ray` per pixel) or the water costs more
    than it should; a lower default resolution on phones (Bedrock does that).
 
-## What another Android fork does (Vasysik/horizon-android, MIT, read 2026-10-29)
+## What another Android fork does (Vasysik/sunrise-android, MIT, read 2026-10-29)
 
 Nothing there cuts the terrain's GPU work (no LOD rings, no merged faces). What differs from Starling:
 
 - **Public APKs use the release profile** (opt-level 3, ThinLTO, codegen-units 1; commit 44998be5),
   where Starling's releases use `fast`.
-- **No 60 fps cap on phones**: it has no `apply_mobile_defaults`, so a phone starts with Horizon's
+- **No 60 fps cap on phones**: it has no `apply_mobile_defaults`, so a phone starts with Sunrise's
   defaults. With this and LTO, its "144 fps against 60-70" needs no faster renderer.
 - **Whole-frame resolution by the window's buffer** (`android/display.rs`, commit b302a6e9): the
   native window's buffer itself is made smaller (presets 100/85/75/67/50/25, default 100), so Android's

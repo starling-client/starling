@@ -4,7 +4,7 @@
 use super::*;
 use crate::glass_ui::{self as ui, white};
 use gpui::deferred;
-use horizon_theme::glass::{fill, ink, radius};
+use sunrise_theme::glass::{fill, ink, radius};
 use std::time::Instant;
 
 /// Play, the version and the big icons are this tall (`h-14`).
@@ -64,7 +64,7 @@ pub(super) enum HomeMenu {
 }
 
 impl Launcher {
-    /// The head: what Home shows above its tabs. `tag`: the Horizon version it plays (empty for a
+    /// The head: what Home shows above its tabs. `tag`: the Sunrise version it plays (empty for a
     /// Java instance); `prepared`: whether that version's files are ready.
     pub(super) fn glass_home_head(
         &mut self,
@@ -137,7 +137,7 @@ impl Launcher {
     /// ([`Self::switch_edition`]).
     fn edition_tabs(&mut self, java: bool, cx: &mut Context<Self>) -> Div {
         let grass = self.grass_mark(18.);
-        let horizon = self.horizon_mark(18.);
+        let sunrise = self.sunrise_mark(18.);
         let tab = |label: &'static str, icon: AnyElement, open: bool| {
             let d = div()
                 .id(SharedString::from(format!("edition-{label}")))
@@ -148,7 +148,7 @@ impl Launcher {
                 .h(px(32.))
                 .px(px(12.))
                 .rounded(px(radius::CONTROL))
-                .font_family(horizon_theme::glass::FONT)
+                .font_family(sunrise_theme::glass::FONT)
                 .text_size(px(13.))
                 .line_height(px(18.))
                 .child(icon)
@@ -179,12 +179,12 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(4.))
-            .child(tab("Rust Edition", horizon, !java))
+            .child(tab("Rust Edition", sunrise, !java))
             .child(tab("Java Edition", java_icon, java))
     }
 
     /// An edition tab's click: the instance of that edition (`java`) played last, or, with none,
-    /// the New instance dialog on Vanilla or Horizon.
+    /// the New instance dialog on Vanilla or Sunrise.
     pub(super) fn switch_edition(&mut self, java: bool, cx: &mut Context<Self>) {
         let pick = edition_pick(&self.instances.list, java).cloned();
         match pick {
@@ -194,7 +194,7 @@ impl Launcher {
                 let kind = if java {
                     new_instance::NewKind::Vanilla
                 } else {
-                    new_instance::NewKind::Horizon
+                    new_instance::NewKind::Sunrise
                 };
                 self.pick_kind(kind, cx);
             }
@@ -229,7 +229,7 @@ impl Launcher {
                 div()
                     .min_w_0()
                     .truncate()
-                    .font_family(horizon_theme::glass::DISPLAY_FONT)
+                    .font_family(sunrise_theme::glass::DISPLAY_FONT)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(px(64.))
                     .line_height(px(64.))
@@ -314,7 +314,7 @@ impl Launcher {
             .is_some_and(|i| i.version.is_none());
         let update = self
             .updates
-            .horizon
+            .sunrise
             .as_ref()
             .filter(|_| follows && !tag.is_empty())
             .map(|r| r.tag.clone());
@@ -336,7 +336,7 @@ impl Launcher {
             (_, _, _) if own.is_some() => Some((tr("Installing"), own.flatten())),
             (_, true, _) => Some((
                 tr("Preparing"),
-                horizon_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),
+                sunrise_launcher::mojang::progress().map(|(d, n)| d as f32 / n.max(1) as f32),
             )),
             (_, _, Some(_)) => Some((tr("Starting"), None)),
             _ => None,
@@ -396,7 +396,7 @@ impl Launcher {
                 .justify_center()
                 .gap(px(10.))
                 .pr(px(40.))
-                .font_family(horizon_theme::glass::FONT)
+                .font_family(sunrise_theme::glass::FONT)
                 .text_size(px(18.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(ui::icon(icon, 20., glyph))
@@ -422,7 +422,7 @@ impl Launcher {
                         .justify_center()
                         .pr(px(40.))
                         .text_color(on_accent)
-                        .font_family(horizon_theme::glass::FONT)
+                        .font_family(sunrise_theme::glass::FONT)
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(match progress {
@@ -448,7 +448,7 @@ impl Launcher {
                 };
                 let press = play_press(
                     ready,
-                    if horizon_launcher::developer_offline::selected() {
+                    if sunrise_launcher::developer_offline::selected() {
                         Some(true)
                     } else {
                         self.owner
@@ -516,7 +516,7 @@ impl Launcher {
                         "Stay on {version}",
                         &[(
                             "version",
-                            &horizon_launcher::nightly::label(tag).unwrap_or(tag.to_string()),
+                            &sunrise_launcher::nightly::label(tag).unwrap_or(tag.to_string()),
                         )],
                     ),
                     locked || !ready,
@@ -600,7 +600,7 @@ impl Launcher {
         let label = self.selected().map_or_else(
             || tr("No version").into(),
             |tag| {
-                horizon_launcher::nightly::label(tag)
+                sunrise_launcher::nightly::label(tag)
                     .or_else(|| build_import::label(tag))
                     .unwrap_or_else(|| tag.clone())
             },
@@ -689,7 +689,7 @@ impl Launcher {
             for tag in &self.installed {
                 let chosen = self.selected() == Some(tag);
                 let latest = follows.as_ref() == Some(tag);
-                let name = horizon_launcher::nightly::label(tag)
+                let name = sunrise_launcher::nightly::label(tag)
                     .or_else(|| build_import::label(tag))
                     .unwrap_or_else(|| tag.clone());
                 let note = if latest {
@@ -733,8 +733,8 @@ impl Launcher {
     }
 
     /// The folder button and its ⋯ (`FolderGroup`), which shows under the pointer or while its
-    /// menu is open: the instance's folder, its screenshots, and (Horizon) the Minecraft folder.
-    fn folder_group(&self, horizon: bool, cx: &mut Context<Self>) -> Option<Div> {
+    /// menu is open: the instance's folder, its screenshots, and (Sunrise) the Minecraft folder.
+    fn folder_group(&self, sunrise: bool, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let instance = self.selected_instance()?;
         let home = instance.home.clone();
@@ -818,7 +818,7 @@ impl Launcher {
                     Some(shots),
                 ),
             ];
-            if horizon {
+            if sunrise {
                 items.push((
                     "folder-minecraft",
                     tr("Choose the Minecraft folder"),
@@ -892,7 +892,7 @@ impl Launcher {
             .pr(px(pr))
             .rounded(px(radius::LARGE))
             .bg(white(if focused { 0.09 } else { 0.06 }))
-            .font_family(horizon_theme::glass::FONT)
+            .font_family(sunrise_theme::glass::FONT)
             .text_size(px(14.))
             .text_color(white(ink::FULL))
             .cursor_text()
@@ -932,7 +932,7 @@ impl Launcher {
                 cx.notify();
             }));
         let field = line_edit::mouse(field, cx, |this| &mut this.friend_code);
-        let valid = horizon_friends::invite::parse(self.friend_code.text()).is_some();
+        let valid = sunrise_friends::invite::parse(self.friend_code.text()).is_some();
         let can = valid && (tag.is_empty() || self.can_start(tag));
         let join = ui::quiet("join-friend", join_label, 40., &t);
         let join = if can {
@@ -973,10 +973,10 @@ fn friend_code_padding_right(join_label: &str) -> f32 {
 /// The instance of one edition (`java`) an edition tab goes to: of those the player can select,
 /// the one played last; among never played ones, the first listed.
 fn edition_pick(
-    list: &[horizon_launcher::instances::Instance],
+    list: &[sunrise_launcher::instances::Instance],
     java: bool,
-) -> Option<&horizon_launcher::instances::Instance> {
-    use horizon_launcher::instances::Kind;
+) -> Option<&sunrise_launcher::instances::Instance> {
+    use sunrise_launcher::instances::Kind;
     list.iter()
         .filter(|i| matches!(i.kind, Kind::Default | Kind::Own) && i.java.is_some() == java)
         .rev()
@@ -1029,7 +1029,7 @@ enum PlayItem {
 
 /// The command that plays instance `id` without the window, as its desktop shortcut runs it.
 fn launch_command(id: &str) -> String {
-    format!("horizon-launcher play --instance {id}")
+    format!("sunrise-launcher play --instance {id}")
 }
 
 #[cfg(test)]
@@ -1049,7 +1049,7 @@ mod tests {
 
     #[test]
     fn an_edition_tab_goes_to_that_editions_instance_played_last() {
-        use horizon_launcher::instances::{Instance, JavaGame, Kind};
+        use sunrise_launcher::instances::{Instance, JavaGame, Kind};
         use std::time::{SystemTime, UNIX_EPOCH};
         let at = |secs: u64| Some(UNIX_EPOCH + Duration::from_secs(secs));
         let one = |id: &str, kind: Kind, java: bool, last: Option<SystemTime>| Instance {
@@ -1068,7 +1068,7 @@ mod tests {
             native_profile: Default::default(),
         };
         let list = [
-            one("horizon", Kind::Default, false, at(50)),
+            one("sunrise", Kind::Default, false, at(50)),
             one("vanilla-old", Kind::Own, true, at(10)),
             one("vanilla-new", Kind::Own, true, at(20)),
             one("port:pack", Kind::Port, true, at(99)),
@@ -1077,7 +1077,7 @@ mod tests {
         let id = |java| edition_pick(&list, java).map(|i| i.id.as_str());
         // A modpack isn't selected from Home, however recent.
         assert_eq!(id(true), Some("vanilla-new"));
-        assert_eq!(id(false), Some("horizon"));
+        assert_eq!(id(false), Some("sunrise"));
         // Never played: the first listed; none of an edition: none (New instance opens).
         let fresh = [
             one("a", Kind::Own, true, None),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Nightly, the only build Horizon ships (.github/workflows/nightly-build.yml, docs/release-flow.md "Nightly").
+"""The Nightly, the only build Sunrise ships (.github/workflows/nightly-build.yml, docs/release-flow.md "Nightly").
 
     nightly.py pick [--force]      which commit tonight's nightly builds: GitHub outputs and nightly-notes.md
     nightly.py pick --kind snapshot   a snapshot of NIGHTLY_BASE (default main's head), a commit of main
@@ -29,7 +29,7 @@ disabled, and the final SHA is rechecked before pushing.
 Its notes list what reached main since the previous nightly, then the picked pull requests. Runs from main's
 checkout with `gh`; it reads and merges the branches with git and never runs anything from them.
 
-Each nightly ships its exact source: horizon-source.tar.gz (`git archive` of the commit, signed with the builds) on
+Each nightly ships its exact source: sunrise-source.tar.gz (`git archive` of the commit, signed with the builds) on
 the release, and the tag nightly-source/<date>-<short>, which no prune deletes. Native mods pin a nightly's commit
 (docs/native-mods.md), so that commit must stay downloadable after its release and build branch are gone.
 """
@@ -101,7 +101,7 @@ def source_tag(today: str, sha: str) -> str:
 
 
 def source_line(today: str, sha: str) -> str:
-    return (f"Source: commit {sha}, kept for good as the tag `{source_tag(today, sha)}`; horizon-source.tar.gz is "
+    return (f"Source: commit {sha}, kept for good as the tag `{source_tag(today, sha)}`; sunrise-source.tar.gz is "
             "its tree. Native mods built for this Nightly pin that commit.")
 
 
@@ -240,7 +240,7 @@ def build_set(main: Ref, prs: list[dict], left_out: list[str], today: str, force
 
 def package_format() -> int:
     """The prebuilt package's layout number, from its one place; anything but a number fails."""
-    return int((Path(__file__).resolve().parents[2] / "crates/horizon-mod-package/src/sdk/package-format").read_text().rstrip())
+    return int((Path(__file__).resolve().parents[2] / "crates/sunrise-mod-package/src/sdk/package-format").read_text().rstrip())
 
 
 # The SDK's packing legs (prebuilt-game-build.yml's matrix): each target, and the Linux server's side.
@@ -251,7 +251,7 @@ SDK_LEGS = (("x86_64-unknown-linux-gnu", ""), ("x86_64-unknown-linux-gnu", "-ser
 # release without (`nightly.py sdk-archives`), and what a mod tool's fetch needs.
 SDK_ARCHIVES = tuple(f"{kind}-{target}{side}.tar.xz" for target, side in SDK_LEGS
                      for kind in ("runtime", "api", "engine")) + ("api-source.tar.xz", "build-data.tar.xz", "surface.json")
-# Beside them in the release: the index and the signed sums (`horizon_mod_package::sdk::BESIDE_ASSETS`).
+# Beside them in the release: the index and the signed sums (`sunrise_mod_package::sdk::BESIDE_ASSETS`).
 SDK_INDEX = "sdk.json"
 SDK_ASSETS = SDK_ARCHIVES + (SDK_INDEX, "SHA256SUMS", "SHA256SUMS.sig")
 
@@ -281,9 +281,9 @@ def listed(name: str, data: bytes, sums: str) -> bool:
 
 
 def signature_check(sha: str, folder: Path, names: list[str]) -> list[str]:
-    """The command that checks sdk-<sha>'s SHA256SUMS signature in `folder` as the launcher does (horizon-release-sign,
+    """The command that checks sdk-<sha>'s SHA256SUMS signature in `folder` as the launcher does (sunrise-release-sign,
     with the fork's keys and the tag the signature must name), and the bytes of `names` against it."""
-    return ["cargo", "run", "--locked", "--quiet", "-p", "horizon-release-sign", "--", "verify",
+    return ["cargo", "run", "--locked", "--quiet", "-p", "sunrise-release-sign", "--", "verify",
             "--repository", "arismoko/horizon", "--tag", f"sdk-{sha}",
             *(argument for name in names for argument in ("--only", name)), str(folder)]
 
@@ -427,7 +427,7 @@ def pick_snapshot() -> None:
     with open("nightly-notes.md", "w") as f:
         f.write(f"Snapshot {today} · {sha[:7]}: main at {sha}, built to test it after merge. Not a Nightly: no "
                 "launcher offers or updates to it; a developer installs it with "
-                f"`horizon-launcher install {tag}`. Its SDK is the release sdk-{sha}.\n\n{train.DISCLAIMER}\n")
+                f"`sunrise-launcher install {tag}`. Its SDK is the release sdk-{sha}.\n\n{train.DISCLAIMER}\n")
     output(build=str(build).lower(), sha=sha, short=sha[:7], source="main", date=today, version=f"snapshot-{today}",
            nightly=f"{today} {sha[:7]}", source_tag="", tag=tag, sdk=str(sdk).lower())
     print(f"{'build' if build else f'skip ({tag} is already published)'}: {tag} {sha}")

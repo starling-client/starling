@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Profile the validation and typed-deserialization passes in separate processes.
 
-Build `cargo build --release -p horizon-client-lib --example gameplay_decode_profile`
+Build `cargo build --release -p sunrise-client-lib --example gameplay_decode_profile`
 then run this tool with the matching prepared resources. These passes are
 both currently required for exact JSON error classification/precedence.
 """
@@ -18,7 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path,
                         default=Path("target/release/examples/gameplay_decode_profile"))
-    parser.add_argument("--resources", type=Path, default=Path(".local/horizon-client/26.3"))
+    parser.add_argument("--resources", type=Path, default=Path(".local/sunrise-client/26.3"))
     parser.add_argument("--repeats", type=int, default=8)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

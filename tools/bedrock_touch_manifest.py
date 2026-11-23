@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write crates/horizon-client/assets/bedrock-touch.json: which of Bedrock's touch textures the
+"""Write crates/sunrise-client/assets/bedrock-touch.json: which of Bedrock's touch textures the
 game fetches on the phone from Mojang's own samples repository (bedrock-samples, at one pinned
 revision), with each file's git blob SHA-1 and size to check it by. Names, paths and hashes only:
 no texture is in the project.
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "crates" / "horizon-client" / "assets" / "bedrock-touch.json"
+OUT = ROOT / "crates" / "sunrise-client" / "assets" / "bedrock-touch.json"
 REPO = "Mojang/bedrock-samples"
 BASE = "resource_pack/textures/"
 

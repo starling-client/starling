@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make a valid mod package report point layout zero, for the server refusal check.
 
-Only the exported horizon_layout_ext function body changes. Rehashing mod.wasm keeps
+Only the exported sunrise_layout_ext function body changes. Rehashing mod.wasm keeps
 package integrity valid: the loader must reach the point-layout check, not fail SHA512.
 """
 import hashlib
@@ -51,7 +51,7 @@ def mismatch(module):
         offset += size
         kind = exports[offset]
         index, offset = uint(exports, offset + 1)
-        if name == b"horizon_layout_ext" and kind == 0:
+        if name == b"sunrise_layout_ext" and kind == 0:
             target = index
     if target is None:
         raise ValueError("package has no point-layout export")
@@ -108,12 +108,12 @@ def main():
     source, destination = map(Path, sys.argv[1:])
     with zipfile.ZipFile(source) as package:
         files = {name: package.read(name) for name in package.namelist()}
-    manifest = tomllib.loads(files["horizon-mod.toml"].decode())
+    manifest = tomllib.loads(files["sunrise-mod.toml"].decode())
     files["mod.wasm"] = mismatch(files["mod.wasm"])
     digest = hashlib.sha512(files["mod.wasm"]).hexdigest()
-    files["horizon-mod.toml"] = re.sub(
+    files["sunrise-mod.toml"] = re.sub(
         rb'(?m)^sha512 = "[a-f0-9]+"$', f'sha512 = "{digest}"'.encode(),
-        files["horizon-mod.toml"],
+        files["sunrise-mod.toml"],
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as package:

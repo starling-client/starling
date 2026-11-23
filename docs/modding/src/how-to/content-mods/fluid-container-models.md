@@ -39,7 +39,7 @@ struct Canister {
     oil: FluidKey,
 }
 
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl ItemPart for Canister {
     fn contained_fluid(&self, _: &dyn ClientHost, event: &mut ContainedFluidEvent<'_>) {
         // Read the stack's own component, written when the canister was filled.
@@ -56,7 +56,7 @@ impl ItemPart for Canister {
 }
 
 struct MyMod;
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for MyMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         let part = Canister {
@@ -70,7 +70,7 @@ impl Hooks for MyMod {
 ```
 
 - The answer is a fluid, never a sprite or a colour: the model draws the fluid's own still sprite and item tint, as
-  for a water bucket. A mod fluid needs a look (`data/<mod>/horizon/fluid/<name>.json`) to draw in an item; a model
+  for a water bucket. A mod fluid needs a look (`data/<mod>/sunrise/fluid/<name>.json`) to draw in an item; a model
   from `register_fluid_models` changes how a fluid with a look draws, but does not make one drawable alone. A
   registered fluid with no look draws the missing texture through the mask, so the missing file shows.
 - Leaving `event.fluid` at `None` draws the stack as holding none: the model's declared `fluid`, untinted, or no

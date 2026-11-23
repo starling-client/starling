@@ -5,7 +5,7 @@
 so two mobs crowded in scaffolding stay where they are from the tick they appear, while the same two on plain ground
 push apart (`Entity.push`).
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each load a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each load a copy of one flat world
 vanilla generated first. Ticking is frozen, the cases are built (mobs with no movement speed, so no random goal
 moves them; each in a sealed cell), and
 the server steps one tick at a time; after each step every case mob's exact Pos and Motion are read with
@@ -100,17 +100,17 @@ def proves(vanilla):
 
 
 def main():
-    lock, build, vanilla_server, horizon_server, _client = locator.sides(NAME)
+    lock, build, vanilla_server, sunrise_server, _client = locator.sides(NAME)
     world = locator.generate_world(vanilla_server, build)
     vanilla = run('vanilla', vanilla_server, world, build)
     why = proves(vanilla)
     if why:
         raise AssertionError(f'vanilla is no proof: {why}:\n' + '\n'.join(vanilla))
-    horizon = run('horizon', horizon_server, world, build)
-    for label, lines in (('vanilla', vanilla), ('horizon', horizon)):
+    sunrise = run('sunrise', sunrise_server, world, build)
+    for label, lines in (('vanilla', vanilla), ('sunrise', sunrise)):
         (build / f'{label}.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    if vanilla != horizon:
-        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, horizon) if v != h]
+    if vanilla != sunrise:
+        differ = [f'- {v}\n+ {h}' for v, h in zip(vanilla, sunrise) if v != h]
         raise AssertionError(f'{len(differ)} lines differ from vanilla:\n' + '\n'.join(differ[:20]))
     print(f'mob climbable push: {len(vanilla)} lines identical')
 

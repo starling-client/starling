@@ -8,8 +8,8 @@ import tempfile
 
 root = Path(sys.argv[1]).resolve()
 extractor = Path(sys.argv[2]).resolve()
-vocab = root / 'crates/horizon-mod-vocab/src/parts'
-api = root / 'crates/horizon-mod-api/src/parts'
+vocab = root / 'crates/sunrise-mod-vocab/src/parts'
+api = root / 'crates/sunrise-mod-api/src/parts'
 files = {
     'menus.rs': vocab / 'menus.rs',
     'registration_refusal.rs': vocab / 'registration_refusal.rs',
@@ -26,8 +26,8 @@ for name in selected:
 (root / '.local').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='parts-admission-', dir=root / '.local') as directory:
     temporary = Path(directory)
-    source = temporary / 'crates/horizon-mod-vocab/src/parts'
-    destination = temporary / 'crates/horizon-mod-api/src/parts'
+    source = temporary / 'crates/sunrise-mod-vocab/src/parts'
+    destination = temporary / 'crates/sunrise-mod-api/src/parts'
     source.mkdir(parents=True)
     for name in selected:
         shutil.copyfile(files[name], source / name)

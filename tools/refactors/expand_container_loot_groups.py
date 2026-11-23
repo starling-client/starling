@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 root = Path(__file__).resolve().parents[2]
-path = root / "crates/horizon-client/src/game/world/container_loot/tests.rs"
+path = root / "crates/sunrise-client/src/game/world/container_loot/tests.rs"
 source = path.read_text()
 start = source.index("macro_rules! groups {")
 invocation = source.index("groups! {", start)

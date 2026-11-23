@@ -19,7 +19,7 @@ VOCAB_TRAITS = '''pub trait Providers {
     type Output;
     const LIMIT: u32 = 3;
 }
-#[horizon_mod_api_macros::host_area]
+#[sunrise_mod_api_macros::host_area]
 pub trait ToolsHost {
     fn tool(&self) -> u32;
 }

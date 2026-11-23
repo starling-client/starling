@@ -5,22 +5,22 @@ use std::path::Path;
 use std::process::Command;
 
 fn desktop_entry(home: &Path, wrapper: Option<&str>, args: &[&str]) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_horizon-launcher"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sunrise-launcher"));
     command
         .arg("desktop-entry")
         .args(args)
-        .env("HORIZON_LAUNCHER_HOME", home.join("launcher"))
-        .env("HORIZON_HOME", home.join("game"))
+        .env("SUNRISE_LAUNCHER_HOME", home.join("launcher"))
+        .env("SUNRISE_HOME", home.join("game"))
         .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("HORIZON_LAUNCHER_TRASH", home.join("trash"))
-        .env("HORIZON_LAUNCHER_CLIPBOARD", home.join("clipboard"))
-        .env("HORIZON_LAUNCHER_DESKTOP", home.join("desktop"))
-        .env("HORIZON_NO_AUDIO", "1")
+        .env("SUNRISE_LAUNCHER_TRASH", home.join("trash"))
+        .env("SUNRISE_LAUNCHER_CLIPBOARD", home.join("clipboard"))
+        .env("SUNRISE_LAUNCHER_DESKTOP", home.join("desktop"))
+        .env("SUNRISE_NO_AUDIO", "1")
         .env("XDG_DATA_HOME", home.join("data"))
-        .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
-        .env_remove("HORIZON_LAUNCHER_DESKTOP_EXEC");
+        .env("SUNRISE_LAUNCHER_NO_SELF_UPDATE", "1")
+        .env_remove("SUNRISE_LAUNCHER_DESKTOP_EXEC");
     if let Some(wrapper) = wrapper {
-        command.env("HORIZON_LAUNCHER_DESKTOP_EXEC", wrapper);
+        command.env("SUNRISE_LAUNCHER_DESKTOP_EXEC", wrapper);
     }
     let output = command.output().unwrap();
     assert!(
@@ -32,21 +32,21 @@ fn desktop_entry(home: &Path, wrapper: Option<&str>, args: &[&str]) {
 
 #[test]
 fn menu_registration_preserves_the_package_wrapper() {
-    let home = std::env::temp_dir().join(format!("horizon-desktop-wrapper-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("sunrise-desktop-wrapper-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let entry = home
         .join("data/applications")
-        .join(if cfg!(horizon_fork_launcher) {
-            "io.github.arismoko.horizonfork.launcher.desktop"
+        .join(if cfg!(sunrise_fork_launcher) {
+            "io.github.arismoko.sunrisefork.launcher.desktop"
         } else {
-            "horizon-launcher.desktop"
+            "sunrise-launcher.desktop"
         });
     let other = home
         .join("data/applications")
-        .join(if cfg!(horizon_fork_launcher) {
-            "horizon-launcher.desktop"
+        .join(if cfg!(sunrise_fork_launcher) {
+            "sunrise-launcher.desktop"
         } else {
-            "io.github.arismoko.horizonfork.launcher.desktop"
+            "io.github.arismoko.sunrisefork.launcher.desktop"
         });
     std::fs::create_dir_all(other.parent().unwrap()).unwrap();
     std::fs::write(&other, "other launcher registration").unwrap();
@@ -56,10 +56,10 @@ fn menu_registration_preserves_the_package_wrapper() {
     let original = std::fs::read_to_string(&entry).unwrap();
     assert!(original.contains(&format!(
         "Exec=\"{}\"\n",
-        env!("CARGO_BIN_EXE_horizon-launcher")
+        env!("CARGO_BIN_EXE_sunrise-launcher")
     )));
 
-    let wrapper = "/usr/bin/horizon-launcher";
+    let wrapper = "/usr/bin/sunrise-launcher";
     for _ in 0..2 {
         desktop_entry(&home, Some(wrapper), &[]);
         let text = std::fs::read_to_string(&entry).unwrap();

@@ -1,7 +1,7 @@
 # Mod registry v2
 
 > **Fork scope:** This is retained upstream design and research, not the fork specification. See the
-> [fork registry reference](../modding/src/reference/registry-index.md). `.hmod` is the only mod package;
+> [fork registry reference](../modding/src/reference/registry-index.md). `.smod` is the only mod package;
 > explicit native pins and update flow, and strict published-kind and owner checks, remain in force. This note
 > authorizes neither a `.hnmod` route nor implicit native repinning or rebuilding.
 
@@ -14,12 +14,12 @@ the launcher installs each one, the category lists and the rollout. The format i
 
 | Kind | File | What it is | The registry's check | The launcher installs it in |
 |---|---|---|---|---|
-| `mod` | `.hmod` | Content mod (and sandboxed code) | manifest + content (today) | `mods/<id>.hmod` |
+| `mod` | `.smod` | Content mod (and sandboxed code) | manifest + content (today) | `mods/<id>.smod` |
 | `native-mod` | `.hnmod` | Native source mod | bundle + pins (today) | the native build; rebuilt after an update |
-| `modpack` | `.hpack` | Registry mods played together | manifest + its mods in the index (today) | its own profile |
+| `modpack` | `.spack` | Registry mods played together | manifest + its mods in the index (today) | its own profile |
 | `resourcepack` | `.zip` | `pack.mcmeta` + `assets/` | plain paths + `pack.mcmeta` (today) | `resourcepacks/<file>` |
-| `shader` | `.hshader` | Horizon's WGSL shader pack | `horizon_shader_api::check` (today) | `shaderpacks/<file>` |
-| `shaderpack` | `.zip` | **new**: a `shaders/`-folder pack (the OptiFine/Iris format Horizon loads with `horizon-shaders`) | plain paths, a `shaders/` folder at the root | `shaderpacks/<file>` |
+| `shader` | `.sshader` | Sunrise's WGSL shader pack | `sunrise_shader_api::check` (today) | `shaderpacks/<file>` |
+| `shaderpack` | `.zip` | **new**: a `shaders/`-folder pack (the OptiFine/Iris format Sunrise loads with `sunrise-shaders`) | plain paths, a `shaders/` folder at the root | `shaderpacks/<file>` |
 | `datapack` | `.zip` | **new**: `pack.mcmeta` + `data/` | plain paths, `pack.mcmeta` with a `pack` object, a `data/` folder; its pack format | a world the player picks: `<world>/datapacks/<file>` |
 
 - Why a separate `shaderpack` kind rather than `.zip` files under `shader`: launchers already released check every
@@ -27,7 +27,7 @@ the launcher installs each one, the category lists and the rollout. The format i
   `Kind::Other` by them: not offered, nothing refused. The same holds for `datapack`.
 - A `shaderpack` is accepted only when the submitter is the pack's author and its licence allows redistribution. The
   form asks for both as a ticked statement; the reviewer checks the licence and the author against the source. Ports
-  of someone else's pack are refused (Mojang rules and [MOD-POLICY.md] in horizon-mods apply as for every kind).
+  of someone else's pack are refused (Mojang rules and [MOD-POLICY.md] in sunrise-mods apply as for every kind).
 - Data packs: the game discovers `<world>/datapacks/*.zip` and turns them on at world open and on `/reload`
   (`datapack::discover`). The launcher already installs Modrinth data packs into a chosen world
   (`browser::installed::install_datapack`); registry data packs go through the same picker.
@@ -66,12 +66,12 @@ One fixed list per kind, Modrinth's, minus `cursed`:
   colored-lighting, foliage, path-tracing, pbr, reflections, shadows (features); potato, low, medium, high,
   screenshot (performance).
 
-They live in `horizon_mod_package::index::categories(kind)`; the site and the launcher read them from the index's projects
+They live in `sunrise_mod_package::index::categories(kind)`; the site and the launcher read them from the index's projects
 and show the kind's list as filters.
 
 ## Submitting and editing
 
-- The form (playhorizon.dev/mods/submit) offers every kind, requires description, 1 to 3 categories and an icon (an
+- The form (playsunrise.net/mods/submit) offers every kind, requires description, 1 to 3 categories and an icon (an
   upload: the service writes `icons/<id>.png` on the submission branch), and takes up to 8 screenshot uploads
   (`screenshots/<id>/<n>.<ext>`). The service checks sizes, types and dimensions before anything reaches GitHub; the
   registry's CI checks them again.
@@ -93,17 +93,17 @@ and show the kind's list as filters.
 
 ## Rollout
 
-The `cargo horizon-mod` pinned by horizon-mods (`HORIZON_REV`) refuses unknown entry fields (#9688), so:
+The `cargo sunrise-mod` pinned by sunrise-mods (`SUNRISE_REV`) refuses unknown entry fields (#9688), so:
 
-1. horizon: the new fields as optional (serde defaults), the two kinds, the checks of what is present, the category
+1. sunrise: the new fields as optional (serde defaults), the two kinds, the checks of what is present, the category
    lists and docs/api/mod-index.md. Nothing is required yet.
-2. horizon-mods: `gh variable set HORIZON_REV` to that merge.
+2. sunrise-mods: `gh variable set SUNRISE_REV` to that merge.
 3. In parallel: the service (uploads, Edit project), the site (form, pages, filters, screenshots), the launcher
    (kinds, filters, screenshots, auto-update), and the backfill of every existing entry (description, categories,
-   tags, icon) in batches of horizon-mods PRs. The service deploys from horizon main on merge, so its PR merges after
+   tags, icon) in batches of sunrise-mods PRs. The service deploys from sunrise main on merge, so its PR merges after
    step 2.
-4. horizon: description, categories and icon required in `check_fields`; bump `HORIZON_REV` again; the form
-   requires them. One issue in horizon-mods tells each owner what was filled in for them and how to change it.
+4. sunrise: description, categories and icon required in `check_fields`; bump `SUNRISE_REV` again; the form
+   requires them. One issue in sunrise-mods tells each owner what was filled in for them and how to change it.
 
 Progress: `agent-state/registry-v2.md` in the orchestration repo.
 

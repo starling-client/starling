@@ -65,10 +65,10 @@ recursive types need a visited-type stack. Container layout follows encoding:
 transparent. Changing a crossing field requires rebuilding dependents; the wire
 format has no compatibility versions or default fields.
 
-`cargo horizon-mod build` writes `layouts.json` at the package root, mapping mod IDs
+`cargo sunrise-mod build` writes `layouts.json` at the package root, mapping mod IDs
 to public type paths and their 16-digit hexadecimal layout identities. It includes
 the mod dependencies it compiled against. A cached host probe under
-`target/horizon-mod/` computes these values, for both native and wasm builds. When
+`target/sunrise-mod/` computes these values, for both native and wasm builds. When
 there are no concrete crossing types, no probe is built and no file is written.
 If `layouts.json` already exists, the build refuses to discard its recorded types.
 Review the removal of the final public crossing type, then remove the file explicitly.

@@ -6,7 +6,7 @@ EntitySelector.findPlayers and EntityArgument's player targets: names, UUIDs, `@
 rotation, and into another level by `execute in`, the console's own level or the destination's), `effect give` and
 `effect clear`, and `kill`.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice and Bob as operators in creative. LocatorBarClient joins them both (players made
 of vanilla's protocol code) and records, step by step, the system chat each receives and what the server changes
 about it: game mode events, teleports, inventory slots, effects, its death (with the death message), the other
@@ -161,34 +161,34 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                    check=True, capture_output=True)
     import json
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.LocatorBarClient']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.LocatorBarClient']
 
     world = generate_world(vanilla_server, build)
     vanilla, vanilla_errors = run_side('vanilla', vanilla_server, client, build, world)
-    horizon, horizon_errors = run_side('horizon', horizon_server, client, build, world)
+    sunrise, sunrise_errors = run_side('sunrise', sunrise_server, client, build, world)
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    errors = vanilla_errors + horizon_errors
-    if errors or vanilla != horizon:
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    errors = vanilla_errors + sunrise_errors
+    if errors or vanilla != sunrise:
         import difflib
-        diff = '\n'.join(difflib.unified_diff(vanilla, horizon, 'vanilla', 'horizon', n=1, lineterm=''))
-        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and horizon.txt):\n'
+        diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=1, lineterm=''))
+        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and sunrise.txt):\n'
                              + '\n'.join(errors[:10]) + '\n' + diff[:8000])
     for needle in ('gamemode 0', 'minecraft:diamond x3', 'effect minecraft:speed', 'respawn ' + NETHER,
                    'death.attack.genericKill'):
@@ -197,7 +197,7 @@ def main():
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        lines=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        lines=len(vanilla), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='Commands from the console and an operator acting on another player of a dedicated server: names, '
               'UUIDs, @a, @p, @r and @s under execute as/at, with give, gamemode, tp (place, player, rotation, '
               'execute in, across levels), effect give and clear and kill, as the players see them.'))

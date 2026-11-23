@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Run the Logical Redstone Archive's contraptions in vanilla and in Horizon, tick by tick.
+"""Run the Logical Redstone Archive's contraptions in vanilla and in Sunrise, tick by tick.
 
 The catalogue (`tools/lra-catalog/`, by maybeachromium, WTFPL) lists each archive entry's input and output
 positions and what it was checked against. The archive's schematics have no licence and are never committed:
 they are downloaded into `.local/lra-catalog/` and checked against the digest pinned here.
 
 Each contraption is built from its schematic in `VanillaRedstoneCatalogOracle` (a real flat-world server)
-and in `redstone_catalog_fixture` (horizon-world). Switches start off (except those the catalogue held on),
+and in `redstone_catalog_fixture` (sunrise-world). Switches start off (except those the catalogue held on),
 every block gets a neighbour update, and the level runs until quiet. Then each step sets the input levers
 and presses buttons as a player's click would, and runs whole level ticks until quiet. Both sides print the
 outputs that changed after every tick, the tick the step ended on, and a hash of every block in the box.
@@ -69,7 +69,7 @@ def fetch_schematics(entries):
         if not path.exists():
             url = f'https://raw.githubusercontent.com/{ARCHIVE}/{COMMIT}/' + urllib.parse.quote(rel)
             path.parent.mkdir(parents=True, exist_ok=True)
-            request = urllib.request.Request(url, headers={'User-Agent': 'horizon/0.1'})
+            request = urllib.request.Request(url, headers={'User-Agent': 'sunrise/0.1'})
             with urllib.request.urlopen(request, timeout=120) as response:
                 data = response.read()
             # The shards download into the same folder at once: each writes its own part file.
@@ -180,7 +180,7 @@ def fixed_cases(states):
             lever = [3, 1, 1]
             steps = [[[*lever, 1]], [[*lever, 0]], [[*lever, 1]], [[*lever, 0], [*lever, 1]], [[*lever, 0]],
                      [[*lever, 1], [*lever, 0]]]
-            yield {'code': f'horizon-{diode}-on-{piston}', 'size': [4, 3, 3], 'cells': cells, 'comparators': [],
+            yield {'code': f'sunrise-{diode}-on-{piston}', 'size': [4, 3, 3], 'cells': cells, 'comparators': [],
                    'containers': [], 'lecterns': [], 'outputs': [[1, 1, 1], [1, 2, 1], [3, 1, 1]], 'settle': 600,
                    'max': 300, 'budget': 2500, 'steps': steps}
 
@@ -217,7 +217,7 @@ def main():
     args = parser.parse_args()
     shard, shards = parity_shard.parse(os.environ.get('PARITY_SHARD', '1/1'))
     lock, jars, libraries = base.verify_artifacts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'redstone-catalog-parity' / (f'shard-{shard}' if shards > 1 else 'all')
     work.mkdir(parents=True, exist_ok=True)
     entries = load_catalog()
@@ -243,12 +243,12 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     deps = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
-    oracle = java_root / 'dev/horizonlab/parity/VanillaRedstoneCatalogOracle.java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
+    oracle = java_root / 'dev/sunriselab/parity/VanillaRedstoneCatalogOracle.java'
     started = time.time()
     run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath', str(java_root),
               '-cp', deps, '-d', str(classes), str(oracle)], args.full)
-    run(['java', '-Xmx4G', '-cp', str(classes) + os.pathsep + deps, 'dev.horizonlab.parity.VanillaRedstoneCatalogOracle',
+    run(['java', '-Xmx4G', '-cp', str(classes) + os.pathsep + deps, 'dev.sunriselab.parity.VanillaRedstoneCatalogOracle',
               str(work / 'vanilla-cases.jsonl'), str(work / 'vanilla.txt')], args.full, stdout=subprocess.DEVNULL)
     vanilla = split((work / 'vanilla.txt').read_text())
     for case in cases:
@@ -256,7 +256,7 @@ def main():
         case['time'] = next((int(n[5:]) for n in notes if n.startswith('time ')), 0)
         case['analog'] = [[*map(int, a.split(' ')[0].split(',')), int(a.split(' ')[1])] for a in vanilla.get(case['code'], ([], [], []))[1]]
     (work / 'rust-cases.jsonl').write_text(''.join(json.dumps(c, separators=(',', ':')) + '\n' for c in cases))
-    run(['cargo', 'build', '--release', '-p', 'horizon-world', '--example', 'world_probe'], args.full)
+    run(['cargo', 'build', '--release', '-p', 'sunrise-world', '--example', 'world_probe'], args.full)
     probe = lab.cargo_target() / 'release/examples' / ('world_probe.exe' if os.name == 'nt' else 'world_probe')
     run([str(probe), 'redstone_catalog_fixture', str(resources), str(work / 'rust-cases.jsonl'), str(work / 'rust.txt')], args.full)
     rust = split((work / 'rust.txt').read_text())
@@ -278,7 +278,7 @@ def main():
         else:
             i = first_difference(a, b)
             step = next((line for line in reversed(a[:i + 1]) if line.startswith('step')), '?')
-            result = {'result': 'mismatch', 'at': step, 'vanilla': a[i:i + 4], 'horizon': b[i:i + 4]}
+            result = {'result': 'mismatch', 'at': step, 'vanilla': a[i:i + 4], 'sunrise': b[i:i + 4]}
         result['status'] = status[code]
         report[code] = result
         if status[code] == 'verified' and result['result'] in ('mismatch', 'oracle error'):
@@ -295,7 +295,7 @@ def main():
     for code in sorted(report):
         r = report[code]
         if r['result'] == 'mismatch':
-            print(f'{code} ({r["status"]}): first difference in {r["at"]}\n  vanilla {r["vanilla"]}\n  horizon {r["horizon"]}')
+            print(f'{code} ({r["status"]}): first difference in {r["at"]}\n  vanilla {r["vanilla"]}\n  sunrise {r["sunrise"]}')
     print(f'{len(cases)} contraptions run in {time.time() - started:.0f} s; report: {work / "report.json"}')
     raise SystemExit(1 if failures else 0)
 

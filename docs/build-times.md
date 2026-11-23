@@ -1,21 +1,21 @@
 # Build times
 
-`tools/build_times.py` measures how long Horizon takes to build, the same way on any checkout, so that two
+`tools/build_times.py` measures how long Sunrise takes to build, the same way on any checkout, so that two
 machines or two commits can be compared. It exists for [#3916](https://github.com/horizon-rust/horizon/issues/3916)
 (a leaner codebase that builds faster): the crate split needs a number before and a number after.
 It only measures. It does not change the build.
 
 ## What it measures
 
-Every build is the one a developer runs, `cargo build --locked -p horizon-game --profile <profile> --timings`
-(the game and `horizon-ctl`), in a target folder of its own.
+Every build is the one a developer runs, `cargo build --locked -p sunrise-game --profile <profile> --timings`
+(the game and `sunrise-ctl`), in a target folder of its own.
 
 - **Cold:** a build from an empty target folder, for the `dev` and `fast` profiles. Its timings page gives the
   time of each crate and the critical path: the chain of units, each one waiting for the one before it, that
   ended last. Shortening any other unit does not shorten the build.
 - **Nothing changed:** the same build again. This is the least any build costs.
-- **Incremental:** a one-line change in one file of `horizon-world`, `horizon-client-render`,
-  `horizon-client` (`game.rs`, the game binary) and `horizon-items` (a small crate low in the tree), then
+- **Incremental:** a one-line change in one file of `sunrise-world`, `sunrise-client-render`,
+  `sunrise-client` (`game.rs`, the game binary) and `sunrise-items` (a small crate low in the tree), then
   the build. The report lists the crates cargo recompiled and the slowest of them.
 
 ## Run it
@@ -23,7 +23,7 @@ Every build is the one a developer runs, `cargo build --locked -p horizon-game -
 ```sh
 python3 tools/build_times.py run                       # everything: 20 to 40 minutes
 python3 tools/build_times.py run --profiles dev        # one profile
-python3 tools/build_times.py run --only incremental --crates horizon-items --profiles dev   # a quick check
+python3 tools/build_times.py run --only incremental --crates sunrise-items --profiles dev   # a quick check
 python3 tools/build_times.py run --only cold --profiles dev
 ```
 
@@ -42,7 +42,7 @@ Before you run it:
   came from. `CARGO_TARGET_DIR` is not used: the tool builds in `.local/build-times/target-<profile>` and
   leaves yours alone. It only ever empties a folder it made itself, and never `target/`.
 - `--repeats 3` runs each incremental measurement three times and reports the median.
-- `--file horizon-items=crates/horizon-items/src/enchant.rs` edits another file. Any crate of the workspace
+- `--file sunrise-items=crates/sunrise-items/src/enchant.rs` edits another file. Any crate of the workspace
   can go in `--crates`; one that is not in the game's dependencies is reported as not recompiled.
 
 ## The edit
@@ -99,35 +99,35 @@ and of 2 (Windows) or 1 (Linux) for `fast`.
 |---|---|---|---|---|
 | Cold | 106.6 | 99.9 | 235.6 | 184.7 |
 | Nothing changed | 0.4 | 0.2 | 0.4 | 0.2 |
-| Edit in `horizon-world` (`level/mod.rs`) | 21.4 | 22.0 | 29.5 | 60.5 |
-| Edit in `horizon-client-render` (`gfx.rs`) | 15.8 | 12.2 | 78.3 | 51.6 |
-| Edit in `horizon-client` (`game.rs`) | 14.4 | 10.6 | 92.3 | 60.6 |
-| Edit in `horizon-items` (`items.rs`) | 23.1 | 19.0 | 127.5 | 83.8 |
+| Edit in `sunrise-world` (`level/mod.rs`) | 21.4 | 22.0 | 29.5 | 60.5 |
+| Edit in `sunrise-client-render` (`gfx.rs`) | 15.8 | 12.2 | 78.3 | 51.6 |
+| Edit in `sunrise-client` (`game.rs`) | 14.4 | 10.6 | 92.3 | 60.6 |
+| Edit in `sunrise-items` (`items.rs`) | 23.1 | 19.0 | 127.5 | 83.8 |
 | Crates recompiled by those four edits | 9, 2, 1, 3 | the same | the same | the same |
 
-Crates recompiled: an edit in `horizon-world` recompiles `horizon-world` and the eight crates above it
-(`horizon-items`, `horizon-protocol`, `horizon-command`, `horizon-client-core`, `horizon-client-input`,
-`horizon-server-files`, `horizon-client-render` and `horizon-client`); one in `horizon-items` recompiles it,
-`horizon-client-render` and `horizon-client`; one in `horizon-client-render` recompiles it and `horizon-client`;
-one in `game.rs` only `horizon-client`.
+Crates recompiled: an edit in `sunrise-world` recompiles `sunrise-world` and the eight crates above it
+(`sunrise-items`, `sunrise-protocol`, `sunrise-command`, `sunrise-client-core`, `sunrise-client-input`,
+`sunrise-server-files`, `sunrise-client-render` and `sunrise-client`); one in `sunrise-items` recompiles it,
+`sunrise-client-render` and `sunrise-client`; one in `sunrise-client-render` recompiles it and `sunrise-client`;
+one in `game.rs` only `sunrise-client`.
 
 What the cold build's timings page shows (`dev`, Windows):
 
 - 361 units. The critical path starts with `proc-macro2`, `quote` and `syn`, goes through the `windows` crates
-  (`windows` itself 20 s), `wgpu-hal` (7 s), `wgpu-core` (7 s) and `horizon-client-render` (14 s), and ends with
-  `horizon-client` the library (21 s, from second 50 to 72) and then `horizon-client` the binary (35 s, from 72
-  to 107). Beside the library only `horizon-client-render` runs, for its last 4 s; beside the binary nothing runs
-  but `horizon-ctl` for 3 s. A third of the build is one rustc on one crate.
-- The crates that cost most compiler time added up: `horizon-client` 60 s, `windows` 35 s, `horizon-world` 27 s,
-  `naga` 17 s, `windows-sys` 15 s, `ash` 15 s, `horizon-client-render` 14 s.
-- In `fast`, `horizon-client` costs 160 s added up, `horizon-world` 67 s, `windows` 57 s, `naga` 54 s,
-  `horizon-client-render` 34 s. The critical path is nearly the same chain, longer: `windows` 33 s, `wgpu-hal` 31 s,
-  `wgpu-core` 27 s, `horizon-client-render` 34 s, the library 43 s, the binary 114 s.
+  (`windows` itself 20 s), `wgpu-hal` (7 s), `wgpu-core` (7 s) and `sunrise-client-render` (14 s), and ends with
+  `sunrise-client` the library (21 s, from second 50 to 72) and then `sunrise-client` the binary (35 s, from 72
+  to 107). Beside the library only `sunrise-client-render` runs, for its last 4 s; beside the binary nothing runs
+  but `sunrise-ctl` for 3 s. A third of the build is one rustc on one crate.
+- The crates that cost most compiler time added up: `sunrise-client` 60 s, `windows` 35 s, `sunrise-world` 27 s,
+  `naga` 17 s, `windows-sys` 15 s, `ash` 15 s, `sunrise-client-render` 14 s.
+- In `fast`, `sunrise-client` costs 160 s added up, `sunrise-world` 67 s, `windows` 57 s, `naga` 54 s,
+  `sunrise-client-render` 34 s. The critical path is nearly the same chain, longer: `windows` 33 s, `wgpu-hal` 31 s,
+  `wgpu-core` 27 s, `sunrise-client-render` 34 s, the library 43 s, the binary 114 s.
 
 Which edit is used changes the incremental numbers (`dev`, Windows, 2 runs each, 3 for `middle`; in `items.rs`
 `middle` is the `top` edit, see above):
 
-| Edit | `horizon-world` | `horizon-client-render` | `horizon-client` | `horizon-items` |
+| Edit | `sunrise-world` | `sunrise-client-render` | `sunrise-client` | `sunrise-items` |
 |---|---|---|---|---|
 | `touch` (no change to the bytes) | 19.2 | 14.6 | 8.7 | 14.9 |
 | `append` (comment on the last line) | 19.2 | 14.9 | 9.0 | 15.1 |

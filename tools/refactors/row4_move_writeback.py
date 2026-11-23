@@ -3,7 +3,7 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[2]
-source = root / "crates/horizon-client/src/game/modding/api_values.rs"
+source = root / "crates/sunrise-client/src/game/modding/api_values.rs"
 destination = source.parent / "api_values/block_entity_writeback.rs"
 text = source.read_text()
 start = text.index("#[derive(Debug, PartialEq, Eq)]\nenum BlockEntitySnapshotError")

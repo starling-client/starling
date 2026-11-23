@@ -40,10 +40,10 @@ def main():
     inputs.write_text(''.join(label + '\t' + item + ('[' + arg + ']' if arg else '') + '\t'
                              + f'{{id:"{item}",count:1,components:{patch}}}\n'
                              for label, item, arg, patch in cases()), encoding='utf-8')
-    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaStoredEnchantmentPatchOracle.java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaStoredEnchantmentPatchOracle.java'
     sources = [Path(__file__), source, source.parent / 'ParityData.java', inputs, lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-items/src/item_data.rs', lab.ROOT / 'crates/horizon-items/src/item_nbt.rs',
-               lab.ROOT / 'crates/horizon-items/examples/stored_enchantment_patch_probe.rs']
+               lab.ROOT / 'crates/sunrise-items/src/item_data.rs', lab.ROOT / 'crates/sunrise-items/src/item_nbt.rs',
+               lab.ROOT / 'crates/sunrise-items/examples/stored_enchantment_patch_probe.rs']
     hashes = base.source_hashes(sources)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
@@ -60,9 +60,9 @@ def main():
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    with tempfile.TemporaryDirectory(prefix='horizon-stored-enchantments-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='sunrise-stored-enchantments-') as tmp:
         scratch = Path(tmp)
-        homes = {key: scratch / key for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
+        homes = {key: scratch / key for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
         env = lab.game_env(os.environ, **homes, CARGO_BUILD_JOBS='2')
         run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', cp,
              '-d', classes, source, source.parent / 'ParityData.java'], 'javac', cwd=scratch, env=env)
@@ -70,9 +70,9 @@ def main():
         expected.unlink(missing_ok=True)
         observed.unlink(missing_ok=True)
         run(['java', '-Xmx512M', '-Djava.awt.headless=true', '-Duser.home=' + tmp, '-cp',
-             str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaStoredEnchantmentPatchOracle',
+             str(classes) + os.pathsep + cp, 'dev.sunriselab.parity.VanillaStoredEnchantmentPatchOracle',
              inputs, expected], 'java', cwd=scratch, env=env)
-        compiled = run(['cargo', 'build', '--locked', '-p', 'horizon-items', '--example',
+        compiled = run(['cargo', 'build', '--locked', '-p', 'sunrise-items', '--example',
                         'stored_enchantment_patch_probe', '--message-format=json'], 'compile', cwd=lab.ROOT, env=env)
         binaries = []
         for line in compiled.read_text(encoding='utf-8').splitlines():

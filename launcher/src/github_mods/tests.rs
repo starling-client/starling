@@ -76,14 +76,14 @@ fn asset(name: &str, digest: Option<&str>) -> Value {
 }
 
 #[test]
-fn a_repository_resolves_to_its_latest_releases_hmod_and_commit() {
+fn a_repository_resolves_to_its_latest_releases_smod_and_commit() {
     let digest = format!("sha256:{}", "AB".repeat(32));
     let api = recorded(vec![
         (
             "repos/acme/zoom/releases/latest",
             release(
                 "v1",
-                json!([asset("zoom.zip", None), asset("zoom-1.hmod", Some(&digest))]),
+                json!([asset("zoom.zip", None), asset("zoom-1.smod", Some(&digest))]),
             ),
         ),
         ("repos/acme/zoom/commits/v1", json!({ "sha": SHA })),
@@ -94,12 +94,12 @@ fn a_repository_resolves_to_its_latest_releases_hmod_and_commit() {
         (Some("v1"), SHA)
     );
     let file = found.asset.unwrap();
-    assert_eq!(file.name, "zoom-1.hmod");
+    assert_eq!(file.name, "zoom-1.smod");
     assert_eq!(file.sha256, Some("ab".repeat(32)));
 }
 
 #[test]
-fn a_release_with_no_hmod_falls_back_to_its_commit() {
+fn a_release_with_no_smod_falls_back_to_its_commit() {
     let api = recorded(vec![
         (
             "repos/acme/zoom/releases/latest",
@@ -114,7 +114,7 @@ fn a_release_with_no_hmod_falls_back_to_its_commit() {
 
 #[test]
 fn an_asset_from_another_host_is_ignored() {
-    let evil = json!({ "name": "x.hmod", "browser_download_url": "https://evil.example/x.hmod" });
+    let evil = json!({ "name": "x.smod", "browser_download_url": "https://evil.example/x.smod" });
     let api = recorded(vec![
         (
             "repos/acme/zoom/releases/latest",
@@ -192,11 +192,11 @@ fn write(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
 }
 
-fn project(root: &Path, id: &str, horizon: &str) {
+fn project(root: &Path, id: &str, sunrise: &str) {
     write(
-        &root.join("horizon-mod.toml"),
+        &root.join("sunrise-mod.toml"),
         &format!(
-            "id='{id}'\nname='{id}'\nversion='0.1.0'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nhorizon='{horizon}'\nmixins='{SHA2}'\n"
+            "id='{id}'\nname='{id}'\nversion='0.1.0'\napi='0.2'\ncapabilities=['registries']\n[native]\ngame='26.3'\nsunrise='{sunrise}'\nmixins='{SHA2}'\n"
         ),
     );
     write(
@@ -215,7 +215,7 @@ fn mod_folders_are_found_wherever_they_are_and_not_searched_inside() {
     project(&root.join(".git/x"), "hidden", SHA);
     // Stop at the mod root, not arbitrary nested crates inside its source.
     write(
-        &root.join("zoom/src/nested/horizon-mod.toml"),
+        &root.join("zoom/src/nested/sunrise-mod.toml"),
         "not a package",
     );
     let ids: Vec<String> = find_mods(&root)
@@ -247,7 +247,7 @@ fn a_mod_folder_packs_into_a_bundle_the_registry_checks_accept() {
         ("zoom", "0.1.0")
     );
     assert_eq!(packed.sha256, sha256(&bytes));
-    let read = horizon_mod_package::index::native::Bundle::read(&packed.file).unwrap();
+    let read = sunrise_mod_package::index::native::Bundle::read(&packed.file).unwrap();
     for shipped in [
         "src/zoom.rs",
         "data/zoom/a.json",
@@ -262,7 +262,7 @@ fn a_mod_folder_packs_into_a_bundle_the_registry_checks_accept() {
 }
 
 #[test]
-fn a_mod_with_no_exact_horizon_commit_is_refused_at_read_boundary() {
+fn a_mod_with_no_exact_sunrise_commit_is_refused_at_read_boundary() {
     let root = tree("unpinned");
     project(&root, "zoom", "main");
     let err = find_mods(&root).unwrap_err();
@@ -271,19 +271,19 @@ fn a_mod_with_no_exact_horizon_commit_is_refused_at_read_boundary() {
 }
 
 #[test]
-fn a_flat_hmod_keeps_its_pins_and_ships_only_selected_files() {
+fn a_flat_smod_keeps_its_pins_and_ships_only_selected_files() {
     let root = tree("unpacked");
     project(&root, "zoom", SHA);
     write(&root.join("assets/zoom/lang/en_us.json"), "{}");
     let bundle = &find_mods(&root).unwrap()[0];
     assert_eq!(bundle.manifest.native.as_ref().unwrap().mixins, SHA2);
     let packed = checked(&pack(bundle).unwrap(), &tree("unpacked-out")).unwrap();
-    let read = horizon_mod_package::index::native::Bundle::read(&packed.file).unwrap();
+    let read = sunrise_mod_package::index::native::Bundle::read(&packed.file).unwrap();
     assert_eq!(read.manifest.id, "zoom");
     assert!(read.files.contains_key("assets/zoom/lang/en_us.json"));
     let native = read.manifest.native.unwrap();
     assert_eq!(
-        (native.horizon.as_str(), native.mixins.as_str()),
+        (native.sunrise.as_str(), native.mixins.as_str()),
         (SHA, SHA2)
     );
     write(&root.join("assets/minecraft/lang/en_us.json"), "{}");
@@ -350,7 +350,7 @@ fn installing_records_the_origin_and_updates_follow_releases_or_the_head() {
     // A release's mod follows the latest release.
     let release = Origin {
         tag: Some("v1".into()),
-        asset: Some("zoom.hmod".into()),
+        asset: Some("zoom.smod".into()),
         ..origin.clone()
     };
     assert_eq!(release.label(), "acme/zoom @ v1");
@@ -368,7 +368,7 @@ fn installing_records_the_origin_and_updates_follow_releases_or_the_head() {
         }
     ));
     // A file that isn't from GitHub is never replaced.
-    write(&home.join(INSTALLED).join("keys.hmod"), "x");
+    write(&home.join(INSTALLED).join("keys.smod"), "x");
     let other = Packed {
         id: "keys".into(),
         ..packed("keys")
@@ -378,7 +378,7 @@ fn installing_records_the_origin_and_updates_follow_releases_or_the_head() {
         .contains("not from GitHub"));
     assert!(remove(&home, "zoom").unwrap());
     assert!(!remove(&home, "zoom").unwrap());
-    assert!(!home.join(INSTALLED).join("zoom.hmod").exists());
+    assert!(!home.join(INSTALLED).join("zoom.smod").exists());
     assert!(!java::is_enabled(&home, "zoom"));
     let _ = fs::remove_dir_all(home);
     let _ = fs::remove_dir_all(source);

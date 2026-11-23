@@ -1,8 +1,8 @@
 //! Compiler-driven discovery uses an isolated, per-pin source and metadata cache.
 use super::{api, dependencies, internals, rust_toolchain};
 use crate::i18n::trf;
-use horizon_mod_package::build_data;
-use horizon_mod_package::internals::{self as catalog, ListedInternal};
+use sunrise_mod_package::build_data;
+use sunrise_mod_package::internals::{self as catalog, ListedInternal};
 use serde::Deserialize;
 use std::{
     collections::BTreeSet,
@@ -53,7 +53,7 @@ fn discover_catalog(folder: &Path, game: &Path) -> Result<Vec<ListedInternal>, E
     let projects = [api::Project::read(&bundle).map_err(|e| e.to_string())?];
     let declared = [dependencies::from_manifest(
         &bundle.manifest.dependencies,
-        horizon_mod_package::manifest::Side::Both,
+        sunrise_mod_package::manifest::Side::Both,
     )];
     let inputs = [dependencies::Mod {
         id: &bundle.manifest.id,
@@ -82,7 +82,7 @@ fn discover_catalog(folder: &Path, game: &Path) -> Result<Vec<ListedInternal>, E
             "RUSTC_WRAPPER",
             std::env::current_exe().map_err(|e| e.to_string())?,
         )
-        .env("HORIZON_INTERNALS_CHECK_MOD", &mod_dir)
+        .env("SUNRISE_INTERNALS_CHECK_MOD", &mod_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
@@ -182,11 +182,11 @@ fn catalog_for_mod_with(
     let native = bundle.native();
     let cache = if bundle.needs_mixins() {
         cache_root
-            .join(&native.horizon)
+            .join(&native.sunrise)
             .join("modules")
             .join(&bundle.manifest.id)
     } else {
-        cache_root.join(&native.horizon)
+        cache_root.join(&native.sunrise)
     };
     let game = cache.join(if bundle.needs_mixins() {
         "module-game"
@@ -196,8 +196,8 @@ fn catalog_for_mod_with(
     if !bundle.needs_mixins() && game.join(".discovery-ready").is_file() {
         return Ok(game);
     }
-    let source = source(&native.horizon).map_err(|reason| Error::SourceUnavailable {
-        revision: native.horizon.clone(),
+    let source = source(&native.sunrise).map_err(|reason| Error::SourceUnavailable {
+        revision: native.sunrise.clone(),
         reason,
     })?;
     let fresh = cache.join("game.new");
@@ -214,13 +214,13 @@ fn catalog_for_mod_with(
     } else {
         super::sync(&source, &fresh)?;
     }
-    horizon_platform::mod_build::api_gen::staging::stage(
+    sunrise_platform::mod_build::api_gen::staging::stage(
         &fresh,
         &fresh.join("points.json"),
         &fresh.join(internals::INTERNALS),
-        horizon_platform::mod_build::api_gen::staging::Mode::Discovery,
-        &horizon_platform::mod_build::api_gen::staging::Build {
-            commit: native.horizon.clone(),
+        sunrise_platform::mod_build::api_gen::staging::Mode::Discovery,
+        &sunrise_platform::mod_build::api_gen::staging::Build {
+            commit: native.sunrise.clone(),
         },
     )?;
     fs::write(fresh.join(".discovery-ready"), "").map_err(|e| e.to_string())?;
@@ -232,7 +232,7 @@ fn catalog_for_mod_with(
 }
 
 // The pinned game never changes in this cache. Keep Cargo.lock after the first check:
-// horizon-world watches it, so restoring the pristine lock would rebuild the entire game
+// sunrise-world watches it, so restoring the pristine lock would rebuild the entire game
 // every time. Reset only the workspace membership and the generated mod source copies.
 // The first copy is published by a rename, so an interrupted copy is never taken as warm.
 fn prepare_stage(game: &Path, stage: &Path) -> Result<(), String> {
@@ -259,7 +259,7 @@ fn prepare_stage(game: &Path, stage: &Path) -> Result<(), String> {
 /// Force the lint for the selected mod, including macro expansions and local allow/deny
 /// attributes, without enabling warnings in the game's own crates or other dependencies.
 pub(crate) fn rustc_wrapper() -> Option<i32> {
-    let selected = std::env::var_os("HORIZON_INTERNALS_CHECK_MOD")?;
+    let selected = std::env::var_os("SUNRISE_INTERNALS_CHECK_MOD")?;
     let mut args = std::env::args_os().skip(1);
     let compiler = args.next()?;
     if Some(&compiler) != std::env::var_os("RUSTC").as_ref() {
@@ -354,7 +354,7 @@ fn parse(line: &str, mod_dir: &Path, stage: &Path) -> Option<Message> {
     {
         return None;
     }
-    let (_, note) = diagnostic.message.rsplit_once("horizon-internal:")?;
+    let (_, note) = diagnostic.message.rsplit_once("sunrise-internal:")?;
     let (kind, path) = note.split_once(':')?;
     Some(Message::Used(kind.into(), path.into()))
 }
@@ -427,7 +427,7 @@ mod tests {
         let stage = Path::new("/cache/stage");
         let own = stage.join("native-api/example");
         let mut event = json!({"reason":"compiler-message", "manifest_path":own.join("Cargo.toml"), "message": {
-            "level":"warning", "message":"use of deprecated method: horizon-internal:method:horizon_client::game::Thing::method",
+            "level":"warning", "message":"use of deprecated method: sunrise-internal:method:sunrise_client::game::Thing::method",
             "code":{"code":"deprecated"}, "spans":[{"file_name":"native-api/example/src/lib.rs"}], "rendered":null
         }});
         assert!(

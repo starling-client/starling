@@ -73,15 +73,15 @@ class Moved(unittest.TestCase):
     def test_a_mods_fluid_goes_with_no_fluid(self):
         said = adapt.code("let b = match f.fluid {\n    Fluid::None => 0,\n    Fluid::Water => 1,\n    Fluid::Lava => 2,\n};")
         self.assertIn("Fluid::None | Fluid::Modded => 0,", said)
-        said = adapt.code("match f.fluid { horizon_client::blocks::Fluid::None => return, _ => {} }")
-        self.assertIn("horizon_client::blocks::Fluid::None | horizon_client::blocks::Fluid::Modded =>", said)
+        said = adapt.code("match f.fluid { sunrise_client::blocks::Fluid::None => return, _ => {} }")
+        self.assertIn("sunrise_client::blocks::Fluid::None | sunrise_client::blocks::Fluid::Modded =>", said)
         # A mod's own `Fluid`, or code that already names a mod's fluid, stays.
         own = "enum Fluid { None, Oil }\nmatch x { Fluid::None => 0, Fluid::Oil => 1 }"
         self.assertEqual(adapt.code(own), own)
 
     def test_old_menu_calls_go_to_the_old_helpers(self):
-        said = adapt.code("game.menu_click(Some(i), 0, horizon_client::menu::Input::Pickup);")
-        self.assertEqual(said, "game.menu_click_old(Some(i), 0, horizon_client::menu::Input::Pickup);")
+        said = adapt.code("game.menu_click(Some(i), 0, sunrise_client::menu::Input::Pickup);")
+        self.assertEqual(said, "game.menu_click_old(Some(i), 0, sunrise_client::menu::Input::Pickup);")
         said = adapt.code(".map_while(|s| Game::menu_slot(&menu, s))")
         self.assertEqual(said, ".map_while(|s| Game::menu_slot_old(&menu, s))")
         line = "game.menu_click(menu, &[click])"
@@ -98,8 +98,8 @@ class Moved(unittest.TestCase):
         self.assertEqual(said, "let names = &game.pack.names;")
 
     def test_the_equipment_slot_is_cores(self):
-        said = adapt.code("m.item_by_slot(horizon_world::player_inventory::EquipmentSlot::Chest)")
-        self.assertEqual(said, "m.item_by_slot(horizon_core::equipment_slot::EquipmentSlot::Chest)")
+        said = adapt.code("m.item_by_slot(sunrise_world::player_inventory::EquipmentSlot::Chest)")
+        self.assertEqual(said, "m.item_by_slot(sunrise_core::equipment_slot::EquipmentSlot::Chest)")
 
 
 class Gear(unittest.TestCase):
@@ -107,11 +107,11 @@ class Gear(unittest.TestCase):
         said = adapt.code("hands([m.extra.main_hand.as_deref(), m.extra.off_hand.as_deref()], at)")
         self.assertEqual(
             said,
-            "hands([m.extra.equipment.get(horizon_items::equipment::MAINHAND).map(|s| &*s.item).as_deref(),"
-            " m.extra.equipment.get(horizon_items::equipment::OFFHAND).map(|s| &*s.item).as_deref()], at)",
+            "hands([m.extra.equipment.get(sunrise_items::equipment::MAINHAND).map(|s| &*s.item).as_deref(),"
+            " m.extra.equipment.get(sunrise_items::equipment::OFFHAND).map(|s| &*s.item).as_deref()], at)",
         )
         said = adapt.code("let stack = m.extra.armor[1].as_ref();")
-        self.assertEqual(said, "let stack = m.extra.equipment[horizon_items::equipment::ARMOR[1]].as_ref();")
+        self.assertEqual(said, "let stack = m.extra.equipment[sunrise_items::equipment::ARMOR[1]].as_ref();")
         # Writes, and the stack of the held item, stay for the compiler to judge.
         for line in ("m.extra.head = None;", "m.extra.main_hand_stack.clone()"):
             self.assertEqual(adapt.code(line), line)
@@ -121,7 +121,7 @@ class Gear(unittest.TestCase):
         self.assertEqual(
             said,
             "(m.extra.stuck.arrows, m.extra.stuck.stingers, m.extra.saddled()"
-            " || m.extra.equipment[horizon_items::equipment::SADDLE].is_some())",
+            " || m.extra.equipment[sunrise_items::equipment::SADDLE].is_some())",
         )
         self.assertEqual(adapt.code("m.extra.saddled()"), "m.extra.saddled()")
 
@@ -143,11 +143,11 @@ class Guests(unittest.TestCase):
 class Items(unittest.TestCase):
     def test_a_custom_name_is_nbt_text(self):
         said = adapt.code("stack.data_mut().custom_name = Some(WAND_NAME.to_owned());")
-        self.assertEqual(said, "stack.data_mut().custom_name = Some(horizon_core::nbt::Tag::String(WAND_NAME.into()));")
+        self.assertEqual(said, "stack.data_mut().custom_name = Some(sunrise_core::nbt::Tag::String(WAND_NAME.into()));")
         said = adapt.code("stack.data().and_then(|data| data.custom_name.as_deref())\n    == Some(WAND_NAME)")
         self.assertEqual(
             said,
-            "stack.data().and_then(|data| data.custom_name.as_ref()) == Some(&horizon_core::nbt::Tag::String(WAND_NAME.into()))",
+            "stack.data().and_then(|data| data.custom_name.as_ref()) == Some(&sunrise_core::nbt::Tag::String(WAND_NAME.into()))",
         )
 
     def test_a_stack_given_is_added_to_the_inventory(self):
@@ -159,11 +159,11 @@ class Items(unittest.TestCase):
 class Hud(unittest.TestCase):
     def test_a_system_toast_goes_through_the_hook(self):
         said = adapt.code(
-            "let new = horizon_client::toasts::SystemToast::new(title, Some(message));\n"
+            "let new = sunrise_client::toasts::SystemToast::new(title, Some(message));\n"
             'if game.toast_allowed("system", "periodic_notification") {\n'
             "    game.server_packs.load_fail = Some(new);\n}"
         )
-        self.assertIn("SystemToast::new(horizon_client::text::Text::literal(title), Some(horizon_client::text::Text::literal(message)))", said)
+        self.assertIn("SystemToast::new(sunrise_client::text::Text::literal(title), Some(sunrise_client::text::Text::literal(message)))", said)
         self.assertIn("if let Some(new) = game.add_system_toast(new) {", said)
 
     def test_the_status_rows_height(self):
@@ -188,8 +188,8 @@ class World(unittest.TestCase):
         self.assertEqual(said, "let (slot, old) = game.maps.slots.claim_old(id);")
 
     def test_layers_as_a_function_take_render_withs_parameters(self):
-        said = adapt.code("let draw = if v { horizon_client::mobs::render::render_with } else { horizon_client::mobs::render::render_layers };")
-        self.assertIn("else { horizon_client::starling_mod_api::render_layers_old }", said)
+        said = adapt.code("let draw = if v { sunrise_client::mobs::render::render_with } else { sunrise_client::mobs::render::render_layers };")
+        self.assertIn("else { sunrise_client::starling_mod_api::render_layers_old }", said)
 
     def test_a_tooltips_display_comes_from_the_games_stack(self):
         said = adapt.code("!crate::item_tooltip::TooltipDisplay::for_stack(stack).shows(\"minecraft:container\")")
@@ -219,7 +219,7 @@ class Panel(unittest.TestCase):
         said = adapt.code(self.OLD)
         self.assertIn("fn view(v: &m::View) -> NativeRecipeViewOld {\n    NativeRecipeViewOld {", said)
         self.assertIn("game.native_panel_recipes_old(m::ID", said)
-        self.assertIn("stack: stack(&horizon_client::starling_mod_api::native_stack_old(s))", said)
+        self.assertIn("stack: stack(&sunrise_client::starling_mod_api::native_stack_old(s))", said)
 
     def test_a_panel_with_fluids_is_the_new_one(self):
         new = self.OLD.replace("note: v.note.clone(),", "note: v.note.clone(),\n        fluid_inputs: Vec::new(),")
@@ -235,20 +235,20 @@ class OldShapes(unittest.TestCase):
         line = "let w = game.native_text_width(batch, f(a, b));"
         self.assertEqual(adapt.code(line), line)
 
-    def test_the_mods_crate_is_horizon_mod_package(self):
-        said = adapt.code("if horizon_mods::evanders_config::enabled() {}")
-        self.assertEqual(said, "if horizon_mod_package::evanders_config::enabled() {}")
+    def test_the_mods_crate_is_sunrise_mod_package(self):
+        said = adapt.code("if sunrise_mods::evanders_config::enabled() {}")
+        self.assertEqual(said, "if sunrise_mod_package::evanders_config::enabled() {}")
 
-    def test_nbt_is_horizon_cores(self):
-        self.assertEqual(adapt.code("use horizon_world::nbt::Tag;"), "use horizon_core::nbt::Tag;")
+    def test_nbt_is_sunrise_cores(self):
+        self.assertEqual(adapt.code("use sunrise_world::nbt::Tag;"), "use sunrise_core::nbt::Tag;")
 
 
 class OldApi(unittest.TestCase):
     def test_the_old_mod_api_module_is_starlings(self):
-        said = adapt.code("use horizon_client::mod_api::NativeScreenView;\nuse crate::mod_api;\n")
+        said = adapt.code("use sunrise_client::mod_api::NativeScreenView;\nuse crate::mod_api;\n")
         self.assertEqual(
             said,
-            "use horizon_client::starling_mod_api::NativeScreenView;\n"
+            "use sunrise_client::starling_mod_api::NativeScreenView;\n"
             "use crate::starling_mod_api as mod_api;\n",
         )
 
@@ -310,14 +310,14 @@ class Index(unittest.TestCase):
 
 def tree():
     found, _ = adapt.module_items(GAME)
-    return {"horizon_client::game::native_hooks::base": found, "horizon_client::game::native_hooks": adapt.Module()}
+    return {"sunrise_client::game::native_hooks::base": found, "sunrise_client::game::native_hooks": adapt.Module()}
 
 
 class Relocate(unittest.TestCase):
     def test_a_moved_method_is_found_by_its_type_and_name(self):
         self.assertEqual(
-            adapt.relocate("horizon_client::game::native_hooks::Game<'_>::native_frame", tree()),
-            "horizon_client::game::native_hooks::base::Game<'_>::native_frame",
+            adapt.relocate("sunrise_client::game::native_hooks::Game<'_>::native_frame", tree()),
+            "sunrise_client::game::native_hooks::base::Game<'_>::native_frame",
         )
 
     def test_a_trait_method_moves_with_its_impl_never_to_a_free_function(self):
@@ -329,24 +329,24 @@ class Relocate(unittest.TestCase):
         )
         touch, _ = adapt.module_items("fn window_event(step: Pointer) -> WindowEvent {\n}\n")
         modules = {
-            "horizon_client::game": adapt.Module(),
-            "horizon_client::game::window_handler": handler,
-            "horizon_client_lib::touch": touch,
+            "sunrise_client::game": adapt.Module(),
+            "sunrise_client::game::window_handler": handler,
+            "sunrise_client_lib::touch": touch,
         }
         self.assertEqual(
-            adapt.relocate("horizon_client::game::<Game<'_> as ApplicationHandler>::window_event", modules),
-            "horizon_client::game::window_handler::<Game<'_> as ApplicationHandler>::window_event",
+            adapt.relocate("sunrise_client::game::<Game<'_> as ApplicationHandler>::window_event", modules),
+            "sunrise_client::game::window_handler::<Game<'_> as ApplicationHandler>::window_event",
         )
 
     def test_what_is_nowhere_stays_as_it_was(self):
-        target = "horizon_client::game::native_hooks::Game<'_>::native_gone"
+        target = "sunrise_client::game::native_hooks::Game<'_>::native_gone"
         self.assertEqual(adapt.relocate(target, tree()), target)
 
 
 INJECTION = """[[injection]]
 id = "hud"
 kind = "HEAD"
-target = "horizon_client::game::native_hooks::base::Game<'_>::native_gui_layer_post"
+target = "sunrise_client::game::native_hooks::base::Game<'_>::native_gui_layer_post"
 helper = "hud.rs"
 bindings = [
   { name = "batch", ty = "&mut HudBatch", value = "&mut *batch" },
@@ -361,13 +361,13 @@ class Rebind(unittest.TestCase):
 
     def test_old_parameters_bind_to_the_old_function_starling_keeps(self):
         old = """[[injection]]
-target = "horizon_client::game::native_hooks::base::Game<'_>::native_use_item_on"
+target = "sunrise_client::game::native_hooks::base::Game<'_>::native_use_item_on"
 bindings = [
   { name = "pos", ty = "[i32; 3]", value = "pos" },
 ]
 """
         said = adapt.rebind(old, tree(), {})
-        self.assertIn('target = "horizon_client::game::native_hooks::base::Game<\'_>::native_use_item_on_old"', said)
+        self.assertIn('target = "sunrise_client::game::native_hooks::base::Game<\'_>::native_use_item_on_old"', said)
 
     def test_a_game_to_change_binds_to_the_old_function_where_the_new_one_only_reads_it(self):
         mutating = INJECTION.replace(
@@ -388,15 +388,15 @@ class Fold(unittest.TestCase):
         manifest = """[[injection]]
 id = "shader"
 kind = "HEAD"
-target = "horizon_client_render::gfx::native_material::module"
+target = "sunrise_client_render::gfx::native_material::module"
 helper = "shader.rs"
 bindings = [
   { name = "vertex", ty = "bool", value = "vertex" },
-  { name = "api", ty = "horizon_shader_api::Api", value = "api" },
+  { name = "api", ty = "sunrise_shader_api::Api", value = "api" },
 ]
 """
         helper = (
-            "fn shader(\n    vertex: bool,\n    api: horizon_shader_api::Api,\n) {\n"
+            "fn shader(\n    vertex: bool,\n    api: sunrise_shader_api::Api,\n) {\n"
             "    let text = shader_source(source, tags, materials, (vertex, displaced), api);\n}\n"
         )
         with tempfile.TemporaryDirectory() as root:
@@ -404,11 +404,11 @@ bindings = [
             (mod_dir / "shader.rs").write_text(helper)
             said = adapt.fold(manifest, mod_dir)
             self.assertIn(
-                '{ name = "api", ty = "(horizon_shader_api::Api, bool)", value = "line" }', said
+                '{ name = "api", ty = "(sunrise_shader_api::Api, bool)", value = "line" }', said
             )
             self.assertIn('{ name = "vertex", ty = "bool", value = "vertex" }', said)
             code = (mod_dir / "shader.rs").read_text()
-            self.assertIn("api: (horizon_shader_api::Api, bool),", code)
+            self.assertIn("api: (sunrise_shader_api::Api, bool),", code)
             # The call hands the tuple on as it is.
             self.assertIn("(vertex, displaced), api);", code)
 
@@ -422,7 +422,7 @@ class Includes(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as root:
-            folder = Path(root) / "crates/horizon-client/src/game/native_hooks"
+            folder = Path(root) / "crates/sunrise-client/src/game/native_hooks"
             folder.mkdir(parents=True)
             (folder / "mod.rs").write_text('mod fire;\ninclude!(concat!(env!("OUT_DIR"), "/x.rs"));\ninclude!("shared.rs");\nfn after() {}\n')
             (folder / "shared.rs").write_text("fn shared() {}\n")
@@ -431,7 +431,7 @@ class Includes(unittest.TestCase):
                 (folder / "mod.rs").read_text(),
                 'mod fire;\ninclude!(concat!(env!("OUT_DIR"), "/x.rs"));\nfn shared() {}\nfn after() {}\n',
             )
-            # Horizon's generator would read its items twice.
+            # Sunrise's generator would read its items twice.
             self.assertFalse((folder / "shared.rs").exists())
 
 

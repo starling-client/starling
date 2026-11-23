@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Wind charges meeting a wither, on a dedicated server, against vanilla's, seen by a vanilla client.
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat world
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat world
 vanilla generated first, with Alice an operator in survival. Three summoned withers (NoAI, so none heals, moves or
 shoots) each take one charge from above:
 

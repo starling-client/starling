@@ -3,7 +3,7 @@
 Each service is its own workspace with its own Cargo.lock. When one of its crates gains a path dependency on
 another crate of the repository, the image must copy that crate too, and Railway must rebuild when it changes:
 otherwise the next deploy fails (`no matching package named ...`) while the old deployment keeps running, and nobody
-sees it (2026-11-09: both services failed after horizon-addresses and horizon-release-sign joined them).
+sees it (2026-11-09: both services failed after sunrise-addresses and sunrise-release-sign joined them).
 """
 
 import json
@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ["horizon-telemetry-server", "horizon-mod-registry"]
+SERVICES = ["sunrise-telemetry-server", "sunrise-mod-registry"]
 
 
 def path_packages(lock: Path) -> set[str]:
@@ -52,10 +52,10 @@ class ServiceImageTests(unittest.TestCase):
     def test_the_checks_read_real_dockerfile_lines(self):
         # A COPY of a crate is recognised, a COPY of anything else is not, and a lockfile's registry packages
         # are not path packages.
-        sample = ROOT / "crates" / "horizon-mod-registry" / "Dockerfile"
-        self.assertIn("horizon-mod-registry", copied_crates(sample))
+        sample = ROOT / "crates" / "sunrise-mod-registry" / "Dockerfile"
+        self.assertIn("sunrise-mod-registry", copied_crates(sample))
         self.assertNotIn("Cargo.toml", copied_crates(sample))
-        self.assertNotIn("serde", path_packages(ROOT / "crates" / "horizon-mod-registry" / "Cargo.lock"))
+        self.assertNotIn("serde", path_packages(ROOT / "crates" / "sunrise-mod-registry" / "Cargo.lock"))
 
 
 if __name__ == "__main__":

@@ -19,8 +19,8 @@ Vanilla 26.3 `SectionCompiler.compile` traverses the section, collects block
 entities separately, emits fluid and model geometry into material layers, and
 sorts translucent quads. Verified with `python3 tools/rea_vanilla.py method
 net.minecraft.client.renderer.chunk.SectionCompiler compile` from
-`/workspace/horizon`; its callers are queried with the corresponding `callers`
-command. The proposed frozen plan is Horizon policy, not a vanilla hook.
+`/workspace/sunrise`; its callers are queried with the corresponding `callers`
+command. The proposed frozen plan is Sunrise policy, not a vanilla hook.
 The issue identifies only a partial NeoForge counterpart: model data and model
 quad hooks, not whole-section replacement. Public
 [model documentation](https://docs.neoforged.net/docs/resources/client/models/modelsystem/)
@@ -127,17 +127,17 @@ checks or callbacks already exist.
 
 | Route | Current file:line owner | Required design behavior |
 | --- | --- | --- |
-| Initial dispatch and worker mesh | `horizon-client-render/src/streaming.rs:2237`, `:1142`; `horizon-client-render/src/mesher.rs:1741`, `:1751` | Capture plan before dispatch; mesh immutable snapshot |
-| Block/state write, neighbours, borders | `horizon-client-render/src/world.rs:385` | Dirty all sections intersecting radius-one dependency, including vertical and diagonal borders |
-| Chunk arrival, biome and light updates | `horizon-client-render/src/streaming.rs:3455`, `:3466`, `:3476`; `:1302`, `:1341` | Invalidate dependent halo plans even if centre states did not change |
-| Unload | `horizon-client-render/src/streaming.rs:516`, `:1394`, `:1961` | Invalidate lifetime generation, cancel jobs, remove uploads; dirty surviving neighbours |
-| Resource/model replacement | `horizon-client-render/src/streaming.rs:1277`, `:1283`; `horizon-client/src/game.rs:14161` | Atomically replace WorkerContext and prepared geometry epoch; rebuild loaded sections |
-| Biome-tint refresh | `horizon-client/src/game/modding/native_biome_colors.rs:16` | Capture new colours/resolvers and remesh through resource reload |
-| Shader/renderer rebuild and pending uploads | `horizon-client/src/game.rs:14161`, `:14178` | Clear pending old output; rebuild affected plans through shared invalidation |
-| Cancelled/stale completion | `horizon-client-render/src/streaming.rs:1887` | Refuse results with mismatching token or absent column; recycle buffers |
-| Prepared geometry generation | `horizon-client-render/src/gfx/prepared_model.rs:268`, `:273` | Keep old resources leased while jobs run; refuse old-generation publication |
-| Block entities and layer emission | `horizon-client-render/src/mesher.rs:1751`; vanilla `SectionCompiler.compile` | Integrate proposed R2 skip decision here; retain separate self-draw lifecycle and translucent sorting |
-| Native/wasm tint and teardown | `horizon-client-render/src/mesher/mod_tint.rs:20`, `:110` | Extend captured data/lifetime boundary; proposed geometry adapters belong in game, not render crate |
+| Initial dispatch and worker mesh | `sunrise-client-render/src/streaming.rs:2237`, `:1142`; `sunrise-client-render/src/mesher.rs:1741`, `:1751` | Capture plan before dispatch; mesh immutable snapshot |
+| Block/state write, neighbours, borders | `sunrise-client-render/src/world.rs:385` | Dirty all sections intersecting radius-one dependency, including vertical and diagonal borders |
+| Chunk arrival, biome and light updates | `sunrise-client-render/src/streaming.rs:3455`, `:3466`, `:3476`; `:1302`, `:1341` | Invalidate dependent halo plans even if centre states did not change |
+| Unload | `sunrise-client-render/src/streaming.rs:516`, `:1394`, `:1961` | Invalidate lifetime generation, cancel jobs, remove uploads; dirty surviving neighbours |
+| Resource/model replacement | `sunrise-client-render/src/streaming.rs:1277`, `:1283`; `sunrise-client/src/game.rs:14161` | Atomically replace WorkerContext and prepared geometry epoch; rebuild loaded sections |
+| Biome-tint refresh | `sunrise-client/src/game/modding/native_biome_colors.rs:16` | Capture new colours/resolvers and remesh through resource reload |
+| Shader/renderer rebuild and pending uploads | `sunrise-client/src/game.rs:14161`, `:14178` | Clear pending old output; rebuild affected plans through shared invalidation |
+| Cancelled/stale completion | `sunrise-client-render/src/streaming.rs:1887` | Refuse results with mismatching token or absent column; recycle buffers |
+| Prepared geometry generation | `sunrise-client-render/src/gfx/prepared_model.rs:268`, `:273` | Keep old resources leased while jobs run; refuse old-generation publication |
+| Block entities and layer emission | `sunrise-client-render/src/mesher.rs:1751`; vanilla `SectionCompiler.compile` | Integrate proposed R2 skip decision here; retain separate self-draw lifecycle and translucent sorting |
+| Native/wasm tint and teardown | `sunrise-client-render/src/mesher/mod_tint.rs:20`, `:110` | Extend captured data/lifetime boundary; proposed geometry adapters belong in game, not render crate |
 
 Every job/result carries section lifetime, section revision, halo revisions,
 resource epoch, tint generation and mod generation. Publication checks all of

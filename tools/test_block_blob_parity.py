@@ -43,7 +43,7 @@ def corpus(facts, placement):
     for legacy,seed,fail,reject in itertools.product([False,True],[0,-1,0x123456789abcdef],[-1,0,5,17],[0,3]):
         placed={'feature':blob(),'placement':[{'type':'count','count':2},{'type':'in_square'}]}
         yield case(placed,mode='placed',legacy=legacy,seed=seed,fail=fail,reject=reject)
-        yield case({'type':'overlay','features':[placed,{'feature':'horizon:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
+        yield case({'type':'overlay','features':[placed,{'feature':'sunrise:moss','placement':[]}]},legacy=legacy,seed=seed,fail=fail,reject=reject)
 
 
 if __name__=='__main__':

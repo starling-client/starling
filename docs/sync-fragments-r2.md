@@ -3,7 +3,7 @@
 ## living_death_message — converted
 
 Converted with tools/convert_sync_fragment.py to the actual catalog location,
-crates/horizon-mod-vocab/src/hooks (horizon-mod-api/src/hooks does not exist).
+crates/sunrise-mod-vocab/src/hooks (sunrise-mod-api/src/hooks does not exist).
 A server collect hook edits Option<Text> through the generated ServerHost dispatcher;
 no new public value type or Wire implementation is needed. LivingDeathEvent and
 LivingDeathPostEvent describe different moments, not the owner message. The game
@@ -19,7 +19,7 @@ Existing typed LivingRef::has_line_of_sight (host/living.rs) and LevelRef::clip
 native_entity_refs.rs clips eye-to-eye within the current level or clips an
 empty-context segment. Do not add native_ aliases or a second notification.
 
-Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/horizon-mod-vocab/src/host/<area>.rs`.
+Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/sunrise-mod-vocab/src/host/<area>.rs`.
 
 ## map_colors_read
 
@@ -29,7 +29,7 @@ maps.rs native_map_read reads a resident map or its saved file without loading
 it, refusing clients and absent worlds. A second map_colors/map_meta API would
 split the existing typed read into raw-id aliases; none was added.
 
-Converter boundary: `unsupported fragment fields: ['doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/horizon-mod-vocab/src/host/<area>.rs`.
+Converter boundary: `unsupported fragment fields: ['doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/sunrise-mod-vocab/src/host/<area>.rs`.
 
 ## npc_entity_lookup
 
@@ -41,7 +41,7 @@ The immutable UUID-search helper is not represented by an equivalent typed
 query in this scaffold; it is deliberately refused rather than smuggled in as
 a notification or a raw-id compatibility alias. No new dispatcher is needed.
 
-Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/horizon-mod-vocab/src/host/<area>.rs`.
+Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/sunrise-mod-vocab/src/host/<area>.rs`.
 
 ## riding_getters
 
@@ -51,7 +51,7 @@ Upstream native_travel.rs reads actor/guest/mob mount ids and enumerates riders;
 the fork already owns resident handle queries with explicit off-level semantics.
 No hook moment, duplicate notification, native_ alias, or new type was added.
 
-Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/horizon-mod-vocab/src/host/<area>.rs`.
+Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/sunrise-mod-vocab/src/host/<area>.rs`.
 
 ## server_settings
 
@@ -63,4 +63,4 @@ configuration query exists in this scaffold. Converting that read into an event
 would invent a notification and not provide the requested query. The converter
 rejects helpers; no native_ aliases or internals access were introduced.
 
-Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/horizon-mod-vocab/src/host/<area>.rs`.
+Converter boundary: `unsupported fragment fields: ['comments', 'doc_summary', 'helpers', 'rust_summary'] or draw contexts; helpers are host methods now, written by hand in crates/sunrise-mod-vocab/src/host/<area>.rs`.

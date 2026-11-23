@@ -74,7 +74,7 @@ Use `PieceContext` to work within the chunk:
 | `entity` | Queue saved entity NBT, including its `id`, `Pos` and other fields. |
 | `block_entity` | Place block entity NBT at a position. |
 
-Entities remain in the generating chunk until it joins the world. Keep the `"horizon:finalize"`
+Entities remain in the generating chunk until it joins the world. Keep the `"sunrise:finalize"`
 byte carried by structure-template entities to request `Mob.finalizeSpawn` with the `STRUCTURE`
 reason when the game loads the entity.
 

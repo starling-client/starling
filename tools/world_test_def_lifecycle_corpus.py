@@ -16,7 +16,7 @@ After each step `/execute if loaded` reads a chunk only `/forceload` holds
 (`FORCED_ONLY`): a finished batch releases every forced chunk
 (`GameTestRunner`'s batch listener). It is not the spot's own chunk: the Java
 oracle's player isn't ticked, so its tickets stay on the 5x5 chunks around its
-spawn, while Horizon's player loads the chunks around wherever it stands, and
+spawn, while Sunrise's player loads the chunks around wherever it stands, and
 neither reaches `FORCED_ONLY`.
 
 1. a name no pack has (`h275:never`);
@@ -37,7 +37,7 @@ PACKS = {
     'h275-override': {'h275:dup': FAIL, 'minecraft:always_pass': FAIL},
 }
 Y = 100
-# In the forced area (chunk x 11), out of both players' reach: the last spot is x 104 (chunk 6) and Horizon's
+# In the forced area (chunk x 11), out of both players' reach: the last spot is x 104 (chunk 6) and Sunrise's
 # harness streams 4 chunks around its player.
 FORCED_ONLY = (184, 8)
 

@@ -16,8 +16,8 @@ import subprocess
 import sys
 
 MANIFEST = "tools/sync/game-moves.tsv"
-GAME = "crates/horizon-client/src/game.rs"
-CLIENT = "crates/horizon-client/src/"
+GAME = "crates/sunrise-client/src/game.rs"
+CLIENT = "crates/sunrise-client/src/"
 
 
 def show(ref, path):
@@ -38,7 +38,7 @@ def progress(manifest, game_rs, exists=lambda _: False):
     """Each destination of the manifest: (fork_path, functions, the ones still in game.rs, moved).
 
     A destination counts as moved once its file is there and none of its functions are left in
-    `game.rs`; `exists` answers for a path under crates/horizon-client/src/.
+    `game.rs`; `exists` answers for a path under crates/sunrise-client/src/.
     """
     out = []
     for line in manifest.splitlines():

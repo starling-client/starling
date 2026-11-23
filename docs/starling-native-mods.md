@@ -1,11 +1,11 @@
 # Native mods on Starling
 
-Horizon's native mods ([native-mods.md](native-mods.md)) are horizon-mixins bundles: Rust that hooks the game's own
+Sunrise's native mods ([native-mods.md](native-mods.md)) are horizon-mixins bundles: Rust that hooks the game's own
 functions and is compiled into the game. On a computer the launcher downloads Rust and builds the game with them. A
 phone cannot build the game (Rust and the NDK are gigabytes, and the build takes hours on a phone), so Starling's build
 service does it and the phone swaps in the result:
 
-1. **The mod.** The player opens an `.hnmod` with Starling (`import.rs`), which puts it in `horizon-native-mods/`.
+1. **The mod.** The player opens an `.hnmod` with Starling (`import.rs`), which puts it in `sunrise-native-mods/`.
 2. **Compile.** The top of the Mods page says which game runs (the APK's own, or a build with which mods, compiled
    when), what the next start runs, and whether the native mods turned on are the ones in it; when they are not, it has
    Compile and Use GitHub (slower) (`game/native_builds.rs`). After a warning, the game sends the folder's mods that
@@ -28,17 +28,17 @@ without native mods" stops using one. Nothing is installed: the APK stays the re
 
 ## The build (native_build.sh)
 
-1. horizon-mixins at Horizon's launcher's pinned commit (`MIXINS_REV`), built once into the cache.
+1. horizon-mixins at Sunrise's launcher's pinned commit (`MIXINS_REV`), built once into the cache.
 2. The source of the commit (git archive, without links), and copies of the bundles, their pins set to that commit.
-3. **One identity for the game module.** While horizon-mixins plans, horizon-android's library is an empty file (it
+3. **One identity for the game module.** While horizon-mixins plans, sunrise-android's library is an empty file (it
    refuses a module destination reached under two names, `E_TARGET_AMBIGUOUS`), and `lib.rs` loses the conditional
-   attribute that keeps it from looking at the modules under that file. The bundles' targets stay Horizon's
-   (`horizon_client::game::Game<'_>::use_item`), so Horizon's own native mods apply unchanged.
-4. **The source as horizon-mixins reads it** (`horizon-materialize`, in horizon-mod-api-gen): the game's module lists,
+   attribute that keeps it from looking at the modules under that file. The bundles' targets stay Sunrise's
+   (`sunrise_client::game::Game<'_>::use_item`), so Sunrise's own native mods apply unchanged.
+4. **The source as horizon-mixins reads it** (`sunrise-materialize`, in sunrise-mod-api-gen): the game's module lists,
    which its build script generates (`include!` of `OUT_DIR`), are written out as plain `#[path] mod` lines, as
-   Horizon's launcher does, and the hook catalog Horizon declares in Rust becomes the `native-hooks.json` named hooks
-   (`hook = "frame"`) are resolved through. The build leaves that file out: Horizon's generator refuses it.
-5. **Mods made for older hooks** (`native_mod_adapt.py`). Horizon split its native hooks by area
+   Sunrise's launcher does, and the hook catalog Sunrise declares in Rust becomes the `native-hooks.json` named hooks
+   (`hook = "frame"`) are resolved through. The build leaves that file out: Sunrise's generator refuses it.
+5. **Mods made for older hooks** (`native_mod_adapt.py`). Sunrise split its native hooks by area
    (`game/native_hooks/`), renamed many and dropped the `Native` prefix of their types; the registry is full of mods
    made for the old ones, which Starling 0.8.0 had. Both kinds apply side by side:
    - a target that moved is found by its type and name in the module tree (or a free function by its name) and the
@@ -46,14 +46,14 @@ without native mods" stops using one. Nothing is installed: the APK stays the re
      written into the file that includes them (horizon-mixins does not look into an `include!`);
    - a named hook the new catalog lacks comes from Starling 0.8.0's (`native-hooks-0.8.json`), pointed at where its
      function is now;
-   - a binding to `batch` becomes `draw`, Horizon's name in its drawing hooks, and one to parameters a hook no longer
+   - a binding to `batch` becomes `draw`, Sunrise's name in its drawing hooks, and one to parameters a hook no longer
      has goes to the old hook Starling keeps as `<name>_old`;
    - the old hooks (`native_frame`, `native_hud`, `native_key`, `native_wheel`, `native_tick`, `native_commands`,
      `native_mods`, `native_settings`, `native_destroy_block`, ...) are kept in `game/starling/native_compat.rs` and
      called where their successors are, with the old helpers (`native_on`, `native_setting`, `native_playing`, ...) on
-     the new ones; an old mod's buttons show as settings on Horizon's Options > Mods page;
+     the new ones; an old mod's buttons show as settings on Sunrise's Options > Mods page;
    - the client's old `mod_api` module, with the old `Native*` types (most are the new ones under their old names), is
-     `horizon_client::starling_mod_api`, which a mod's `horizon_client::mod_api` and `crate::mod_api` are pointed to.
+     `sunrise_client::starling_mod_api`, which a mod's `sunrise_client::mod_api` and `crate::mod_api` are pointed to.
 6. `horizon-mixins apply` into a stage, then into a build folder kept between builds: files whose bytes changed get
    the time of now, the others keep theirs, so Cargo recompiles only what the mods touched.
 7. `build_apk.py --profile fast`, as a release: the stripped library, an APK unless `NATIVE_LIBRARY_ONLY` is set, and
@@ -61,7 +61,7 @@ without native mods" stops using one. Nothing is installed: the APK stays the re
 
 ## Permissions
 
-A native mod is written for Horizon on a computer, where nothing asks before a program opens the microphone. On Android
+A native mod is written for Sunrise on a computer, where nothing asks before a program opens the microphone. On Android
 the app holds the permission and asks the player, and the mod stays as its maker wrote it: `native_build.sh` reads each
 mod's source with `native_mod_permissions.py` and writes what it needs in `build.json` (the mod's `permissions`, and
 all of them at the top). Today that is `microphone`: capturing sound through cpal (`build_input_stream`,

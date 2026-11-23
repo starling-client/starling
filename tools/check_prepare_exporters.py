@@ -24,7 +24,7 @@ def hashes(folder):
     return {str(p.relative_to(folder)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in folder.rglob('*') if p.is_file() and p.suffix != '.log'
             and not {'classes', 'client-classes'} & set(p.relative_to(folder).parts)
-            and p.name != 'horizon-resources.json'}
+            and p.name != 'sunrise-resources.json'}
 
 
 def normalize(path):
@@ -74,9 +74,9 @@ def verify(folders):
             if isinstance(node, dict):
                 return {key: clean(item) for key, item in node.items()}
             return node
-        manifests.append(clean(json.loads((folder / 'horizon-resources.json').read_text())))
+        manifests.append(clean(json.loads((folder / 'sunrise-resources.json').read_text())))
     if any(manifest != manifests[0] for manifest in manifests):
-        differences.append('horizon-resources.json')
+        differences.append('sunrise-resources.json')
     print(f'Normalized exporter noise: {noise}')
     if differences:
         raise SystemExit(f'Resources differ: {differences}')
@@ -98,7 +98,7 @@ def main():
         binary = frozen
         results = []
         times = []
-        # (name, HORIZON_PREPARE_JOBS, exporter/data-generator JVMs): with 6 jobs or more, block
+        # (name, SUNRISE_PREPARE_JOBS, exporter/data-generator JVMs): with 6 jobs or more, block
         # behaviour gets a second server JVM; below, most machines' path, it stays on the first.
         runs = [('isolated-1', None, None), ('isolated-2', None, None),
                 ('batched', '6', 6), ('batched-2-jobs', '2', 5)]
@@ -106,14 +106,14 @@ def main():
             folder = work / name
             folder.mkdir()
             shutil.copyfile(ROOT / 'research-lock.json', folder / 'research-lock.json')
-            shutil.copytree(ROOT / 'mods/horizon/src/test/java', folder / 'mods/horizon/src/test/java')
+            shutil.copytree(ROOT / 'mods/sunrise/src/test/java', folder / 'mods/sunrise/src/test/java')
             shutil.copytree(ROOT / 'exporters', folder / 'exporters')
             (folder / '.local').mkdir()
             (folder / '.local/minecraft').symlink_to((ROOT / '.local/minecraft').resolve(), target_is_directory=True)
             env = dict(os.environ)
-            env.pop('HORIZON_PREPARE_ISOLATED', None)
+            env.pop('SUNRISE_PREPARE_ISOLATED', None)
             if name.startswith('isolated'):
-                env['HORIZON_PREPARE_ISOLATED'] = '1'
+                env['SUNRISE_PREPARE_ISOLATED'] = '1'
             else:
                 # An actual runtime-only home: no javac in bin. Java resolves its own libraries.
                 java = Path(shutil.which('java')).resolve()
@@ -127,7 +127,7 @@ def main():
                 wrapper.chmod(0o755)
                 env['JAVA_HOME'] = str(runtime)
                 env['PATH'] = str(runtime / 'bin')
-                env['HORIZON_PREPARE_JOBS'] = jobs
+                env['SUNRISE_PREPARE_JOBS'] = jobs
             started = time.monotonic()
             with (work / f'{name}.log').open('w') as log:
                 subprocess.run([str(binary), '--root', str(folder)], cwd=folder, env=env,
@@ -141,13 +141,13 @@ def main():
             text = (work / f'{name}.log').read_text()
             if 'Compiling ' in text:
                 raise SystemExit(f'{name} unexpectedly needed a compiler')
-            resources = next((folder / '.local/horizon-client').iterdir())
+            resources = next((folder / '.local/sunrise-client').iterdir())
             results.append(resources)
             times.append(round(time.monotonic() - started, 2))
             print(f'{name}: {times[-1]}s, prepared', flush=True)
         verify(results)
         # Nothing changed since the last run: it starts no JVM and leaves every file as it was.
-        manifest = resources / 'horizon-resources.json'
+        manifest = resources / 'sunrise-resources.json'
         before = hashes(resources), manifest.read_bytes()
         trace.write_text('')
         with (work / 'repeat.log').open('w') as log:

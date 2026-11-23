@@ -22,21 +22,21 @@ class MaterialConditionCorpusTests(unittest.TestCase):
         self.assertTrue({'7f800000','ff800000','7fc00000'}<={op[2] for op in ops if op[0]=='input'})
 
     def test_codec_mutations_and_named_references(self):
-        definitions={"horizon:forward":'{"type":"not","invert":"horizon:leaf"}',"horizon:leaf":'{"type":"hole"}'}
+        definitions={"sunrise:forward":'{"type":"not","invert":"sunrise:leaf"}',"sunrise:leaf":'{"type":"hole"}'}
         fixtures=list(material.codec_corpus(definitions))
         self.assertEqual(len(fixtures),8)
         self.assertEqual(fixtures,list(material.codec_corpus(definitions)))
         decoded=[json.loads(s) for s in fixtures[0]['json']]
-        self.assertIn('horizon:forward',decoded)
-        self.assertIn({'type':'not','invert':'horizon:forward'},decoded)
+        self.assertIn('sunrise:forward',decoded)
+        self.assertIn({'type':'not','invert':'sunrise:forward'},decoded)
         self.assertIn({'type':'water','offset':0,'surface_depth_multiplier':21,'add_stone_depth':False},decoded)
         self.assertIn({'type':'water','offset':0,'surface_depth_multiplier':0,'add_stone_depth':None},decoded)
         self.assertTrue(any('4294967296' in s for s in fixtures[0]['json']))
         self.assertIn('{"type":"hole","type":null}',fixtures[0]['json'])
 
     def test_rule_composition_and_independent_application_positions(self):
-        fixtures=list(material.rule_corpus({"horizon:test":'{"type":"hole"}'}))
-        self.assertEqual(fixtures,list(material.rule_corpus({"horizon:test":'{"type":"hole"}'})))
+        fixtures=list(material.rule_corpus({"sunrise:test":'{"type":"hole"}'}))
+        self.assertEqual(fixtures,list(material.rule_corpus({"sunrise:test":'{"type":"hole"}'})))
         self.assertEqual(len(fixtures),24)
         rules=fixtures[0]['rules']
         self.assertIn(['sequence',[]],rules)
@@ -74,13 +74,13 @@ class MaterialConditionCorpusTests(unittest.TestCase):
 
     def test_biome_tag_aliases_and_rule_application(self):
         biomes={'minecraft:plains':'unused','minecraft:badlands':'unused'}
-        tags={'minecraft:is_badlands':'unused','horizon:empty':'unused'}
+        tags={'minecraft:is_badlands':'unused','sunrise:empty':'unused'}
         fixtures=list(material.biome_tag_corpus(biomes,tags))
         self.assertEqual(fixtures,list(material.biome_tag_corpus(biomes,tags)))
         self.assertEqual(len(fixtures),5)
         decoded=[json.loads(value) for value in fixtures[0]['json']]
         self.assertIn({'type':'biome','biome_is':'#is_badlands'},decoded)
-        self.assertIn({'type':'biome','biome_is':'#horizon:empty'},decoded)
+        self.assertIn({'type':'biome','biome_is':'#sunrise:empty'},decoded)
         self.assertIn({'type':'biome','biome_is':['#minecraft:is_badlands']},decoded)
         self.assertTrue(fixtures[0]['rules'])
         self.assertTrue(any(op[0]=='apply' for op in fixtures[0]['ops']))

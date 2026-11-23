@@ -1,7 +1,7 @@
 # Native mods: building and shipping
 
-A native mod is Rust source in a `.hmod`. The launcher compiles it on the player's machine, with its own pinned Rust
-toolchain, against the prebuilt game of the exact Horizon build the mod pins in `[native]`. The game itself is never
+A native mod is Rust source in a `.smod`. The launcher compiles it on the player's machine, with its own pinned Rust
+toolchain, against the prebuilt game of the exact Sunrise build the mod pins in `[native]`. The game itself is never
 rebuilt for a mod: the mods are compiled and linked against that prebuilt game, and the instance then plays the
 result.
 
@@ -51,7 +51,7 @@ its declarations, and the installed inventory freezes before worlds open.
 
 These declarations populate the integrated command/statistic inventory and
 append after vanilla's IDs in LAN and client built-in registry reads, preserving
-vanilla IDs. Servers declaring custom statistics require Horizon clients with
+vanilla IDs. Servers declaring custom statistics require Sunrise clients with
 the same ordered statistic inventory; configuration rejects mismatches before
 play. Register the target before rewriting an award to it; an arbitrary
 identifier alone does not register a statistic.

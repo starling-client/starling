@@ -1,7 +1,7 @@
 # The native route
 
 The native route lets a native mod change the game's own code: a function's body, a value or call inside
-it, or a hot loop. You declare it with `[[native.*]]` tables written after `[native]` in `horizon-mod.toml`,
+it, or a hot loop. You declare it with `[[native.*]]` tables written after `[native]` in `sunrise-mod.toml`,
 and the launcher applies them to the prebuilt game without rebuilding the game.
 
 ## When to use it
@@ -32,13 +32,13 @@ Every row of these tables has an `id`. No two rows of one mod share an `id`, cou
 
 ## It is tied to one game build
 
-A mod on this route builds against one exact game build: the commit in `[native] horizon`. Your code gets
+A mod on this route builds against one exact game build: the commit in `[native] sunrise`. Your code gets
 the game's own types, such as `Game` and its fields, and these change between builds without notice.
 
-- To move to a new build, change `horizon` and rebuild. A target that was renamed or moved fails the build
+- To move to a new build, change `sunrise` and rebuild. A target that was renamed or moved fails the build
   with an error naming your mod.
 - A change elsewhere in a target's body is not reported. Reread the functions you target on each new build.
-- Read the game's source at your `horizon` commit on [GitHub](https://github.com/arismoko/horizon). Every
+- Read the game's source at your `sunrise` commit on [GitHub](https://github.com/arismoko/horizon). Every
   target path, field and type on these pages comes from it.
 - This code runs with the player's rights. It is not sandboxed.
 
@@ -47,16 +47,16 @@ the game's own types, such as `Game` and its fields, and these change between bu
 | Field | Value |
 | --- | --- |
 | `game` | The Minecraft version, `"26.3"`. |
-| `horizon` | The game build: the exact Horizon commit, 40 lowercase hex characters. |
+| `sunrise` | The game build: the exact Sunrise commit, 40 lowercase hex characters. |
 | `mixins` | The exact commit of the [horizon-mixins](https://github.com/horizon-rust/horizon-mixins) tool, which applies `[[native.mixin]]` rows; 40 lowercase hex characters. |
 
-`cargo horizon-mod new path/to/mod --template native` writes all three; to move an existing mod, edit them. Otherwise the mod is an ordinary native mod
+`cargo sunrise-mod new path/to/mod --template native` writes all three; to move an existing mod, edit them. Otherwise the mod is an ordinary native mod
 ([Your first native mod](../start/first-mod.md)).
 
 ## Building
 
 Build as for any native mod: the launcher's **Build**, or
-`horizon-launcher native-build path/to/mod --trust-native-code`. The flag says you trust the mod's code to
+`sunrise-launcher native-build path/to/mod --trust-native-code`. The flag says you trust the mod's code to
 run with your rights.
 
 A build with a `[[native.mixin]]` row obtains the horizon-mixins tool for your `mixins` commit.

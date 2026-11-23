@@ -27,7 +27,7 @@ def corpus(facts, placement):
     selective = {'type': 'rule_based', 'fallback': {'id': 'clay'}, 'rules': [
         {'if_true': {'type': 'matching_blocks', 'blocks': 'water'}, 'then': empty}]}
     providers = [{'id': 'clay'}, empty, selective, {'type': 'random_block', 'blocks': ['clay', 'air', 'water']},
-                 {'type': 'rotated', 'state': {'id': 'oak_log'}}, 'horizon:stone']
+                 {'type': 'rotated', 'state': {'id': 'oak_log'}}, 'sunrise:stone']
     targets = [{'type': 'true'}, {'type': 'not', 'predicate': {'type': 'true'}},
                {'type': 'matching_blocks', 'blocks': ['stone', 'water']},
                {'type': 'solid'}, {'type': 'replaceable'}, {'type': 'has_sturdy_face', 'direction': 'up'}]
@@ -58,7 +58,7 @@ def corpus(facts, placement):
     for legacy, fail, reject in itertools.product([False,True],[-1,0,3,10],[0,3]):
         placed={'feature':disk(selective,radius=1,half_height=1),'placement':[{'type':'count','count':2},{'type':'in_square'}]}
         yield case(placed,mode='placed',legacy=legacy,fail=fail,reject=reject)
-        yield case({'type':'overlay','features':[placed,{'feature':'horizon:moss','placement':[]}]},legacy=legacy,fail=fail,reject=reject)
+        yield case({'type':'overlay','features':[placed,{'feature':'sunrise:moss','placement':[]}]},legacy=legacy,fail=fail,reject=reject)
 
 
 if __name__ == '__main__':

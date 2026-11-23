@@ -1,0 +1,8 @@
+id = "starling_wasm_probe"
+name = "Starling Wasm Probe"
+version = "0.1.0"
+description = "The server thread says in the chat every ten seconds how many ticks it ran, and the game thread marks the line when it arrives: a phone showing both runs wasm mods on both threads."
+api = "0.2"
+side = "both"
+# Every mod declares it (sunrise-mod-package's manifest), though this one registers nothing.
+capabilities = ["registries"]

@@ -29,7 +29,7 @@ The game puts this before your file:
 The function reads and returns linear light: 1.0 is paper white, and more is brighter where the frame can hold it. The
 alpha you return is coverage. The game supplies the vertex stage, the bindings and the conversion
 to the frame, so a file that declares a binding or an entry point is refused. Names that start with
-`horizon_` belong to the game.
+`sunrise_` belong to the game.
 
 ## 2. Register the pipeline
 

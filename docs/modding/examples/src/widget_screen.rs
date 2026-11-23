@@ -88,7 +88,7 @@ impl WidgetScreen {
     }
 }
 
-#[mod_api::horizon_mod]
+#[mod_api::sunrise_mod]
 impl Hooks for WidgetScreen {
     fn input_key(&self, host: &mut dyn ClientHost, event: &mut InputKeyEvent<'_>) {
         if event.action == KeyAction::Press && event.key == "key.keyboard.f8" && host.playing() {

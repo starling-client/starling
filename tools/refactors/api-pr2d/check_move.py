@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-PREFIX = 'crates/horizon-mod-api/src/parts/'
+PREFIX = 'crates/sunrise-mod-api/src/parts/'
 BASE = sys.argv[1]
 LAYOUT = ROOT / 'target/debug/part-table-layout'
 

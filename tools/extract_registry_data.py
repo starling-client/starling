@@ -9,7 +9,7 @@ import hashlib
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-path = ROOT / "crates/horizon-world/src/registry.rs"
+path = ROOT / "crates/sunrise-world/src/registry.rs"
 text = path.read_text()
 start = text.index("    pub fn id(&self, state: &BlockState)")
 brace = text.index("{", start)
@@ -26,7 +26,7 @@ fields = text[fields_start:fields_end]
 new_fields = re.sub(r"^    (states|ids|collided|defaults):", r"    pub(super) \1:", fields, flags=re.M)
 data_method = method.replace("    pub fn id", "    pub(super) fn id", 1)
 assert data_method[data_method.index("{"):] == body
-new_file = ROOT / "crates/horizon-world/src/registry/data.rs"
+new_file = ROOT / "crates/sunrise-world/src/registry/data.rs"
 assert not new_file.exists()
 new_file.write_text(
     "//! Immutable imported registry data, separate from per-installation worker state.\n"

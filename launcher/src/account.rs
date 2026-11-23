@@ -10,7 +10,7 @@
 //! Minecraft: Java Edition, as other launchers do, and the game plays as the selected account.
 //! The game binary itself, its harnesses and the servers don't go through the launcher's gate.
 //!
-//! The Azure app (client ID) is Horizon's own and is configuration: `HORIZON_MSA_CLIENT_ID` at
+//! The Azure app (client ID) is Sunrise's own and is configuration: `SUNRISE_MSA_CLIENT_ID` at
 //! build time, or at run time to override it. Without one, sign-in says it is not configured.
 pub mod session;
 
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = crate::identity::KEYCHAIN_SERVICE;
 const SCOPE: &str = "XboxLive.signin offline_access";
-pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
+pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (SUNRISE_MSA_CLIENT_ID), so it can't start the game.";
 /// What every Play says while no account in the launcher owns the game.
 pub const NEEDS_OWNER: &str =
     "Sign in with a Microsoft account that owns Minecraft: Java Edition to play";
@@ -40,9 +40,9 @@ const RENEW_BEFORE: u64 = 3600;
 /// The configured Azure app, if any: the run-time variable wins over the build-time one, and an
 /// empty value means none.
 pub fn client_id() -> Option<String> {
-    std::env::var("HORIZON_MSA_CLIENT_ID")
+    std::env::var("SUNRISE_MSA_CLIENT_ID")
         .ok()
-        .or_else(|| option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned))
+        .or_else(|| option_env!("SUNRISE_MSA_CLIENT_ID").map(str::to_owned))
         .map(|id| id.trim().to_owned())
         .filter(|id| !id.is_empty())
 }
@@ -60,9 +60,9 @@ pub struct Endpoints {
 
 impl Endpoints {
     pub fn live() -> Self {
-        // Development builds only: `HORIZON_MSA_MICROSOFT_ENDPOINT` points the device-code and
+        // Development builds only: `SUNRISE_MSA_MICROSOFT_ENDPOINT` points the device-code and
         // token requests at a local mock, to see and screenshot the sign-in panel.
-        let microsoft = std::env::var("HORIZON_MSA_MICROSOFT_ENDPOINT")
+        let microsoft = std::env::var("SUNRISE_MSA_MICROSOFT_ENDPOINT")
             .ok()
             .filter(|_| cfg!(debug_assertions))
             .unwrap_or_else(|| "https://login.microsoftonline.com/consumers/oauth2/v2.0".into());
@@ -119,7 +119,7 @@ fn builder() -> ureq::AgentBuilder {
         .timeout(Duration::from_secs(20))
         .timeout_connect(Duration::from_secs(10))
         .resolver(Interleaved(System))
-        .user_agent(&format!("horizon-launcher/{}", crate::backend::VERSION))
+        .user_agent(&format!("sunrise-launcher/{}", crate::backend::VERSION))
 }
 
 /// A request to `url`: the launcher's user agent, a 20 s timeout, and the player's proxy when one
@@ -750,7 +750,7 @@ impl Bounded {
         use std::sync::atomic::Ordering::SeqCst;
         let no_answer = || {
             let said = keyring_no_answer(self.wait);
-            eprintln!("Horizon: {said}");
+            eprintln!("Sunrise: {said}");
             Err(said)
         };
         if self.stuck.load(SeqCst) > 0 {
@@ -1077,7 +1077,7 @@ fn machine_id() -> Option<Vec<u8>> {
 fn file_key(install_secret: &[u8; 32]) -> chacha20poly1305::Key {
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"horizon-launcher account-secrets v2");
+    hash.update(b"sunrise-launcher account-secrets v2");
     let id = machine_id().unwrap_or_default();
     hash.update((id.len() as u64).to_le_bytes());
     hash.update(&id);
@@ -1090,7 +1090,7 @@ fn file_key(install_secret: &[u8; 32]) -> chacha20poly1305::Key {
 fn file_key_v1() -> chacha20poly1305::Key {
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"horizon-launcher account-secrets v1");
+    hash.update(b"sunrise-launcher account-secrets v1");
     if let Some(id) = machine_id() {
         hash.update(id);
     }
@@ -1180,7 +1180,7 @@ impl SecretStore for SystemStore {
             let attributes = vec![("service", SERVICE), ("account", key)];
             keyring
                 .create_item(
-                    "Horizon launcher: Minecraft account",
+                    "Sunrise launcher: Minecraft account",
                     &attributes,
                     secret.as_bytes(),
                     true,
@@ -1380,7 +1380,7 @@ fn set_item(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
 /// the player's credential store is full (an undocumented limit of its total size). The Xbox app
 /// and the Minecraft Launcher are known to leave hundreds of items there (#4313, #4366).
 #[cfg(any(target_os = "windows", test))]
-pub const CREDENTIAL_MANAGER_FULL: &str = "Windows Credential Manager is full, so Horizon can't \
+pub const CREDENTIAL_MANAGER_FULL: &str = "Windows Credential Manager is full, so Sunrise can't \
      keep your sign-in (Windows error 8; it isn't your computer's memory). Open Credential Manager \
      from the Start menu, go to Windows Credentials and remove entries you no longer use, then sign \
      in again. The Xbox app and the Minecraft Launcher often leave many XblGrts and Xbl| entries \
@@ -1672,8 +1672,8 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
         )
     ))]
     {
-        if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
-            return Err("HORIZON_NO_KEYCHAIN is set.".into());
+        if std::env::var_os("SUNRISE_NO_KEYCHAIN").is_some() {
+            return Err("SUNRISE_NO_KEYCHAIN is set.".into());
         }
         let keychain = Bounded::new(SystemStore, KEYCHAIN_WAIT);
         keychain.get("probe").map(|_| Box::new(keychain) as _)
@@ -1692,14 +1692,14 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
 
 /// Microsoft sign-ins. Linux and FreeBSD: the Secret Service with the secrets file beside it
 /// ([`Layered`], #5095). macOS and Windows: the keychain if it answers. Memory with
-/// `HORIZON_NO_KEYCHAIN` (the launcher's own tests) or no keychain on macOS and Windows (said in the
+/// `SUNRISE_NO_KEYCHAIN` (the launcher's own tests) or no keychain on macOS and Windows (said in the
 /// UI with [`no_keychain`]).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
             #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
-            if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
+            if std::env::var_os("SUNRISE_NO_KEYCHAIN").is_none() {
                 return Box::new(Layered::new(
                     Box::new(Bounded::new(SystemStore, KEYCHAIN_WAIT)),
                     FileStore::launcher(),
@@ -1991,7 +1991,7 @@ pub fn launch(
                     "Can't read {name}'s sign-in: {why}",
                     &[("name", &account.name), ("why", &why)],
                 );
-                eprintln!("Horizon: {said}");
+                eprintln!("Sunrise: {said}");
                 if plays {
                     pass.offline = Some(said.clone());
                 }
@@ -2331,7 +2331,7 @@ pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
     );
     if let Err(e) = accounts.save_renewed() {
-        eprintln!("Horizon: the accounts are not saved: {e}");
+        eprintln!("Sunrise: the accounts are not saved: {e}");
     }
     Ok(session_file(game_home, pass, env))
 }
@@ -2350,7 +2350,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
         who,
     );
     if let Err(e) = accounts.save_renewed() {
-        eprintln!("Horizon: the accounts are not saved: {e}");
+        eprintln!("Sunrise: the accounts are not saved: {e}");
     }
     let pass = pass?;
     let env = split_sessions(
@@ -2359,7 +2359,7 @@ pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, S
         pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
     );
     if let Err(e) = accounts.save_renewed() {
-        eprintln!("Horizon: the accounts are not saved: {e}");
+        eprintln!("Sunrise: the accounts are not saved: {e}");
     }
     Ok(session_file(game_home, pass, env))
 }
@@ -2418,15 +2418,15 @@ fn split_sessions(
     }
 }
 
-/// Whether the game's Splitscreen setting is on (`horizon-extras.txt`, `splitscreen:true`): only
+/// Whether the game's Splitscreen setting is on (`sunrise-extras.txt`, `splitscreen:true`): only
 /// then do the other accounts' sessions go to it.
 fn splitscreen_on(game_home: &Path) -> bool {
-    std::fs::read_to_string(game_home.join("horizon-extras.txt"))
+    std::fs::read_to_string(game_home.join("sunrise-extras.txt"))
         .is_ok_and(|text| text.lines().any(|l| l.trim() == "splitscreen:true"))
 }
 
 /// The signed-in accounts but the one that plays, each its session in a file of its own, for
-/// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
+/// the game's splitscreen players to sign in with (`SUNRISE_ACCOUNT_SESSIONS`: name, uuid and
 /// file each). A token known to own the game and not due goes as it is; otherwise it is renewed
 /// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
 /// whose token names another profile is left out: the game starts all the same. Nothing with one
@@ -2532,7 +2532,7 @@ fn account_sessions_until(
         return Vec::new();
     }
     vec![(
-        "HORIZON_ACCOUNT_SESSIONS",
+        "SUNRISE_ACCOUNT_SESSIONS",
         serde_json::Value::from(list).to_string(),
     )]
 }
@@ -2550,7 +2550,7 @@ pub fn java_player() -> Result<crate::java_launch::Player, String> {
         &mut accounts,
     );
     if let Err(e) = accounts.save_renewed() {
-        eprintln!("Horizon: the accounts are not saved: {e}");
+        eprintln!("Sunrise: the accounts are not saved: {e}");
     }
     player
 }

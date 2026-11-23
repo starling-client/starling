@@ -1,7 +1,7 @@
 //! Where the player's own Minecraft files are: the folder they chose, the official launcher's,
 //! or another launcher's (Prism Launcher, MultiMC, Modrinth App, ATLauncher, GDLauncher, Dawn
 //! Client), #434.
-//! horizon-prepare reads the official launcher's layout and pins the version JSON's own sha1, so
+//! sunrise-prepare reads the official launcher's layout and pins the version JSON's own sha1, so
 //! files found elsewhere are linked into that layout in the launcher's data folder, with the
 //! pinned version JSON from Mojang when the other launcher keeps its own rewrite of it.
 
@@ -56,12 +56,12 @@ pub struct Found {
     pub base: PathBuf,
     /// The client jar, checked against the pin.
     pub client: PathBuf,
-    /// The launcher's version JSON when it is one Horizon pins.
+    /// The launcher's version JSON when it is one Sunrise pins.
     pub manifest: Option<PathBuf>,
 }
 
 impl Found {
-    /// Whether `base` is in the official launcher's layout, so horizon-prepare reads it as is.
+    /// Whether `base` is in the official launcher's layout, so sunrise-prepare reads it as is.
     fn official_layout(&self, version: &str) -> bool {
         let dir = self.base.join("versions").join(version);
         self.client == dir.join(format!("{version}.jar"))
@@ -258,7 +258,7 @@ fn dawn_root(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The launcher whose tree `path` is inside, when its folder name is one Horizon knows, so the
+/// The launcher whose tree `path` is inside, when its folder name is one Sunrise knows, so the
 /// not-found message can name it (#693).
 fn launcher_of(path: &Path) -> Option<&'static str> {
     path.ancestors()
@@ -315,7 +315,7 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
         .find(|file| file.is_file());
     Err(match (other, listed) {
         (Some(jar), _) => format!(
-            "{} is not the {v} release Horizon was made for",
+            "{} is not the {v} release Sunrise was made for",
             jar.strip_prefix(dir).unwrap_or(&jar).display()
         ),
         (None, Some(file)) => format!(
@@ -332,10 +332,10 @@ pub fn find(dir: &Path, pins: &Pins) -> Result<Found, String> {
 
 /// The error when no folder has the pinned version: every folder looked in with what it
 /// lacks, and what the player can do about it (#419, #693). When the chosen folder is inside a
-/// launcher Horizon knows, the advice names it: a Prism or MultiMC instance downloads the game
+/// launcher Sunrise knows, the advice names it: a Prism or MultiMC instance downloads the game
 /// only when it is launched once.
 pub fn not_found(version: &str, checked: &[(PathBuf, String)], chosen: &Path) -> String {
-    let mut text = format!("Minecraft {version} was not found. Horizon looked in:");
+    let mut text = format!("Minecraft {version} was not found. Sunrise looked in:");
     for (dir, missing) in checked {
         text += &format!("\n  {} ({missing})", dir.display());
     }
@@ -457,7 +457,7 @@ pub(crate) fn fetch_checked(fetch: Fetch, url: &str, sha1: &str) -> Result<Vec<u
     let body = fetch(url)?;
     match sha1_hex(&body) {
         actual if actual == sha1 => Ok(body),
-        actual => Err(format!("is not the one Horizon pins (sha1 {actual})")),
+        actual => Err(format!("is not the one Sunrise pins (sha1 {actual})")),
     }
 }
 

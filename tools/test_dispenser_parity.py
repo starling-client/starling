@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Compare vanilla dispensers and droppers with Horizon's, one activation per case.
+"""Compare vanilla dispensers and droppers with Sunrise's, one activation per case.
 
 A dispenser or dropper at the origin faces a random direction and holds the
 case's items; the block in front (and below it) comes from a palette of blocks
 the behaviours care about, and some cases put a target entity in front. Vanilla
 `DispenserBlock.dispenseFrom` runs over the headless level of the block update
-oracle (`VanillaDispenserOracle`); Horizon runs its game glue as a component probe on a server thread
-(`HORIZON_DISPENSE_FIXTURE`). Both print block changes, container contents,
+oracle (`VanillaDispenserOracle`); Sunrise runs its game glue as a component probe on a server thread
+(`SUNRISE_DISPENSE_FIXTURE`). Both print block changes, container contents,
 spawned entities (type, position, motion), the targets afterwards, level events,
 sounds, game events and the level random. Motion drawn from an entity's own
 unseeded random (vanilla marks it "~") is compared within its spread.
@@ -483,7 +483,7 @@ def voice(line):
 
 
 def run(command, **kwargs):
-    runner = run_game if Path(command[0]).stem == 'horizon-client' else subprocess.run
+    runner = run_game if Path(command[0]).stem == 'sunrise-client' else subprocess.run
     done = runner(command, capture_output=True, text=True, **kwargs)
     if done.returncode:
         print((done.stdout + done.stderr)[-4000:])
@@ -536,7 +536,7 @@ def main():
         args.count = 6000
     lock, jars, libraries = base.verify_artifacts()
     facts = h.load_facts()
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     work = lab.LOCAL / 'dispenser-parity'
     work.mkdir(parents=True, exist_ok=True)
     all_cases = list(cases(facts, args.count, args.seed, args.only))
@@ -544,17 +544,17 @@ def main():
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    java_root = lab.ROOT / 'mods/horizon/src/test/java'
+    java_root = lab.ROOT / 'mods/sunrise/src/test/java'
     run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(java_root), '-nowarn',
-         '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/horizonlab/parity/VanillaDispenserOracle.java')])
-    run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.VanillaDispenserOracle',
+         '-cp', dependencies, '-d', str(classes), str(java_root / 'dev/sunriselab/parity/VanillaDispenserOracle.java')])
+    run(['java', '-Xmx3G', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaDispenserOracle',
          str(resources), str(work / 'cases.jsonl'), str(work / 'native.txt')])
-    run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    run(['cargo', 'build', '-q', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
         env={**os.environ, 'CARGO_BUILD_JOBS': os.environ.get('CARGO_BUILD_JOBS', '3')})
-    executable = lab.cargo_target() / ('fast/horizon-client.exe' if os.name == 'nt' else 'fast/horizon-client')
+    executable = lab.cargo_target() / ('fast/sunrise-client.exe' if os.name == 'nt' else 'fast/sunrise-client')
     with tempfile.TemporaryDirectory(prefix='game-', dir=work) as game_dir:
         run([str(executable), '--resources', str(resources), '--game-dir', game_dir], cwd=work,
-            env=lab.game_env(HORIZON_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
+            env=lab.game_env(SUNRISE_DISPENSE_FIXTURE=f'{work / "cases.jsonl"},{work / "rust.txt"}'))
     # Loot table names (D) are vanilla's bookkeeping; the drops themselves are compared.
     ignore = tuple(prefix + ' ' for prefix in args.ignore.split(',') if prefix) + ('D ',)
     native = h.split_cases((work / 'native.txt').read_text(), ignore)
@@ -566,7 +566,7 @@ def main():
         if a and a[0].startswith('error'):
             errors.setdefault(a[0], []).append(case)
             continue
-        for side, lines in [('vanilla', a), ('horizon', b)]:
+        for side, lines in [('vanilla', a), ('sunrise', b)]:
             if 'expected_spawn' in case:
                 spawned = [line.split()[1] for line in lines if line.startswith('N ')]
                 assert spawned == case['expected_spawn'], (side, case, spawned)

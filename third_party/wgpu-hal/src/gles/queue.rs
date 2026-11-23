@@ -826,7 +826,7 @@ impl super::Queue {
                 // Depth and stencil can't go through `glCopyTexSubImage*`, which reads the read
                 // buffer's colour: GLES refuses a depth destination and a depth source on
                 // COLOR_ATTACHMENT0 reads nothing. Blit between the framebuffers instead.
-                // Horizon patch (#2386); WebGPU copies need the same format on both sides.
+                // Sunrise patch (#2386); WebGPU copies need the same format on both sides.
                 let aspect = copy.src_base.aspect;
                 if aspect.intersects(crate::FormatAspects::DEPTH | crate::FormatAspects::STENCIL) {
                     unsafe { self.blit_depth_stencil(gl, src, src_target, dst, dst_target, copy) };

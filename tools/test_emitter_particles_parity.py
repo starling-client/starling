@@ -59,7 +59,7 @@ def main():
              'seeded particle random and follow movement, dimension changes, removal and lifetime.')
     harness.differential(
         'rust-emitter-particles-parity', 'VanillaEmitterParticlesOracle', 'emitter_particles_probe', make_cases, scope,
-        sources=[lab.ROOT / 'crates/horizon-client-render/src/particles.rs'])
+        sources=[lab.ROOT / 'crates/sunrise-client-render/src/particles.rs'])
 
 
 if __name__ == '__main__':

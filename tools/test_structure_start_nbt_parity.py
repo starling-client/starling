@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compare the structure starts Horizon saves with the tags vanilla's StructureStart.createTag writes.
+"""Compare the structure starts Sunrise saves with the tags vanilla's StructureStart.createTag writes.
 
-The oracle (VanillaStructureStartOracle with HORIZON_START_NBT) generates the start of each case's chunk with the
+The oracle (VanillaStructureStartOracle with SUNRISE_START_NBT) generates the start of each case's chunk with the
 pinned server's own classes and prints its tag; the probe (world_probe structure_start_nbt) prints the tag
-Horizon saves for the same chunk. Both print sorted keys and typed numbers, and the lines must be identical.
+Sunrise saves for the same chunk. Both print sorted keys and typed numbers, and the lines must be identical.
 The cases are the start chunks of one site of every structure kind (seed 12345, and a badlands mineshaft of seed
 -7777), which between them use every StructurePieceType.
 """
@@ -45,12 +45,12 @@ def main():
     report_path = build / 'report.json'
     report_path.unlink(missing_ok=True)
     lock, jars, libraries = base.verify_artifacts()
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaStructureStartOracle.java'
-    probe = lab.ROOT / 'crates/horizon-world/examples/probe/structure_start_nbt.rs'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaStructureStartOracle.java'
+    probe = lab.ROOT / 'crates/sunrise-world/examples/probe/structure_start_nbt.rs'
     sources = [oracle, probe, Path(__file__), lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py',
-               lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/horizon-world/Cargo.toml',
-               *sorted((lab.ROOT / 'crates/horizon-core/src').rglob('*.rs')),
-               *sorted((lab.ROOT / 'crates/horizon-world/src').rglob('*.rs'))]
+               lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/sunrise-world/Cargo.toml',
+               *sorted((lab.ROOT / 'crates/sunrise-core/src').rglob('*.rs')),
+               *sorted((lab.ROOT / 'crates/sunrise-world/src').rglob('*.rs'))]
     tested_sources = base.source_hashes(sources)
 
     def run(command, name, env=None):
@@ -61,30 +61,30 @@ def main():
     classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['client'], *libraries]))
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath',
-         lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle], 'compile-java')
-    run(['cargo', 'build', '--release', '-p', 'horizon-world', '--example', 'world_probe'], 'compile-rust')
+         lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle], 'compile-java')
+    run(['cargo', 'build', '--release', '-p', 'sunrise-world', '--example', 'world_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
     binary = Path(metadata['target_directory']) / 'release/examples' / (
         'world_probe.exe' if os.name == 'nt' else 'world_probe')
-    resources = lab.LOCAL / 'horizon-client' / lock['minecraft']['version']
+    resources = lab.LOCAL / 'sunrise-client' / lock['minecraft']['version']
     groups = collections.defaultdict(list)
     for seed, dimension, cx, cz in CASES:
         groups[(seed, dimension)].append((cx, cz))
-    vanilla, horizon = [], []
+    vanilla, sunrise = [], []
     for (seed, dimension), chunks in sorted(groups.items()):
         name = f'{seed}-{dimension}'
         out = build / f'client-{name}.txt'
-        env = dict(os.environ, HORIZON_START_NBT='1', HORIZON_DIMENSION=dimension,
-                   HORIZON_CHUNKS=';'.join(f'{x},{z}' for x, z in chunks))
+        env = dict(os.environ, SUNRISE_START_NBT='1', SUNRISE_DIMENSION=dimension,
+                   SUNRISE_CHUNKS=';'.join(f'{x},{z}' for x, z in chunks))
         run(['java', '-Xmx2g', '-cp', str(classes) + os.pathsep + dependencies,
-             'dev.horizonlab.parity.VanillaStructureStartOracle', out, seed, 0, 0, 0, 0], 'client-' + name, env)
+             'dev.sunriselab.parity.VanillaStructureStartOracle', out, seed, 0, 0, 0, 0], 'client-' + name, env)
         vanilla += sorted(l for l in out.read_text(encoding='utf-8').splitlines() if l.startswith('nbt '))
         probe_out = subprocess.check_output([str(binary), 'structure_start_nbt', str(resources), str(seed), dimension,
                                              *(f'{x},{z}' for x, z in chunks)], text=True)
-        horizon += sorted(probe_out.splitlines())
+        sunrise += sorted(probe_out.splitlines())
     (build / 'client.txt').write_text(''.join(l + '\n' for l in vanilla), encoding='utf-8')
-    (build / 'rust.txt').write_text(''.join(l + '\n' for l in horizon), encoding='utf-8')
+    (build / 'rust.txt').write_text(''.join(l + '\n' for l in sunrise), encoding='utf-8')
     if len(vanilla) != len(CASES):
         raise AssertionError(f'the oracle found {len(vanilla)} starts for {len(CASES)} cases')
     matched = base.compare(build / 'client.txt', build / 'rust.txt')

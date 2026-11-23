@@ -9,7 +9,7 @@
 //! motion, and stops 10 s after the window loses focus ([`motion`]).
 use crate::art::bake;
 use gpui::{div, img, prelude::*, px, rgb, Div, RenderImage};
-use horizon_theme::night::{Night, SkyArt};
+use sunrise_theme::night::{Night, SkyArt};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -163,8 +163,8 @@ const STAR_LEVELS: [f32; 4] = [0.95, 0.6, 0.3, 0.6];
 const STAR_PERIODS: [f32; 4] = [4., 6., 8., 10.];
 
 /// How the sky moves: not at all under the system's reduced motion (macOS) or with
-/// `HORIZON_LAUNCHER_MOTION=off`; while the window is in front (and 10 s after); or always, with
-/// `HORIZON_LAUNCHER_MOTION=always`, for recordings.
+/// `SUNRISE_LAUNCHER_MOTION=off`; while the window is in front (and 10 s after); or always, with
+/// `SUNRISE_LAUNCHER_MOTION=always`, for recordings.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Motion {
     Still,
@@ -174,7 +174,7 @@ pub(crate) enum Motion {
 
 pub(crate) fn motion() -> Motion {
     static MOTION: LazyLock<Motion> = LazyLock::new(|| {
-        match std::env::var("HORIZON_LAUNCHER_MOTION").as_deref() {
+        match std::env::var("SUNRISE_LAUNCHER_MOTION").as_deref() {
             Ok("off" | "reduced") => return Motion::Still,
             Ok("always") => return Motion::Always,
             Ok("full") => return Motion::InFront,
@@ -418,7 +418,7 @@ fn bands(n: &Night, h: f32) -> Vec<(f32, f32, u32)> {
         if n.dark {
             c
         } else {
-            horizon_theme::night::over(0xffffff, MORNING, c)
+            sunrise_theme::night::over(0xffffff, MORNING, c)
         }
     };
     let rows = (h / TEXEL).ceil();
@@ -437,7 +437,7 @@ fn bands(n: &Night, h: f32) -> Vec<(f32, f32, u32)> {
         let mut from = at;
         for k in 0..STEPS {
             let to = (at + span * (k + 1) as f32 / STEPS as f32).round();
-            let c = horizon_theme::night::over(next, k as f32 / STEPS as f32, n.sky[i]);
+            let c = sunrise_theme::night::over(next, k as f32 / STEPS as f32, n.sky[i]);
             out.push((from * TEXEL, (to - from) * TEXEL, wash(c)));
             from = to;
         }
@@ -545,7 +545,7 @@ fn skyline(line: &Skyline, color: u32, scale: f32) -> Arc<RenderImage> {
 }
 
 /// The upper half of a sun cut by the horizon, in three bands of colour, its lower half sliced by
-/// rows of sky like Horizon's mark.
+/// rows of sky like Sunrise's mark.
 fn sun(art: &SkyArt) -> Vec<[u8; 4]> {
     let (r, w) = (SUN_RADIUS as f32, SUN_RADIUS * 2);
     let mut out = vec![[0; 4]; w * SUN_RADIUS];
@@ -574,7 +574,7 @@ fn sun(art: &SkyArt) -> Vec<[u8; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_theme::night::{DAWN, NIGHT, UNCARDED_STOPS};
+    use sunrise_theme::night::{DAWN, NIGHT, UNCARDED_STOPS};
 
     /// The sky's upper bands, behind text without a plate, hold the night tokens' text colours.
     fn uncarded_bands(n: &Night, h: f32) -> Vec<u32> {
@@ -605,7 +605,7 @@ mod tests {
         for n in [NIGHT, DAWN] {
             for c in uncarded_bands(&n, 800.) {
                 for text in [n.ink, n.ink_soft, n.muted] {
-                    let ratio = horizon_theme::contrast(text, c);
+                    let ratio = sunrise_theme::contrast(text, c);
                     assert!(ratio >= 4.5, "#{text:06x} on #{c:06x}: {ratio:.2}");
                 }
             }

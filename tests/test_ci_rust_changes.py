@@ -20,23 +20,23 @@ class RustChangesTests(unittest.TestCase):
             "tools/parity.py", "tools/test_tick_parity.py", "tests/test_ci_runners.py", "docs/setup.md",
         ]))
         for path in [
-            "crates/horizon-client/src/game.rs", "xtask/src/main.rs", "Cargo.lock",
+            "crates/sunrise-client/src/game.rs", "xtask/src/main.rs", "Cargo.lock",
             ".cargo/config.toml", ".github/workflows/ci.yml", "tools/ci/rust_changes.py",
             "tools/release_train.py", "tools/ci/sign_release.sh", "tools/native-hook-fragments/a.json",
-            "tools/parity_hosts.json", "mods/horizon/src/x.py",
-            "research-lock.json", "crates/horizon-theme/tokens.css", "unknown-file",
+            "tools/parity_hosts.json", "mods/sunrise/src/x.py",
+            "research-lock.json", "crates/sunrise-theme/tokens.css", "unknown-file",
         ]:
             with self.subTest(path=path):
                 self.assertTrue(needs_rust(["README.md", path]))
 
     def test_launcher_checks_follow_the_crates_it_builds(self):
-        for path in ["crates/horizon-client/src/game.rs", "launcher/links.json", "launcher/docs/a.md",
+        for path in ["crates/sunrise-client/src/game.rs", "launcher/links.json", "launcher/docs/a.md",
                      "launcher/README.md", "website/src/index.html", "tools/pr_ready.py"]:
             with self.subTest(path=path):
                 self.assertFalse(needs_launcher([path]))
-        for path in ["launcher/src/main.rs", "launcher/Cargo.lock", "crates/horizon-port-pack/src/net.rs",
-                     "crates/horizon-mcp/src/lib.rs", "crates/horizon-mod-api-gen/src/injection.rs",
-                     "crates/horizon-theme/src/lib.rs", "Cargo.toml", "Cargo.lock",
+        for path in ["launcher/src/main.rs", "launcher/Cargo.lock", "crates/sunrise-port-pack/src/net.rs",
+                     "crates/sunrise-mcp/src/lib.rs", "crates/sunrise-mod-api-gen/src/injection.rs",
+                     "crates/sunrise-theme/src/lib.rs", "Cargo.toml", "Cargo.lock",
                      ".github/workflows/ci.yml", ".github/workflows/dyna-ci.yml"]:
             with self.subTest(path=path):
                 self.assertTrue(needs_launcher(["README.md", path]))
@@ -73,7 +73,7 @@ class RustChangesTests(unittest.TestCase):
             "tools/README.md", "tests/fixtures/example.md", ".github/pull_request_template.md",
             "docs/modding/src/introduction.md", "roadmap/journal/example.md",
             "README.md", "ROADMAP.md", "docs/README.md",
-            "crates/horizon-client/src/game.rs", "packaging/server/start.sh", "research-lock.json",
+            "crates/sunrise-client/src/game.rs", "packaging/server/start.sh", "research-lock.json",
             "unknown-file",
         ]:
             with self.subTest(path=path):
@@ -106,7 +106,7 @@ class RustChangesTests(unittest.TestCase):
             self.assertTrue(selected["launcher_required"])
             self.assertTrue(selected["tooling_required"])
         # The machine sample is a daily leg: a mod API change selects nothing extra in dyna-checks.
-        self.assertFalse(selections([("M", "crates/horizon-mod-api/README.md")])["rust_required"])
+        self.assertFalse(selections([("M", "crates/sunrise-mod-api/README.md")])["rust_required"])
 
     def test_git_status_and_cli_selections_for_actual_documentation_changes(self):
         selector = Path(__file__).resolve().parents[1] / "tools/ci/rust_changes.py"

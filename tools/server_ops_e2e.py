@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""An operator's commands on Horizon's dedicated server, typed by a Horizon player, end to end.
+"""An operator's commands on Sunrise's dedicated server, typed by a Sunrise player, end to end.
 
 Vanilla decides what an operator may run by its permission level (ops.json, `op-permission-level`):
 `/kick`, `/ban`, `/ban-ip`, `/pardon`, `/pardon-ip`, `/banlist`, `/op`, `/deop` and `/whitelist` need 3 (admins),
@@ -9,15 +9,15 @@ only way.
     python3 tools/server_ops_e2e.py --bin-dir target/fast
 
 A survival dedicated server (offline mode, a flat world) with the player Opal in ops.json, at level 2, 3 and 4 in
-turn. Opal joins with Horizon's game, driven by horizon-ctl, and types each command in the chat as a player does;
-horizon-bots players stand in as the moderated ones. Each command her level allows must give vanilla's feedback in
+turn. Opal joins with Sunrise's game, driven by sunrise-ctl, and types each command in the chat as a player does;
+sunrise-bots players stand in as the moderated ones. Each command her level allows must give vanilla's feedback in
 her chat and change what it changes (the bot leaves, banned-players.json, banned-ips.json, whitelist.json,
 ops.json); at level 2 the admins' commands must do nothing.
 
-The game and the server run with fresh HORIZON_HOME, launcher and XDG folders and without audio. Logs go to --out.
+The game and the server run with fresh SUNRISE_HOME, launcher and XDG folders and without audio. Logs go to --out.
 Build first:
-    cargo build --profile fast -p horizon-game -p horizon-client-lib --bins
-    cargo build --profile fast -p horizon-bots
+    cargo build --profile fast -p sunrise-game -p sunrise-client-lib --bins
+    cargo build --profile fast -p sunrise-bots
 """
 import argparse
 import json
@@ -79,7 +79,7 @@ def chat(game):
 
 
 def bot(bins, port, name, seconds):
-    return subprocess.Popen([bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1',
+    return subprocess.Popen([bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1',
                              '--behaviour', 'stand', '--seconds', str(seconds), '--name', name],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -94,12 +94,12 @@ def run(bins, level, out):
     (folder / 'eula.txt').write_text('eula=true\n')
     (folder / 'ops.json').write_text(json.dumps([{'uuid': str(lab.offline_uuid(PLAYER)), 'name': PLAYER,
                                                   'level': level, 'bypassesPlayerLimit': False}]))
-    command = [bins / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / f'sunrise-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / f'server-{level}.log')
-    game = Game(f'opal{level}', bins / 'horizon-ctl', lab.RESOURCES.resolve())
-    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HORIZON_LAUNCHER_HOME'):
+    game = Game(f'opal{level}', bins / 'sunrise-ctl', lab.RESOURCES.resolve())
+    for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'SUNRISE_LAUNCHER_HOME'):
         game.d.env[key] = str(game.work / key.lower())
-    game.d.env['HORIZON_LAUNCHER_NO_SELF_UPDATE'] = '1'
+    game.d.env['SUNRISE_LAUNCHER_NO_SELF_UPDATE'] = '1'
     bots = []
     failed = []
     try:

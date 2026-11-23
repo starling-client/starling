@@ -1,35 +1,35 @@
-# horizon-server in a container (docs/server.md, section 3). Build context: the repository root:
-#   docker build -f packaging/server/Dockerfile -t horizon-server .
+# sunrise-server in a container (docs/server.md, section 3). Build context: the repository root:
+#   docker build -f packaging/server/Dockerfile -t sunrise-server .
 #
 # The image holds none of Minecraft's files. Prepare them on the host from your own Minecraft 26.3
-# (horizon-prepare --prepare, see packaging/PLAY.txt) and mount the folder it writes, read-only:
-#   docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
-#     -v horizon-data:/data \
-#     -v /path/to/.local/horizon-client/26.3:/opt/horizon/.local/horizon-client/26.3:ro \
-#     -e HORIZON_EULA=true -e HORIZON_WHITELIST=true -e HORIZON_PLAYERS=Alex,Steve -e HORIZON_OP=Alex \
-#     horizon-server
+# (sunrise-prepare --prepare, see packaging/PLAY.txt) and mount the folder it writes, read-only:
+#   docker run -d --name sunrise -p 25565:25565 --stop-timeout 180 \
+#     -v sunrise-data:/data \
+#     -v /path/to/.local/sunrise-client/26.3:/opt/sunrise/.local/sunrise-client/26.3:ro \
+#     -e SUNRISE_EULA=true -e SUNRISE_WHITELIST=true -e SUNRISE_PLAYERS=Alex,Steve -e SUNRISE_OP=Alex \
+#     sunrise-server
 #
-# HORIZON_EULA=true accepts the Minecraft EULA (https://aka.ms/MinecraftEULA) for this server. The first
-# start writes /data/server.toml from HORIZON_* (EULA, WORLD, SEED, PORT, WHITELIST, PLAYERS, OP); later
-# starts use the file. Manage it with `docker exec horizon horizon-server status|cmd|backup|logs ...`.
+# SUNRISE_EULA=true accepts the Minecraft EULA (https://aka.ms/MinecraftEULA) for this server. The first
+# start writes /data/server.toml from SUNRISE_* (EULA, WORLD, SEED, PORT, WHITELIST, PLAYERS, OP); later
+# starts use the file. Manage it with `docker exec sunrise sunrise-server status|cmd|backup|logs ...`.
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 COPY . .
-# The server build of the game (no sound, no controllers: it needs neither ALSA nor udev) as horizon-engine.
-RUN cargo build --release --locked -p horizon-game --no-default-features --bin horizon-client \
-    && cargo build --release --locked -p horizon-server --bin horizon-server \
-    && mkdir /out && cp target/release/horizon-client /out/horizon-engine && cp target/release/horizon-server /out/
+# The server build of the game (no sound, no controllers: it needs neither ALSA nor udev) as sunrise-engine.
+RUN cargo build --release --locked -p sunrise-game --no-default-features --bin sunrise-client \
+    && cargo build --release --locked -p sunrise-server --bin sunrise-server \
+    && mkdir /out && cp target/release/sunrise-client /out/sunrise-engine && cp target/release/sunrise-server /out/
 
 FROM debian:bookworm-slim
-RUN useradd --system --home-dir /data --shell /usr/sbin/nologin horizon \
-    && mkdir -p /data /opt/horizon/.local/horizon-client \
-    && chown horizon:horizon /data
-COPY --from=build /out/ /opt/horizon/
-ENV PATH=/opt/horizon:$PATH \
-    HORIZON_NO_AUDIO=1
+RUN useradd --system --home-dir /data --shell /usr/sbin/nologin sunrise \
+    && mkdir -p /data /opt/sunrise/.local/sunrise-client \
+    && chown sunrise:sunrise /data
+COPY --from=build /out/ /opt/sunrise/
+ENV PATH=/opt/sunrise:$PATH \
+    SUNRISE_NO_AUDIO=1
 WORKDIR /data
 VOLUME /data
 EXPOSE 25565
-USER horizon
-# SIGTERM makes horizon-server stop the game cleanly (it saves first): give it --stop-timeout 180.
-CMD ["sh", "-c", "test -f server.toml || horizon-server init --yes || exit 1; exec horizon-server run"]
+USER sunrise
+# SIGTERM makes sunrise-server stop the game cleanly (it saves first): give it --stop-timeout 180.
+CMD ["sh", "-c", "test -f server.toml || sunrise-server init --yes || exit 1; exec sunrise-server run"]

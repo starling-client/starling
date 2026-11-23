@@ -70,21 +70,21 @@ impl Environment {
     }
 }
 
-/// A search's filters. Empty: the browser's defaults (what runs in Horizon).
+/// A search's filters. Empty: the browser's defaults (what runs in Sunrise).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Filters {
     /// Every one of these categories (`decoration`, `worldgen`...).
     pub categories: Vec<String>,
-    /// Every one of these tags: Horizon's registry only, a project's own words (`zoom`, `pvp`...).
+    /// Every one of these tags: Sunrise's registry only, a project's own words (`zoom`, `pvp`...).
     pub tags: Vec<String>,
     /// One loader (`neoforge`, `fabric`...), in place of the kind's defaults.
     pub loader: Option<String>,
-    /// One Minecraft version, in place of the one Horizon plays.
+    /// One Minecraft version, in place of the one Sunrise plays.
     pub game_version: Option<String>,
     pub environment: Option<Environment>,
     /// None: by relevance with search text, else by downloads.
     pub sort: Option<Sort>,
-    /// Only what works on the selected instance: Horizon's registry leaves out the native mods
+    /// Only what works on the selected instance: Sunrise's registry leaves out the native mods
     /// with no version that builds on it.
     pub works_on: bool,
 }
@@ -98,7 +98,7 @@ impl Filters {
             Sort::Relevance
         })
     }
-    /// A game version other than the one Horizon plays was asked for.
+    /// A game version other than the one Sunrise plays was asked for.
     pub fn other_version(&self) -> bool {
         self.game_version.as_deref().is_some_and(|v| v != GAME)
     }
@@ -116,14 +116,14 @@ pub struct Tag {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tags {
     pub categories: Vec<Tag>,
-    /// Horizon's registry only: the tags its projects of the kind carry, the most used first.
+    /// Sunrise's registry only: the tags its projects of the kind carry, the most used first.
     pub tags: Vec<String>,
     pub loaders: Vec<String>,
     /// Release versions, newest first.
     pub game_versions: Vec<String>,
 }
 
-/// A category as playhorizon.dev names it (`categoryLabel` in the site's `mods-logic.ts`):
+/// A category as playsunrise.net names it (`categoryLabel` in the site's `mods-logic.ts`):
 /// `game-mechanics` reads "Game mechanics", `gui` "GUI". English: the launcher translates the
 /// names its tables have.
 pub fn category_label(slug: &str) -> String {

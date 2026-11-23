@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use std::io;
 
 fn hardware_probe(visible: bool) -> bool {
-    let Some(path) = std::env::var_os("HORIZON_STARTUP_PROBE_LOG") else {
+    let Some(path) = std::env::var_os("SUNRISE_STARTUP_PROBE_LOG") else {
         return false;
     };
     use std::io::Write;

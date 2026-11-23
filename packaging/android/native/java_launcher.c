@@ -1,8 +1,8 @@
 /*
- * Starling's `java` and `javac` on Android, for horizon-prepare (the game files prepared on the
+ * Starling's `java` and `javac` on Android, for sunrise-prepare (the game files prepared on the
  * phone). An app may run programs only from its APK's library folder, so build_apk.py puts this
  * there twice, as libstarling_java.so and libstarling_javac.so (built with -DJAVAC), and the game
- * names them as the Java tools (horizon_prepare::java::supply). Each starts the runtime Starling
+ * names them as the Java tools (sunrise_prepare::java::supply). Each starts the runtime Starling
  * downloaded (STARLING_JAVA_HOME, starling_account::java) as the JDK's own launchers do, through
  * JLI_Launch in its libjli.so; the runtime finds its home from where that library is.
  */

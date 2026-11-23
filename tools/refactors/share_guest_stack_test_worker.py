@@ -13,7 +13,7 @@ files = [
     "world/villager_professions/tests.rs",
 ]
 pattern = re.compile(
-    r"(?P<indent> +)horizon_guest_stack::builder\(\)\n"
+    r"(?P<indent> +)sunrise_guest_stack::builder\(\)\n"
     r"(?:(?P=indent)    \.name\(std::thread::current\(\)\.name\(\)\.unwrap\(\)\.to_owned\(\)\)\n)?"
     r"(?P=indent)    \.spawn\(\|\| \{(?P<body>.*?)\n"
     r"(?P=indent)    \}\)\n(?P=indent)    \.unwrap\(\)\n"
@@ -24,7 +24,7 @@ pattern = re.compile(
 changes = []
 count = 0
 for relative in files:
-    path = root / "crates/horizon-client/src/game" / relative
+    path = root / "crates/sunrise-client/src/game" / relative
     source = path.read_text()
     result, n = pattern.subn(
         lambda m: m["indent"]

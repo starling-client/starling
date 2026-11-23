@@ -3,7 +3,7 @@ use crate::native_cache::{Error, LockMode, Release};
 use cap_std::fs::Dir;
 use std::{fs, path::Path, process::Command, sync::Arc};
 
-pub(crate) const SOURCE: &str = "HORIZON_RUNTIME_SOURCE";
+pub(crate) const SOURCE: &str = "SUNRISE_RUNTIME_SOURCE";
 
 pub(crate) fn mark(command: &mut Command, source: &Path) {
     command.env(SOURCE, source);
@@ -18,14 +18,14 @@ fn override_value<'a>(command: &'a Command, key: &str) -> Option<Option<&'a std:
 }
 
 // This adapter owns localized launcher errors; the kernel protocol lives below game/launcher.
-pub(crate) struct Registry(Arc<horizon_mod_package::runtime_leases::Registry>);
-pub(crate) use horizon_mod_package::runtime_leases::Claim;
+pub(crate) struct Registry(Arc<sunrise_mod_package::runtime_leases::Registry>);
+pub(crate) use sunrise_mod_package::runtime_leases::Claim;
 impl Registry {
     fn at(data: &Path) -> Result<Arc<Self>, Error> {
         Self::with_release(data, Release::Unlock)
     }
     pub(crate) fn with_release(data: &Path, release: Release) -> Result<Arc<Self>, Error> {
-        horizon_mod_package::runtime_leases::Registry::with_release(data, release)
+        sunrise_mod_package::runtime_leases::Registry::with_release(data, release)
             .map(|registry| Arc::new(Self(registry)))
             .map_err(Into::into)
     }
@@ -39,8 +39,8 @@ impl Registry {
 
 /// Launcher-owned primitives-in-use; this is not a standalone cleanup safety guarantee.
 pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
-    let logs = override_value(command, "HORIZON_HOME").map_or_else(
-        || std::env::var_os("HORIZON_HOME").map(std::path::PathBuf::from),
+    let logs = override_value(command, "SUNRISE_HOME").map_or_else(
+        || std::env::var_os("SUNRISE_HOME").map(std::path::PathBuf::from),
         |value| value.map(std::path::PathBuf::from),
     );
     let source = override_value(command, SOURCE)
@@ -76,12 +76,12 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
                 }
             }
         }
-        let selection = horizon_mod_package::selection::LaunchArguments::for_command(&game)?;
+        let selection = sunrise_mod_package::selection::LaunchArguments::for_command(&game)?;
         paths.push(selection.context.game_dir);
         paths.push(selection.context.home);
         let cwd = command.get_current_dir().unwrap_or(Path::new("."));
         for argument in selection.rest {
-            if let horizon_mod_package::selection::Argument::Value(name, value) = argument {
+            if let sunrise_mod_package::selection::Argument::Value(name, value) = argument {
                 if name == "--resources" {
                     paths.push(cwd.join(value));
                 }
@@ -90,12 +90,12 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
     }
     if let Some(home) = command.get_current_dir() {
         let home = home.canonicalize()?;
-        for relative in [".horizon-cache", "wasm-cache", "cache"] {
+        for relative in [".sunrise-cache", "wasm-cache", "cache"] {
             crate::storage::mark_used(&home.join(relative))?;
         }
-        use horizon_mod_package::{mod_list, Package};
+        use sunrise_mod_package::{mod_list, Package};
         for folder in [mod_list::DIR, mod_list::NATIVE_DIR] {
-            for path in horizon_mod_package::find(&home.join(folder)) {
+            for path in sunrise_mod_package::find(&home.join(folder)) {
                 if let Ok(package) = Package::read(&path) {
                     if crate::browser::java::is_enabled(&home, &package.manifest.id) {
                         for jar in package.manifest.jar {
@@ -123,9 +123,9 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
     // prepare_command also runs non-game commands (including hooks and tools), whose
     // arguments must not be interpreted by the game's parser.
     if command.get_args().any(|argument| argument == "--resources") {
-        let arguments = horizon_mod_package::selection::LaunchArguments::for_command(command)?;
+        let arguments = sunrise_mod_package::selection::LaunchArguments::for_command(command)?;
         for argument in arguments.rest {
-            if let horizon_mod_package::selection::Argument::Value(flag, resources) = argument {
+            if let sunrise_mod_package::selection::Argument::Value(flag, resources) = argument {
                 if flag == "--resources" {
                     paths.push(
                         command
@@ -171,7 +171,7 @@ pub(crate) fn shared(command: &Command) -> Result<Vec<Claim>, Error> {
 #[cfg(test)]
 mod tests;
 
-const GAME: &str = "HORIZON_LAUNCHER_GAME_COMMAND";
+const GAME: &str = "SUNRISE_LAUNCHER_GAME_COMMAND";
 
 /// Preserve the engine-owned argument grammar before wrappers obscure it.
 pub(crate) fn snapshot(command: &mut Command) {
@@ -303,7 +303,7 @@ fn spawn_inner(command: &mut Command, piped: bool) -> std::io::Result<std::proce
     let _ = piped;
     #[cfg(unix)]
     {
-        use horizon_mod_package::{holder, selection::LaunchArguments};
+        use sunrise_mod_package::{holder, selection::LaunchArguments};
         let encoded = override_value(command, GAME)
             .flatten()
             .map(std::ffi::OsStr::to_owned);
@@ -352,7 +352,7 @@ fn spawn_inner(command: &mut Command, piped: bool) -> std::io::Result<std::proce
                 };
                 let prepared =
                     holder::Prepared::new(data.clone(), trees, program, &selection.context)?;
-                let marker = horizon_mod_package::local_control::Marker::runtime()?;
+                let marker = sunrise_mod_package::local_control::Marker::runtime()?;
                 let mut holder_command = Command::new(executable);
                 // Private bootstrap ignores arguments; retaining the final command's arguments
                 // also permits receiver harnesses whose process entry parses test filters first.
@@ -430,9 +430,9 @@ pub(crate) fn publish(path: &Path) -> Result<(), Error> {
         .map(Path::to_owned)
         .collect();
     for relative in [
-        ".local/horizon-client/26.3",
+        ".local/sunrise-client/26.3",
         "resources",
-        ".horizon-cache",
+        ".sunrise-cache",
         "wasm-cache",
         "cache",
         "logs",
@@ -475,9 +475,9 @@ pub(crate) fn publish_existing() -> Result<(), Error> {
                         let path = entry.path();
                         units.push(path.clone());
                         for relative in [
-                            ".local/horizon-client/26.3",
+                            ".local/sunrise-client/26.3",
                             "resources",
-                            ".horizon-cache",
+                            ".sunrise-cache",
                             "wasm-cache",
                             "cache",
                             "logs",
@@ -508,8 +508,8 @@ pub(crate) fn publish_existing() -> Result<(), Error> {
 }
 
 /// Held from before an executable becomes visible through its completion publication.
-pub(crate) fn installation() -> Result<horizon_mod_package::runtime_leases::Publication, Error> {
-    use horizon_mod_package::{
+pub(crate) fn installation() -> Result<sunrise_mod_package::runtime_leases::Publication, Error> {
+    use sunrise_mod_package::{
         locks::{LockMode, Release},
         runtime_leases::Registry,
     };

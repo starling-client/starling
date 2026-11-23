@@ -181,7 +181,7 @@ size_t _mi_popcount_generic(size_t x);
 static inline size_t mi_popcount(size_t x) {
   #if mi_has_builtinz(popcount)
     return mi_builtinz(popcount)(x);
-  // Horizon (#7264): MSVC's __popcnt is the POPCNT instruction whatever the target, which x64
+  // Sunrise (#7264): MSVC's __popcnt is the POPCNT instruction whatever the target, which x64
   // CPUs before Nehalem (Core 2) and AMD K8 lack: the game died before main on them. x86/x64
   // take the portable count below, as GCC builds without -mpopcnt do, so the release programs
   // hold no POPCNT at all (tools/check_cpu_baseline.py). Upstream checks the CPUID bit at each

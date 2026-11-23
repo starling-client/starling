@@ -32,7 +32,7 @@ class SyncTests(unittest.TestCase):
     def test_conversion_stages_doc_and_removes_json(self):
         doc = 'First line\n\n Last line'
         fragment = {'hooks': [{'name': 'example', 'doc': doc, 'side': 'server',
-                    'target': "horizon_client::game::native_hooks::Game<'_>::native_example",
+                    'target': "sunrise_client::game::native_hooks::Game<'_>::native_example",
                     'mod_api': {'contract': 'listen'}}]}
         (self.fragments / 'example.json').write_text(json.dumps(fragment))
         subprocess.run(['git', 'add', '.'], cwd=self.root, check=True)

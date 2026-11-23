@@ -3,8 +3,8 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-API = ROOT / 'crates/horizon-mod-api/src/load_state.rs'
-VOCAB = ROOT / 'crates/horizon-mod-vocab/src/world/phase.rs'
+API = ROOT / 'crates/sunrise-mod-api/src/load_state.rs'
+VOCAB = ROOT / 'crates/sunrise-mod-vocab/src/world/phase.rs'
 s = API.read_text()
 
 

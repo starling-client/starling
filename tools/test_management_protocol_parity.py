@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Vanilla's server management protocol (JSON-RPC over a WebSocket), Horizon's against vanilla's.
+"""Vanilla's server management protocol (JSON-RPC over a WebSocket), Sunrise's against vanilla's.
 
-The pinned vanilla server (`net.minecraft.server.Main nogui`) and Horizon's (`horizon-server run`, which
+The pinned vanilla server (`net.minecraft.server.Main nogui`) and Sunrise's (`sunrise-server run`, which
 serves the protocol beside the game it supervises) start in folders with the same lists (ops.json,
 whitelist.json, banned-players.json, banned-ips.json) and the same `management-server-*` settings (a fixed
 secret, one allowed origin, and TLS, vanilla's default, with a PKCS12 keystore `keytool` makes). Each is then
@@ -33,9 +33,9 @@ sent the same things over TLS, and every answer is compared exactly:
   it took is recorded);
 - the TLS version each server agrees on.
 
-A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications the
+A parse error's `data` is Gson's message in vanilla and serde's in Sunrise: left out. The notifications the
 servers send meanwhile (`server/stopping`...) are set aside, and their names are kept in each side's report
-(`notifications`); Horizon sends `server/started` and `server/stopping` so far, not yet the rest.
+(`notifications`); Sunrise sends `server/started` and `server/stopping` so far, not yet the rest.
 """
 import base64
 import json
@@ -328,7 +328,7 @@ MESSAGES = [
     '{"jsonrpc":"2.0","id":117,"method":"minecraft:serversettings/pause_when_empty_seconds/set","params":[30]}',
     '{"jsonrpc":"2.0","id":118,"method":"minecraft:serversettings/pause_when_empty_seconds"}',
 ]
-# The notifications Horizon sends so far, which both servers must send for the same messages the same number of
+# The notifications Sunrise sends so far, which both servers must send for the same messages the same number of
 # times (the others, `server/saving`... depend on timing, or aren't sent yet).
 COMPARED_NOTIFICATIONS = {
     f'minecraft:notification/{name}' for name in (
@@ -543,15 +543,15 @@ def main():
     build = lab.LOCAL / NAME
     shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
-    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client',
-                   '-p', 'horizon-server', '--bin', 'horizon-server'], build, 'compile-rust')
+    oh.run_logged(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client',
+                   '-p', 'sunrise-server', '--bin', 'sunrise-server'], build, 'compile-rust')
     target = lab.cargo_target() / 'fast'
     work = Path(tempfile.mkdtemp(prefix='hz-management-'))
-    os.environ['HORIZON_API_DISCOVERY'] = NO_SERVICES
+    os.environ['SUNRISE_API_DISCOVERY'] = NO_SERVICES
     try:
         keystore, context = make_keystore(work)
         sides = {}
-        for side in ('vanilla', 'horizon'):
+        for side in ('vanilla', 'sunrise'):
             folder = work / side
             folder.mkdir()
             write_lists(folder)
@@ -572,10 +572,10 @@ def main():
                 (folder / 'server.toml').write_text(
                     f'[server]\nport = {port}\nonline_mode = false\nview_distance = 3\nsimulation_distance = 3\n\n'
                     f'[properties]\n{toml}\n'
-                    f'[engine]\npath = {json.dumps(str(target / f"horizon-client{EXE}"))}\n'
+                    f'[engine]\npath = {json.dumps(str(target / f"sunrise-client{EXE}"))}\n'
                     f'resources = {json.dumps(str(lab.RESOURCES.resolve()))}\nrestart_on_crash = false\n\n'
                     '[backups]\nevery = "0"\n\n[panel]\nbind = ""\n')
-                command = [target / f'horizon-server{EXE}', '--dir', folder, 'run']
+                command = [target / f'sunrise-server{EXE}', '--dir', folder, 'run']
             server = Server(command, folder, build / f'{side}.log')
             try:
                 server.wait_for(DONE, 600)
@@ -637,7 +637,7 @@ def main():
                 sides[side]['saved_status_replies'] = next(
                     (line.partition('=')[2] for line in properties.splitlines()
                      if line.startswith('enable-status=')), None)
-                if side == 'horizon':
+                if side == 'sunrise':
                     world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
                     sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
                     sides[side]['saved_config_game_mode'] = 'game_mode = "spectator"' in world
@@ -784,152 +784,152 @@ def main():
                     ws.sock.close()
             finally:
                 restarted.stop()
-        vanilla, horizon = sides['vanilla'], sides['horizon']
+        vanilla, sunrise = sides['vanilla'], sides['sunrise']
         failures = []
         for key in ('no secret', 'wrong secret', 'origin not allowed', 'subprotocol', 'tls', 'stop'):
-            if vanilla[key] != horizon[key]:
-                failures.append(f'{key}: vanilla {vanilla[key]!r}, Horizon {horizon[key]!r}')
-        for message, v, h in zip(MESSAGES, vanilla['answers'], horizon['answers']):
+            if vanilla[key] != sunrise[key]:
+                failures.append(f'{key}: vanilla {vanilla[key]!r}, Sunrise {sunrise[key]!r}')
+        for message, v, h in zip(MESSAGES, vanilla['answers'], sunrise['answers']):
             if v != h:
-                failures.append(f'{message}\n  vanilla {json.dumps(v)[:400]}\n  Horizon {json.dumps(h)[:400]}')
+                failures.append(f'{message}\n  vanilla {json.dumps(v)[:400]}\n  Sunrise {json.dumps(h)[:400]}')
         told = {side: sorted(n for n in sides[side]['notifications'] if n in COMPARED_NOTIFICATIONS)
-                for side in ('vanilla', 'horizon')}
-        if told['vanilla'] != told['horizon']:
-            failures.append(f"notifications: vanilla {told['vanilla']}\n  Horizon {told['horizon']}")
-        if vanilla['saved_difficulty'] != horizon['saved_difficulty'] or vanilla['saved_difficulty'] != 'peaceful':
-            failures.append(f"saved difficulty: vanilla {vanilla['saved_difficulty']!r}, Horizon {horizon['saved_difficulty']!r}")
-        if not horizon['saved_config_difficulty']:
-            failures.append('Horizon did not save peaceful difficulty in server.toml')
-        if vanilla['saved_game_mode'] != horizon['saved_game_mode'] or vanilla['saved_game_mode'] != 'spectator':
-            failures.append(f"saved game mode: vanilla {vanilla['saved_game_mode']!r}, Horizon {horizon['saved_game_mode']!r}")
-        if not horizon['saved_config_game_mode']:
-            failures.append('Horizon did not save spectator game mode in server.toml')
-        if vanilla['saved_force_game_mode'] != horizon['saved_force_game_mode'] or vanilla['saved_force_game_mode'] != 'true':
-            failures.append(f"saved forced game mode: vanilla {vanilla['saved_force_game_mode']!r}, Horizon {horizon['saved_force_game_mode']!r}")
-        if not horizon['saved_config_force_game_mode']:
-            failures.append('Horizon did not save forced game mode in server.toml')
-        if vanilla['saved_use_allowlist'] != horizon['saved_use_allowlist'] or vanilla['saved_use_allowlist'] != 'true':
-            failures.append(f"saved allowlist use: vanilla {vanilla['saved_use_allowlist']!r}, Horizon {horizon['saved_use_allowlist']!r}")
-        if vanilla['saved_enforce_allowlist'] != horizon['saved_enforce_allowlist'] or vanilla['saved_enforce_allowlist'] != 'true':
-            failures.append(f"saved allowlist enforcement: vanilla {vanilla['saved_enforce_allowlist']!r}, Horizon {horizon['saved_enforce_allowlist']!r}")
-        if not horizon['saved_config_use_allowlist']:
-            failures.append('Horizon did not save allowlist use in server.toml')
-        if not horizon['saved_config_enforce_allowlist']:
-            failures.append('Horizon did not save allowlist enforcement in server.toml')
-        if vanilla['saved_pause_when_empty_seconds'] != horizon['saved_pause_when_empty_seconds'] or \
+                for side in ('vanilla', 'sunrise')}
+        if told['vanilla'] != told['sunrise']:
+            failures.append(f"notifications: vanilla {told['vanilla']}\n  Sunrise {told['sunrise']}")
+        if vanilla['saved_difficulty'] != sunrise['saved_difficulty'] or vanilla['saved_difficulty'] != 'peaceful':
+            failures.append(f"saved difficulty: vanilla {vanilla['saved_difficulty']!r}, Sunrise {sunrise['saved_difficulty']!r}")
+        if not sunrise['saved_config_difficulty']:
+            failures.append('Sunrise did not save peaceful difficulty in server.toml')
+        if vanilla['saved_game_mode'] != sunrise['saved_game_mode'] or vanilla['saved_game_mode'] != 'spectator':
+            failures.append(f"saved game mode: vanilla {vanilla['saved_game_mode']!r}, Sunrise {sunrise['saved_game_mode']!r}")
+        if not sunrise['saved_config_game_mode']:
+            failures.append('Sunrise did not save spectator game mode in server.toml')
+        if vanilla['saved_force_game_mode'] != sunrise['saved_force_game_mode'] or vanilla['saved_force_game_mode'] != 'true':
+            failures.append(f"saved forced game mode: vanilla {vanilla['saved_force_game_mode']!r}, Sunrise {sunrise['saved_force_game_mode']!r}")
+        if not sunrise['saved_config_force_game_mode']:
+            failures.append('Sunrise did not save forced game mode in server.toml')
+        if vanilla['saved_use_allowlist'] != sunrise['saved_use_allowlist'] or vanilla['saved_use_allowlist'] != 'true':
+            failures.append(f"saved allowlist use: vanilla {vanilla['saved_use_allowlist']!r}, Sunrise {sunrise['saved_use_allowlist']!r}")
+        if vanilla['saved_enforce_allowlist'] != sunrise['saved_enforce_allowlist'] or vanilla['saved_enforce_allowlist'] != 'true':
+            failures.append(f"saved allowlist enforcement: vanilla {vanilla['saved_enforce_allowlist']!r}, Sunrise {sunrise['saved_enforce_allowlist']!r}")
+        if not sunrise['saved_config_use_allowlist']:
+            failures.append('Sunrise did not save allowlist use in server.toml')
+        if not sunrise['saved_config_enforce_allowlist']:
+            failures.append('Sunrise did not save allowlist enforcement in server.toml')
+        if vanilla['saved_pause_when_empty_seconds'] != sunrise['saved_pause_when_empty_seconds'] or \
                 vanilla['saved_pause_when_empty_seconds'] != '30':
-            failures.append(f"saved pause-when-empty seconds: vanilla {vanilla['saved_pause_when_empty_seconds']!r}, Horizon {horizon['saved_pause_when_empty_seconds']!r}")
-        if not horizon['saved_config_pause_when_empty_seconds']:
-            failures.append('Horizon did not save pause-when-empty seconds in server.toml')
-        if vanilla['restarted_force_game_mode'] != horizon['restarted_force_game_mode'] or \
+            failures.append(f"saved pause-when-empty seconds: vanilla {vanilla['saved_pause_when_empty_seconds']!r}, Sunrise {sunrise['saved_pause_when_empty_seconds']!r}")
+        if not sunrise['saved_config_pause_when_empty_seconds']:
+            failures.append('Sunrise did not save pause-when-empty seconds in server.toml')
+        if vanilla['restarted_force_game_mode'] != sunrise['restarted_force_game_mode'] or \
                 vanilla['restarted_force_game_mode'] != {'jsonrpc': '2.0', 'id': 64, 'result': True}:
-            failures.append(f"restarted forced game mode: vanilla {vanilla['restarted_force_game_mode']!r}, Horizon {horizon['restarted_force_game_mode']!r}")
-        if vanilla['restarted_autosave'] != horizon['restarted_autosave'] or \
+            failures.append(f"restarted forced game mode: vanilla {vanilla['restarted_force_game_mode']!r}, Sunrise {sunrise['restarted_force_game_mode']!r}")
+        if vanilla['restarted_autosave'] != sunrise['restarted_autosave'] or \
                 vanilla['restarted_autosave'] != {'jsonrpc': '2.0', 'id': 74, 'result': True}:
-            failures.append(f"restarted autosave: vanilla {vanilla['restarted_autosave']!r}, Horizon {horizon['restarted_autosave']!r}")
-        if vanilla['restarted_pause_when_empty_seconds'] != horizon['restarted_pause_when_empty_seconds'] or \
+            failures.append(f"restarted autosave: vanilla {vanilla['restarted_autosave']!r}, Sunrise {sunrise['restarted_autosave']!r}")
+        if vanilla['restarted_pause_when_empty_seconds'] != sunrise['restarted_pause_when_empty_seconds'] or \
                 vanilla['restarted_pause_when_empty_seconds'] != {'jsonrpc': '2.0', 'id': 119, 'result': 30}:
-            failures.append(f"restarted pause-when-empty seconds: vanilla {vanilla['restarted_pause_when_empty_seconds']!r}, Horizon {horizon['restarted_pause_when_empty_seconds']!r}")
-        if vanilla['restarted_use_allowlist'] != horizon['restarted_use_allowlist'] or \
+            failures.append(f"restarted pause-when-empty seconds: vanilla {vanilla['restarted_pause_when_empty_seconds']!r}, Sunrise {sunrise['restarted_pause_when_empty_seconds']!r}")
+        if vanilla['restarted_use_allowlist'] != sunrise['restarted_use_allowlist'] or \
                 vanilla['restarted_use_allowlist'] != {'jsonrpc': '2.0', 'id': 93, 'result': True}:
-            failures.append(f"restarted allowlist use: vanilla {vanilla['restarted_use_allowlist']!r}, Horizon {horizon['restarted_use_allowlist']!r}")
-        if vanilla['restarted_enforce_allowlist'] != horizon['restarted_enforce_allowlist'] or \
+            failures.append(f"restarted allowlist use: vanilla {vanilla['restarted_use_allowlist']!r}, Sunrise {sunrise['restarted_use_allowlist']!r}")
+        if vanilla['restarted_enforce_allowlist'] != sunrise['restarted_enforce_allowlist'] or \
                 vanilla['restarted_enforce_allowlist'] != {'jsonrpc': '2.0', 'id': 94, 'result': True}:
-            failures.append(f"restarted allowlist enforcement: vanilla {vanilla['restarted_enforce_allowlist']!r}, Horizon {horizon['restarted_enforce_allowlist']!r}")
-        if vanilla['saved_max_players'] != horizon['saved_max_players'] or vanilla['saved_max_players'] != '30':
-            failures.append(f"saved max players: vanilla {vanilla['saved_max_players']!r}, Horizon {horizon['saved_max_players']!r}")
-        if not horizon['saved_config_max_players']:
-            failures.append('Horizon did not save max players in server.toml')
-        if vanilla['restarted_max_players'] != horizon['restarted_max_players'] or \
+            failures.append(f"restarted allowlist enforcement: vanilla {vanilla['restarted_enforce_allowlist']!r}, Sunrise {sunrise['restarted_enforce_allowlist']!r}")
+        if vanilla['saved_max_players'] != sunrise['saved_max_players'] or vanilla['saved_max_players'] != '30':
+            failures.append(f"saved max players: vanilla {vanilla['saved_max_players']!r}, Sunrise {sunrise['saved_max_players']!r}")
+        if not sunrise['saved_config_max_players']:
+            failures.append('Sunrise did not save max players in server.toml')
+        if vanilla['restarted_max_players'] != sunrise['restarted_max_players'] or \
                 vanilla['restarted_max_players'] != {'jsonrpc': '2.0', 'id': 109, 'result': 30}:
-            failures.append(f"restarted max players: vanilla {vanilla['restarted_max_players']!r}, Horizon {horizon['restarted_max_players']!r}")
-        if vanilla['saved_status_heartbeat_interval'] != horizon['saved_status_heartbeat_interval'] or \
+            failures.append(f"restarted max players: vanilla {vanilla['restarted_max_players']!r}, Sunrise {sunrise['restarted_max_players']!r}")
+        if vanilla['saved_status_heartbeat_interval'] != sunrise['saved_status_heartbeat_interval'] or \
                 vanilla['saved_status_heartbeat_interval'] != '-5':
-            failures.append(f"saved status heartbeat interval: vanilla {vanilla['saved_status_heartbeat_interval']!r}, Horizon {horizon['saved_status_heartbeat_interval']!r}")
-        if vanilla['restarted_status_heartbeat_interval'] != horizon['restarted_status_heartbeat_interval'] or \
+            failures.append(f"saved status heartbeat interval: vanilla {vanilla['saved_status_heartbeat_interval']!r}, Sunrise {sunrise['saved_status_heartbeat_interval']!r}")
+        if vanilla['restarted_status_heartbeat_interval'] != sunrise['restarted_status_heartbeat_interval'] or \
                 vanilla['restarted_status_heartbeat_interval'] != {'jsonrpc': '2.0', 'id': 408, 'result': -5}:
-            failures.append(f"restarted status heartbeat interval: vanilla {vanilla['restarted_status_heartbeat_interval']!r}, Horizon {horizon['restarted_status_heartbeat_interval']!r}")
-        if vanilla['saved_player_idle_timeout'] != horizon['saved_player_idle_timeout'] or \
+            failures.append(f"restarted status heartbeat interval: vanilla {vanilla['restarted_status_heartbeat_interval']!r}, Sunrise {sunrise['restarted_status_heartbeat_interval']!r}")
+        if vanilla['saved_player_idle_timeout'] != sunrise['saved_player_idle_timeout'] or \
                 vanilla['saved_player_idle_timeout'] != '30':
-            failures.append(f"saved player idle timeout: vanilla {vanilla['saved_player_idle_timeout']!r}, Horizon {horizon['saved_player_idle_timeout']!r}")
-        if not horizon['saved_config_player_idle_timeout']:
-            failures.append('Horizon did not save player idle timeout in server.toml')
-        if vanilla['restarted_player_idle_timeout'] != horizon['restarted_player_idle_timeout'] or \
+            failures.append(f"saved player idle timeout: vanilla {vanilla['saved_player_idle_timeout']!r}, Sunrise {sunrise['saved_player_idle_timeout']!r}")
+        if not sunrise['saved_config_player_idle_timeout']:
+            failures.append('Sunrise did not save player idle timeout in server.toml')
+        if vanilla['restarted_player_idle_timeout'] != sunrise['restarted_player_idle_timeout'] or \
                 vanilla['restarted_player_idle_timeout'] != {'jsonrpc': '2.0', 'id': 133, 'result': 30}:
-            failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Horizon {horizon['restarted_player_idle_timeout']!r}")
-        if vanilla['saved_entity_broadcast_range'] != horizon['saved_entity_broadcast_range'] or \
+            failures.append(f"restarted player idle timeout: vanilla {vanilla['restarted_player_idle_timeout']!r}, Sunrise {sunrise['restarted_player_idle_timeout']!r}")
+        if vanilla['saved_entity_broadcast_range'] != sunrise['saved_entity_broadcast_range'] or \
                 vanilla['saved_entity_broadcast_range'] != '80':
-            failures.append(f"saved entity broadcast range: vanilla {vanilla['saved_entity_broadcast_range']!r}, Horizon {horizon['saved_entity_broadcast_range']!r}")
-        if not horizon['saved_config_entity_broadcast_range']:
-            failures.append('Horizon did not save entity broadcast range in server.toml')
-        if vanilla['restarted_entity_broadcast_range'] != horizon['restarted_entity_broadcast_range'] or \
+            failures.append(f"saved entity broadcast range: vanilla {vanilla['saved_entity_broadcast_range']!r}, Sunrise {sunrise['saved_entity_broadcast_range']!r}")
+        if not sunrise['saved_config_entity_broadcast_range']:
+            failures.append('Sunrise did not save entity broadcast range in server.toml')
+        if vanilla['restarted_entity_broadcast_range'] != sunrise['restarted_entity_broadcast_range'] or \
                 vanilla['restarted_entity_broadcast_range'] != {'jsonrpc': '2.0', 'id': 189, 'result': 80}:
-            failures.append(f"restarted entity broadcast range: vanilla {vanilla['restarted_entity_broadcast_range']!r}, Horizon {horizon['restarted_entity_broadcast_range']!r}")
-        if vanilla['saved_simulation_distance'] != horizon['saved_simulation_distance'] or \
+            failures.append(f"restarted entity broadcast range: vanilla {vanilla['restarted_entity_broadcast_range']!r}, Sunrise {sunrise['restarted_entity_broadcast_range']!r}")
+        if vanilla['saved_simulation_distance'] != sunrise['saved_simulation_distance'] or \
                 vanilla['saved_simulation_distance'] != '8':
-            failures.append(f"saved simulation distance: vanilla {vanilla['saved_simulation_distance']!r}, Horizon {horizon['saved_simulation_distance']!r}")
-        if not horizon['saved_config_simulation_distance']:
-            failures.append('Horizon did not save simulation distance in server.toml')
-        if vanilla['restarted_simulation_distance'] != horizon['restarted_simulation_distance'] or \
+            failures.append(f"saved simulation distance: vanilla {vanilla['saved_simulation_distance']!r}, Sunrise {sunrise['saved_simulation_distance']!r}")
+        if not sunrise['saved_config_simulation_distance']:
+            failures.append('Sunrise did not save simulation distance in server.toml')
+        if vanilla['restarted_simulation_distance'] != sunrise['restarted_simulation_distance'] or \
                 vanilla['restarted_simulation_distance'] != {'jsonrpc': '2.0', 'id': 179, 'result': 8}:
-            failures.append(f"restarted simulation distance: vanilla {vanilla['restarted_simulation_distance']!r}, Horizon {horizon['restarted_simulation_distance']!r}")
-        if vanilla['saved_view_distance'] != horizon['saved_view_distance'] or vanilla['saved_view_distance'] != '8':
-            failures.append(f"saved view distance: vanilla {vanilla['saved_view_distance']!r}, Horizon {horizon['saved_view_distance']!r}")
-        if not horizon['saved_config_view_distance']:
-            failures.append('Horizon did not save view distance in server.toml')
-        if vanilla['restarted_view_distance'] != horizon['restarted_view_distance'] or \
+            failures.append(f"restarted simulation distance: vanilla {vanilla['restarted_simulation_distance']!r}, Sunrise {sunrise['restarted_simulation_distance']!r}")
+        if vanilla['saved_view_distance'] != sunrise['saved_view_distance'] or vanilla['saved_view_distance'] != '8':
+            failures.append(f"saved view distance: vanilla {vanilla['saved_view_distance']!r}, Sunrise {sunrise['saved_view_distance']!r}")
+        if not sunrise['saved_config_view_distance']:
+            failures.append('Sunrise did not save view distance in server.toml')
+        if vanilla['restarted_view_distance'] != sunrise['restarted_view_distance'] or \
                 vanilla['restarted_view_distance'] != {'jsonrpc': '2.0', 'id': 169, 'result': 8}:
-            failures.append(f"restarted view distance: vanilla {vanilla['restarted_view_distance']!r}, Horizon {horizon['restarted_view_distance']!r}")
-        if vanilla['saved_spawn_protection'] != horizon['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
-            failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Horizon {horizon['saved_spawn_protection']!r}")
-        if not horizon['saved_config_spawn_protection']:
-            failures.append('Horizon did not save spawn protection in server.toml')
-        if vanilla['restarted_spawn_protection'] != horizon['restarted_spawn_protection'] or \
+            failures.append(f"restarted view distance: vanilla {vanilla['restarted_view_distance']!r}, Sunrise {sunrise['restarted_view_distance']!r}")
+        if vanilla['saved_spawn_protection'] != sunrise['saved_spawn_protection'] or vanilla['saved_spawn_protection'] != '8':
+            failures.append(f"saved spawn protection: vanilla {vanilla['saved_spawn_protection']!r}, Sunrise {sunrise['saved_spawn_protection']!r}")
+        if not sunrise['saved_config_spawn_protection']:
+            failures.append('Sunrise did not save spawn protection in server.toml')
+        if vanilla['restarted_spawn_protection'] != sunrise['restarted_spawn_protection'] or \
                 vanilla['restarted_spawn_protection'] != {'jsonrpc': '2.0', 'id': 159, 'result': 8}:
-            failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Horizon {horizon['restarted_spawn_protection']!r}")
-        if vanilla['saved_operator_user_permission_level'] != horizon['saved_operator_user_permission_level'] or \
+            failures.append(f"restarted spawn protection: vanilla {vanilla['restarted_spawn_protection']!r}, Sunrise {sunrise['restarted_spawn_protection']!r}")
+        if vanilla['saved_operator_user_permission_level'] != sunrise['saved_operator_user_permission_level'] or \
                 vanilla['saved_operator_user_permission_level'] != '2':
-            failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Horizon {horizon['saved_operator_user_permission_level']!r}")
-        if not horizon['saved_config_operator_user_permission_level']:
-            failures.append('Horizon did not save operator permission level in server.toml')
-        if vanilla['restarted_operator_user_permission_level'] != horizon['restarted_operator_user_permission_level'] or \
+            failures.append(f"saved operator permission level: vanilla {vanilla['saved_operator_user_permission_level']!r}, Sunrise {sunrise['saved_operator_user_permission_level']!r}")
+        if not sunrise['saved_config_operator_user_permission_level']:
+            failures.append('Sunrise did not save operator permission level in server.toml')
+        if vanilla['restarted_operator_user_permission_level'] != sunrise['restarted_operator_user_permission_level'] or \
                 vanilla['restarted_operator_user_permission_level'] != {'jsonrpc': '2.0', 'id': 229, 'result': 2}:
-            failures.append(f"restarted operator permission level: vanilla {vanilla['restarted_operator_user_permission_level']!r}, Horizon {horizon['restarted_operator_user_permission_level']!r}")
-        if vanilla['saved_allow_flight'] != horizon['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
-            failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Horizon {horizon['saved_allow_flight']!r}")
-        if not horizon['saved_config_allow_flight']:
-            failures.append('Horizon did not save allow-flight in server.toml')
-        if vanilla['restarted_allow_flight'] != horizon['restarted_allow_flight'] or \
+            failures.append(f"restarted operator permission level: vanilla {vanilla['restarted_operator_user_permission_level']!r}, Sunrise {sunrise['restarted_operator_user_permission_level']!r}")
+        if vanilla['saved_allow_flight'] != sunrise['saved_allow_flight'] or vanilla['saved_allow_flight'] != 'true':
+            failures.append(f"saved allow-flight: vanilla {vanilla['saved_allow_flight']!r}, Sunrise {sunrise['saved_allow_flight']!r}")
+        if not sunrise['saved_config_allow_flight']:
+            failures.append('Sunrise did not save allow-flight in server.toml')
+        if vanilla['restarted_allow_flight'] != sunrise['restarted_allow_flight'] or \
                 vanilla['restarted_allow_flight'] != {'jsonrpc': '2.0', 'id': 149, 'result': True}:
-            failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Horizon {horizon['restarted_allow_flight']!r}")
-        if vanilla['saved_accepts_transfers'] != horizon['saved_accepts_transfers'] or \
+            failures.append(f"restarted allow-flight: vanilla {vanilla['restarted_allow_flight']!r}, Sunrise {sunrise['restarted_allow_flight']!r}")
+        if vanilla['saved_accepts_transfers'] != sunrise['saved_accepts_transfers'] or \
                 vanilla['saved_accepts_transfers'] != 'true':
-            failures.append(f"saved accepts-transfers: vanilla {vanilla['saved_accepts_transfers']!r}, Horizon {horizon['saved_accepts_transfers']!r}")
-        if not horizon['saved_config_accepts_transfers']:
-            failures.append('Horizon did not save accepts-transfers in server.toml')
-        if vanilla['restarted_accepts_transfers'] != horizon['restarted_accepts_transfers'] or \
+            failures.append(f"saved accepts-transfers: vanilla {vanilla['saved_accepts_transfers']!r}, Sunrise {sunrise['saved_accepts_transfers']!r}")
+        if not sunrise['saved_config_accepts_transfers']:
+            failures.append('Sunrise did not save accepts-transfers in server.toml')
+        if vanilla['restarted_accepts_transfers'] != sunrise['restarted_accepts_transfers'] or \
                 vanilla['restarted_accepts_transfers'] != {'jsonrpc': '2.0', 'id': 308, 'result': True}:
-            failures.append(f"restarted accepts-transfers: vanilla {vanilla['restarted_accepts_transfers']!r}, Horizon {horizon['restarted_accepts_transfers']!r}")
-        if vanilla['saved_hide_online_players'] != horizon['saved_hide_online_players'] or \
+            failures.append(f"restarted accepts-transfers: vanilla {vanilla['restarted_accepts_transfers']!r}, Sunrise {sunrise['restarted_accepts_transfers']!r}")
+        if vanilla['saved_hide_online_players'] != sunrise['saved_hide_online_players'] or \
                 vanilla['saved_hide_online_players'] != 'true':
-            failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Horizon {horizon['saved_hide_online_players']!r}")
-        if not horizon['saved_config_hide_online_players']:
-            failures.append('Horizon did not save hide-online-players in server.toml')
-        if vanilla['restarted_hide_online_players'] != horizon['restarted_hide_online_players'] or \
+            failures.append(f"saved hide-online-players: vanilla {vanilla['saved_hide_online_players']!r}, Sunrise {sunrise['saved_hide_online_players']!r}")
+        if not sunrise['saved_config_hide_online_players']:
+            failures.append('Sunrise did not save hide-online-players in server.toml')
+        if vanilla['restarted_hide_online_players'] != sunrise['restarted_hide_online_players'] or \
                 vanilla['restarted_hide_online_players'] != {'jsonrpc': '2.0', 'id': 199, 'result': True}:
-            failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Horizon {horizon['restarted_hide_online_players']!r}")
-        if vanilla['saved_status_replies'] != horizon['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
-            failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Horizon {horizon['saved_status_replies']!r}")
-        if not horizon['saved_config_status_replies']:
-            failures.append('Horizon did not save status replies in server.toml')
-        if vanilla['restarted_status_replies'] != horizon['restarted_status_replies'] or \
+            failures.append(f"restarted hide-online-players: vanilla {vanilla['restarted_hide_online_players']!r}, Sunrise {sunrise['restarted_hide_online_players']!r}")
+        if vanilla['saved_status_replies'] != sunrise['saved_status_replies'] or vanilla['saved_status_replies'] != 'false':
+            failures.append(f"saved status replies: vanilla {vanilla['saved_status_replies']!r}, Sunrise {sunrise['saved_status_replies']!r}")
+        if not sunrise['saved_config_status_replies']:
+            failures.append('Sunrise did not save status replies in server.toml')
+        if vanilla['restarted_status_replies'] != sunrise['restarted_status_replies'] or \
                 vanilla['restarted_status_replies'] != {'jsonrpc': '2.0', 'id': 219, 'result': False}:
-            failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Horizon {horizon['restarted_status_replies']!r}")
+            failures.append(f"restarted status replies: vanilla {vanilla['restarted_status_replies']!r}, Sunrise {sunrise['restarted_status_replies']!r}")
         (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
         report = lab.LOCAL / 'datagen/out/reports/json-rpc-api-schema.json'
-        discovered = horizon['answers'][MESSAGES.index('{"jsonrpc":"2.0","id":12,"method":"rpc.discover"}')]
+        discovered = sunrise['answers'][MESSAGES.index('{"jsonrpc":"2.0","id":12,"method":"rpc.discover"}')]
         if json.loads(report.read_text()) != discovered.get('result'):
             failures.append(f'rpc.discover differs from {report}')
         if failures:

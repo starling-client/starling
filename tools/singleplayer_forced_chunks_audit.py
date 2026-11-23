@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check #1527: per-dimension /forceload add/remove across normal restarts.
 
-Build horizon-client and horizon-ctl with the fast profile first, then run:
+Build sunrise-client and sunrise-ctl with the fast profile first, then run:
   python3 tools/singleplayer_forced_chunks_audit.py --case force-save
 Runs singleplayer on its server thread, using scratch homes.
 """
@@ -46,13 +46,13 @@ def run(bin_dir, resources):
         for stage in range(3):
             # Every process gets fresh homes; copy only this fixture's saved world.
             env = lab.game_env({k: v for k, v in os.environ.items() if k not in (
-                'HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
-            home = Path(env['HORIZON_HOME'])
+                'SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')})
+            home = Path(env['SUNRISE_HOME'])
             if previous is not None:
                 shutil.copytree(previous, home / 'saves')
             socket = work / f'{stage}.sock'
-            cli = Cli(bin_dir / 'horizon-ctl', socket, home, env)
-            args = [str(bin_dir / 'horizon-client'), '--resources', str(resources),
+            cli = Cli(bin_dir / 'sunrise-ctl', socket, home, env)
+            args = [str(bin_dir / 'sunrise-client'), '--resources', str(resources),
                     '--world', 'forced', '--creative', '--seed', '4242', '--offscreen',
                     '--render-distance', '4', '--control', '--control-socket', str(socket)]
             with (work / f'{stage}.log').open('w') as log:

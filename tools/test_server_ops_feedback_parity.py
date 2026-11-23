@@ -5,7 +5,7 @@ CommandSourceStack.broadcastToAdmins: a command's success that vanilla sends wit
 italic as `[name: message]`, to every other operator while `send_command_feedback` is on, including the
 console's own commands when `broadcast-console-to-ops` is (DedicatedServer.shouldInformAdmins).
 
-A vanilla dedicated server and Horizon's (`horizon-client --dedicated --nogui`) each serve a copy of one flat
+A vanilla dedicated server and Sunrise's (`sunrise-client --dedicated --nogui`) each serve a copy of one flat
 world vanilla generated first, with the same server.properties and Alice and Bob as operators. LocatorBarClient
 joins them both (players made of vanilla's protocol code) and records the system chat each receives while, step
 by step, the console sets the time, asks for the difficulty (a query, told to nobody), whitelists a player,
@@ -110,46 +110,46 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/LocatorBarClient.java'
+    oracle = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/LocatorBarClient.java'
     classes = build / 'classes'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir()
     dependencies = os.pathsep.join(map(str, [jars['server'], *libraries]))
     subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-nowarn', '-sourcepath',
-                    lab.ROOT / 'mods/horizon/src/test/java', '-cp', dependencies, '-d', classes, oracle],
+                    lab.ROOT / 'mods/sunrise/src/test/java', '-cp', dependencies, '-d', classes, oracle],
                    cwd=lab.ROOT, check=True, capture_output=True)
-    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'], cwd=lab.ROOT,
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'sunrise-game', '--bin', 'sunrise-client'], cwd=lab.ROOT,
                    check=True, capture_output=True)
     import json
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))
-    binary = Path(metadata['target_directory']) / 'fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
+    binary = Path(metadata['target_directory']) / 'fast' / ('sunrise-client.exe' if os.name == 'nt' else 'sunrise-client')
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
-    horizon_server = [binary, '--resources', lab.LOCAL / 'horizon-client/26.3', '--dedicated', '--nogui']
-    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.horizonlab.parity.LocatorBarClient']
+    sunrise_server = [binary, '--resources', lab.LOCAL / 'sunrise-client/26.3', '--dedicated', '--nogui']
+    client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.LocatorBarClient']
 
     world = generate_world(vanilla_server, build)
-    sides = {'vanilla': ([], []), 'horizon': ([], [])}
+    sides = {'vanilla': ([], []), 'sunrise': ([], [])}
     for case in CASES:
-        for label, command in [('vanilla', vanilla_server), ('horizon', horizon_server)]:
+        for label, command in [('vanilla', vanilla_server), ('sunrise', sunrise_server)]:
             lines, errors = run_side(label, case, command, client, build, world)
             sides[label][0].extend(lines)
             sides[label][1].extend(errors)
-    (vanilla, vanilla_errors), (horizon, horizon_errors) = sides['vanilla'], sides['horizon']
+    (vanilla, vanilla_errors), (sunrise, sunrise_errors) = sides['vanilla'], sides['sunrise']
     (build / 'vanilla.txt').write_text('\n'.join(vanilla) + '\n', encoding='utf-8')
-    (build / 'horizon.txt').write_text('\n'.join(horizon) + '\n', encoding='utf-8')
-    errors = vanilla_errors + horizon_errors
-    if errors or vanilla != horizon:
+    (build / 'sunrise.txt').write_text('\n'.join(sunrise) + '\n', encoding='utf-8')
+    errors = vanilla_errors + sunrise_errors
+    if errors or vanilla != sunrise:
         import difflib
-        diff = '\n'.join(difflib.unified_diff(vanilla, horizon, 'vanilla', 'horizon', n=1, lineterm=''))
-        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and horizon.txt):\n'
+        diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=1, lineterm=''))
+        raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and sunrise.txt):\n'
                              + '\n'.join(errors[:10]) + '\n' + diff[:6000])
     if sum('[Server' in l or 'chat.type.admin' in l for l in vanilla) < 5:
         raise AssertionError(f'vanilla sent the operators too little: the script did not run (see {build})')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),
         java=subprocess.check_output(['java', '--version'], text=True).splitlines()[0],
-        lines=len(vanilla), output_sha256=lab.digest(build / 'horizon.txt', 'sha256'),
+        lines=len(vanilla), output_sha256=lab.digest(build / 'sunrise.txt', 'sha256'),
         scope='The system chat two operators get on a dedicated server while the console and one of them run '
               'commands: broadcastToAdmins for the console (broadcast-console-to-ops on and off) and a player, '
               'queries, deop and op, send_command_feedback off and on, and save-all.'))

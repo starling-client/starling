@@ -12,7 +12,7 @@ another meshing context or worker event bus.
 
 Verified vanilla using `python3 tools/rea_vanilla.py method
 net.minecraft.client.renderer.chunk.SectionCompiler compile` and `callers` for
-that method from `/workspace/horizon`. Compile visits 4096 cells, marks solid
+that method from `/workspace/sunrise`. Compile visits 4096 cells, marks solid
 cells in VisGraph, collects block entities, emits fluids separately from block
 models, sorts translucent output and resolves section connectivity. The sole
 reported caller is `SectionRenderDispatcher.RenderSection.CompileTask.doTask`.
@@ -77,15 +77,15 @@ below are integration points, not claims that the proposed epochs already exist.
 
 | Route | Verified file:line | Required behavior |
 | --- | --- | --- |
-| Initial mesh and remesh | `horizon-client-render/src/streaming.rs:2237`, `:1142` | Prepare before scheduling, use frozen input in worker |
-| State write and neighbour borders | `horizon-client-render/src/world.rs:385` | Dirty all radius-one dependent sections, including diagonals and vertical borders |
-| Column replacement, biome/light changes | `horizon-client-render/src/streaming.rs:3455`, `:3476` | Invalidate halo dependencies even if centre state is unchanged |
-| Visibility toggle | `horizon-client/src/game/modding/native_render_visibility.rs:13` | Explicit refresh increments policy epoch and remeshes affected loaded sections; conservative all-loaded refresh initially |
-| Resource reload | `horizon-client-render/src/streaming.rs:1277`, `:1283` | Replace context, rebuild plans and sections |
-| Renderer recovery and pending uploads | `horizon-client/src/game.rs:14166`, `:14178` | Clear pending old uploads and use shared reload invalidation |
-| Unload | `horizon-client-render/src/streaming.rs:516`, `:1394` | Cancel queued jobs, invalidate lifetime, remove terrain, dirty surviving halo dependents |
-| Stale workers | `horizon-client-render/src/streaming.rs:1887` | Extend sequence/column checks to all captured generations and recycle refused output |
-| Existing mask consumption | `horizon-client-render/src/mesher.rs:1766` | Preserve built-in behavior and raw input separately |
+| Initial mesh and remesh | `sunrise-client-render/src/streaming.rs:2237`, `:1142` | Prepare before scheduling, use frozen input in worker |
+| State write and neighbour borders | `sunrise-client-render/src/world.rs:385` | Dirty all radius-one dependent sections, including diagonals and vertical borders |
+| Column replacement, biome/light changes | `sunrise-client-render/src/streaming.rs:3455`, `:3476` | Invalidate halo dependencies even if centre state is unchanged |
+| Visibility toggle | `sunrise-client/src/game/modding/native_render_visibility.rs:13` | Explicit refresh increments policy epoch and remeshes affected loaded sections; conservative all-loaded refresh initially |
+| Resource reload | `sunrise-client-render/src/streaming.rs:1277`, `:1283` | Replace context, rebuild plans and sections |
+| Renderer recovery and pending uploads | `sunrise-client/src/game.rs:14166`, `:14178` | Clear pending old uploads and use shared reload invalidation |
+| Unload | `sunrise-client-render/src/streaming.rs:516`, `:1394` | Cancel queued jobs, invalidate lifetime, remove terrain, dirty surviving halo dependents |
+| Stale workers | `sunrise-client-render/src/streaming.rs:1887` | Extend sequence/column checks to all captured generations and recycle refused output |
+| Existing mask consumption | `sunrise-client-render/src/mesher.rs:1766` | Preserve built-in behavior and raw input separately |
 
 Chunk arrival also invalidates surviving sections that captured Missing; use
 the streaming column installation boundary shared with replacement. Every plan,

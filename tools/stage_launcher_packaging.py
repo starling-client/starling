@@ -18,33 +18,33 @@ def stage(source: Path, destination: Path, repository: str):
     if repository == UPSTREAM:
         return
     replacements = {
-        'horizon-launcher': 'horizon-fork-launcher',
-        'horizon-fork-launcher.desktop': 'io.github.arismoko.horizonfork.launcher.desktop',
-        'dev.horizon.launcher': 'io.github.arismoko.horizonfork.launcher',
-        'Horizon.app': 'Horizon Fork Launcher (arismoko).app',
-        '<string>Horizon</string>': '<string>Horizon Fork Launcher (arismoko)</string>',
-        'Name=Horizon\n': 'Name=Horizon Fork Launcher (arismoko)\n',
-        'StartupWMClass=horizon-fork-launcher': 'StartupWMClass=io.github.arismoko.horizonfork.launcher',
+        'sunrise-launcher': 'sunrise-fork-launcher',
+        'sunrise-fork-launcher.desktop': 'io.github.arismoko.sunrisefork.launcher.desktop',
+        'dev.sunrise.launcher': 'io.github.arismoko.sunrisefork.launcher',
+        'Sunrise.app': 'Sunrise Fork Launcher (arismoko).app',
+        '<string>Sunrise</string>': '<string>Sunrise Fork Launcher (arismoko)</string>',
+        'Name=Sunrise\n': 'Name=Sunrise Fork Launcher (arismoko)\n',
+        'StartupWMClass=sunrise-fork-launcher': 'StartupWMClass=io.github.arismoko.sunrisefork.launcher',
     }
-    for name in ('linux/appimage.sh', 'linux/horizon-launcher.desktop', 'macos/package.sh', 'macos/Info.plist'):
+    for name in ('linux/appimage.sh', 'linux/sunrise-launcher.desktop', 'macos/package.sh', 'macos/Info.plist'):
         path = destination / name
         text = path.read_text()
         for old, new in replacements.items():
             text = text.replace(old, new)
         if name == 'macos/package.sh':
             # Spaces in the fork's bundle name must remain one shell argument.
-            text = text.replace('app=$out/Horizon Fork Launcher (arismoko).app', 'app="$out/Horizon Fork Launcher (arismoko).app"')
-            text = text.replace('--keepParent Horizon Fork Launcher (arismoko).app', '--keepParent "Horizon Fork Launcher (arismoko).app"')
+            text = text.replace('app=$out/Sunrise Fork Launcher (arismoko).app', 'app="$out/Sunrise Fork Launcher (arismoko).app"')
+            text = text.replace('--keepParent Sunrise Fork Launcher (arismoko).app', '--keepParent "Sunrise Fork Launcher (arismoko).app"')
             text = text.replace('identity=${MACOS_SIGN_IDENTITY:--}', 'identity=-')
-            text = text.replace('"title": "Horizon"', '"title": "Horizon Fork Launcher (arismoko)"')
-            text = text.replace('"$out/dmg.json" Horizon "$dmg"', '"$out/dmg.json" "Horizon Fork Launcher (arismoko)" "$dmg"')
+            text = text.replace('"title": "Sunrise"', '"title": "Sunrise Fork Launcher (arismoko)"')
+            text = text.replace('"$out/dmg.json" Sunrise "$dmg"', '"$out/dmg.json" "Sunrise Fork Launcher (arismoko)" "$dmg"')
         path.write_text(text)
-    (destination / 'linux/horizon-launcher.desktop').rename(destination / 'linux/io.github.arismoko.horizonfork.launcher.desktop')
-    shutil.copyfile(source / 'icons/fork/launcher.ico', destination / 'icons/horizon.ico')
-    shutil.copyfile(source / 'icons/fork/launcher.icns', destination / 'icons/horizon.icns')
+    (destination / 'linux/sunrise-launcher.desktop').rename(destination / 'linux/io.github.arismoko.sunrisefork.launcher.desktop')
+    shutil.copyfile(source / 'icons/fork/launcher.ico', destination / 'icons/sunrise.ico')
+    shutil.copyfile(source / 'icons/fork/launcher.icns', destination / 'icons/sunrise.icns')
     for size in (16, 24, 32, 48, 64, 128, 256, 512):
-        shutil.copyfile(source / f'icons/fork/{size}.png', destination / f'icons/hicolor/{size}x{size}/apps/horizon.png')
-    shutil.copyfile(source / 'icons/fork/launcher.svg', destination / 'icons/hicolor/scalable/apps/horizon.svg')
+        shutil.copyfile(source / f'icons/fork/{size}.png', destination / f'icons/hicolor/{size}x{size}/apps/sunrise.png')
+    shutil.copyfile(source / 'icons/fork/launcher.svg', destination / 'icons/hicolor/scalable/apps/sunrise.svg')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

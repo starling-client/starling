@@ -7,9 +7,9 @@ intentionally does not leave an alias for the unmerged contributor spelling.
 from pathlib import Path
 
 paths = [
-    Path("crates/horizon-mod-package/src/manifest.rs"),
-    Path("crates/horizon-mod-package/src/dependencies.rs"),
-    Path("crates/horizon-mod-host/src/loading.rs"),
+    Path("crates/sunrise-mod-package/src/manifest.rs"),
+    Path("crates/sunrise-mod-package/src/dependencies.rs"),
+    Path("crates/sunrise-mod-host/src/loading.rs"),
 ]
 for path in paths:
     source = path.read_text()

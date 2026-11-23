@@ -1,82 +1,82 @@
 [workspace]
-exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "third_party/android-activity", "tools/fixtures/paper-trace-mod"]
+exclude = ["crates/sunrise-telemetry-server", "launcher", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "third_party/android-activity", "tools/fixtures/paper-trace-mod"]
 members = [
     "crates/starling-catalog",
-    "crates/horizon-guest-stack",
-    "crates/horizon-mod-vocab",
-    "crates/horizon-game-discovery",
-    "crates/horizon-cosmetics",
-    "crates/horizon-telemetry",
-    "crates/horizon-hooks",
-    "crates/horizon-mod-host",
-    "crates/horizon-game",
-    "crates/horizon-official",
-    "crates/horizon-heartbeat",
-    "crates/horizon-core",
-    "crates/horizon-platform",
-    "crates/horizon-addresses",
-    "crates/horizon-mod-runtime",
-    "crates/horizon-mod-render",
+    "crates/sunrise-guest-stack",
+    "crates/sunrise-mod-vocab",
+    "crates/sunrise-game-discovery",
+    "crates/sunrise-cosmetics",
+    "crates/sunrise-telemetry",
+    "crates/sunrise-hooks",
+    "crates/sunrise-mod-host",
+    "crates/sunrise-game",
+    "crates/sunrise-official",
+    "crates/sunrise-heartbeat",
+    "crates/sunrise-core",
+    "crates/sunrise-platform",
+    "crates/sunrise-addresses",
+    "crates/sunrise-mod-runtime",
+    "crates/sunrise-mod-render",
     "docs/modding/examples",
-    "crates/horizon-dualsense",
-    "crates/horizon-narrator",
-    "crates/horizon-threads",
-    "crates/horizon-hdr",
-    "crates/horizon-world",
-    "crates/horizon-client",
+    "crates/sunrise-dualsense",
+    "crates/sunrise-narrator",
+    "crates/sunrise-threads",
+    "crates/sunrise-hdr",
+    "crates/sunrise-world",
+    "crates/sunrise-client",
     # Starling: the game as a NativeActivity library; empty on other targets.
-    "crates/horizon-android",
-    "crates/horizon-engine-slots",
-    "crates/horizon-mod-points",
-    "crates/horizon-internals",
-    "crates/horizon-client-lib",
-    "crates/horizon-client-core",
-    "crates/horizon-client-input",
-    "crates/horizon-client-render",
-    "crates/horizon-command",
-    "crates/horizon-items",
-    "crates/horizon-server-files",
-    "crates/horizon-java-properties",
-    "crates/horizon-anticheat",
-    "crates/horizon-chat-filter",
-    # The Model Context Protocol, shared by horizon-ctl, horizon-server and the launcher.
-    "crates/horizon-mcp",
-    "crates/horizon-server",
-    "crates/horizon-server-launch",
-    "crates/horizon-bots",
-    "crates/horizon-assets",
-    "crates/horizon-protocol",
-    "crates/horizon-theme",
-    "crates/horizon-prepare",
-    "crates/horizon-system",
-    "crates/horizon-bench",
-    "crates/horizon-perf-format",
-    "crates/horizon-perf",
-    "crates/horizon-perf-share",
-    "crates/horizon-friends",
-    "crates/horizon-relay",
-    "crates/horizon-mod-package",
-    "crates/horizon-mod-wasm",
-    "crates/horizon-mod-api-gen",
-    "crates/horizon-mod-api",
-    "crates/horizon-mod-dimension-game",
-    "crates/horizon-hot-paths-game",
-    "crates/horizon-mod-api-macros",
-    "crates/horizon-mod-point-shape",
-    "crates/horizon-mod-source",
-    "crates/horizon-mod-surface",
-    "crates/horizon-mod-point-emit",
-    "crates/horizon-mod-api-gen/dispatch-tests",
-    "crates/horizon-mod-wasm/wire-loopback",
-    "crates/cargo-horizon-mod",
-    "crates/horizon-port-pack",
-    "crates/horizon-shaders",
-    "crates/horizon-optifine",
-    "crates/horizon-polytone",
-    "crates/horizon-shader-api",
-    "crates/horizon-release-sign",
+    "crates/sunrise-android",
+    "crates/sunrise-engine-slots",
+    "crates/sunrise-mod-points",
+    "crates/sunrise-internals",
+    "crates/sunrise-client-lib",
+    "crates/sunrise-client-core",
+    "crates/sunrise-client-input",
+    "crates/sunrise-client-render",
+    "crates/sunrise-command",
+    "crates/sunrise-items",
+    "crates/sunrise-server-files",
+    "crates/sunrise-java-properties",
+    "crates/sunrise-anticheat",
+    "crates/sunrise-chat-filter",
+    # The Model Context Protocol, shared by sunrise-ctl, sunrise-server and the launcher.
+    "crates/sunrise-mcp",
+    "crates/sunrise-server",
+    "crates/sunrise-server-launch",
+    "crates/sunrise-bots",
+    "crates/sunrise-assets",
+    "crates/sunrise-protocol",
+    "crates/sunrise-theme",
+    "crates/sunrise-prepare",
+    "crates/sunrise-system",
+    "crates/sunrise-bench",
+    "crates/sunrise-perf-format",
+    "crates/sunrise-perf",
+    "crates/sunrise-perf-share",
+    "crates/sunrise-friends",
+    "crates/sunrise-relay",
+    "crates/sunrise-mod-package",
+    "crates/sunrise-mod-wasm",
+    "crates/sunrise-mod-api-gen",
+    "crates/sunrise-mod-api",
+    "crates/sunrise-mod-dimension-game",
+    "crates/sunrise-hot-paths-game",
+    "crates/sunrise-mod-api-macros",
+    "crates/sunrise-mod-point-shape",
+    "crates/sunrise-mod-source",
+    "crates/sunrise-mod-surface",
+    "crates/sunrise-mod-point-emit",
+    "crates/sunrise-mod-api-gen/dispatch-tests",
+    "crates/sunrise-mod-wasm/wire-loopback",
+    "crates/cargo-sunrise-mod",
+    "crates/sunrise-port-pack",
+    "crates/sunrise-shaders",
+    "crates/sunrise-optifine",
+    "crates/sunrise-polytone",
+    "crates/sunrise-shader-api",
+    "crates/sunrise-release-sign",
     "crates/starling-account",
-    "crates/horizon-mod-deps",
+    "crates/sunrise-mod-deps",
     "xtask",
 ]
 resolver = "2"
@@ -108,14 +108,14 @@ large_enum_variant = "allow"
 # winit 0.30.13 with an input hook on Android (`winit::platform::android::set_input_hook`): its
 # Android backend makes touches of a controller's sticks and a mouse's buttons and drops the
 # rest (hover, the wheel, the buttons' own events), and the app never sees the raw events.
-# Starling takes those there (crates/horizon-client/src/android_lib.rs). A few lines in the
-# backend, marked "Horizon's patch"; nothing changes on the other platforms.
+# Starling takes those there (crates/sunrise-client/src/android_lib.rs). A few lines in the
+# backend, marked "Sunrise's patch"; nothing changes on the other platforms.
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
 winit = { path = "third_party/winit" }
 # android-activity 0.6.1 whose NativeActivity thread, the game's, has the wasm guest stack on 64-bit
-# Android (horizon-guest-stack): std's 2 MiB was too little for a wasm mod to run on it. One spawn,
-# marked "Horizon's patch" (src/native_activity/glue.rs); the folder drops android-games-sdk, which
+# Android (sunrise-guest-stack): std's 2 MiB was too little for a wasm mod to run on it. One spawn,
+# marked "Sunrise's patch" (src/native_activity/glue.rs); the folder drops android-games-sdk, which
 # only GameActivity builds. Drop this once android-activity takes a stack size.
 android-activity = { path = "third_party/android-activity" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
@@ -144,13 +144,13 @@ opt-level = 3
 opt-level = 3
 
 # Packaging validates each real module repeatedly. Optimize the validator, not
-# the fixture or guest code (which use their separate horizon-wasm profile).
-[profile.dev.package.horizon-mod-package]
+# the fixture or guest code (which use their separate sunrise-wasm profile).
+[profile.dev.package.sunrise-mod-package]
 opt-level = 3
 [profile.dev.package.wasmparser]
 opt-level = 3
 
-[profile.dev.package.horizon-mod-api-gen]
+[profile.dev.package.sunrise-mod-api-gen]
 opt-level = 3
 [profile.dev.package.syn]
 opt-level = 3
@@ -159,7 +159,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.proc-macro2]
 opt-level = 3
-[profile.release.package.horizon-mod-api-gen]
+[profile.release.package.sunrise-mod-api-gen]
 opt-level = 3
 [profile.release.package.syn]
 opt-level = 3
@@ -188,11 +188,11 @@ codegen-units = 256
 lto = "off"
 
 # The crates edits land in, lightly optimized; the dependencies stay fully optimized.
-[profile.quick.package.horizon-client]
+[profile.quick.package.sunrise-client]
 opt-level = 1
 
-[profile.quick.package.horizon-android]
+[profile.quick.package.sunrise-android]
 opt-level = 1
 
-[profile.quick.package.horizon-client-lib]
+[profile.quick.package.sunrise-client-lib]
 opt-level = 1

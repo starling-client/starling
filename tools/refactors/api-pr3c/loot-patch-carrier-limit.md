@@ -5,9 +5,9 @@ No API, engine, dispatch or particle behavior is changed by this report.
 
 ## Representation mismatch
 
-At integration base `a819320057`, `horizon-world/src/loot.rs` declares
+At integration base `a819320057`, `sunrise-world/src/loot.rs` declares
 `LootStack.components: Vec<(String, serde_json::Value)>`. JSON null means removal.
-The proposed API snapshot in `horizon-mod-api/src/world/snapshots.rs` instead carries
+The proposed API snapshot in `sunrise-mod-api/src/world/snapshots.rs` instead carries
 `Vec<(String, Option<Tag>)>`. Unknown component values must keep their NBT types.
 
 The existing production functions `scoreboard::tag_to_json` and
@@ -35,11 +35,11 @@ existing `ItemData::set_loot_component` implementation.
 
 Audited consumers that need coordinated changes include:
 
-- `horizon-world/src/loot.rs`: `set_components`, `set_instrument`, and the horn test.
-- `horizon-items/src/item_data.rs`: the JSON-based `set_loot_component` materializer.
-- `horizon-client/src/structure_blocks.rs`: `loot_item_with_components`.
-- `horizon-client/src/game/mobs/creatures/mod.rs`: `from_loot`.
-- `horizon-client/src/mobs/drops.rs`: the generated trim patch.
+- `sunrise-world/src/loot.rs`: `set_components`, `set_instrument`, and the horn test.
+- `sunrise-items/src/item_data.rs`: the JSON-based `set_loot_component` materializer.
+- `sunrise-client/src/structure_blocks.rs`: `loot_item_with_components`.
+- `sunrise-client/src/game/mobs/creatures/mod.rs`: `from_loot`.
+- `sunrise-client/src/mobs/drops.rs`: the generated trim patch.
 
 After that prerequisite, implement the guarded engine-to-API context/stack
 snapshots, stage complete validated writeback before mutating the roll, and run
@@ -55,7 +55,7 @@ codec, not a duplicate implementation:
 #[cfg(test)]
 mod loot_patch_cut_probe {
     use super::{json_to_tag, tag_to_json};
-    use horizon_core::nbt::Tag;
+    use sunrise_core::nbt::Tag;
 
     #[test]
     fn loot_patch_codec_is_not_injective() {
@@ -74,7 +74,7 @@ mod loot_patch_cut_probe {
 Command:
 
 ```sh
-cargo test -p horizon-client-core --lib loot_patch_cut_probe::loot_patch_codec_is_not_injective -- --nocapture
+cargo test -p sunrise-client-core --lib loot_patch_cut_probe::loot_patch_codec_is_not_injective -- --nocapture
 ```
 
 Observed result: **1 passed, 0 failed, 91 filtered out** at this worktree's

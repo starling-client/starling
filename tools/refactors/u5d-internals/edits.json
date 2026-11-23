@@ -1,7 +1,7 @@
 {
   "base": "a21791aac58c4a470a5c4a2e6f660b5192250e09",
   "files": {
-    "crates/horizon-mod-package/src/manifest.rs": [
+    "crates/sunrise-mod-package/src/manifest.rs": [
       {
         "old": [
           "    /// A wasm mod's `mod.wasm`, its toolchain and what it was linked against.\n",
@@ -22,7 +22,7 @@
       },
       {
         "old": [
-          "    pub horizon: String,\n",
+          "    pub sunrise: String,\n",
           "    pub mixins: String,\n",
           "    /// Game internals used by this mod, fingerprinted against its pinned build.\n",
           "    #[serde(default)]\n",
@@ -31,7 +31,7 @@
           "    pub injection: Vec<Injection>,\n"
         ],
         "new": [
-          "    pub horizon: String,\n",
+          "    pub sunrise: String,\n",
           "    pub mixins: String,\n",
           "    #[serde(default)]\n",
           "    pub injection: Vec<Injection>,\n"
@@ -189,27 +189,27 @@
       },
       {
         "old": [
-          "        let injection = \"[[native.injection]]\\nid='count'\\ntarget=\\\"horizon_client::game::Game<'_>::tick\\\"\\nkind='HEAD'\\n\";\n",
+          "        let injection = \"[[native.injection]]\\nid='count'\\ntarget=\\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind='HEAD'\\n\";\n",
           "        let text = format!(\n",
-          "            \"{base}internals=[{{path='horizon_client::game::Game',hash='1234'}}]\\n{injection}raw='count'\\n\"\n",
+          "            \"{base}internals=[{{path='sunrise_client::game::Game',hash='1234'}}]\\n{injection}raw='count'\\n\"\n",
           "        );\n",
           "        let manifest = Manifest::parse(&text).unwrap();\n",
           "        let native = manifest.native.unwrap();\n",
-          "        assert_eq!(native.internals[0].path, \"horizon_client::game::Game\");\n",
+          "        assert_eq!(native.internals[0].path, \"sunrise_client::game::Game\");\n",
           "        assert_eq!(native.injection[0].raw.as_deref(), Some(\"count\"));\n",
           "        for keys in [\n"
         ],
         "new": [
-          "        let injection = \"[[native.injection]]\\nid='count'\\ntarget=\\\"horizon_client::game::Game<'_>::tick\\\"\\nkind='HEAD'\\n\";\n",
+          "        let injection = \"[[native.injection]]\\nid='count'\\ntarget=\\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind='HEAD'\\n\";\n",
           "        let text = format!(\n",
           "            \"{}{injection}raw='count'\\n\",\n",
           "            base.replace(\n",
           "                \"[native]\",\n",
-          "                \"internals=[{path='horizon_client::game::Game',hash='1234'}]\\n[native]\"\n",
+          "                \"internals=[{path='sunrise_client::game::Game',hash='1234'}]\\n[native]\"\n",
           "            )\n",
           "        );\n",
           "        let manifest = Manifest::parse(&text).unwrap();\n",
-          "        assert_eq!(manifest.internals[0].path, \"horizon_client::game::Game\");\n",
+          "        assert_eq!(manifest.internals[0].path, \"sunrise_client::game::Game\");\n",
           "        let native = manifest.native.unwrap();\n",
           "        assert_eq!(native.injection[0].raw.as_deref(), Some(\"count\"));\n",
           "        for keys in [\n"
@@ -310,7 +310,7 @@
         "count": 1
       }
     ],
-    "crates/horizon-mod-package/src/manifest/wasm.rs": [
+    "crates/sunrise-mod-package/src/manifest/wasm.rs": [
       {
         "old": [
           "    linked: std::collections::BTreeMap<String, String>,\n",
@@ -366,7 +366,7 @@
         "count": 1
       }
     ],
-    "crates/horizon-mod-internals/build.rs": [
+    "crates/sunrise-mod-internals/build.rs": [
       {
         "old": [
           "    let entries = internals_view::catalog(&catalog)?;\n",
@@ -389,7 +389,7 @@
         "count": 1
       }
     ],
-    "crates/horizon-mod-wasm/src/raw.rs": [
+    "crates/sunrise-mod-wasm/src/raw.rs": [
       {
         "old": [
           "\n",
@@ -471,7 +471,7 @@
         "count": 1
       }
     ],
-    "crates/cargo-horizon-mod/src/internals.rs": [
+    "crates/cargo-sunrise-mod/src/internals.rs": [
       {
         "old": [
           "    let text = fs::read_to_string(&path).map_err(|e| format!(\"{}: {e}\", path.display()))?;\n",
@@ -479,7 +479,7 @@
           "    let (declared, catalog) = if let Some(wasm) = &manifest.wasm {\n",
           "        (wasm.internals(), internals::read(&wasm_catalog(dir)?)?)\n",
           "    } else if let Some(native) = &manifest.native {\n",
-          "        (native.internals.as_slice(), load(dir, &native.horizon)?)\n",
+          "        (native.internals.as_slice(), load(dir, &native.sunrise)?)\n",
           "    } else {\n",
           "        return Err(\"internals add needs a [native] or [wasm] mod\".into());\n"
         ],
@@ -489,7 +489,7 @@
           "    let catalog = if manifest.wasm.is_some() {\n",
           "        internals::read(&wasm_catalog(dir)?)?\n",
           "    } else if let Some(native) = &manifest.native {\n",
-          "        load(dir, &native.horizon)?\n",
+          "        load(dir, &native.sunrise)?\n",
           "    } else {\n",
           "        return Err(\"internals add needs a [native] or [wasm] mod\".into());\n"
         ],
@@ -817,21 +817,21 @@
         "count": 1
       }
     ],
-    "crates/cargo-horizon-mod/src/main.rs": [
+    "crates/cargo-sunrise-mod/src/main.rs": [
       {
         "old": [
-          "        internals::set_string(rev, &horizon);\n",
+          "        internals::set_string(rev, &sunrise);\n",
           "    }\n",
           "    if !native.internals.is_empty() {\n",
-          "        let old = internals::load(dir, &native.horizon)?;\n",
-          "        let new = internals::load(dir, &horizon)?;\n"
+          "        let old = internals::load(dir, &native.sunrise)?;\n",
+          "        let new = internals::load(dir, &sunrise)?;\n"
         ],
         "new": [
-          "        internals::set_string(rev, &horizon);\n",
+          "        internals::set_string(rev, &sunrise);\n",
           "    }\n",
           "    if !manifest.internals.is_empty() {\n",
-          "        let old = internals::load(dir, &native.horizon)?;\n",
-          "        let new = internals::load(dir, &horizon)?;\n"
+          "        let old = internals::load(dir, &native.sunrise)?;\n",
+          "        let new = internals::load(dir, &sunrise)?;\n"
         ],
         "count": 1
       }
@@ -842,7 +842,7 @@
           "}\n",
           "\n",
           "/// Paths declared by a native package, in manifest order.\n",
-          "pub fn declared_internals(manifest: &horizon_mod_package::Manifest) -> Vec<String> {\n",
+          "pub fn declared_internals(manifest: &sunrise_mod_package::Manifest) -> Vec<String> {\n",
           "    manifest\n",
           "        .native\n",
           "        .as_ref()\n",
@@ -861,7 +861,7 @@
           "}\n",
           "\n",
           "/// Paths declared by a code package, in manifest order.\n",
-          "pub fn declared_internals(manifest: &horizon_mod_package::Manifest) -> Vec<String> {\n",
+          "pub fn declared_internals(manifest: &sunrise_mod_package::Manifest) -> Vec<String> {\n",
           "    manifest\n",
           "        .internals\n",
           "        .iter()\n",
@@ -889,14 +889,14 @@
           "        let header = \"id='owner'\\nname='Owner'\\nversion='1.0.0'\\napi='0.2'\\ncapabilities=['registries']\\ninternals=[{path='Game',hash='game'},{path='Game::world',kind='field',hash='world'}]\\n\";\n",
           "        for target in [\n",
           "            format!(\n",
-          "                \"[native]\\ngame='26.3'\\nhorizon='{}'\\nmixins='{}'\\n\",\n",
+          "                \"[native]\\ngame='26.3'\\nsunrise='{}'\\nmixins='{}'\\n\",\n",
           "                \"a\".repeat(40),\n",
           "                \"b\".repeat(40)\n",
           "            ),\n",
           "            format!(\"[wasm]\\nsha512='{}'\\ntoolchain='1.99.1'\\n\", \"0\".repeat(128)),\n",
           "        ] {\n",
           "            let manifest =\n",
-          "                horizon_mod_package::Manifest::parse(&format!(\"{header}{target}\")).unwrap();\n",
+          "                sunrise_mod_package::Manifest::parse(&format!(\"{header}{target}\")).unwrap();\n",
           "            assert_eq!(declared_internals(&manifest), [\"Game\", \"Game::world\"]);\n",
           "        }\n",
           "    }\n",
@@ -939,14 +939,14 @@
         "old": [
           "            &root,\n",
           "            \"wasm_only\",\n",
-          "            \"\\n[[native.internals]]\\npath = 'horizon_client::game::Game'\\nhash = '1234'\\n\",\n",
+          "            \"\\n[[native.internals]]\\npath = 'sunrise_client::game::Game'\\nhash = '1234'\\n\",\n",
           "        );\n",
           "        fs::write(root.join(mod_list::FILE), \"mod.wasm_only:true\\n\").unwrap();\n"
         ],
         "new": [
           "            &root,\n",
           "            \"wasm_only\",\n",
-          "            \"\\n[[internals]]\\npath = 'horizon_client::game::Game'\\nhash = '1234'\\n\",\n",
+          "            \"\\n[[internals]]\\npath = 'sunrise_client::game::Game'\\nhash = '1234'\\n\",\n",
           "        );\n",
           "        fs::write(root.join(mod_list::FILE), \"mod.wasm_only:true\\n\").unwrap();\n"
         ],
@@ -956,14 +956,14 @@
         "old": [
           "        fs::write(seed.join(\"uninstalled.txt\"), \"Never::include\").unwrap();\n",
           "        install(&root, \"plain\", \"\");\n",
-          "        let internal = \"\\n[[native.internals]]\\npath = 'horizon_client::game::Game'\\nhash = '1234'\\n[[inject]]\\nid = 'tick'\\nat = \\\"horizon_client::game::Game<'_>::tick\\\"\\nkind = 'head'\\naccess = 'internals'\\nhash = 'signature'\\nwith = 'tick'\\n\";\n",
+          "        let internal = \"\\n[[native.internals]]\\npath = 'sunrise_client::game::Game'\\nhash = '1234'\\n[[inject]]\\nid = 'tick'\\nat = \\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind = 'head'\\naccess = 'internals'\\nhash = 'signature'\\nwith = 'tick'\\n\";\n",
           "        install(&root, \"example\", internal);\n",
           "        fs::write(\n"
         ],
         "new": [
           "        fs::write(seed.join(\"uninstalled.txt\"), \"Never::include\").unwrap();\n",
           "        install(&root, \"plain\", \"\");\n",
-          "        let internal = \"\\n[[internals]]\\npath = 'horizon_client::game::Game'\\nhash = '1234'\\n[[inject]]\\nid = 'tick'\\nat = \\\"horizon_client::game::Game<'_>::tick\\\"\\nkind = 'head'\\naccess = 'internals'\\nhash = 'signature'\\nwith = 'tick'\\n\";\n",
+          "        let internal = \"\\n[[internals]]\\npath = 'sunrise_client::game::Game'\\nhash = '1234'\\n[[inject]]\\nid = 'tick'\\nat = \\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind = 'head'\\naccess = 'internals'\\nhash = 'signature'\\nwith = 'tick'\\n\";\n",
           "        install(&root, \"example\", internal);\n",
           "        fs::write(\n"
         ],
@@ -973,7 +973,7 @@
     "launcher/src/native_mods/internals.rs": [
       {
         "old": [
-          "    pub(super) fn check(&self, manifest: &horizon_mod_package::Manifest) -> Result<(), Error> {\n",
+          "    pub(super) fn check(&self, manifest: &sunrise_mod_package::Manifest) -> Result<(), Error> {\n",
           "        super::slots::check(self, manifest).map_err(Error::Inject)?;\n",
           "        let Some(native) = &manifest.native else {\n",
           "            return Ok(());\n",
@@ -983,7 +983,7 @@
           "        }\n"
         ],
         "new": [
-          "    pub(super) fn check(&self, manifest: &horizon_mod_package::Manifest) -> Result<(), Error> {\n",
+          "    pub(super) fn check(&self, manifest: &sunrise_mod_package::Manifest) -> Result<(), Error> {\n",
           "        super::slots::check(self, manifest).map_err(Error::Inject)?;\n",
           "        if manifest.native.is_none() {\n",
           "            return Ok(());\n",
@@ -996,7 +996,7 @@
       },
       {
         "old": [
-          "    fn discovery_facade(&self, manifest: &horizon_mod_package::Manifest) -> Result<Facade, Error> {\n",
+          "    fn discovery_facade(&self, manifest: &sunrise_mod_package::Manifest) -> Result<Facade, Error> {\n",
           "        let mut manifest = manifest.clone();\n",
           "        manifest\n",
           "            .native\n",
@@ -1008,7 +1008,7 @@
           "        facade.source.insert_str(0, \"#![allow(deprecated)]\\n\");\n"
         ],
         "new": [
-          "    fn discovery_facade(&self, manifest: &horizon_mod_package::Manifest) -> Result<Facade, Error> {\n",
+          "    fn discovery_facade(&self, manifest: &sunrise_mod_package::Manifest) -> Result<Facade, Error> {\n",
           "        let mut manifest = manifest.clone();\n",
           "        manifest.internals.clear();\n",
           "        let mut facade = self.facade(&manifest)?;\n",
@@ -1019,7 +1019,7 @@
       {
         "old": [
           "        let mut tree = Module::default();\n",
-          "        let mut crates = BTreeSet::from([\"horizon_client\".into()]);\n",
+          "        let mut crates = BTreeSet::from([\"sunrise_client\".into()]);\n",
           "        if let Some(native) = &manifest.native {\n",
           "            for declared in &native.internals {\n",
           "                let entry = internals::resolve(\n",
@@ -1027,7 +1027,7 @@
         ],
         "new": [
           "        let mut tree = Module::default();\n",
-          "        let mut crates = BTreeSet::from([\"horizon_client\".into()]);\n",
+          "        let mut crates = BTreeSet::from([\"sunrise_client\".into()]);\n",
           "        if manifest.native.is_some() {\n",
           "            for declared in &manifest.internals {\n",
           "                let entry = internals::resolve(\n",
@@ -1037,7 +1037,7 @@
       },
       {
         "old": [
-          "pub(super) fn needed(manifest: &horizon_mod_package::Manifest) -> bool {\n",
+          "pub(super) fn needed(manifest: &sunrise_mod_package::Manifest) -> bool {\n",
           "    !manifest.inject.is_empty()\n",
           "        || manifest.native.as_ref().is_some_and(|native| {\n",
           "            !native.internals.is_empty()\n",
@@ -1049,7 +1049,7 @@
           "}\n"
         ],
         "new": [
-          "pub(super) fn needed(manifest: &horizon_mod_package::Manifest) -> bool {\n",
+          "pub(super) fn needed(manifest: &sunrise_mod_package::Manifest) -> bool {\n",
           "    !manifest.inject.is_empty()\n",
           "        || !manifest.internals.is_empty()\n",
           "        || manifest.native.as_ref().is_some_and(|native| {\n",
@@ -1064,17 +1064,17 @@
       },
       {
         "old": [
-          "        fs::write(dir.join(\"Cargo.toml\"), \"[package]\\nname='example'\\nversion='1.0.0'\\nedition='2024'\\n[dependencies]\\nhorizon-mod-api={version='0.1'}\\n\").unwrap();\n",
-          "        let path = dir.join(horizon_mod_package::manifest::MANIFEST);\n",
-          "        let text = fs::read_to_string(&path).unwrap().replace(\"[native]\", \"[native]\\ninternals = [{ path = 'horizon_client::game::Game', hash = '1234' }, { path = 'horizon_client::game::maps::dimension_id', hash = '5678' }]\")\n",
-          "            + \"[[native.injection]]\\nid = 'count'\\ntarget = \\\"horizon_client::game::Game<'_>::tick\\\"\\nkind = 'HEAD'\\nraw = 'count'\\n\";\n",
+          "        fs::write(dir.join(\"Cargo.toml\"), \"[package]\\nname='example'\\nversion='1.0.0'\\nedition='2024'\\n[dependencies]\\nsunrise-mod-api={version='0.1'}\\n\").unwrap();\n",
+          "        let path = dir.join(sunrise_mod_package::manifest::MANIFEST);\n",
+          "        let text = fs::read_to_string(&path).unwrap().replace(\"[native]\", \"[native]\\ninternals = [{ path = 'sunrise_client::game::Game', hash = '1234' }, { path = 'sunrise_client::game::maps::dimension_id', hash = '5678' }]\")\n",
+          "            + \"[[native.injection]]\\nid = 'count'\\ntarget = \\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind = 'HEAD'\\nraw = 'count'\\n\";\n",
           "        fs::write(path, text).unwrap();\n"
         ],
         "new": [
-          "        fs::write(dir.join(\"Cargo.toml\"), \"[package]\\nname='example'\\nversion='1.0.0'\\nedition='2024'\\n[dependencies]\\nhorizon-mod-api={version='0.1'}\\n\").unwrap();\n",
-          "        let path = dir.join(horizon_mod_package::manifest::MANIFEST);\n",
-          "        let text = fs::read_to_string(&path).unwrap().replace(\"[native]\", \"internals = [{ path = 'horizon_client::game::Game', hash = '1234' }, { path = 'horizon_client::game::maps::dimension_id', hash = '5678' }]\\n[native]\\n\")\n",
-          "            + \"[[native.injection]]\\nid = 'count'\\ntarget = \\\"horizon_client::game::Game<'_>::tick\\\"\\nkind = 'HEAD'\\nraw = 'count'\\n\";\n",
+          "        fs::write(dir.join(\"Cargo.toml\"), \"[package]\\nname='example'\\nversion='1.0.0'\\nedition='2024'\\n[dependencies]\\nsunrise-mod-api={version='0.1'}\\n\").unwrap();\n",
+          "        let path = dir.join(sunrise_mod_package::manifest::MANIFEST);\n",
+          "        let text = fs::read_to_string(&path).unwrap().replace(\"[native]\", \"internals = [{ path = 'sunrise_client::game::Game', hash = '1234' }, { path = 'sunrise_client::game::maps::dimension_id', hash = '5678' }]\\n[native]\\n\")\n",
+          "            + \"[[native.injection]]\\nid = 'count'\\ntarget = \\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind = 'HEAD'\\nraw = 'count'\\n\";\n",
           "        fs::write(path, text).unwrap();\n"
         ],
         "count": 1
@@ -1083,15 +1083,15 @@
         "old": [
           "        let (dir, mut bundle, catalog) = fixture(\"owner-return\");\n",
           "        let native = bundle.manifest.native.as_mut().unwrap();\n",
-          "        native.internals[1] = horizon_mod_package::manifest::Internal {\n",
-          "            path: \"horizon_client::game::maps::Game<'_>::dimension_id\".into(),\n",
+          "        native.internals[1] = sunrise_mod_package::manifest::Internal {\n",
+          "            path: \"sunrise_client::game::maps::Game<'_>::dimension_id\".into(),\n",
           "            kind: None,\n"
         ],
         "new": [
           "        let (dir, mut bundle, catalog) = fixture(\"owner-return\");\n",
           "        let native = bundle.manifest.native.as_mut().unwrap();\n",
-          "        bundle.manifest.internals[1] = horizon_mod_package::manifest::Internal {\n",
-          "            path: \"horizon_client::game::maps::Game<'_>::dimension_id\".into(),\n",
+          "        bundle.manifest.internals[1] = sunrise_mod_package::manifest::Internal {\n",
+          "            path: \"sunrise_client::game::maps::Game<'_>::dimension_id\".into(),\n",
           "            kind: None,\n"
         ],
         "count": 1
@@ -1101,7 +1101,7 @@
           "        field.signature = \"u8\".into();\n",
           "        catalog.internals.insert(2, field);\n",
           "        bundle.manifest.native.as_mut().unwrap().internals[1] =\n",
-          "            horizon_mod_package::manifest::Internal {\n",
+          "            sunrise_mod_package::manifest::Internal {\n",
           "                path: method.path.clone(),\n",
           "                kind: Some(\"method\".into()),\n",
           "                hash: method.hash,\n",
@@ -1109,7 +1109,7 @@
           "        let facade = catalog.facade(&bundle.manifest).unwrap();\n",
           "        assert!(facade\n",
           "            .source\n",
-          "            .contains(\"pub use horizon_client::game::Game;\"));\n",
+          "            .contains(\"pub use sunrise_client::game::Game;\"));\n",
           "        bundle.manifest.native.as_mut().unwrap().internals[1].hash = \"field\".into();\n",
           "        assert!(\n",
           "            matches!(catalog.check(&bundle.manifest), Err(Error::Changed { signature, .. }) if signature == method.signature)\n",
@@ -1121,7 +1121,7 @@
         "new": [
           "        field.signature = \"u8\".into();\n",
           "        catalog.internals.insert(2, field);\n",
-          "        bundle.manifest.internals[1] = horizon_mod_package::manifest::Internal {\n",
+          "        bundle.manifest.internals[1] = sunrise_mod_package::manifest::Internal {\n",
           "            path: method.path.clone(),\n",
           "            kind: Some(\"method\".into()),\n",
           "            hash: method.hash,\n",
@@ -1129,7 +1129,7 @@
           "        let facade = catalog.facade(&bundle.manifest).unwrap();\n",
           "        assert!(facade\n",
           "            .source\n",
-          "            .contains(\"pub use horizon_client::game::Game;\"));\n",
+          "            .contains(\"pub use sunrise_client::game::Game;\"));\n",
           "        bundle.manifest.internals[1].hash = \"field\".into();\n",
           "        assert!(\n",
           "            matches!(catalog.check(&bundle.manifest), Err(Error::Changed { signature, .. }) if signature == method.signature)\n",
@@ -1235,20 +1235,20 @@
         "count": 1
       }
     ],
-    "crates/cargo-horizon-mod/tests/internals.rs": [
+    "crates/cargo-sunrise-mod/tests/internals.rs": [
       {
         "old": [
           "            .join(format!(\"internals-{name}-{}\", std::process::id()));\n",
           "        fs::create_dir_all(&dir).unwrap();\n",
-          "        fs::write(dir.join(MANIFEST), format!(\"# A modder's description\\nid = 'example'\\nname = 'Example'\\nversion = '0.1.0'\\napi = '0.2'\\ncapabilities = ['registries']\\n\\n[native] # native settings\\ngame = '26.3'\\nhorizon = '{OLD}' # pinned game\\nmixins = '{}'\\n{declarations}\", \"a\".repeat(40))).unwrap();\n",
-          "        fs::write(dir.join(\"Cargo.toml\"), format!(\"# Keep this comment\\n[package]\\nname = 'example'\\nversion = '0.1.0'\\n[dependencies]\\nhorizon-mod-api = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # API pin\\nhorizon-internals = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # facade pin\\n\")).unwrap();\n",
+          "        fs::write(dir.join(MANIFEST), format!(\"# A modder's description\\nid = 'example'\\nname = 'Example'\\nversion = '0.1.0'\\napi = '0.2'\\ncapabilities = ['registries']\\n\\n[native] # native settings\\ngame = '26.3'\\nsunrise = '{OLD}' # pinned game\\nmixins = '{}'\\n{declarations}\", \"a\".repeat(40))).unwrap();\n",
+          "        fs::write(dir.join(\"Cargo.toml\"), format!(\"# Keep this comment\\n[package]\\nname = 'example'\\nversion = '0.1.0'\\n[dependencies]\\nsunrise-mod-api = {{ git = 'https://example.invalid/sunrise', rev = '{OLD}' }} # API pin\\nsunrise-internals = {{ git = 'https://example.invalid/sunrise', rev = '{OLD}' }} # facade pin\\n\")).unwrap();\n",
           "        let project = Self { dir };\n"
         ],
         "new": [
           "            .join(format!(\"internals-{name}-{}\", std::process::id()));\n",
           "        fs::create_dir_all(&dir).unwrap();\n",
-          "        fs::write(dir.join(MANIFEST), format!(\"# A modder's description\\nid = 'example'\\nname = 'Example'\\nversion = '0.1.0'\\napi = '0.2'\\ncapabilities = ['registries']\\n{declarations}\\n[native] # native settings\\ngame = '26.3'\\nhorizon = '{OLD}' # pinned game\\nmixins = '{}'\\n\", \"a\".repeat(40))).unwrap();\n",
-          "        fs::write(dir.join(\"Cargo.toml\"), format!(\"# Keep this comment\\n[package]\\nname = 'example'\\nversion = '0.1.0'\\n[dependencies]\\nhorizon-mod-api = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # API pin\\nhorizon-internals = {{ git = 'https://example.invalid/horizon', rev = '{OLD}' }} # facade pin\\n\")).unwrap();\n",
+          "        fs::write(dir.join(MANIFEST), format!(\"# A modder's description\\nid = 'example'\\nname = 'Example'\\nversion = '0.1.0'\\napi = '0.2'\\ncapabilities = ['registries']\\n{declarations}\\n[native] # native settings\\ngame = '26.3'\\nsunrise = '{OLD}' # pinned game\\nmixins = '{}'\\n\", \"a\".repeat(40))).unwrap();\n",
+          "        fs::write(dir.join(\"Cargo.toml\"), format!(\"# Keep this comment\\n[package]\\nname = 'example'\\nversion = '0.1.0'\\n[dependencies]\\nsunrise-mod-api = {{ git = 'https://example.invalid/sunrise', rev = '{OLD}' }} # API pin\\nsunrise-internals = {{ git = 'https://example.invalid/sunrise', rev = '{OLD}' }} # facade pin\\n\")).unwrap();\n",
           "        let project = Self { dir };\n"
         ],
         "count": 1
@@ -1297,14 +1297,14 @@
       },
       {
         "old": [
-          "    assert_eq!(native.horizon, NEW);\n",
+          "    assert_eq!(native.sunrise, NEW);\n",
           "    assert_eq!(\n",
           "        native\n",
           "            .internals\n",
           "            .iter()\n"
         ],
         "new": [
-          "    assert_eq!(native.horizon, NEW);\n",
+          "    assert_eq!(native.sunrise, NEW);\n",
           "    assert_eq!(\n",
           "        manifest\n",
           "            .internals\n",
@@ -1316,14 +1316,14 @@
         "old": [
           "    let project = Project::new(\n",
           "        \"tables\",\n",
-          "        \"\\n[[native.internals]] # the game\\npath = 'horizon_client::game::Game'\\nhash = 'stale' # fingerprint\\n\",\n",
+          "        \"\\n[[native.internals]] # the game\\npath = 'sunrise_client::game::Game'\\nhash = 'stale' # fingerprint\\n\",\n",
           "    );\n",
           "    success(&project.run(&[\n"
         ],
         "new": [
           "    let project = Project::new(\n",
           "        \"tables\",\n",
-          "        \"\\n[[internals]] # the game\\npath = 'horizon_client::game::Game'\\nhash = 'stale' # fingerprint\\n\",\n",
+          "        \"\\n[[internals]] # the game\\npath = 'sunrise_client::game::Game'\\nhash = 'stale' # fingerprint\\n\",\n",
           "    );\n",
           "    success(&project.run(&[\n"
         ],
@@ -1331,25 +1331,25 @@
       },
       {
         "old": [
-          "        \"horizon_client::game::Game::creative\",\n",
+          "        \"sunrise_client::game::Game::creative\",\n",
           "    ]));\n",
           "    assert_eq!(project.manifest().native.unwrap().internals[0].hash, \"1111\");\n",
           "    assert!(project.text().contains(\"[[native.internals]] # the game\"));\n",
           "    assert!(project.text().contains(\"# fingerprint\"));\n",
-          "    let report = success(&project.run(&[\"update\", \"--horizon\", NEW]));\n",
-          "    assert!(report.contains(\"unchanged: horizon_client::game::Game\"));\n",
+          "    let report = success(&project.run(&[\"update\", \"--sunrise\", NEW]));\n",
+          "    assert!(report.contains(\"unchanged: sunrise_client::game::Game\"));\n",
           "    assert_eq!(project.manifest().native.unwrap().internals.len(), 2);\n",
           "    assert!(project.text().contains(\"# fingerprint\"));\n",
           "}\n"
         ],
         "new": [
-          "        \"horizon_client::game::Game::creative\",\n",
+          "        \"sunrise_client::game::Game::creative\",\n",
           "    ]));\n",
           "    assert_eq!(project.manifest().internals[0].hash, \"1111\");\n",
           "    assert!(project.text().contains(\"[[internals]] # the game\"));\n",
           "    assert!(project.text().contains(\"# fingerprint\"));\n",
-          "    let report = success(&project.run(&[\"update\", \"--horizon\", NEW]));\n",
-          "    assert!(report.contains(\"unchanged: horizon_client::game::Game\"));\n",
+          "    let report = success(&project.run(&[\"update\", \"--sunrise\", NEW]));\n",
+          "    assert!(report.contains(\"unchanged: sunrise_client::game::Game\"));\n",
           "    assert_eq!(project.manifest().internals.len(), 2);\n",
           "    assert!(project.text().contains(\"# fingerprint\"));\n",
           "}\n"
@@ -1456,85 +1456,85 @@
         "count": 1
       }
     ],
-    "crates/horizon-mod-wasm/tests/bench/internals/horizon-mod.toml": [
+    "crates/sunrise-mod-wasm/tests/bench/internals/sunrise-mod.toml": [
       {
         "old": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "[native]\n",
           "internals = [\n",
-          "  { path = \"horizon_client::game::Game::f0\", kind = \"field\", hash = \"e54b1e10133fea1679f1a3f91c585a9e97974e539aa8f5182dc1196cc232479c\" },\n"
+          "  { path = \"sunrise_client::game::Game::f0\", kind = \"field\", hash = \"e54b1e10133fea1679f1a3f91c585a9e97974e539aa8f5182dc1196cc232479c\" },\n"
         ],
         "new": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "internals = [\n",
-          "  { path = \"horizon_client::game::Game::f0\", kind = \"field\", hash = \"e54b1e10133fea1679f1a3f91c585a9e97974e539aa8f5182dc1196cc232479c\" },\n"
+          "  { path = \"sunrise_client::game::Game::f0\", kind = \"field\", hash = \"e54b1e10133fea1679f1a3f91c585a9e97974e539aa8f5182dc1196cc232479c\" },\n"
         ],
         "count": 1
       }
     ],
-    "crates/horizon-mod-wasm/tests/internals/counter/horizon-mod.toml": [
+    "crates/sunrise-mod-wasm/tests/internals/counter/sunrise-mod.toml": [
       {
         "old": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "[native]\n",
           "internals = [\n",
-          "  { path = \"horizon_client::game::Game::left\", kind = \"field\", hash = \"71b38399f108e572a5ef928b5cfdf52872f61b4615115d91f588221900ab97e0\" },\n"
+          "  { path = \"sunrise_client::game::Game::left\", kind = \"field\", hash = \"71b38399f108e572a5ef928b5cfdf52872f61b4615115d91f588221900ab97e0\" },\n"
         ],
         "new": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "internals = [\n",
-          "  { path = \"horizon_client::game::Game::left\", kind = \"field\", hash = \"71b38399f108e572a5ef928b5cfdf52872f61b4615115d91f588221900ab97e0\" },\n"
+          "  { path = \"sunrise_client::game::Game::left\", kind = \"field\", hash = \"71b38399f108e572a5ef928b5cfdf52872f61b4615115d91f588221900ab97e0\" },\n"
         ],
         "count": 1
       }
     ],
-    "crates/horizon-mod-wasm/tests/internals/coverage.toml": [
+    "crates/sunrise-mod-wasm/tests/internals/coverage.toml": [
       {
         "old": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "[native]\n",
           "internals = [\n",
-          "  { path = \"horizon_client::Coverage<'_>\", kind = \"struct\", hash = \"7897376af4a7a71056941e276ba6bdf884f738c76d05fdd11f77340d041ef940\" },\n"
+          "  { path = \"sunrise_client::Coverage<'_>\", kind = \"struct\", hash = \"7897376af4a7a71056941e276ba6bdf884f738c76d05fdd11f77340d041ef940\" },\n"
         ],
         "new": [
           "capabilities = [\"registries\"]\n",
           "\n",
           "internals = [\n",
-          "  { path = \"horizon_client::Coverage<'_>\", kind = \"struct\", hash = \"7897376af4a7a71056941e276ba6bdf884f738c76d05fdd11f77340d041ef940\" },\n"
+          "  { path = \"sunrise_client::Coverage<'_>\", kind = \"struct\", hash = \"7897376af4a7a71056941e276ba6bdf884f738c76d05fdd11f77340d041ef940\" },\n"
         ],
         "count": 1
       }
     ],
-    "tools/fixtures/native-slot-order/horizon-mod.toml": [
+    "tools/fixtures/native-slot-order/sunrise-mod.toml": [
       {
         "old": [
           "]\n",
           "\n",
           "[native]\n",
           "game = \"26.3\"\n",
-          "horizon = \"0000000000000000000000000000000000000000\"\n",
+          "sunrise = \"0000000000000000000000000000000000000000\"\n",
           "mixins = \"0000000000000000000000000000000000000000\"\n",
-          "internals = [{ path = \"horizon_client::game::Game\", hash = \"0000000000000000\" }, { path = \"horizon_client::game::Game<'_>::ticks_until_autosave\", hash = \"0000000000000000\" }]\n"
+          "internals = [{ path = \"sunrise_client::game::Game\", hash = \"0000000000000000\" }, { path = \"sunrise_client::game::Game<'_>::ticks_until_autosave\", hash = \"0000000000000000\" }]\n"
         ],
         "new": [
           "]\n",
           "\n",
-          "internals = [{ path = \"horizon_client::game::Game\", hash = \"0000000000000000\" }, { path = \"horizon_client::game::Game<'_>::ticks_until_autosave\", hash = \"0000000000000000\" }]\n",
+          "internals = [{ path = \"sunrise_client::game::Game\", hash = \"0000000000000000\" }, { path = \"sunrise_client::game::Game<'_>::ticks_until_autosave\", hash = \"0000000000000000\" }]\n",
           "\n",
           "[native]\n",
           "game = \"26.3\"\n",
-          "horizon = \"0000000000000000000000000000000000000000\"\n",
+          "sunrise = \"0000000000000000000000000000000000000000\"\n",
           "mixins = \"0000000000000000000000000000000000000000\"\n"
         ],
         "count": 1
       }
     ],
-    "crates/horizon-mod-api-gen/src/internals_table/catalog_coverage.rs": [
+    "crates/sunrise-mod-api-gen/src/internals_table/catalog_coverage.rs": [
       {
         "old": [
           "    .unwrap();\n",
@@ -1561,7 +1561,7 @@
         "count": 1
       }
     ],
-    "crates/horizon-mod-wasm/src/raw/controlled_exports.rs": [
+    "crates/sunrise-mod-wasm/src/raw/controlled_exports.rs": [
       {
         "old": [
           "    assert!(crate::INTERNALS.set(&TABLE).is_ok());\n",
@@ -1619,14 +1619,14 @@
         "old": [
           "        fs::write(dir.join(\"catalog.json\"), catalog).unwrap();\n",
           "        let manifest = format!(\n",
-          "            \"id='generation'\\nname='Generation'\\nversion='1.0.0'\\napi='0.2'\\nside='both'\\ncapabilities=['registries']\\n[native]\\ninternals=[{{path=\\\"horizon_client::game::Game<'_>::tick\\\",hash='h'}}]\\n[wasm]\\nsha512='{}'\\ntoolchain='1.99.1'\\n[[inject]]\\nid='listener'\\nat=\\\"horizon_client::game::Game<'_>::tick\\\"\\nkind='head'\\naccess='internals'\\nhash='h'\\nwith='chosen'\",\n",
+          "            \"id='generation'\\nname='Generation'\\nversion='1.0.0'\\napi='0.2'\\nside='both'\\ncapabilities=['registries']\\n[native]\\ninternals=[{{path=\\\"sunrise_client::game::Game<'_>::tick\\\",hash='h'}}]\\n[wasm]\\nsha512='{}'\\ntoolchain='1.99.1'\\n[[inject]]\\nid='listener'\\nat=\\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind='head'\\naccess='internals'\\nhash='h'\\nwith='chosen'\",\n",
           "            \"0\".repeat(128)\n",
           "        );\n"
         ],
         "new": [
           "        fs::write(dir.join(\"catalog.json\"), catalog).unwrap();\n",
           "        let manifest = format!(\n",
-          "            \"id='generation'\\nname='Generation'\\nversion='1.0.0'\\napi='0.2'\\nside='both'\\ncapabilities=['registries']\\ninternals=[{{path=\\\"horizon_client::game::Game<'_>::tick\\\",hash='h'}}]\\n[wasm]\\nsha512='{}'\\ntoolchain='1.99.1'\\n[[inject]]\\nid='listener'\\nat=\\\"horizon_client::game::Game<'_>::tick\\\"\\nkind='head'\\naccess='internals'\\nhash='h'\\nwith='chosen'\",\n",
+          "            \"id='generation'\\nname='Generation'\\nversion='1.0.0'\\napi='0.2'\\nside='both'\\ncapabilities=['registries']\\ninternals=[{{path=\\\"sunrise_client::game::Game<'_>::tick\\\",hash='h'}}]\\n[wasm]\\nsha512='{}'\\ntoolchain='1.99.1'\\n[[inject]]\\nid='listener'\\nat=\\\"sunrise_client::game::Game<'_>::tick\\\"\\nkind='head'\\naccess='internals'\\nhash='h'\\nwith='chosen'\",\n",
           "            \"0\".repeat(128)\n",
           "        );\n"
         ],
@@ -1640,11 +1640,11 @@
           "```toml\n",
           "[native]\n",
           "game = \"26.3\"\n",
-          "horizon = \"<exact game commit>\"\n",
+          "sunrise = \"<exact game commit>\"\n",
           "mixins = \"<exact mixins commit>\"\n",
           "internals = [\n",
-          "    { path = \"horizon_client::game::Game\", hash = \"<written by the tool>\" },\n",
-          "    { path = \"horizon_client::game::native_ticks::TickRound::listening\", kind = \"method\", hash = \"<written by the tool>\" },\n",
+          "    { path = \"sunrise_client::game::Game\", hash = \"<written by the tool>\" },\n",
+          "    { path = \"sunrise_client::game::native_ticks::TickRound::listening\", kind = \"method\", hash = \"<written by the tool>\" },\n",
           "]\n",
           "\n",
           "[[native.injection]]\n"
@@ -1653,13 +1653,13 @@
           "\n",
           "```toml\n",
           "internals = [\n",
-          "    { path = \"horizon_client::game::Game\", hash = \"<written by the tool>\" },\n",
-          "    { path = \"horizon_client::game::native_ticks::TickRound::listening\", kind = \"method\", hash = \"<written by the tool>\" },\n",
+          "    { path = \"sunrise_client::game::Game\", hash = \"<written by the tool>\" },\n",
+          "    { path = \"sunrise_client::game::native_ticks::TickRound::listening\", kind = \"method\", hash = \"<written by the tool>\" },\n",
           "]\n",
           "\n",
           "[native]\n",
           "game = \"26.3\"\n",
-          "horizon = \"<exact game commit>\"\n",
+          "sunrise = \"<exact game commit>\"\n",
           "mixins = \"<exact mixins commit>\"\n",
           "\n",
           "[[native.injection]]\n"
@@ -1689,14 +1689,14 @@
           "\n",
           "A wasm mod uses the same `[native] internals` declarations and `raw` injections beside `[wasm]`,\n",
           "but omits all three native pins and carries no helper or support-module source. Its generated view\n",
-          "imports `horizon:mod-internals/view`: roots, path nodes, plain values and declared function calls.\n"
+          "imports `sunrise:mod-internals/view`: roots, path nodes, plain values and declared function calls.\n"
         ],
         "new": [
           "### Wasm raw listeners\n",
           "\n",
           "A wasm mod uses the same top-level `internals` declarations and `[[inject]]` listeners beside `[wasm]`,\n",
           "but omits all three native pins and carries no helper or support-module source. Its generated view\n",
-          "imports `horizon:mod-internals/view`: roots, path nodes, plain values and declared function calls.\n"
+          "imports `sunrise:mod-internals/view`: roots, path nodes, plain values and declared function calls.\n"
         ],
         "count": 1
       }
@@ -1704,20 +1704,20 @@
     "launcher/src/instance_mods.rs": [
       {
         "old": [
-          "                    &format!(\"[native]\\ngame = '26.3'\\nhorizon = '{pin}'\\nmixins = '{pin}'\\n\");\n",
+          "                    &format!(\"[native]\\ngame = '26.3'\\nsunrise = '{pin}'\\nmixins = '{pin}'\\n\");\n",
           "                if id == \"tracked_code\" || id == \"local_code\" {\n",
           "                    manifest += &format!(\n",
-          "                        \"internals = [{{path = 'horizon_client::game::Game', hash = '{}'}}]\\n\",\n",
+          "                        \"internals = [{{path = 'sunrise_client::game::Game', hash = '{}'}}]\\n\",\n",
           "                        \"b\".repeat(64)\n",
           "                    );\n",
           "                }\n",
           "            }\n"
         ],
         "new": [
-          "                    &format!(\"[native]\\ngame = '26.3'\\nhorizon = '{pin}'\\nmixins = '{pin}'\\n\");\n",
+          "                    &format!(\"[native]\\ngame = '26.3'\\nsunrise = '{pin}'\\nmixins = '{pin}'\\n\");\n",
           "                if id == \"tracked_code\" || id == \"local_code\" {\n",
           "                    manifest = manifest.replace(\"[native]\", &format!(\n",
-          "                        \"internals = [{{path = 'horizon_client::game::Game', hash = '{}'}}]\\n[native]\",\n",
+          "                        \"internals = [{{path = 'sunrise_client::game::Game', hash = '{}'}}]\\n[native]\",\n",
           "                        \"b\".repeat(64)\n",
           "                    ));\n",
           "                }\n",
@@ -1728,16 +1728,16 @@
     ]
   },
   "fixture_manifests": [
-    "crates/horizon-mod-wasm/tests/bench/internals/horizon-mod.toml",
-    "crates/horizon-mod-wasm/tests/internals/counter/horizon-mod.toml",
-    "crates/horizon-mod-wasm/tests/internals/coverage.toml",
-    "tools/fixtures/native-slot-order/horizon-mod.toml"
+    "crates/sunrise-mod-wasm/tests/bench/internals/sunrise-mod.toml",
+    "crates/sunrise-mod-wasm/tests/internals/counter/sunrise-mod.toml",
+    "crates/sunrise-mod-wasm/tests/internals/coverage.toml",
+    "tools/fixtures/native-slot-order/sunrise-mod.toml"
   ],
   "manual_files": [
     "tools/refactors/u5d-internals/move.py",
     "tools/refactors/u5d-internals/edits.json",
     "tools/refactors/u5d-internals/README.md",
-    "crates/horizon-mod-package/tests/internals_owner.rs",
+    "crates/sunrise-mod-package/tests/internals_owner.rs",
     "docs/modding/src/how-to/wasm-mods.md",
     "docs/modding/src/reference/manifest.md",
     "docs/modding/src/reference/registry-index.md"

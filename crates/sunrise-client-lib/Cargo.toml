@@ -1,0 +1,280 @@
+[package]
+name = "sunrise-client-lib"
+autobins = false
+autoexamples = false
+autotests = false
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Reusable client systems, control tool and parity probes"
+
+[build-dependencies]
+sunrise-game-discovery = { path = "../sunrise-game-discovery" }
+
+[lib]
+path = "../sunrise-client/src/client_lib.rs"
+
+[dependencies]
+# The design system's palette and type scale (android_control_theme.rs).
+sunrise-theme = { path = "../sunrise-theme" }
+sunrise-guest-stack = { path = "../sunrise-guest-stack" }
+sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
+sunrise-engine-slots = { path = "../sunrise-engine-slots" }
+sunrise-hooks = { path = "../sunrise-hooks" }
+sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
+mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
+sunrise-assets = { path = "../sunrise-assets" }
+sunrise-client-core = { path = "../sunrise-client-core" }
+sunrise-client-input = { path = "../sunrise-client-input" }
+sunrise-client-render = { path = "../sunrise-client-render" }
+sunrise-command = { path = "../sunrise-command" }
+sunrise-items = { path = "../sunrise-items" }
+sunrise-core = { path = "../sunrise-core" }
+# `sunrise-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
+sunrise-mcp = { path = "../sunrise-mcp" }
+# The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
+sunrise-optifine = { path = "../sunrise-optifine" }
+sunrise-threads = { path = "../sunrise-threads" }
+# The .hzperf capture format and writer (docs/perf-platform.md).
+sunrise-perf-format = { path = "../sunrise-perf-format" }
+# One pool of helper threads for the server tick's parallel phases (`parallel.rs`): threads made
+# once, not for every phase of every tick.
+rayon = "1.10"
+sunrise-hdr = { path = "../sunrise-hdr" }
+sunrise-world = { path = "../sunrise-world" }
+sunrise-protocol = { path = "../sunrise-protocol" }
+# server.properties, eula.txt and the user lists, shared with sunrise-server.
+sunrise-server-files = { path = "../sunrise-server-files" }
+# The JDK's clock, for the LAN host's random seed (lan/mod.rs).
+sunrise-java-properties = { path = "../sunrise-java-properties" }
+# The control endpoint's token (control.rs), as sunrise-server's and the relay's.
+getrandom = "0.3"
+# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
+sunrise-anticheat = { path = "../sunrise-anticheat" }
+# Shader packs: reading them and turning their GLSL into naga modules.
+sunrise-shaders = { path = "../sunrise-shaders" }
+# Sunrise's own shader packs: the format, the stages and the check (docs/shaders.md).
+sunrise-shader-api = { path = "../sunrise-shader-api" }
+# The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
+sunrise-narrator = { path = "../sunrise-narrator" }
+# Sunrise mods: sandboxed WebAssembly components, off unless installed and turned on (docs/modding/src/how-to/content-mods.md).
+# Their runtime is the `mods` feature.
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+winit = "0.30.13"
+pollster = "0.4"
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = "0.30"
+png = "0.18"
+sha2 = "0.10.9"
+# Server resource packs are checked and cached by their SHA-1, as vanilla does.
+sha1 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+# hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
+# not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
+naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
+miniz_oxide = "0.8"
+ab_glyph = "0.2.32"
+log = "0.4"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# The network threads of a server's players: epoll, kqueue or Windows' AFD (lan/io_pool.rs).
+mio = { version = "1.2.4", features = ["os-poll", "net"] }
+# Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md).
+sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false }
+sunrise-bench = { path = "../sunrise-bench" }
+# Starling's Microsoft sign-in inside the game (`accounts.rs`): a phone has no launcher.
+starling-account = { path = "../starling-account" }
+# The game files prepared on a phone (`preparer.rs`), where no computer prepares them.
+sunrise-prepare = { path = "../sunrise-prepare" }
+crc32fast = "1"
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+# Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
+gilrs = { version = "0.11", optional = true }
+# The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
+sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
+# HTTPS to the Minecraft services (online-mode session join).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+unicode-bidi = "0.3.18"
+# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+
+[target.'cfg(unix)'.dependencies]
+# The server thread's CPU time per tick (`SUNRISE_SPIKES`, spans.rs).
+rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+# Use the registered URI handler without routing links through Explorer/cmd.
+open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
+# Resolve virtualized folders to shell-compatible physical paths (desktop.rs).
+dunce = "1.0.5"
+# DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Splitscreen: a window filling a monitor goes over its menu bar (game/runtime/split/windows.rs
+# `above_menu_bar`); all already in the tree through winit and wgpu.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
+# DirectX 12 driver (`graphicsApi`, graphics.rs).
+wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+
+[features]
+# Scoped observations for compiled-guest executor tests only.
+test-payload-probe = []
+# Isolated server-publication slots for resource-backed game fixtures only.
+test-publication-scope = []
+# Non-consuming residency journal observation for game fixtures only.
+test-residency-observer = []
+default = ["audio", "controllers"]
+# Dev-only: the ignored tracker-send benchmark uses the executable's allocator.
+tracker-send-bench = []
+# Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
+# Linux: the server build (`--no-default-features`, released as sunrise-engine; docs/server.md).
+audio = ["sunrise-client-render/audio"]
+# Controllers: gilrs, and the DualSense's own output. Without it only `sunrise-ctl pad`'s virtual pad.
+controllers = ["dep:gilrs", "sunrise-client-input/controllers"]
+# Records the call sites of mob random draws (`mob_ai_probe` traces).
+rng-trace = ["sunrise-core/rng-trace"]
+# Compatibility with earlier experiment commands: main already uses mimalloc.
+windows-mimalloc = []
+# Opt-in Windows heap experiment; see docs/windows-allocators.md.
+windows-segment-heap = []
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+sunrise-threads = { path = "../sunrise-threads", features = ["test-allocation-probe"] }
+sunrise-mod-wasm = { path = "../sunrise-mod-wasm", features = ["listener-fixture", "test-copy-probe"] }
+tempfile = "3"
+mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"] }
+mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab", features = ["testing"] }
+sunrise-client-render = { path = "../sunrise-client-render", features = ["test-support"] }
+sunrise-items = { path = "../sunrise-items", features = ["test-support"] }
+# Reads back the captures the server_perf tests write.
+sunrise-perf = { path = "../sunrise-perf" }
+# Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
+naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
+
+[[bin]]
+name = "sunrise-ctl"
+path = "../sunrise-client/src/bin/sunrise-ctl/main.rs"
+
+[[example]]
+name = "chunk_load_bench"
+path = "../sunrise-client/examples/chunk_load_bench.rs"
+
+[[example]]
+name = "gen_light_bench"
+path = "../sunrise-client/examples/gen_light_bench.rs"
+
+[[example]]
+name = "gameplay_decode_profile"
+path = "../sunrise-client/examples/gameplay_decode_profile.rs"
+
+[[example]]
+name = "json_load_bench"
+path = "../sunrise-client/examples/json_load_bench.rs"
+
+[[example]]
+name = "mod_port_probe"
+path = "../sunrise-client/examples/mod_port_probe.rs"
+
+[[example]]
+name = "model_library_bench"
+path = "../sunrise-client/examples/model_library_bench.rs"
+
+[[example]]
+name = "model_states_bench"
+path = "../sunrise-client/examples/model_states_bench.rs"
+
+[[example]]
+name = "old_world_fixture"
+path = "../sunrise-client/examples/old_world_fixture.rs"
+
+[[example]]
+name = "portal_scan_bench"
+path = "../sunrise-client/examples/portal_scan_bench.rs"
+
+[[example]]
+name = "random_tick_eligibility_bench"
+path = "../sunrise-client/examples/random_tick_eligibility_bench.rs"
+
+[[example]]
+name = "resource_memory"
+path = "../sunrise-client/examples/resource_memory.rs"
+
+[[example]]
+name = "save_batch_bench"
+path = "../sunrise-client/examples/save_batch_bench.rs"
+
+[[example]]
+name = "shared_json_startup_profile"
+path = "../sunrise-client/examples/shared_json_startup_profile.rs"
+
+[[example]]
+name = "sprite_cache_parity"
+path = "../sunrise-client/examples/sprite_cache_parity.rs"
+
+[[example]]
+name = "client_probe"
+path = "../sunrise-client/examples/probe/main.rs"
+
+[[test]]
+name = "load_defaults"
+path = "../sunrise-client/tests/load_defaults.rs"
+
+[[test]]
+name = "custom_component_api"
+path = "../sunrise-client/tests/custom_component_api.rs"
+
+[[test]]
+name = "custom_component_unregistered"
+path = "../sunrise-client/tests/custom_component_unregistered.rs"
+
+[[test]]
+name = "custom_component_wire"
+path = "../sunrise-client/tests/custom_component_wire.rs"
+
+[[test]]
+name = "datapack_join"
+path = "../sunrise-client/tests/datapack_join.rs"
+
+[[test]]
+name = "forced_chunks"
+path = "../sunrise-client/tests/forced_chunks.rs"
+
+[[test]]
+name = "generation_saves"
+path = "../sunrise-client/tests/generation_saves.rs"
+
+[[test]]
+name = "lan_bot"
+path = "../sunrise-client/tests/lan_bot.rs"
+
+[[test]]
+name = "streaming_meshes"
+path = "../sunrise-client/tests/streaming_meshes.rs"
+
+[[test]]
+name = "tall_column"
+path = "../sunrise-client/tests/tall_column.rs"
+
+[[test]]
+name = "wide_states"
+path = "../sunrise-client/tests/wide_states.rs"
+
+[[example]]
+name = "chunk_encoding_bench"
+path = "../sunrise-client/examples/chunk_encoding_bench.rs"

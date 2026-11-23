@@ -25,9 +25,9 @@ def method(source, name):
 
 
 def program(root):
-    gfx = (root / "crates/horizon-client-render/src/gfx.rs").read_text()
-    post = (root / "crates/horizon-client-render/src/gfx/pack_post.rs").read_text()
-    game = (root / "crates/horizon-client/src/game.rs").read_text()
+    gfx = (root / "crates/sunrise-client-render/src/gfx.rs").read_text()
+    post = (root / "crates/sunrise-client-render/src/gfx/pack_post.rs").read_text()
+    game = (root / "crates/sunrise-client/src/game.rs").read_text()
     geometry = game.index("fn entity_geometry(")
     start = game.index("let pack_shadows =", geometry)
     end = game.index("if let Some(sprite) = shadow_sprite", start)
@@ -130,7 +130,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="horizon-shadow-ownership-") as folder:
+    with tempfile.TemporaryDirectory(prefix="sunrise-shadow-ownership-") as folder:
         source = Path(folder) / "ownership.rs"
         source.write_text(program(args.source_root))
         binary = Path(folder) / "ownership"

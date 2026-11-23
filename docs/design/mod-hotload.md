@@ -11,7 +11,7 @@ restart" to seconds. It builds on the registry v2 ([registry-v2.md](registry-v2.
 
 | | Install | Turn on or off | Change |
 |---|---|---|---|
-| Content mod (`.hmod`) | launcher, or by hand in `horizon-mods/` | Options > Mods, then **restart** | rebuild the `.hmod`, restart |
+| Content mod (`.smod`) | launcher, or by hand in `sunrise-mods/` | Options > Mods, then **restart** | rebuild the `.smod`, restart |
 | Native mod (`.hnmod`) | launcher only | off: at once, if the mod checks `on`; on: **rebuild** | **rebuild** (minutes), restart |
 
 Three facts from the code shape the plan:
@@ -21,7 +21,7 @@ Three facts from the code shape the plan:
 - The server's data tables (recipes, tags, loot tables, advancements, functions, data maps) are rebuilt by `/reload`
   (`reload_world_tables`), from `options.resources`, and sent to the players (`lan::reload_sync_data`). A mod switch
   never reaches them.
-- The content root is one folder, `.horizon-cache/mod-content`, rebuilt **in place** when the mod set changes. A
+- The content root is one folder, `.sunrise-cache/mod-content`, rebuilt **in place** when the mod set changes. A
   running game whose `Resources` were built from the old root then reads tables of the new one. Today that happens
   only between a switch and the restart the page asks for; with live switching it would happen every time.
 
@@ -82,7 +82,7 @@ this step out of the first PRs:
 
 - **Process-wide tables are set once.** Mob effects (`potions::MOD_EFFECTS`), thrown entity types
   (`projectiles::THROWN_TYPES`), mod menu types, living entity types and native component types
-  (`horizon_protocol::item::custom::install`) are `OnceLock`s, filled at start and read without a lock on hot
+  (`sunrise_protocol::item::custom::install`) are `OnceLock`s, filled at start and read without a lock on hot
   paths. They become `ArcSwap`-style tables replaced between worlds, never while one is open.
 - **A mod turned off whose blocks are in the world.** Opening a world without a mod already drops its effects and
   keeps its entities frozen ([mods.md](../mods.md)), and its blocks get what opening the world without it does today. The world reload asks
@@ -111,14 +111,14 @@ the desktop (i7-13700KF, NVMe, under a load of 30 to 40), in #10217's test: buil
 
 ## The in-game mod browser
 
-Options > Mods gets a **Browse mods** button beside **Open mod folder**. It opens Horizon's own menu pages, drawn
+Options > Mods gets a **Browse mods** button beside **Open mod folder**. It opens Sunrise's own menu pages, drawn
 with the options screen's widgets (`options_ui`), every string through `Text::tr` keys in
-`assets/horizon/lang/*.json`.
+`assets/sunrise/lang/*.json`.
 
-- **The index.** The same file the launcher reads (`horizon-mods` `index.json`, `HORIZON_MOD_INDEX` for a test
+- **The index.** The same file the launcher reads (`sunrise-mods` `index.json`, `SUNRISE_MOD_INDEX` for a test
   registry), fetched on a worker with the game's `ureq` when the page opens (a Pages file, not the API: no rate
-  limit), kept in `mod-browser/horizon-index.json` beside `options.txt`. The launcher and the game share that copy,
-  so an offline game still lists what the launcher saw last. Parsed with `horizon_mod_package::index::Index::parse`, which
+  limit), kept in `mod-browser/sunrise-index.json` beside `options.txt`. The launcher and the game share that copy,
+  so an offline game still lists what the launcher saw last. Parsed with `sunrise_mod_package::index::Index::parse`, which
   refuses an index with a bad entry as the launcher does.
 - **The list.** A search box and the projects this game can install, sorted by downloads: name, author, summary,
   its categories, and **Installed**, **Update** or nothing. A search matches the name, id, summary, tags and
@@ -130,15 +130,15 @@ with the options screen's widgets (`options_ui`), every string through `Text::tr
   them as PNG and JPEG under its own Pages ([registry-v2.md](registry-v2.md)); the page will draw them through the
   same dynamic-texture path as player skins (`skin_slots`), one at a time, loaded when the page opens.
 - **Install.** As the launcher's `install_version`: the newest version for this game that was not taken down, into
-  `mod-browser/downloads/`, then `horizon_mod_package::index::check_file` (size, SHA-256, the author's signature, the
-  file's manifest against the index), then moved to `horizon-mods/<id>.hmod`, turned on in `horizon-mods.txt`, and
+  `mod-browser/downloads/`, then `sunrise_mod_package::index::check_file` (size, SHA-256, the author's signature, the
+  file's manifest against the index), then moved to `sunrise-mods/<id>.smod`, turned on in `sunrise-mods.txt`, and
   recorded in `mod-browser.json` with the launcher's own fields, so the launcher lists it, updates it and removes
-  it. A file the index took down (`revoked.toml`) is refused. A `.hmod` with code (`needs_port`) is not offered.
+  it. A file the index took down (`revoked.toml`) is refused. A `.smod` with code (`needs_port`) is not offered.
 - **Kinds.** Content mods first. Resource packs, shader packs and data packs follow with the same page; each installs
   where the launcher puts it.
 - **Native mods.** Listed with the launcher's warning, word for word: they are native code with the player's rights,
   not sandboxed, and the red **Install** button asks first, as the launcher's trust notice does. The game can't
-  compile, so it installs the `.hnmod` into `horizon-native-mods/`, and the launcher builds it before the next play
+  compile, so it installs the `.hnmod` into `sunrise-native-mods/`, and the launcher builds it before the next play
   (#9901). The registry review stays the gate for every kind.
 
 ## Native mods: the fast path
@@ -152,7 +152,7 @@ A native mod's code is in the game's binary. What can be made fast:
 | **B. Background build while playing, then a quick swap** | build while playing, then a restart into the same world | as A | restart | low; a second process and a hand-over |
 | **C. Rust `dylib`s** (#7386 stages 3 and 4, arismoko's #797) | that mod only, under 30 s (the spike's pass mark) | restart | **never**: a Rust `dylib` can't be unloaded soundly | medium: exact-build pinning, Windows export limit |
 | **D. A C ABI or `abi_stable` plugin layer over `native-hooks.json`** | that mod only, seconds | at run time | possible, with care | high: a second API to keep beside `mod_api`, and still not sandboxed |
-| **E. wasm mods** (arismoko's fork: `horizon-mod-wasm`, wasmtime, one API with native) | that mod only, seconds | at run time | **yes**: drop the instance | medium: performance of the hooks it covers, API coverage |
+| **E. wasm mods** (arismoko's fork: `sunrise-mod-wasm`, wasmtime, one API with native) | that mod only, seconds | at run time | **yes**: drop the instance | medium: performance of the hooks it covers, API coverage |
 
 ### What each costs, and the choice
 
@@ -166,7 +166,7 @@ A native mod's code is in the game's binary. What can be made fast:
   interface is generated at build time). It would give native speed and run-time loading, but no sandbox and no
   sound unload. We don't build it.
 - **C and E are arismoko's work, and we build on it.** The fork has the `dylib` loader (#797), its acceptance harness
-  (#798) and the wasm runtime. They merge upstream through their own PRs; Horizon's side is to keep the hook catalog
+  (#798) and the wasm runtime. They merge upstream through their own PRs; Sunrise's side is to keep the hook catalog
   and `Hooks` dispatch shaped so both can sit behind it.
 - **A is the biggest win for the least risk, now.** Turning a native mod on or off is the common case (trying a mod,
   finding a conflict, a modpack switch), and it needs no compiler at all while the mod is in the build. Step one
@@ -182,7 +182,7 @@ A native mod's code is in the game's binary. What can be made fast:
 ### Measured
 
 On the desktop (i7-13700KF, `-j 8`, Linux, `rustc` 1.99, the launcher's `profile.fast`, incremental), building
-`horizon-client` as the launcher does, on 2026-11-05 while other builds kept the machine at a load of about 30 to 40
+`sunrise-client` as the launcher does, on 2026-11-05 while other builds kept the machine at a load of about 30 to 40
 (an idle machine is faster; the ratios are the point):
 
 | Build | Time |
@@ -190,7 +190,7 @@ On the desktop (i7-13700KF, `-j 8`, Linux, `rustc` 1.99, the launcher's `profile
 | Cold, empty target | 812 s |
 | No change | 55 s |
 | One line changed in gameplay (`game/modding/mods/mod.rs`), as a mixin into gameplay does | 570 s (the revert: 668 s) |
-| One line changed in `horizon-world`, as a mixin into a lower crate does | 427 s (the revert: 469 s) |
+| One line changed in `sunrise-world`, as a mixin into a lower crate does | 427 s (the revert: 469 s) |
 | The gameplay change, linked with mold | 612 s |
 
 Mold changes nothing: the time is spent compiling the gameplay crate again, not linking it. A native mod's change
@@ -206,8 +206,8 @@ Nothing in this note widens what a mod can do.
 - Native mods stay full-trust native code. The in-game browser shows the launcher's trust notice and red warning
   before installing one, and installing never builds or runs it: the launcher does, behind its own warning.
 - The registry review stays the gate for listing a project, `revoked.toml` turns off taken-down files in the game
-  as in the launcher, and SHA-256 pinning and signatures are checked before a file reaches `horizon-mods/`.
-- The browser fetches only the index, the registry's release assets (`horizon_mod_package::index::FILE_HOST`) and, later,
+  as in the launcher, and SHA-256 pinning and signatures are checked before a file reaches `sunrise-mods/`.
+- The browser fetches only the index, the registry's release assets (`sunrise_mod_package::index::FILE_HOST`) and, later,
   the registry's own mirrored images. It never follows a project's own links.
 
 ## Plan, small PRs
@@ -234,7 +234,7 @@ What this note takes from them:
   static build kept for a settled mod set.
 - From levzzz5154's horizon-mixins: mixins stay for what has no hook; option A keeps every mixin mod working,
   turned off only through `on`.
-- From Vaspyyy's #9866: the browser says before install whether a native mod builds on the player's Horizon; the
+- From Vaspyyy's #9866: the browser says before install whether a native mod builds on the player's Sunrise; the
   in-game list shows the same verdict.
 
 What we'd ask them:

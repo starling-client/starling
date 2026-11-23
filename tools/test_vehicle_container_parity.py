@@ -7,13 +7,13 @@ menu a server sends in ClientboundOpenScreenPacket - and prints its MenuType,
 the container's slot count and the title's translation key
 (Entity.getDisplayName: the vehicle's custom name or its type's name). The Rust
 example (vehicle_container_fixture) answers with
-horizon_client::containers::vehicle_menu and vehicle_menu_name, the menu
+sunrise_client::containers::vehicle_menu and vehicle_menu_name, the menu
 `lan_open_vehicle_container` sends. Compared for every chest boat wood type,
 the bamboo chest raft, the chest minecart and the hopper minecart.
 
 What it does not cover: the interaction itself (the right-click/sneak/riding
 paths - the live before/after runs cover those), the GUI drawing, and the
-custom name a renamed vehicle would show (Horizon's vehicles keep no custom
+custom name a renamed vehicle would show (Sunrise's vehicles keep no custom
 name).
 """
 import argparse
@@ -39,7 +39,7 @@ def main():
     vanilla.compile('ParityData', 'VanillaVehicleContainerOracle')
     (work / 'cases.txt').write_text(''.join(c + '\n' for c in CASES), encoding='utf-8')
     vanilla.run('VanillaVehicleContainerOracle', work / 'cases.txt', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'vehicle_container_fixture', work / 'cases.txt', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'vehicle_container_fixture', work / 'cases.txt', work / 'rust.txt')
     errors = sum(line == 'error' for line in (work / 'native.txt').read_text(encoding='utf-8').split('\n'))
     if errors:
         print(f'{errors} cases fail in vanilla')

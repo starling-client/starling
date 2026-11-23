@@ -1,5 +1,5 @@
 use super::*;
-use horizon_mod_package::manifest::collect_jar_requirements;
+use sunrise_mod_package::manifest::collect_jar_requirements;
 use sha2::Digest;
 use std::{cell::Cell, io::Write, path::PathBuf};
 
@@ -51,7 +51,7 @@ fn package(root: &Path, id: &str, jars: Vec<JarRef>, native: bool) -> PathBuf {
         format!("id='{id}'\nname='{id}'\nversion='1'\napi='0.2'\ncapabilities=['registries']\n");
     if native {
         text.push_str(&format!(
-            "[native]\ngame='26.3'\nhorizon='{}'\nmixins='{}'\n",
+            "[native]\ngame='26.3'\nsunrise='{}'\nmixins='{}'\n",
             "a".repeat(40),
             "b".repeat(40)
         ));
@@ -71,7 +71,7 @@ fn package(root: &Path, id: &str, jars: Vec<JarRef>, native: bool) -> PathBuf {
             jar.sha512()
         ));
     }
-    fs::write(path.join("horizon-mod.toml"), text).unwrap();
+    fs::write(path.join("sunrise-mod.toml"), text).unwrap();
     path
 }
 
@@ -359,13 +359,13 @@ fn failed_metadata_lookup_names_every_missing_jar_but_not_cache_hits() {
 
 #[test]
 fn final_launch_combines_only_enabled_content_dev_and_adjacent_native_candidates() {
-    use horizon_mod_package::mod_list::{DIR, FILE, NATIVE_DIR};
+    use sunrise_mod_package::mod_list::{DIR, FILE, NATIVE_DIR};
     use std::process::Command;
     let root = Scratch::new();
     let game = root.0.join("game");
     let bin = root.0.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    let program = bin.join("horizon-client");
+    let program = bin.join("sunrise-client");
     fs::write(&program, b"synthetic executable placeholder: never run").unwrap();
     let (shared, shared_bytes) = source(b"shared");
     let (dev, dev_bytes) = source(b"dev");
@@ -389,7 +389,7 @@ fn final_launch_combines_only_enabled_content_dev_and_adjacent_native_candidates
     let mut command = Command::new(&program);
     command
         .current_dir(&root.0)
-        .env("HORIZON_HOME", root.0.join("wrong-cache"))
+        .env("SUNRISE_HOME", root.0.join("wrong-cache"))
         .args(["--game-dir", "game", "--home", "cache", "--dev-mod"])
         .arg(dev_path);
     let error = prepare_launch(
@@ -437,11 +437,11 @@ fn final_launch_combines_only_enabled_content_dev_and_adjacent_native_candidates
     let mut server = Command::new(&program);
     server
         .current_dir(&game)
-        .env("HORIZON_HOME", root.0.join("wrong-cache"))
+        .env("SUNRISE_HOME", root.0.join("wrong-cache"))
         .args(["--dedicated", "--nogui"]);
     let mut launch = crate::launch::Launch::default();
     launch.env.insert(
-        "HORIZON_HOME".into(),
+        "SUNRISE_HOME".into(),
         root.0.join("cache").to_str().unwrap().into(),
     );
     prepare_launch(&mut server, &launch, Permission::headless(false)).unwrap();
@@ -454,7 +454,7 @@ fn information_requests_do_not_read_packages_or_create_a_cache() {
         let mut command = std::process::Command::new(root.0.join("not-installed"));
         command
             .current_dir(&root.0)
-            .env("HORIZON_HOME", root.0.join("cache"))
+            .env("SUNRISE_HOME", root.0.join("cache"))
             .args([flag, "--missing-value"]);
         prepare_launch(
             &mut command,

@@ -23,7 +23,7 @@ TESTS = 'game::lan::world_spawn_sync_tests::'
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--resources', type=Path, default=Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)))
+    parser.add_argument('--resources', type=Path, default=Path(os.environ.get('SUNRISE_TEST_RESOURCES', lab.RESOURCES)))
     parser.add_argument('--lab-root', type=Path)
     parser.add_argument('--work-dir', type=Path, default=lab.LOCAL / 'world-spawn-sync-parity')
     args = parser.parse_args()
@@ -37,14 +37,14 @@ def main():
         lab.LOCAL = args.lab_root.resolve()
         lab.GAME = lab.LOCAL / 'minecraft' / lab.VERSION
     lock, jars, libraries = base.verify_artifacts()
-    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWorldSpawnPacketOracle.java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaWorldSpawnPacketOracle.java'
     sources = [Path(__file__), source, lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/src/game/commands.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/lan_actions.rs',
-               lab.ROOT / 'crates/horizon-client/src/lan/hub.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/lan.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/native_player_fx.rs',
-               lab.ROOT / 'crates/horizon-client/src/game/server_travel.rs']
+               lab.ROOT / 'crates/sunrise-client/src/game/commands.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/lan_actions.rs',
+               lab.ROOT / 'crates/sunrise-client/src/lan/hub.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/lan.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/native_player_fx.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/server_travel.rs']
     hashes = base.source_hashes(sources)
     lab.write_json(build / 'input.json', dict(sources_sha256=hashes))
 
@@ -60,18 +60,18 @@ def main():
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    with tempfile.TemporaryDirectory(prefix='horizon-world-spawn-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='sunrise-world-spawn-') as tmp:
         scratch = Path(tmp)
-        homes = {key: scratch / key for key in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
+        homes = {key: scratch / key for key in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
         env = lab.game_env(os.environ, **homes, CARGO_BUILD_JOBS='2', RUST_TEST_THREADS='1', RUST_MIN_STACK='16777216')
         run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', cp,
              '-d', classes, source], 'javac', cwd=scratch, env=env)
         vanilla = run(['java', '-Xmx512M', '-Djava.awt.headless=true', '-Duser.home=' + tmp, '-cp',
-                       str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaWorldSpawnPacketOracle'],
+                       str(classes) + os.pathsep + cp, 'dev.sunriselab.parity.VanillaWorldSpawnPacketOracle'],
                       'java', cwd=scratch, env=env)
         rows = [r for r in vanilla.read_text(encoding='utf-8').splitlines() if r.startswith('world-spawn\t')]
         assert len(rows) == 7 and len(set(rows)) == 7, 'vanilla oracle did not emit all seven cases'
-        compiled = run(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib', '--no-run',
+        compiled = run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run',
                         '--message-format=json'], 'compile', cwd=lab.ROOT, env=env)
         binaries = []
         for line in compiled.read_text(encoding='utf-8').splitlines():
@@ -79,12 +79,12 @@ def main():
                 continue
             row = json.loads(line)
             if (row.get('reason') == 'compiler-artifact' and row.get('executable')
-                    and row.get('target', {}).get('name') == 'horizon_client'
+                    and row.get('target', {}).get('name') == 'sunrise_client'
                     and row.get('profile', {}).get('test')):
                 binaries.append(Path(row['executable']))
         assert len(binaries) == 1, 'expected one actual Game test binary'
         binary_hash = lab.digest(binaries[0], 'sha256')
-        env['HORIZON_TEST_RESOURCES'] = str(args.resources.resolve())
+        env['SUNRISE_TEST_RESOURCES'] = str(args.resources.resolve())
         result = run([binaries[0], TESTS, '--ignored', '--nocapture'], 'game', cwd=scratch, env=env)
         text = result.read_text(encoding='utf-8')
         assert 'running 3 tests' in text and '3 passed; 0 failed' in text, 'regressions did not execute'

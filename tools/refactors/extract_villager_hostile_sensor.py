@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Move the original hostile sensor out of the capped brain, preserving scope."""
 from pathlib import Path
-p = Path('crates/horizon-client/src/mobs/villager_brain.rs')
+p = Path('crates/sunrise-client/src/mobs/villager_brain.rs')
 s = p.read_text()
 a = s.index('/// `VillagerHostilesSensor.ACCEPTABLE_DISTANCE_FROM_HOSTILES`.')
 f = s.index('fn sense_hostiles(', a)

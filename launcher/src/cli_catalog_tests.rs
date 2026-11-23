@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn native_build_catalog_requires_a_folder_and_refuses_build_or_sync_options() {
     let parse = |args: &[&str]| {
-        Cli::try_parse_from([&["horizon-launcher", "native-build", "--catalog"], args].concat())
+        Cli::try_parse_from([&["sunrise-launcher", "native-build", "--catalog"], args].concat())
     };
     assert!(matches!(
         parse(&["mod", "--trust-native-code"]).unwrap().command,

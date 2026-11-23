@@ -12,7 +12,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[3]
-API = ROOT / 'crates/horizon-mod-api/src'
+API = ROOT / 'crates/sunrise-mod-api/src'
 
 
 def layout(source):
@@ -105,7 +105,7 @@ def main():
             changed = text.replace('crate::part_table::', 'crate::parts::').replace('super::part_table::', 'super::parts::')
             if path == API / 'exports/part_table.rs':
                 changed = changed.replace('mod part_table;', 'mod parts;').replace('use part_table::', 'use parts::')
-            changed = changed.replace('crates/horizon-mod-api/src/part_table.rs', 'crates/horizon-mod-api/src/parts/mod.rs')
+            changed = changed.replace('crates/sunrise-mod-api/src/part_table.rs', 'crates/sunrise-mod-api/src/parts/mod.rs')
             if path.suffix == '.md':
                 changed = changed.replace('`part_table.rs`', '`parts/`')
             if changed != text:

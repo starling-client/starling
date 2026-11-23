@@ -43,13 +43,13 @@ def main():
     inputs = out / "cases.json"
     inputs.write_text(json.dumps(cases, sort_keys=True) + "\n", encoding="utf-8")
     lock, jars, libraries = base.verify_artifacts()
-    source = lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMapSavedDataOracle.java"
+    source = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMapSavedDataOracle.java"
     tested_sources = base.source_hashes([
         Path(__file__), source,
-        lab.ROOT / "mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java",
-        lab.ROOT / "crates/horizon-client/src/game/blocks/maps/mod.rs",
-        lab.ROOT / "crates/horizon-client/src/game/blocks/maps/save_tests.rs",
-        lab.ROOT / "crates/horizon-client/Cargo.toml",
+        lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java",
+        lab.ROOT / "crates/sunrise-client/src/game/blocks/maps/mod.rs",
+        lab.ROOT / "crates/sunrise-client/src/game/blocks/maps/save_tests.rs",
+        lab.ROOT / "crates/sunrise-client/Cargo.toml",
         lab.ROOT / "Cargo.toml", lab.ROOT / "Cargo.lock"])
     classes = out / "classes"
     classes.mkdir(exist_ok=True)
@@ -60,11 +60,11 @@ def main():
             base.run(list(map(str, command)), stdout=log, stderr=subprocess.STDOUT, env=env)
 
     run(["javac", "--release", lock["minecraft"]["java_major"], "-proc:none",
-         "-sourcepath", lab.ROOT / "mods/horizon/src/test/java", "-cp", classpath,
+         "-sourcepath", lab.ROOT / "mods/sunrise/src/test/java", "-cp", classpath,
          "-d", classes, source], "compile-java")
     java = out / "java.txt"
     run(["java", "-Xmx1G", "-cp", str(classes) + os.pathsep + classpath,
-         "dev.horizonlab.parity.VanillaMapSavedDataOracle", inputs, java], "java")
+         "dev.sunriselab.parity.VanillaMapSavedDataOracle", inputs, java], "java")
     reference = java.read_text(encoding="utf-8").splitlines()
     assert len(reference) == len(cases)
     assert [line.split(" ", 1)[0] for line in reference] == [case["name"] for case in cases]
@@ -73,8 +73,8 @@ def main():
         return
     rust = out / "rust.txt"
     rust.unlink(missing_ok=True)
-    env = dict(os.environ, HORIZON_MAP_SAVE_CASES=str(inputs), HORIZON_MAP_SAVE_OUTPUT=str(rust))
-    run(["cargo", "test", "-p", "horizon-client", "--lib",
+    env = dict(os.environ, SUNRISE_MAP_SAVE_CASES=str(inputs), SUNRISE_MAP_SAVE_OUTPUT=str(rust))
+    run(["cargo", "test", "-p", "sunrise-client", "--lib",
          "game::maps::save_tests::saved_map_codec_fixture", "--", "--ignored", "--exact"],
         "rust", env)
     actual = rust.read_text(encoding="utf-8").splitlines()

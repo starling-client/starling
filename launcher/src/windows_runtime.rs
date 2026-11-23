@@ -5,7 +5,7 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::{fs, io, path::Path, process::Command};
 
 use crate::run_leases::SOURCE;
-const SLOT: &str = "HORIZON_WINDOWS_RUNTIME_SLOT";
+const SLOT: &str = "SUNRISE_WINDOWS_RUNTIME_SLOT";
 
 pub(crate) struct Guard {
     _slot: fs::File,
@@ -25,7 +25,7 @@ fn redirect_in(cmd: Command, root: &Path) -> Command {
     if value(&cmd, SOURCE).is_none() || value(&cmd, SLOT).is_some() {
         return cmd;
     }
-    let home = value(&cmd, "HORIZON_HOME")
+    let home = value(&cmd, "SUNRISE_HOME")
         .map(Path::new)
         .or(cmd.get_current_dir())
         .expect("the game command has a home");
@@ -138,8 +138,8 @@ pub(crate) fn in_use(source: &Path) -> bool {
     in_use_in(source, &crate::backend::data_dir().join("run"))
 }
 
-/// Whether a program in the version's own folder is running: `horizon-ctl` under the launcher's
-/// MCP server, `horizon-server`, `horizon-prepare`. They start from there, not from a runtime
+/// Whether a program in the version's own folder is running: `sunrise-ctl` under the launcher's
+/// MCP server, `sunrise-server`, `sunrise-prepare`. They start from there, not from a runtime
 /// slot, and Windows refuses both to open a running image for writing and to delete it.
 fn runs_program(dir: &Path) -> bool {
     const ERROR_SHARING_VIOLATION: i32 = 32;
@@ -198,10 +198,10 @@ mod tests {
 
     #[test]
     fn a_program_running_from_the_version_folder_keeps_it_in_use() {
-        let root = std::env::temp_dir().join(format!("horizon-program-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sunrise-program-{}", std::process::id()));
         let version = root.join("version");
         fs::create_dir_all(&version).unwrap();
-        let ctl = version.join("horizon-ctl.exe");
+        let ctl = version.join("sunrise-ctl.exe");
         fs::copy(
             Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe"),
             &ctl,
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn an_orphaned_process_keeps_its_runtime_and_source_version_protected() {
-        let root = std::env::temp_dir().join(format!("horizon-orphan-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sunrise-orphan-{}", std::process::id()));
         let source = root.join("version");
         fs::create_dir_all(&source).unwrap();
         fs::copy(
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn versions_reuse_a_slot_keep_native_files_and_cannot_replace_a_running_game() {
-        let root = std::env::temp_dir().join(format!("horizon-runtime-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sunrise-runtime-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
@@ -274,7 +274,7 @@ mod tests {
             fs::write(source.join("native-data/mod/table"), version).unwrap();
             let mut cmd = Command::new(source.join(crate::backend::CLIENT));
             cmd.current_dir(&home)
-                .env("HORIZON_HOME", &home)
+                .env("SUNRISE_HOME", &home)
                 .arg("--offscreen");
             crate::run_leases::mark(&mut cmd, &source);
             redirect_in(cmd, &root.join("run"))

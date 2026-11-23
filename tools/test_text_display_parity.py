@@ -28,17 +28,17 @@ def main():
     fixtures.write_text(''.join(json.dumps(c, ensure_ascii=False) + '\n' for c in cases))
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)
-    source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTextDisplayOracle.java'
+    source = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaTextDisplayOracle.java'
     sources = [Path(__file__).resolve(), source,
-        lab.ROOT / 'crates/horizon-client/src/text_display.rs',
-        lab.ROOT / 'crates/horizon-protocol/src/entity_data.rs', lab.ROOT / 'Cargo.lock']
+        lab.ROOT / 'crates/sunrise-client/src/text_display.rs',
+        lab.ROOT / 'crates/sunrise-protocol/src/entity_data.rs', lab.ROOT / 'Cargo.lock']
     tested = base.source_hashes(sources)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     run = lambda command, name: harness.run_logged(command, build, name)
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath',
-         lab.ROOT / 'mods/horizon/src/test/java', '-cp', cp, '-d', classes, source], 'compile-java')
+         lab.ROOT / 'mods/sunrise/src/test/java', '-cp', cp, '-d', classes, source], 'compile-java')
     run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + cp,
-         'dev.horizonlab.parity.VanillaTextDisplayOracle', fixtures, build / 'java.jsonl'], 'java')
+         'dev.sunriselab.parity.VanillaTextDisplayOracle', fixtures, build / 'java.jsonl'], 'java')
     command = harness.build_probe(build, 'text_display_fixture')
     run([*command, build / 'java.jsonl', build / 'rust.jsonl'], 'rust')
     expected = [json.loads(line)['expected'] for line in (build / 'java.jsonl').read_text().splitlines()]

@@ -12,7 +12,7 @@ choices = {
     "mobs": ("mobs.rs", "mobs/living.rs", "totem_death_effects", False),
 }
 a, b, name, method = choices[sys.argv[1]]
-folder = root / "crates/horizon-client/src"
+folder = root / "crates/sunrise-client/src"
 a, b = folder / a, folder / b
 source, target = a.read_text(), b.read_text()
 indent = "    " if method else ""

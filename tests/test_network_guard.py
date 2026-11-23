@@ -121,7 +121,7 @@ class NetworkGuard(unittest.TestCase):
         self.assertIn("did not load", result["status"])
 
     def test_invalid_channel_exits_instead_of_losing_violation(self):
-        env = {**os.environ, "LD_PRELOAD": str(self.shim), "HORIZON_NETWORK_GUARD_LOG": "/nonexistent/guard/log"}
+        env = {**os.environ, "LD_PRELOAD": str(self.shim), "SUNRISE_NETWORK_GUARD_LOG": "/nonexistent/guard/log"}
         result = subprocess.run([sys.executable, "-c", "pass"], env=env)
         self.assertEqual(result.returncode, 125)
 

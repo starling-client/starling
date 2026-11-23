@@ -17,9 +17,9 @@ for p in paths:
     new = []
     for line in text.split('\n'):
         if 'cargo run' in line and '--example' not in line:
-            line = re.sub(r'-p horizon-client(?![\w-])', '-p horizon-game', line)
+            line = re.sub(r'-p sunrise-client(?![\w-])', '-p sunrise-game', line)
         if '--example' in line and any(name in line for name in ['native_waypoints', 'native_gui_overlay_probe', 'wind_burst_hook_probe']):
-            line = re.sub(r'-p horizon-client(?![\w-])', '-p horizon-mod-host', line)
+            line = re.sub(r'-p sunrise-client(?![\w-])', '-p sunrise-mod-host', line)
         new.append(line)
     updated = '\n'.join(new)
     if updated != text:

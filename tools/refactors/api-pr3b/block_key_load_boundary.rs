@@ -1,5 +1,5 @@
 //! Execute the game load expression against a real engine registry and count lookup allocations.
-use horizon_world::registry::BlockRegistry;
+use sunrise_world::registry::BlockRegistry;
 use mod_api::__private::{block_key, block_key_id};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

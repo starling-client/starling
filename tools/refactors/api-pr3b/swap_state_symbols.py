@@ -20,13 +20,13 @@ parser.add_argument("--defer-constructor-fixtures", action="store_true", help="r
 parser.add_argument("--format", action="store_true", help="include touched-file rustfmt output in the logged transformation")
 args = parser.parse_args()
 root = args.root.resolve()
-api = root / "crates/horizon-mod-api/src"
+api = root / "crates/sunrise-mod-api/src"
 if not (root / "Cargo.toml").is_file() or not api.is_dir():
-    parser.error("root must be the Horizon checkout")
+    parser.error("root must be the Sunrise checkout")
 
 symbols = re.compile(r"\b(BlockStateId|BlockId)\b")
 constructors = re.compile(r"\b(?:BlockStateId|BlockId)\s*\(")
-old_export = "    horizon_world::{level::BlockId, registry::BlockStateId},\n"
+old_export = "    sunrise_world::{level::BlockId, registry::BlockStateId},\n"
 changes = []
 pending = []
 refused = []
@@ -57,7 +57,7 @@ for path in sorted(api.rglob("*.rs")):
     if not symbols.search(source):
         continue
     relative = path.relative_to(root).as_posix()
-    if relative == "crates/horizon-mod-api/src/exports/horizon_world.rs":
+    if relative == "crates/sunrise-mod-api/src/exports/sunrise_world.rs":
         if source.count(old_export) != 1:
             refused.append({"file": relative, "reason": "raw export shape changed; inspect it"})
             continue
@@ -65,33 +65,33 @@ for path in sorted(api.rglob("*.rs")):
     else:
         if constructors.search(source):
             if args.defer_constructor_fixtures and relative in {
-                "crates/horizon-mod-api/src/wasm_key_tests.rs",
-                "crates/horizon-mod-api/src/parts/blocks.rs",
+                "crates/sunrise-mod-api/src/wasm_key_tests.rs",
+                "crates/sunrise-mod-api/src/parts/blocks.rs",
             }:
                 hand_fixes.append({"file": relative, "reason": "raw numeric wire fixture renamed only; replace with owned record and field-tuple comparison by hand"})
             else:
                 refused.append({"file": relative, "reason": "numeric constructor fixture must be migrated by hand"})
-        if re.search(r"horizon_world::[^;\n]*\b(?:BlockStateId|BlockId)\b", source):
+        if re.search(r"sunrise_world::[^;\n]*\b(?:BlockStateId|BlockId)\b", source):
             refused.append({"file": relative, "reason": "qualified engine import needs boundary ownership review"})
         replacement = symbols.sub(lambda match: "BlockState" if match[0] == "BlockStateId" else "BlockKey", source)
     record_change(path, source, replacement)
 
 # These private native methods consume engine states, not API payload values.
 for relative in [
-    "crates/horizon-client/src/game/modding/native_entity_refs.rs",
-    "crates/horizon-client/src/game/modding/native_block_sprites.rs",
+    "crates/sunrise-client/src/game/modding/native_entity_refs.rs",
+    "crates/sunrise-client/src/game/modding/native_block_sprites.rs",
 ]:
     path = root / relative
     if not path.is_file():
         continue
     source = path.read_text()
-    replacement = source.replace("mod_api::BlockStateId", "horizon_world::registry::BlockStateId")
+    replacement = source.replace("mod_api::BlockStateId", "sunrise_world::registry::BlockStateId")
     if replacement != source:
         record_change(path, source, replacement)
 
 # Remove only the two transitional explicit-raw lookup arms. Inferred type
 # normalization and the numeric engine carrier conversion must remain untouched.
-dispatch = root / "crates/horizon-mod-api-gen/src/dispatch.rs"
+dispatch = root / "crates/sunrise-mod-api-gen/src/dispatch.rs"
 if dispatch.is_file():
     source = dispatch.read_text()
     first = '                    "BlockStateId" if table == "block" => {'

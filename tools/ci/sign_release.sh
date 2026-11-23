@@ -4,13 +4,13 @@
 # for every key set in RELEASE_SIGNING_KEY and RELEASE_SIGNING_KEY_NEXT (base64 PKCS#8, the `release`
 # environment's secrets). The job that runs this holds the private keys, so it runs nothing from the repository
 # but this file, which calls only the runner's sha256sum and OpenSSL; the publish job then checks the result
-# with horizon-release-sign, as launchers do.
+# with sunrise-release-sign, as launchers do.
 # EPHEMERAL=yes (dry runs) signs with a throwaway key instead and writes its public key to ephemeral.pub.
 # ALSO_FOR=<version> (Nightlies and snapshots) signs the same SHA256SUMS a second time, for
 # "horizon release <ALSO_FOR>\n", into SHA256SUMS.v2.sig, with the same key(s): the build's own version
 # (nightly-<date>-<commit> on the nightly channel, snapshot-<date>-<commit> on the snapshot channel), which current
 # launchers require, while SHA256SUMS.sig stays signed for the channel for launchers from before (docs/security.md).
-#   tools/ci/sign_release.sh v2026.10.19 dist/horizon-linux-x86_64.tar.gz dist/horizon-windows-x64.zip ...
+#   tools/ci/sign_release.sh v2026.10.19 dist/sunrise-linux-x86_64.tar.gz dist/sunrise-windows-x64.zip ...
 #   ALSO_FOR=nightly-2026-10-28-0c02067 tools/ci/sign_release.sh nightly dist/...
 #   ALSO_FOR=snapshot-2026-11-13-0c02067 tools/ci/sign_release.sh snapshot dist/...
 set -euo pipefail

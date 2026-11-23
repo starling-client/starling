@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location(
 wit_order = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wit_order)
 
-WIT = '''package horizon:mod-api@0.1.0;
+WIT = '''package sunrise:mod-api@0.1.0;
 interface types {
   record first {
     x: u32,
@@ -57,7 +57,7 @@ class HostRegroupGateTests(unittest.TestCase):
             ('use types.{first, second}', 'use types.{first, third}'),
             ('  before: func();\n  after: func();', '  after: func();\n  before: func();'),
             ('  import host;\n  export hooks;', '  export hooks;\n  import host;'),
-            ('package horizon:mod-api@0.1.0;', 'package horizon:mod-api@0.2.0;'),
+            ('package sunrise:mod-api@0.1.0;', 'package sunrise:mod-api@0.2.0;'),
         ]:
             with self.subTest(before=before):
                 self.assertFalse(self.compare(WIT.replace(before, after)))

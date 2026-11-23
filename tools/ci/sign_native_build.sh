@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Signs one prebuilt native-mod build (#11859, crates/horizon-release-sign/src/native_build.rs) in
-# horizon-mods' native-build workflow: writes <key16>-<target>.sig beside the archive, one base64 Ed25519
+# Signs one prebuilt native-mod build (#11859, crates/sunrise-release-sign/src/native_build.rs) in
+# sunrise-mods' native-build workflow: writes <key16>-<target>.sig beside the archive, one base64 Ed25519
 # signature per line over "horizon native build <key> <target>\n<sha256>  <archive>\n", for every key set in
 # NATIVE_BUILD_SIGNING_KEY and NATIVE_BUILD_SIGNING_KEY_NEXT (base64 PKCS#8, the `native-builds` environment's
 # secrets). The key and target are the workflow's own inputs, never read from the build: a build can only be
@@ -13,7 +13,7 @@
 set -euo pipefail
 key=$1 target=$2 archive=$3
 openssl=${OPENSSL:-openssl}
-keys_file=${NATIVE_BUILD_KEYS:-$(dirname "$0")/../../crates/horizon-release-sign/native-build-keys.txt}
+keys_file=${NATIVE_BUILD_KEYS:-$(dirname "$0")/../../crates/sunrise-release-sign/native-build-keys.txt}
 [[ "$key" =~ ^[0-9a-f]{64}$ ]] || { echo "$key: not a build key (64 lowercase hex digits)" >&2; exit 1; }
 [[ "$target" =~ ^[a-z0-9_]+(-[a-z0-9_]+)+$ ]] || { echo "$target: not a target triple" >&2; exit 1; }
 dir=$(dirname "$archive")

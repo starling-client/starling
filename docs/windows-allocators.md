@@ -1,6 +1,6 @@
 # Windows allocator experiments
 
-The normal client already uses mimalloc through `horizon_threads::Allocator`,
+The normal client already uses mimalloc through `sunrise_threads::Allocator`,
 including its startup configuration and memory-release behavior. The Windows
 prebuilt archive that native mods build against is the exception: it uses the
 system heap (feature `system-allocator`), because std is a separate DLL there
@@ -22,11 +22,11 @@ mimalloc. No frame-rate improvement is guaranteed.
 
 ```sh
 # Current mimalloc baseline, then add Segment Heap. Keep the same profile.
-cargo build --profile fast -p horizon-game --bin horizon-client
-cargo build --profile fast -p horizon-game --bin horizon-client --features windows-segment-heap
+cargo build --profile fast -p sunrise-game --bin sunrise-client
+cargo build --profile fast -p sunrise-game --bin sunrise-client --features windows-segment-heap
 # Older commands still build, but these repeat the two variants above.
-cargo build --profile fast -p horizon-game --bin horizon-client --features windows-mimalloc
-cargo build --profile fast -p horizon-game --bin horizon-client --features windows-segment-heap,windows-mimalloc
+cargo build --profile fast -p sunrise-game --bin sunrise-client --features windows-mimalloc
+cargo build --profile fast -p sunrise-game --bin sunrise-client --features windows-segment-heap,windows-mimalloc
 ```
 
 Copy each executable to a separate experiment directory before building the next
@@ -48,13 +48,13 @@ On Windows, extract the manifest from a built executable using the Windows SDK's
 `mt.exe` (PowerShell syntax):
 
 ```powershell
-mt.exe '-inputresource:target/fast/horizon-client.exe;#1' '-out:client.manifest'
+mt.exe '-inputresource:target/fast/sunrise-client.exe;#1' '-out:client.manifest'
 mt.exe -manifest client.manifest -validate_manifest
 ```
 
 Check that the feature build contains `SegmentHeap` in the
 `http://schemas.microsoft.com/SMI/2020/WindowsSettings` namespace. The baseline
-must not contain this element. Confirm Explorer still shows Horizon's icon for
+must not contain this element. Confirm Explorer still shows Sunrise's icon for
 both builds. Inspecting the final executable matters: a valid source XML file
 alone does not prove that the linker embedded it.
 

@@ -1,5 +1,5 @@
-use horizon_core::nbt::{Compound, JavaString, Tag};
-use horizon_items::items::ItemStack as EngineStack;
+use sunrise_core::nbt::{Compound, JavaString, Tag};
+use sunrise_items::items::ItemStack as EngineStack;
 use mod_api::*;
 use std::{
     hint::black_box,
@@ -55,7 +55,7 @@ mod allocations {
 
 mod game {
     use super::*;
-    use horizon_items::items::ItemStack;
+    use sunrise_items::items::ItemStack;
     #[derive(Default)]
     pub struct Game<'a>(std::marker::PhantomData<&'a ()>);
     impl mod_api::Host for Game<'_> {}
@@ -68,7 +68,7 @@ mod game {
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 struct Part;
-#[mod_api::horizon_part]
+#[mod_api::sunrise_part]
 impl ItemPart for Part {
     fn use_item(&self, _: &mut dyn ServerHost, event: &mut UseItemEvent<'_>) -> Flow {
         black_box(event.stack);
@@ -139,7 +139,7 @@ fn report(label: &str, mut f: impl FnMut()) {
     }
 }
 fn with_patch(base: &EngineStack, patch: Compound) -> EngineStack {
-    let (_, extra) = horizon_items::item_data::decode_components(Some(&Tag::Compound(patch)));
+    let (_, extra) = sunrise_items::item_data::decode_components(Some(&Tag::Compound(patch)));
     EngineStack {
         extra,
         ..base.clone()

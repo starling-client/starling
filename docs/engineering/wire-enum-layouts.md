@@ -44,10 +44,10 @@ validation. Keep their artifacts together; do not substitute incompatible rlibs.
 mkdir -p target/wire-layout-capture
 # The diagnostic flag forces a recorded rustc invocation even with warm outputs.
 env -u RUSTC_WRAPPER RUSTC_BOOTSTRAP=1 CARGO_INCREMENTAL=0 \
-  cargo rustc --locked -p horizon-mod-vocab --lib -vv -- -Ztime-passes \
+  cargo rustc --locked -p sunrise-mod-vocab --lib -vv -- -Ztime-passes \
   2> target/wire-layout-capture/build.log
 env -u RUSTC_WRAPPER RUSTC_BOOTSTRAP=1 cargo rustc --locked \
-  -p horizon-mod-vocab --lib -- -Zunpretty=expanded \
+  -p sunrise-mod-vocab --lib -- -Zunpretty=expanded \
   > target/wire-layout-capture/expanded.rs
 python3 tools/capture_wire_enum_layouts.py \
   --base 5c6c41f19f64c26231e0e49be505c5e2b1439be9 \
@@ -73,10 +73,10 @@ replacement of expected values.
 ```sh
 mkdir -p target/wire-goldens
 env -u RUSTC_WRAPPER RUSTC_BOOTSTRAP=1 cargo rustc --locked \
-  -p horizon-mod-vocab --lib -- -Zunpretty=expanded \
+  -p sunrise-mod-vocab --lib -- -Zunpretty=expanded \
   > target/wire-goldens/expanded.rs
 python3 tools/generate_wire_enum_goldens.py --expanded target/wire-goldens/expanded.rs --check
-cargo test --locked -p horizon-mod-vocab --lib existing_fieldless_enum_layouts_match_baseline
+cargo test --locked -p sunrise-mod-vocab --lib existing_fieldless_enum_layouts_match_baseline
 ```
 
 Omit `--check` only to regenerate the ordinary Rust file from the frozen pins.

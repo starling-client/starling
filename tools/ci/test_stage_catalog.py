@@ -25,7 +25,7 @@ class StageBuildData(unittest.TestCase):
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         (ROOT / "target").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / "target") as temporary:
-            stage_tool = os.environ.get("HORIZON_STAGE_TOOL")
+            stage_tool = os.environ.get("SUNRISE_STAGE_TOOL")
             staged = PREBUILT.stage(Path(temporary), stage_tool=Path(stage_tool) if stage_tool else None)
             documents = {name: json.loads((staged / name).read_text()) for name in PREBUILT.BUILD_DATA}
             for name, document in documents.items():
@@ -35,7 +35,7 @@ class StageBuildData(unittest.TestCase):
             self.assertTrue(points)
             self.assertTrue(all(len(point["signature_hash"]) == 32 for point in points))
             self.assertTrue(documents[PREBUILT.INTERNALS]["internals"])
-            self.assertFalse((ROOT / ".horizon-source-staged").exists())
+            self.assertFalse((ROOT / ".sunrise-source-staged").exists())
         # Staging must not change the tracked source it describes.
         subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=ROOT, check=True)
 

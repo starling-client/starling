@@ -13,7 +13,7 @@ except ImportError:
     import test_rust_parity as base
 
 RESOURCES = lab.RESOURCES
-PARITY = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
+PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 
 
 def work_dir(name):
@@ -35,7 +35,7 @@ class Vanilla:
     def compile(self, *oracles):
         sources = [PARITY / (name + '.java') for name in oracles]
         done = subprocess.run(['javac', '--release', str(self.lock['minecraft']['java_major']), '-proc:none',
-                               '-sourcepath', str(lab.ROOT / 'mods/horizon/src/test/java'), '-nowarn', '-Xmaxerrs', '30',
+                               '-sourcepath', str(lab.ROOT / 'mods/sunrise/src/test/java'), '-nowarn', '-Xmaxerrs', '30',
                                '-cp', self.deps, '-d', str(self.classes), *map(str, sources)], capture_output=True, text=True)
         if done.returncode:
             print(done.stderr.replace(str(lab.ROOT) + '/', ''))
@@ -43,16 +43,16 @@ class Vanilla:
 
     def run(self, oracle, *args, heap='2G'):
         subprocess.run(['java', f'-Xmx{heap}', '-cp', str(self.classes) + os.pathsep + self.deps,
-                        'dev.horizonlab.parity.' + oracle, *map(str, args)], check=True)
+                        'dev.sunriselab.parity.' + oracle, *map(str, args)], check=True)
 
 
 def cargo_example(package, example, *args, profile=None):
     command = ['cargo', 'run', '-q', '-j3']
     if profile:
         command += ['--profile', profile]
-    probe = package.removeprefix('horizon-') + '_probe'  # each crate's probe example: client_probe, world_probe
-    if package == 'horizon-client':
-        package = 'horizon-client-lib'
+    probe = package.removeprefix('sunrise-') + '_probe'  # each crate's probe example: client_probe, world_probe
+    if package == 'sunrise-client':
+        package = 'sunrise-client-lib'
     command += ['-p', package, '--example', probe, '--', example, *map(str, args)]
     subprocess.run(command, check=True, cwd=lab.ROOT)
 

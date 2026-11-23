@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Check that horizon-prepare (Rust) writes what the Python preparer wrote.
+"""Check that sunrise-prepare (Rust) writes what the Python preparer wrote.
 
 Prepares the same jars three times in fresh folders made from the same tree (research-lock.json
 and the vanilla exporters of --python-ref): twice with that ref's tools/prepare_native_client.py
-and once with horizon-prepare. Every file under .local/ is compared by sha256:
+and once with sunrise-prepare. Every file under .local/ is compared by sha256:
 
 - identical: the same bytes in all three runs;
 - exporter noise: differs between the two Python runs too, so the vanilla Java exporter itself
   writes it differently each run (lambda addresses, hash-set order), not the preparer;
 - port differences: identical between the Python runs but not in the Rust run. There must be none.
 
-The manifest (horizon-resources.json) is compared field by field: only the recorded hashes of
+The manifest (sunrise-resources.json) is compared field by field: only the recorded hashes of
 exporter-noise files may differ, and each must be the hash of its own run's file.
 
 Then each preparer runs again over the other's output (Rust over a Python tree, Python over the
@@ -39,7 +39,7 @@ def tree(ref, destination, archive=None):
     """The preparer's inputs at `ref`: research-lock.json, the exporters and the Python preparer."""
     destination.mkdir(parents=True)
     if archive is None:
-        archive = subprocess.run(['git', '-C', str(ROOT), 'archive', ref, 'tools', 'mods/horizon/src/test/java',
+        archive = subprocess.run(['git', '-C', str(ROOT), 'archive', ref, 'tools', 'mods/sunrise/src/test/java',
                                   'research-lock.json'], check=True, capture_output=True).stdout
     else:
         archive = archive.read_bytes()
@@ -71,19 +71,19 @@ def main():
     parser.add_argument('--minecraft-dir', type=Path, required=True)
     parser.add_argument('--python-ref', default=PYTHON_REF)
     parser.add_argument('--python-tree', type=Path,
-                        help='a tar of that tree instead of git (git archive REF tools mods/horizon/src/test/java '
+                        help='a tar of that tree instead of git (git archive REF tools mods/sunrise/src/test/java '
                              'research-lock.json), for a machine without the repository')
-    parser.add_argument('--binary', type=Path, help='horizon-prepare to test (default: cargo build --release)')
+    parser.add_argument('--binary', type=Path, help='sunrise-prepare to test (default: cargo build --release)')
     parser.add_argument('--work', type=Path, default=ROOT / '.local/compare-prepare')
     parser.add_argument('--keep', action='store_true', help='keep the prepared folders')
     args = parser.parse_args()
     binary = args.binary
     if binary is None:
-        subprocess.run(['cargo', 'build', '--release', '-p', 'horizon-prepare'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--release', '-p', 'sunrise-prepare'], cwd=ROOT, check=True)
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                       cwd=ROOT, text=True))
         binary = Path(metadata['target_directory']) / 'release' / (
-            'horizon-prepare.exe' if os.name == 'nt' else 'horizon-prepare')
+            'sunrise-prepare.exe' if os.name == 'nt' else 'sunrise-prepare')
     binary = binary.resolve()
     work = args.work.resolve()
     shutil.rmtree(work, ignore_errors=True)
@@ -104,8 +104,8 @@ def main():
     port = [n for n in names if n not in identical and n not in noise]
     # Only lab.py fetches the decompiler; preparing does not need it.
     port = [n for n in port if not (n.startswith('tools/vineflower-') and n not in rust)]
-    manifest = 'horizon-client/' + json.loads((folders['rust'] / 'research-lock.json').read_text())[
-        'minecraft']['version'] + '/horizon-resources.json'
+    manifest = 'sunrise-client/' + json.loads((folders['rust'] / 'research-lock.json').read_text())[
+        'minecraft']['version'] + '/sunrise-resources.json'
     noisy = {n.rsplit('/', 1)[-1] for n in noise if n.startswith(manifest.rsplit('/', 1)[0] + '/')}
     manifests = {n: json.loads((folders[n] / '.local' / manifest).read_text()) for n in folders}
     manifest_differences = []
@@ -125,7 +125,7 @@ def main():
     if manifest in port and not manifest_differences:
         port.remove(manifest)
     # Each preparer over the other's output: nothing to export again, no resource changes.
-    resources = 'horizon-client/'
+    resources = 'sunrise-client/'
     before = {'python-2': second, 'rust': rust}
     times['rust over python'] = run('rust over python', [str(binary), '--root', str(folders['python-2']), *game],
                                     folders['python-2'], work / 'rust-over-python.log')

@@ -5,10 +5,10 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-for relative in ("crates/horizon-mod-vocab/src/content/payloads.rs",
-                 "crates/horizon-mod-vocab/src/exports/payloads.rs"):
+for relative in ("crates/sunrise-mod-vocab/src/content/payloads.rs",
+                 "crates/sunrise-mod-vocab/src/exports/payloads.rs"):
     (ROOT / relative).unlink(missing_ok=True)
-path = ROOT / "crates/horizon-mod-vocab/src/content/mod.rs"
+path = ROOT / "crates/sunrise-mod-vocab/src/content/mod.rs"
 path.write_text(path.read_text().replace("pub(crate) mod payloads;\n", ""))
 path = ROOT / "docs/modding/src/concepts/typed-payloads.md"
 source = path.read_text()
@@ -30,4 +30,4 @@ path = ROOT / "tools/fixtures/wire_enum_baseline_identities.json"
 path.write_text(json.dumps([entry for entry in json.loads(path.read_text()) if entry not in retired], indent=2) + "\n")
 sys.path.insert(0, str(ROOT / "tools"))
 from generate_wire_enum_goldens import render
-(ROOT / "crates/horizon-mod-vocab/src/wire/fieldless_enum_goldens.rs").write_text(render(manifest))
+(ROOT / "crates/sunrise-mod-vocab/src/wire/fieldless_enum_goldens.rs").write_text(render(manifest))

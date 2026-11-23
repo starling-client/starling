@@ -26,8 +26,8 @@ def corpus(facts):
         [{'type':'count','count':2},{'type':'in_square'},{'type':'heightmap','heightmap':'MOTION_BLOCKING'},{'type':'biome'}],
         [{'type':'count_on_every_layer','count':1},{'type':'offset','x':0,'y':1,'z':0},{'type':'biome'}],
         [{'type':'biome'},{'type':'count','count':2},{'type':'heightmap','heightmap':'WORLD_SURFACE'},{'type':'offset','x':1,'y':0,'z':1}],
-        [{'type':'count','count':3},{'type':'in_square'},{'type':'heightmap','heightmap':'MOTION_BLOCKING'},{'type':'block_predicate_filter','predicate':{'type':'matching_biomes','biomes':['horizon:b0','horizon:b1']}},{'type':'biome'}],
-        [{'type':'biome'},{'type':'block_predicate_filter','predicate':{'type':'volume_match','min':[-1,0,-1],'max':[1,0,1],'match':{'type':'not','predicate':{'type':'matching_biomes','biomes':['horizon:b3']}}}}],
+        [{'type':'count','count':3},{'type':'in_square'},{'type':'heightmap','heightmap':'MOTION_BLOCKING'},{'type':'block_predicate_filter','predicate':{'type':'matching_biomes','biomes':['sunrise:b0','sunrise:b1']}},{'type':'biome'}],
+        [{'type':'biome'},{'type':'block_predicate_filter','predicate':{'type':'volume_match','min':[-1,0,-1],'max':[1,0,1],'match':{'type':'not','predicate':{'type':'matching_biomes','biomes':['sunrise:b3']}}}}],
     ]
     for seed in [0,-1]:
         for stage in ['empty','biomes','terrain']:
@@ -50,12 +50,12 @@ def main():
     lock,jars,libraries=base.verify_artifacts()
     tags=worldgen.tag_resources(jars["server"])
     if not tags or tags!=worldgen.tag_resources(jars["client"]):raise ValueError("client/server block tags differ or are empty")
-    oracle=lab.ROOT/"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaDecorationRegionOracle.java"
+    oracle=lab.ROOT/"mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaDecorationRegionOracle.java"
     helper=oracle.with_name("VanillaHeightmapOracle.java")
     placement_helper=oracle.with_name("VanillaPlacementOracle.java")
     sources=[oracle,helper,placement_helper,Path(__file__),lab.ROOT/"tools/test_rust_parity.py",lab.ROOT/"tools/test_worldgen_parity.py",lab.ROOT/"tools/test_feature_region_parity.py",lab.ROOT/"tools/test_decoration_parity.py",lab.ROOT/"tools/test_feature_sort_parity.py",lab.ROOT/"tools/lab.py",lab.ROOT/"Cargo.toml",lab.ROOT/"Cargo.lock",
-             lab.ROOT/"crates/horizon-core/Cargo.toml",lab.ROOT/"crates/horizon-world/Cargo.toml",
-             *sorted((lab.ROOT/"crates/horizon-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/horizon-world/src").rglob("*.rs")),lab.ROOT/"crates/horizon-world/examples/probe/decoration_region_fixture.rs",lab.ROOT/"crates/horizon-world/examples/probe/support/decoration_storage.rs"]
+             lab.ROOT/"crates/sunrise-core/Cargo.toml",lab.ROOT/"crates/sunrise-world/Cargo.toml",
+             *sorted((lab.ROOT/"crates/sunrise-core/src").rglob("*.rs")),*sorted((lab.ROOT/"crates/sunrise-world/src").rglob("*.rs")),lab.ROOT/"crates/sunrise-world/examples/probe/decoration_region_fixture.rs",lab.ROOT/"crates/sunrise-world/examples/probe/support/decoration_storage.rs"]
     tested_sources=base.source_hashes(sources)
     classes=build/"classes";classes.mkdir(exist_ok=True)
     def run(command,name):
@@ -63,7 +63,7 @@ def main():
     dependency_path=os.pathsep.join(map(str,libraries))
     run(["javac","--release",lock["minecraft"]["java_major"],"-proc:none","-cp",str(jars["server"])+os.pathsep+dependency_path,"-d",classes,oracle,helper,placement_helper],"compile-java")
     def java(side,mode,path):
-        run(["java","-Xmx1G","-cp",os.pathsep.join([str(classes),str(jars[side]),dependency_path]),"dev.horizonlab.parity.VanillaDecorationRegionOracle",mode,path],side+"-"+mode)
+        run(["java","-Xmx1G","-cp",os.pathsep.join([str(classes),str(jars[side]),dependency_path]),"dev.sunriselab.parity.VanillaDecorationRegionOracle",mode,path],side+"-"+mode)
     for side in jars:java(side,"export",build/f"facts-{side}.json")
     facts=json.loads((build/"facts-server.json").read_text())
     if facts!=json.loads((build/"facts-client.json").read_text()):raise ValueError("client/server state facts differ")
@@ -73,7 +73,7 @@ def main():
     (build/"tags.json").write_text(json.dumps(tags,separators=(",",":")),encoding="utf-8")
     fixture_paths=[inputs,build/"tags.json",build/"facts-client.json",build/"facts-server.json"]
     tested_fixtures=base.source_hashes(fixture_paths)
-    run(["cargo","build","--release","-p","horizon-world","--example","world_probe"],"compile-rust")
+    run(["cargo","build","--release","-p","sunrise-world","--example","world_probe"],"compile-rust")
     metadata=json.loads(subprocess.check_output(["cargo","metadata","--no-deps","--format-version","1"],cwd=lab.ROOT,text=True))
     binary=Path(metadata["target_directory"])/"release/examples"/("world_probe.exe" if os.name=="nt" else "world_probe")
     run([binary,"decoration_region_fixture",build],"rust")

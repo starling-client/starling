@@ -4,7 +4,7 @@ import unittest
 
 from tools import port_harness as harness
 
-JAVAC = """/x/mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java:45: error: cannot find symbol
+JAVAC = """/x/mods/sunrise/src/test/java/dev/sunriselab/parity/ParityData.java:45: error: cannot find symbol
   symbol:   variable WORLD
   location: class RegistryLayer
 1 error
@@ -51,7 +51,7 @@ class ClassifyTests(unittest.TestCase):
 
 
 class AssetTests(unittest.TestCase):
-    def test_javac_errors_from_the_log_horizon_prepare_names(self):
+    def test_javac_errors_from_the_log_sunrise_prepare_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "export.log"
             log.write_text("Oracle.java:33: error: cannot find symbol\n")
@@ -59,7 +59,7 @@ class AssetTests(unittest.TestCase):
             self.assertIn("Oracle.java:33: error", harness.named_logs(output))
             self.assertEqual(harness.named_logs("error: see /nonexistent/x.log"), "")
 
-    def test_the_reports_link_goes_before_horizon_prepare(self):
+    def test_the_reports_link_goes_before_sunrise_prepare(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, store = Path(tmp) / "candidate", Path(tmp) / "store-reports"
             (store / "minecraft").mkdir(parents=True)
@@ -72,7 +72,7 @@ class AssetTests(unittest.TestCase):
             harness.own_reports(root)
             self.assertFalse(reports.exists() or reports.is_symlink())
             self.assertTrue((store / "minecraft").is_dir())
-            reports.mkdir()  # its own reports, from an earlier horizon-prepare, stay
+            reports.mkdir()  # its own reports, from an earlier sunrise-prepare, stay
             harness.own_reports(root)
             self.assertTrue(reports.is_dir())
 

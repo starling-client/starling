@@ -32,8 +32,8 @@ form, not a hand-written stack codec.
 Contributor #1730 introduced `mod_api::testing::FakeHost` in `src/testing.rs` and
 `src/testing/{level,players,services,registries,journal}.rs`, and migrated
 handwritten hosts in `transaction.rs`, `lib.rs`, `hooks_tests.rs`, wasm
-`groups`/`sample`/`points`, `horizon-mod-points/tests/wire.rs`,
-`horizon-client/tests/mod_api_hooks.rs`, `brewing.rs` and `menu.rs`. These consumers
+`groups`/`sample`/`points`, `sunrise-mod-points/tests/wire.rs`,
+`sunrise-client/tests/mod_api_hooks.rs`, `brewing.rs` and `menu.rs`. These consumers
 are migrated after merging main, including #1730 and #1651. Widget additions from
 #1694 carry no stack in `widgets.rs`; GUI stack drawing still converts the API
 value in `game/host/draw.rs` through `api_values.rs` before the engine renderer.
@@ -59,7 +59,7 @@ Signature changes, WIT record changes and hook dispatch equivalence require
 separate review/proofs; the manifest comparison does not claim those are equal.
 
 Generate each checkout's API outputs with its own generator (the same
-`horizon_mod_api_gen::generate(root, out, Target::Api)` entry point used by the
+`sunrise_mod_api_gen::generate(root, out, Target::Api)` entry point used by the
 API build script). The refreshed structural baseline is merged main `8843d83923`, including the widget
 consumers. Earlier archived reports used `8fcd440a3e675499b83277490376dfa92001d14e`.
 Run `host-manifest` on the generated `mod_api_generated_host.rs`, generated

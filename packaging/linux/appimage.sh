@@ -18,7 +18,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 binary=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 version=$2
 out=$(mkdir -p "$3" && cd "$3" && pwd)
-name=horizon-launcher-linux-x86_64.AppImage
+name=sunrise-launcher-linux-x86_64.AppImage
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -27,15 +27,15 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/lib" \
   "$appdir/usr/share/applications" "$appdir/usr/share/icons"
 
 # The program.
-cp "$binary" "$appdir/usr/bin/horizon-launcher"
-chmod 755 "$appdir/usr/bin/horizon-launcher"
+cp "$binary" "$appdir/usr/bin/sunrise-launcher"
+chmod 755 "$appdir/usr/bin/sunrise-launcher"
 
 # Both places: AppRun's, and the one desktop environments read once the image is unpacked.
-cp "$here/horizon-launcher.desktop" "$appdir/horizon-launcher.desktop"
-cp "$here/horizon-launcher.desktop" "$appdir/usr/share/applications/horizon-launcher.desktop"
+cp "$here/sunrise-launcher.desktop" "$appdir/sunrise-launcher.desktop"
+cp "$here/sunrise-launcher.desktop" "$appdir/usr/share/applications/sunrise-launcher.desktop"
 cp -R "$here/../icons/hicolor/." "$appdir/usr/share/icons/hicolor/"
-cp "$here/../icons/hicolor/512x512/apps/horizon.png" "$appdir/horizon.png"
-ln -s horizon.png "$appdir/.DirIcon"
+cp "$here/../icons/hicolor/512x512/apps/sunrise.png" "$appdir/sunrise.png"
+ln -s sunrise.png "$appdir/.DirIcon"
 
 # Runs the packaged binary. It finds the packaged libraries through its own run path (set below),
 # not LD_LIBRARY_PATH, which every program it starts (the game, a browser, a file manager) would
@@ -44,7 +44,7 @@ cat > "$appdir/AppRun" <<'EOF'
 #!/bin/sh
 # AppRun: the launcher; its libraries are beside it (usr/lib, through its run path).
 here=$(dirname "$(readlink -f "$0")")
-exec "$here/usr/bin/horizon-launcher" "$@"
+exec "$here/usr/bin/sunrise-launcher" "$@"
 EOF
 chmod 755 "$appdir/AppRun"
 
@@ -71,7 +71,7 @@ system_library() {
 }
 
 # Everything else the launcher links, then everything those need, until nothing new is added.
-todo=("$appdir/usr/bin/horizon-launcher")
+todo=("$appdir/usr/bin/sunrise-launcher")
 seen=" "
 while [[ ${#todo[@]} -gt 0 ]]; do
   elf=${todo[0]}
@@ -90,7 +90,7 @@ done
 # Each packaged file looks for the others beside the launcher: the binary in ../lib, a library in
 # its own folder. A run path is the file's own, so nothing the launcher starts inherits it.
 command -v patchelf > /dev/null || { echo "error: patchelf is needed (apt install patchelf)" >&2; exit 1; }
-patchelf --set-rpath '$ORIGIN/../lib' "$appdir/usr/bin/horizon-launcher"
+patchelf --set-rpath '$ORIGIN/../lib' "$appdir/usr/bin/sunrise-launcher"
 for lib in "$appdir"/usr/lib/*.so*; do
   if [[ -e "$lib" ]]; then patchelf --set-rpath '$ORIGIN' "$lib"; fi
 done
@@ -98,7 +98,7 @@ done
 # Everything the launcher links is either beside it or the machine's: a library missing on the
 # machine that builds this would make an image that starts nowhere. No LD_LIBRARY_PATH: the run
 # paths alone must find them.
-missing=$(ldd "$appdir/usr/bin/horizon-launcher" | grep "not found" || true)
+missing=$(ldd "$appdir/usr/bin/sunrise-launcher" | grep "not found" || true)
 [[ -z "$missing" ]] || {
   echo "error: the launcher links libraries this machine does not have:" >&2
   echo "$missing" >&2
@@ -123,19 +123,19 @@ ARCH=x86_64 "$tool" --appimage-extract-and-run --no-appstream "$appdir" "$out/$n
 
 # It starts, and is the version it was built as, before any window or GPU is needed.
 got=$("$out/$name" --appimage-extract-and-run --version)
-[[ "$got" == "horizon-launcher $version" ]] || {
-  echo "error: expected 'horizon-launcher $version', got '$got'" >&2
+[[ "$got" == "sunrise-launcher $version" ]] || {
+  echo "error: expected 'sunrise-launcher $version', got '$got'" >&2
   exit 1
 }
 
 # The menu entry it installs starts the AppImage, not the copy inside its mount, which is gone
 # once the launcher exits. A data folder of its own: never a player's.
 data=$work/data
-HORIZON_LAUNCHER_HOME=$work/home XDG_DATA_HOME=$data \
+SUNRISE_LAUNCHER_HOME=$work/home XDG_DATA_HOME=$data \
   "$out/$name" --appimage-extract-and-run desktop-entry > /dev/null
-grep -Fq "Exec=\"$out/$name\"" "$data/applications/horizon-launcher.desktop" || {
+grep -Fq "Exec=\"$out/$name\"" "$data/applications/sunrise-launcher.desktop" || {
   echo "error: the menu entry does not start $out/$name" >&2
-  cat "$data/applications/horizon-launcher.desktop" >&2
+  cat "$data/applications/sunrise-launcher.desktop" >&2
   exit 1
 }
 

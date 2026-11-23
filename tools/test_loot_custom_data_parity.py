@@ -7,8 +7,8 @@ read as `{}`. A data pack gives `minecraft:blocks/dirt` one pool per pattern,
 each behind `match_tool`; `loot give @s mine` runs it as the player with sticks
 carrying different custom data, and `clear` counts which pools dropped. Every
 record is compared whole, with no masks. (The loot engine's `filtered` and
-`equipment` paths share the predicate; Horizon's commands can't reach them
-with a data pack's table, so horizon-world's `custom_data_predicate_tests`
+`equipment` paths share the predicate; Sunrise's commands can't reach them
+with a data pack's table, so sunrise-world's `custom_data_predicate_tests`
 holds the same matrix from this oracle.)
 """
 import hashlib

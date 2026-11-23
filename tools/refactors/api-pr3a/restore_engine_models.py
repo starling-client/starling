@@ -10,8 +10,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[3]
 def read(p): return (root / p).read_text()
 def write(p, s): (root / p).write_text(s)
-api = 'crates/horizon-mod-api/src/'
-client = 'crates/horizon-client/src/'
+api = 'crates/sunrise-mod-api/src/'
+client = 'crates/sunrise-client/src/'
 s = read(api+'crafting.rs')
 start = s.index('/// A set of accepted items')
 end = s.index('/// A recipe in force')
@@ -32,7 +32,7 @@ s = s[:s.index('/// The walk both ingredient kinds share')]+walk+s[start:]
 write(api+'crafting.rs', s)
 engine = ('//! Engine recipe ingredients and stack matching.\n'
           'use super::{ItemStack, Items};\n'
-          'use horizon_world::native_load_context::LoadContext;\n'
+          'use sunrise_world::native_load_context::LoadContext;\n'
           'use serde_json::Value;\nuse std::collections::HashSet;\n'
           'use mod_api::item::crafting::{WalkedIngredient, native_ingredient};\n'
           'pub use mod_api::item::crafting::Shape;\n'

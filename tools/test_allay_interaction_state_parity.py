@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native client Allay.mobInteract state with Horizon's client predictor."""
+"""Compare native client Allay.mobInteract state with Sunrise's client predictor."""
 import os
 from pathlib import Path
 import tempfile
@@ -32,12 +32,12 @@ def main():
     paths = [
         'tools/test_allay_interaction_state_parity.py', 'tools/oracle_harness.py',
         'tools/test_rust_parity.py', 'tools/lab.py', 'tools/integration_env.py',
-        'Cargo.toml', 'Cargo.lock', 'crates/horizon-client/src/mobs/allay.rs',
-        'crates/horizon-client/src/mobs/allay/interaction.rs',
-        'crates/horizon-client/src/mobs.rs',
-        'crates/horizon-client/examples/probe/main.rs',
-        'crates/horizon-client/examples/probe/allay_interaction_fixture.rs',
-        'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaAllayInteractionStateOracle.java',
+        'Cargo.toml', 'Cargo.lock', 'crates/sunrise-client/src/mobs/allay.rs',
+        'crates/sunrise-client/src/mobs/allay/interaction.rs',
+        'crates/sunrise-client/src/mobs.rs',
+        'crates/sunrise-client/examples/probe/main.rs',
+        'crates/sunrise-client/examples/probe/allay_interaction_fixture.rs',
+        'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaAllayInteractionStateOracle.java',
     ]
     sources = [lab.ROOT / p for p in paths]
     hashes = h.base.source_hashes(sources)
@@ -50,7 +50,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='allay-state-', dir=build) as scratch:
         env = integration_env.game_environment(os.environ, scratch)
         h.run_logged(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + dependencies,
-                      'dev.horizonlab.parity.VanillaAllayInteractionStateOracle', build / 'client.txt'],
+                      'dev.sunriselab.parity.VanillaAllayInteractionStateOracle', build / 'client.txt'],
                      build, 'client', env=env)
         h.run_logged([*probe, build / 'rust.txt'], build, 'rust', env=env)
     matched = h.compare(build / 'client.txt', build / 'rust.txt', 864)

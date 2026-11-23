@@ -32,9 +32,9 @@ PROPERTIES = {
 }
 
 
-PROFILER_THREADS = ('horizon-profile', 'horizon-perf')
-PROFILER_CODE = ('horizon_threads::sampler', 'horizon_threads::profile', 'horizon_threads::heap_sample',
-                 'horizon_perf_format', 'framehop', 'gimli')
+PROFILER_THREADS = ('sunrise-profile', 'sunrise-perf')
+PROFILER_CODE = ('sunrise_threads::sampler', 'sunrise_threads::profile', 'sunrise_threads::heap_sample',
+                 'sunrise_perf_format', 'framehop', 'gimli')
 
 
 class Failed(Exception):
@@ -42,9 +42,9 @@ class Failed(Exception):
 
 
 def perf(bins, *args):
-    done = subprocess.run([bins / f'horizon-perf{EXE}', *map(str, args)], capture_output=True, text=True, timeout=60)
+    done = subprocess.run([bins / f'sunrise-perf{EXE}', *map(str, args)], capture_output=True, text=True, timeout=60)
     if done.returncode:
-        raise Failed(f'horizon-perf {" ".join(map(str, args))}: {done.stderr or done.stdout}')
+        raise Failed(f'sunrise-perf {" ".join(map(str, args))}: {done.stderr or done.stdout}')
     return done.stdout
 
 
@@ -66,7 +66,7 @@ def check(bins, scratch, out):
     props = dict(PROPERTIES, **{'server-port': str(port)})
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (folder / 'eula.txt').write_text('eula=true\n')
-    command = [bins / f'horizon-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
+    command = [bins / f'sunrise-client{EXE}', '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     server = Server(command, folder, out / 'server.log')
     bots = None
     try:
@@ -74,12 +74,12 @@ def check(bins, scratch, out):
         server.console(f'summon minecraft:cow 0 -59 0 {{CustomName:"{MOB}"}}')
         server.console(f'setblock 3 -60 3 minecraft:oak_sign{{front_text:{{messages:["{SIGN}","","",""]}}}}')
         bots = subprocess.Popen(
-            [bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '2', '--behaviour', 'walk',
+            [bins / f'sunrise-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '2', '--behaviour', 'walk',
              '--seconds', '14', '--name', PLAYER, '--report', out / 'bots.json'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         server.wait_for(rf'{PLAYER}1 joined the game', 60)
         time.sleep(2)
-        server.console('horizon-report 4')
+        server.console('sunrise-report 4')
         deadline = time.time() + 60
         path = None
         while time.time() < deadline and path is None:
@@ -148,7 +148,7 @@ def main():
     out.mkdir(parents=True)
     os.environ.update(lab.game_env())
     # A 4 s capture of a small world allocates little that stays: sample often enough to hold some of it.
-    os.environ['HORIZON_HEAP_SAMPLE_KIB'] = '64'
+    os.environ['SUNRISE_HEAP_SAMPLE_KIB'] = '64'
     with tempfile.TemporaryDirectory(prefix='server-perf-e2e-') as scratch:
         try:
             check(bins, Path(scratch), out)

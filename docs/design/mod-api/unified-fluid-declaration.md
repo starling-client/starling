@@ -6,12 +6,12 @@ this note.
 
 ## Answer and reference behaviour
 
-Use one `Fluid` declaration owned by `horizon-mod-package::content`, with an
+Use one `Fluid` declaration owned by `sunrise-mod-package::content`, with an
 explicit `TankOnly` or `World(WorldFluid)` placement mode and shared appearance.
 `Content.fluids` becomes `Vec<Fluid>`. Files and native/wasm registration decode
 into this same declaration and use one validation and publication pass. A client
 model registration decorates an existing identity; it never declares a fluid.
-Do not revive `horizon-mods`.
+Do not revive `sunrise-mods`.
 
 Reviewed upstream references:
 [horizon-rust/horizon commit 73456ae0085f662006ce3ffe5866920be0d34e7a](https://github.com/horizon-rust/horizon/commit/73456ae0085f662006ce3ffe5866920be0d34e7a)
@@ -56,7 +56,7 @@ because its number decodes. Tank mode has no block, flowing registry entry,
 bucket or scheduled ticks; world-only fields in tank mode are errors.
 
 Proposed validation bounds: tick delay 1..=i32::MAX; drop-off 1..=7; slope
-search 1..=4 initially; light 0..=15; viscosity 1..=i32::MAX. These are Horizon
+search 1..=4 initially; light 0..=15; viscosity 1..=i32::MAX. These are Sunrise
 policy, not claimed NeoForge limits. The slope bound preserves vanilla's maximum
 search capacity; reject upstream's extra 5..=8 pending a bounded search design.
 Water template defaults to tick delay 5, drop-off 1, slope 4 and light 0;
@@ -71,20 +71,20 @@ Keep the fork's flowing-name convention (`a:flowing_dir/oil` for `a:dir/oil`),
 reject collisions, and never silently rename it to upstream's last-segment rule.
 
 The API-owned declaration, placement, template and appearance types each carry
-an explicit `#[derive(horizon_mod_api_macros::Wire)]`, using the shared Wire
+an explicit `#[derive(sunrise_mod_api_macros::Wire)]`, using the shared Wire
 mechanism rather than catalog-generated per-type serialization forms. This
-follows `crates/horizon-mod-vocab/src/world/game_rule_value.rs:7` and the derive
-entry point at `crates/horizon-mod-api-macros/src/lib.rs:6`. The generator builds
+follows `crates/sunrise-mod-vocab/src/world/game_rule_value.rs:7` and the derive
+entry point at `crates/sunrise-mod-api-macros/src/lib.rs:6`. The generator builds
 host call tables only; engine structs stay out of the public API and ABI.
-Before applying these derives in `horizon-mod-package`, move the shared Wire
+Before applying these derives in `sunrise-mod-package`, move the shared Wire
 contract and its supporting codec/layout primitives into a lower, API-owned
 crate that depends on neither package nor API. Both crates depend directly on
 that crate; `mod_api::wire` re-exports the same contract. Update the existing
 derive to resolve that lower crate directly for package-owned declarations,
 while retaining the same explicit derive mechanism for native and wasm. Do not
 add a package-to-API dependency: the API already depends on the package
-(`crates/horizon-mod-api/Cargo.toml:15`), and the current derive emits
-`::mod_api::wire` (`crates/horizon-mod-api-macros/src/wire.rs:49`). This dependency
+(`crates/sunrise-mod-api/Cargo.toml:15`), and the current derive emits
+`::mod_api::wire` (`crates/sunrise-mod-api-macros/src/wire.rs:49`). This dependency
 restructure is a prerequisite in stage 2, not a second serialization mechanism.
 Explicit enum tags and bounded decoding remain requirements. Both targets
 submit the same fields and receive the same refusal. Bound strings and list
@@ -110,13 +110,13 @@ Verified current owners (line numbers describe this checkout):
 
 | Route | Owner and required change |
 | --- | --- |
-| File declarations, generated blocks/buckets | `crates/horizon-mod-package/src/content.rs:509`, `:521`, `:565`, `:877`: replace FluidFile/FluidLook split with one validated Fluid |
-| Code declaration ingress | `crates/horizon-mod-vocab/src/parts/fluids.rs:589`, `:634`; `crates/horizon-client/src/game/modding/api_values/content_declarations.rs:448`: replace world-only registrar and conversion with unified input |
-| Registration and merge | `crates/horizon-client/src/mod_content.rs:95`, `:131`, `:157`: remove independent merging/override semantics; one owner, one publication pass |
-| Runtime identity and ticks | `crates/horizon-world/src/fluid.rs:150`, `:210`; `crates/horizon-world/src/level/tick.rs:1815`, `:1864`: retain kinds and tick matching |
-| Flow, bucket placement and pickup | `crates/horizon-world/src/level/fluids.rs:184`, `:312`, `:365`: consume resolved template/rules and preserve own block |
-| Client appearance | `crates/horizon-client-render/src/fluid_models.rs:32`, `:53`: index shared declaration appearance, retain model overrides |
-| Save/cache/worldgen ticks | `crates/horizon-client/src/save.rs:627`; `crates/horizon-world/src/level/data/cache.rs:629`; `crates/horizon-world/src/worldgen/generator_decoration.rs:874`: retain name/tick conversions |
+| File declarations, generated blocks/buckets | `crates/sunrise-mod-package/src/content.rs:509`, `:521`, `:565`, `:877`: replace FluidFile/FluidLook split with one validated Fluid |
+| Code declaration ingress | `crates/sunrise-mod-vocab/src/parts/fluids.rs:589`, `:634`; `crates/sunrise-client/src/game/modding/api_values/content_declarations.rs:448`: replace world-only registrar and conversion with unified input |
+| Registration and merge | `crates/sunrise-client/src/mod_content.rs:95`, `:131`, `:157`: remove independent merging/override semantics; one owner, one publication pass |
+| Runtime identity and ticks | `crates/sunrise-world/src/fluid.rs:150`, `:210`; `crates/sunrise-world/src/level/tick.rs:1815`, `:1864`: retain kinds and tick matching |
+| Flow, bucket placement and pickup | `crates/sunrise-world/src/level/fluids.rs:184`, `:312`, `:365`: consume resolved template/rules and preserve own block |
+| Client appearance | `crates/sunrise-client-render/src/fluid_models.rs:32`, `:53`: index shared declaration appearance, retain model overrides |
+| Save/cache/worldgen ticks | `crates/sunrise-client/src/save.rs:627`; `crates/sunrise-world/src/level/data/cache.rs:629`; `crates/sunrise-world/src/worldgen/generator_decoration.rs:874`: retain name/tick conversions |
 
 Single player, LAN and dedicated use the server simulation; remote clients only
 resolve synchronized content and render, never run authoritative flow callbacks.
@@ -159,13 +159,13 @@ and rollback semantics, rebasing against whichever version lands first.
 | Transaction abort | Tank insert followed by abort restores original amount; forged authority follows #2453 refusal |
 
 Tag membership also requires replacing the current vanilla-only mask behavior
-(`crates/horizon-world/src/fluid.rs:258`); custom membership is proposed here.
+(`crates/sunrise-world/src/fluid.rs:258`); custom membership is proposed here.
 These are implementation acceptance requirements, not claims that the unified
 API exists today. Current reference routes are
-`crates/horizon-world/src/level/fluids.rs:77` (timing), `:189` (drop-off),
+`crates/sunrise-world/src/level/fluids.rs:77` (timing), `:189` (drop-off),
 `:199` (slope), `:209` (conversion), `:101` (replacement), `:312` (container liquid
 placement), `:365` (source pickup), `:750` (mixing), and
-`crates/horizon-client-render/src/fluid_models.rs:32` (appearance collection).
+`crates/sunrise-client-render/src/fluid_models.rs:32` (appearance collection).
 
 Port upstream's world-physics fixtures through the fork API: own-block spreading,
 source/flowing resolution, replacement and mixing, configurable timing/drop-off,
@@ -200,9 +200,9 @@ Only a newly created world records the validated initial schema before chunk
 publication or saves. Rebuilding mods does not migrate saved data. Implement an explicit saved-schema
 check in the implementation stage; this is not an existing loader guarantee.
 Current scheduled-fluid ticks serialize names and resolve them on load
-(`crates/horizon-client/src/save.rs:625`, `:632`, `:1982`), so renaming cannot be
+(`crates/sunrise-client/src/save.rs:625`, `:632`, `:1982`), so renaming cannot be
 treated as a process-index change. In particular, `read_ticks` uses
-`filter_map` and drops unresolved names (`crates/horizon-client/src/save.rs:605`,
+`filter_map` and drops unresolved names (`crates/sunrise-client/src/save.rs:605`,
 `:606`); accepting a new baseline could therefore silently lose old ticks. Add acceptance fixtures for both mode changes
 and name changes: refusal leaves the original save untouched. Add no alias,
 fallback parser or automatic remapping.

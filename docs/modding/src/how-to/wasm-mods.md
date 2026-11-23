@@ -50,12 +50,12 @@ computed once at load; they are not per-tick work.
 ## Build
 
 ```sh
-cargo horizon-mod build --wasm
+cargo sunrise-mod build --wasm
 ```
 
 The command builds your crate with the pinned Rust toolchain (installed through rustup the first time, with
-`rust-src`), writes `mod.wasm` beside `horizon-mod.toml`, records it in a `[wasm]` section, and
-packs `target/horizon-mod/<id>.hmod`. Let the tool write `[wasm]`; do not edit it by hand:
+`rust-src`), writes `mod.wasm` beside `sunrise-mod.toml`, records it in a `[wasm]` section, and
+packs `target/sunrise-mod/<id>.smod`. Let the tool write `[wasm]`; do not edit it by hand:
 
 ```toml
 [wasm]
@@ -68,9 +68,9 @@ my_library = "…"
 A mod carries native code or wasm code, not both. A wasm mod has no `[native]` table.
 
 A mod with `[[inject]]` listeners builds against the game's staged point catalog. Pass
-`--catalog path/to/points.json`, or set `HORIZON_WASM_STD` to the toolchain's std member
+`--catalog path/to/points.json`, or set `SUNRISE_WASM_STD` to the toolchain's std member
 with `points.json` beside it. Mods without listeners need no catalog. When packaging the
-wasm toolchain, `cargo horizon-mod wasm-std <out.wasm> --catalog <staged-points.json>`
+wasm toolchain, `cargo sunrise-mod wasm-std <out.wasm> --catalog <staged-points.json>`
 copies that catalog beside the std member.
 
 A dependency group shares its handler table and cache budget. A handler registered by one
@@ -83,13 +83,13 @@ usual (`try_reserve` returns an error, an infallible allocation ends the call wi
 give back what a cache can rebuild. It must free memory and must not allocate. Registering the same function twice is
 harmless; `false` means all 29 slots are taken.
 
-A wasm mod must not declare its own `#[global_allocator]`: `cargo horizon-mod build --wasm` fails with rustc's error
+A wasm mod must not declare its own `#[global_allocator]`: `cargo sunrise-mod build --wasm` fails with rustc's error
 "the `#[global_allocator]` in this crate conflicts with global allocator in: mod_api". Allocate through the standard
 collections and let the group's allocator do the rest.
 
 ## Dependencies
 
-`[dependencies]` work as for native mods. List the library mod in `horizon-mod.toml` and its
+`[dependencies]` work as for native mods. List the library mod in `sunrise-mod.toml` and its
 crate in `Cargo.toml`. The tool stages the resolved mod packages into one Cargo workspace:
 each library's single compiler unit produces both its rlib and its position-independent member,
 and dependents use that exact rlib through Cargo's ordinary dependency edges. Cargo owns
@@ -100,7 +100,7 @@ Ordinary Rust calls such as `my_library::function()`, statics, generics and owne
 no generated interface or export annotations. Members export their public definitions without
 symbol interposition: duplicate definitions are refused, rather than overriding another mod.
 Each member records its compiler, target, settings,
-rlib digest and dependency artifact identities in `horizon.build` metadata covered by its module
+rlib digest and dependency artifact identities in `sunrise.build` metadata covered by its module
 hash. Mod crate disambiguators use the mod ID, version and resolved Cargo features rather than
 the temporary workspace path. A shared crate disambiguator alone is not an ABI guarantee:
 the loader checks the exact dependency build recorded in `[wasm.linked]`, including when the
@@ -108,8 +108,8 @@ library and its consumers were built separately. Changing a library's source, to
 features or settings requires rebuilding its consumers.
 
 The build packages every member of the resolved group into the invoking project's
-`target/horizon-mod/` directory. A consumer build does not replace another project's previously
-packaged `.hmod`. To include additional local roots in the same Cargo invocation, repeat
+`target/sunrise-mod/` directory. A consumer build does not replace another project's previously
+packaged `.smod`. To include additional local roots in the same Cargo invocation, repeat
 `--with path/to/another/mod`. The game links a mod with its
 dependencies at load, one copy of each library shared by every mod that uses it, and refuses a
 mod whose library is missing or another build than the one it was linked against, naming it on
@@ -140,14 +140,14 @@ member constructors run after linking. Groups do not share memory with one anoth
 The build step moves a core start function to the explicit `__wasm_start` export. The loader
 instantiates members, fills self-referencing GOT entries from their actual exports, then runs
 `__wasm_start`, data relocations and constructors in that order. A raw core start is refused:
-it would execute before its own addresses could be relocated. `horizon.private` metadata lists
+it would execute before its own addresses could be relocated. `sunrise.private` metadata lists
 compiler implementation exports that remain local to a member (for example an upstream inline
 method emitted in several members). Their original symbols can resolve that member's own GOT,
 but are not published as library definitions. This is symbol visibility metadata, not function
 glue or another Rust interface.
 
 Pointers and lengths below are wasm32 `u32` values. The game provides these imports in the
-`horizon` module:
+`sunrise` module:
 
 - `host(id, in_ptr, in_len, out_ptr, out_cap) -> u32` invokes a generated import ID. Arguments
   are Wire values in order. It writes the reply if it fits and returns its length; if the length
@@ -157,11 +157,11 @@ Pointers and lengths below are wasm32 `u32` values. The game provides these impo
 
 Each guest exports:
 
-- `horizon_layout() -> u64`: the generated layout hash. A mismatch is refused.
-- `horizon_layout_ext() -> u64`, when `mod_points` is linked: the full point catalog's layout
+- `sunrise_layout() -> u64`: the generated layout hash. A mismatch is refused.
+- `sunrise_layout_ext() -> u64`, when `mod_points` is linked: the full point catalog's layout
   hash. The loader checks it before accepting any listener.
-- `horizon_in(len) -> ptr`: the buffer into which the game writes the next call's input.
-- `horizon_hook(id) -> u64`: runs the generated export ID after the input is written. The high
+- `sunrise_in(len) -> ptr`: the buffer into which the game writes the next call's input.
+- `sunrise_hook(id) -> u64`: runs the generated export ID after the input is written. The high
   32 bits are the reply pointer and the low 32 bits its length; `u32::MAX` as the length denotes
   an error, with a Wire string at the pointer. The reply remains valid until the next call at
   the same depth. A handler call starts its input with the handler's `u64` ID.
@@ -198,7 +198,7 @@ group. APIs marked `Not on wasm` in their Rust documentation cannot be used by w
 ### Memory
 
 A group's members share one linear memory: their heaps, stacks and static data together. Its limit is
-the largest `wasm_memory_mib` a member's `horizon-mod.toml` declares (1 to 4096 MiB, wasm32's 4 GiB),
+the largest `wasm_memory_mib` a member's `sunrise-mod.toml` declares (1 to 4096 MiB, wasm32's 4 GiB),
 so a library declares what it and its addons need. Without a declaration, the limit is
 1 GiB or the instance cap, whichever is smaller. The limit is a ceiling, not memory taken: the group
 uses what it grows to. It bounds that used memory only: on 64-bit systems the runtime still reserves
@@ -207,7 +207,7 @@ not shrink that reservation. Past the limit, or past what the system gives, `mem
 guest and the call goes on; Rust's allocator then reports the failure as usual (`try_reserve` returns an
 error; an infallible allocation ends the call with a trap and the log names the group and its limit).
 
-Each instance caps every group with `wasm.memory_cap_mib:<MiB>` in `horizon-mods.txt`, beside `options.txt`:
+Each instance caps every group with `wasm.memory_cap_mib:<MiB>` in `sunrise-mods.txt`, beside `options.txt`:
 4096 unless the player lowers it. A group whose members declare more than the cap is refused at load, and
 the Mods page names the group, what it declares and the cap.
 
@@ -217,7 +217,7 @@ Wasm threads and shared memory are off for wasm mods. A module that declares or 
 
 ## Compiled module cache
 
-The game caches compiled wasm modules in `<game_dir>/.horizon-cache/wasm/`, keyed by the
+The game caches compiled wasm modules in `<game_dir>/.sunrise-cache/wasm/`, keyed by the
 wasm bytes, Wasmtime compatibility and engine settings. Hits map the compiled file into memory;
 files shipped beside a mod are never loaded as compiled code.
 

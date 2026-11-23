@@ -1,11 +1,11 @@
 //! Home's Console tab: the game's output of this run as it comes, with a search, Follow (keep the
-//! newest line in view), Copy, and Share log (`horizon_launcher::game_log`): an upload to mclo.gs
+//! newest line in view), Copy, and Share log (`sunrise_launcher::game_log`): an upload to mclo.gs
 //! that happens only after the player confirms, without their home folder or names.
 use super::servers_page::Field;
 use super::*;
 use crate::scrollbar::TakeWheel;
 use gpui::ClipboardItem;
-use horizon_launcher::game_log::{self, Shared};
+use sunrise_launcher::game_log::{self, Shared};
 
 pub(super) struct Console {
     follow: bool,
@@ -314,7 +314,7 @@ impl Launcher {
     /// patterns. Dark appearance only.
     pub(super) fn glass_console(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         use crate::glass_ui::{self as ui, white};
-        use horizon_theme::glass::{ink, radius};
+        use sunrise_theme::glass::{ink, radius};
         let t = self.theme;
         if self.prepare_log.is_empty() && self.client.is_none() {
             return None;

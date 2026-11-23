@@ -3,8 +3,8 @@
 //! the file and attaches it to the issue by hand (docs/telemetry.md).
 use crate::account::Accounts;
 use crate::backend;
-use horizon_system::Machine;
-use horizon_telemetry::scrub::Scrubber;
+use sunrise_system::Machine;
+use sunrise_telemetry::scrub::Scrubber;
 use std::path::PathBuf;
 
 /// The newest log lines kept in a report.
@@ -33,7 +33,7 @@ pub fn write(text: &str, with_log: bool) -> Result<PathBuf, String> {
     let scrubber = scrubber();
     let machine = Machine::detect_in(Some(&home));
     let mut report = format!(
-        "{}\n\nHorizon launcher {}\n{} {} on {}, {} ({} cores, {} threads, {} GB)\n",
+        "{}\n\nSunrise launcher {}\n{} {} on {}, {} ({} cores, {} threads, {} GB)\n",
         scrubber.scrub(text.trim()),
         backend::VERSION,
         machine.os,

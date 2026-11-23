@@ -5,9 +5,9 @@ import hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "crates/horizon-mod-package/src/manifest/inject/mod_points.rs"
-DEST = ROOT / "crates/horizon-mod-point-shape/src/catalog.rs"
-LIB = ROOT / "crates/horizon-mod-point-shape/src/lib.rs"
+SOURCE = ROOT / "crates/sunrise-mod-package/src/manifest/inject/mod_points.rs"
+DEST = ROOT / "crates/sunrise-mod-point-shape/src/catalog.rs"
+LIB = ROOT / "crates/sunrise-mod-point-shape/src/lib.rs"
 HASH = "fa2dd076fa55321e6137c39b7e90888e1176a19925403518022f8f8207a65337"
 HEADER = "//! Serialized values shared by mod-point generation and package validation.\nuse serde::{Deserialize, Serialize};\n\n"
 MODULE = "pub mod catalog;\n\n"

@@ -9,7 +9,7 @@ book types (through the serverbound settings packet's codec), and saving and
 loading the player's recipeBook compound (with unknown ids dropped, and a
 compound missing a list ignored). The Java oracle
 (VanillaRecipeBookOracle) drives ServerRecipeBook and its codec;
-examples/probe/recipe_book_fixture drives horizon_client::recipe_book. After each
+examples/probe/recipe_book_fixture drives sunrise_client::recipe_book. After each
 operation the count, the known and highlighted recipes, the settings and
 the saved compound are compared.
 """
@@ -78,7 +78,7 @@ def main():
                           {'op': 'save'}, {'op': 'load'}, {'op': 'save'}, {'op': 'load', 'drop': 'toBeDisplayed'}]})
     (work / 'cases.jsonl').write_text(''.join(json.dumps(c) + '\n' for c in cases))
     vanilla.run('VanillaRecipeBookOracle', work / 'cases.jsonl', work / 'native.txt')
-    lib.cargo_example('horizon-client', 'recipe_book_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
+    lib.cargo_example('sunrise-client', 'recipe_book_fixture', lib.RESOURCES, work / 'cases.jsonl', work / 'rust.txt')
 
     def by_case(path):
         out, cur = [], []

@@ -5,7 +5,7 @@ Ability names are plain, case-sensitive strings with no namespace. They are not 
 An item's Part can change the answer to an ability question. The hook receives a read-only Host. Keep answers pure functions of the stack and ability so the client and server agree.
 
 ```rust,ignore
-#[horizon_part]
+#[sunrise_part]
 impl ItemPart for CarvingTool {
     fn can_perform_action(&self, _: &dyn Host, event: &mut CanPerformActionEvent<'_>) {
         if event.ability == "shears_carve" {

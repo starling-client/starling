@@ -3,7 +3,7 @@
     native_mixins_source.py SOURCE
 
 Run on SOURCE, the copy that native_build.sh and tools/starling/hnmod_compat.sh prepare (never the checkout), after
-horizon-materialize. Two things horizon-mixins refuses in the game since the fork of 2026-11-14:
+sunrise-materialize. Two things horizon-mixins refuses in the game since the fork of 2026-11-14:
 
 1. A module named through a parent folder, `#[path = "../x.rs"]` (E_INVALID_PATH: no '.' or '..'):
    `game/mobs/creatures/mod.rs` names five files of `game/creatures/` that way. Each such file moves into the folder
@@ -11,9 +11,9 @@ horizon-materialize. Two things horizon-mixins refuses in the game since the for
    target it as before. Refused, leaving SOURCE as it was: a file named twice, a moved file that names modules of its
    own (they would be looked for in the new folder), or a name already taken there. Modules under `#[cfg(test)]` are
    left alone: horizon-mixins skips them.
-2. `#[horizon_mod_api_macros::replaceable]` on a function a mod targets (E_UNSUPPORTED_MACRO: an unexpanded
+2. `#[sunrise_mod_api_macros::replaceable]` on a function a mod targets (E_UNSUPPORTED_MACRO: an unexpanded
    attribute macro). The macro returns the function as written: it marks the functions the fork's prebuilt game
-   stages for replacement (`horizon-mod-api-gen` replace.rs), which a phone's build does not use. The marker line goes.
+   stages for replacement (`sunrise-mod-api-gen` replace.rs), which a phone's build does not use. The marker line goes.
 """
 
 import pathlib
@@ -23,11 +23,11 @@ import sys
 ATTR = re.compile(r'^(\s*)#\[path\s*=\s*"([^"]*\.\.[^"]*)"\]\s*$')
 MOD = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*;")
 CHILD = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*;", re.M)
-REPLACEABLE = "#[horizon_mod_api_macros::replaceable]"
+REPLACEABLE = "#[sunrise_mod_api_macros::replaceable]"
 
 
 def parent_paths(source: pathlib.Path) -> None:
-    src = source / "crates/horizon-client/src"
+    src = source / "crates/sunrise-client/src"
     moves = {}
     edits = []
     for file in sorted(src.rglob("*.rs")):
@@ -49,7 +49,7 @@ def parent_paths(source: pathlib.Path) -> None:
             if j >= len(lines) or not MOD.match(lines[j]) or any("cfg(test)" in a for a in attrs):
                 continue
             target = (file.parent / m.group(2)).resolve()
-            # A test file's own fixtures outside the game (horizon-mod-wasm's, the book's): the test module above
+            # A test file's own fixtures outside the game (sunrise-mod-wasm's, the book's): the test module above
             # them is under #[cfg(test)], which horizon-mixins does not read.
             if not target.is_file() or src not in target.parents:
                 continue

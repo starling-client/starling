@@ -11,24 +11,24 @@ Cancelling a layer changes drawing only.
 
 References are against main at `d57e01504e`.
 
-- `crates/horizon-client/src/game/mobs/mounts.rs:951`: `draw_mount_hud` resolves
+- `crates/sunrise-client/src/game/mobs/mounts.rs:951`: `draw_mount_hud` resolves
   `mount_index`, computes capacity, constructs vehicle draws, calls `keep_status_rows`
   before `gui_layer`, then returns capacity even when drawing was cancelled.
-- `crates/horizon-client/src/game.rs:8770`: initializes the frame's HUD room;
+- `crates/sunrise-client/src/game.rs:8770`: initializes the frame's HUD room;
   `game.rs:8867` calls mount drawing except for spectators, then passes its returned
   `vehicle_hearts` into player layout at `game.rs:8903`. This shared client presentation
   route serves single player, LAN and remote servers; dedicated servers draw no HUD.
-- `crates/horizon-client/src/game/interface/hud_room.rs:59`: reserves status keep-outs
+- `crates/sunrise-client/src/game/interface/hud_room.rs:59`: reserves status keep-outs
   from draw geometry, independently of whether the layer later draws.
-- `crates/horizon-client-render/src/hud_layout.rs:473`: default capacity;
+- `crates/sunrise-client-render/src/hud_layout.rs:473`: default capacity;
   `hud_layout.rs:478`: ten containers per row, starting at `h - 39`, stepping up
   ten pixels; `hud_layout.rs:674` selects food using zero vehicle capacity;
   `hud_layout.rs:704` offsets the player's air row using vehicle row count.
   Player health hearts themselves need no new vertical displacement.
-- `crates/horizon-mod-vocab/src/client/hud_layout.rs:143`: `HealthInputs.vehicle_hearts`
+- `crates/sunrise-mod-vocab/src/client/hud_layout.rs:143`: `HealthInputs.vehicle_hearts`
   is the vocabulary crossing to player layout. The exports live in
-  `crates/horizon-mod-vocab/src/exports/hud_layout.rs:1`.
-- `crates/horizon-client/src/game/native_hooks/shared.rs:2202`: `gui_layer` runs
+  `crates/sunrise-mod-vocab/src/exports/hud_layout.rs:1`.
+- `crates/sunrise-client/src/game/native_hooks/shared.rs:2202`: `gui_layer` runs
   preceding mod layers, Pre, conditional drawing, then Post. Today Post runs even
   when Pre cancels. Preserve that existing behavior pending verified counterpart evidence.
 
@@ -57,7 +57,7 @@ Vanilla 26.3 registers `minecraft:max_health` with default **20.0**, minimum
 **1.0** and maximum **1024.0** health. The prepared vanilla `attributes.json`
 records these as raw f64 bits `4034000000000000`, `3ff0000000000000` and
 `4090000000000000`, respectively. These registered bounds are readable through
-Horizon's attribute table: `crates/horizon-world/src/attribute_health.rs:79`
+Sunrise's attribute table: `crates/sunrise-world/src/attribute_health.rs:79`
 resolves `minecraft:max_health`, and `attribute_health.rs:114` reads its value.
 At two health per heart, the allowed effective capacity is **0.5–512 hearts**.
 The default HUD's 30-heart display cap is not the attribute maximum and must not
