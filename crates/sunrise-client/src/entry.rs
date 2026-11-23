@@ -141,6 +141,14 @@ pub fn start(
         thread,
     );
     // The log's first line names the build, so a bug report that carries the log says which one it was.
+    // Starling: on a phone the APK's own version (`0.9.0-preview.<commit>`), which is what a report needs;
+    // Sunrise's crate version beside it.
+    #[cfg(target_os = "android")]
+    match crate::android::app_version() {
+        Some((apk, _)) => log::info!("Starling {apk} (Sunrise {})", crash::version()),
+        None => log::info!("Sunrise {}", crash::version()),
+    }
+    #[cfg(not(target_os = "android"))]
     log::info!("Sunrise {}", crash::version());
     // Mods' startup bars and lines (`RegistrationContext::progress`), before they register.
     game::startup_progress::install(side == "server");
