@@ -12,9 +12,10 @@ pub const MANIFEST: &str = "horizon-mod.toml";
 
 /// The crates a mod may name, by what follows `horizon_` or `horizon-` in their names. Anything
 /// else that says "horizon" (a mod's own id, a namespace, a comment) stays as written.
-const CRATES: [&str; 14] = [
+/// `part` is no crate: `#[horizon_part]`, the attribute of a part.
+const CRATES: [&str; 15] = [
     "mod", "client", "core", "world", "items", "protocol", "assets", "hooks", "platform", "shader",
-    "render", "threads", "look", "optifine",
+    "render", "threads", "look", "optifine", "part",
 ];
 
 /// Whether the file at `path` is a Horizon package: a ZIP with Horizon's manifest and not
