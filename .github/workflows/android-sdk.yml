@@ -134,7 +134,7 @@ jobs:
       - name: Build the APK
         env:
           RUSTFLAGS: -C prefer-dynamic
-          SUNRISE_ANDROID_KEY_ALIAS: sunrise-debug
+          SUNRISE_ANDROID_KEY_ALIAS: horizon-debug
         run: |
           python packaging/android/build_apk.py --abi arm64-v8a --profile "$PROFILE" --preview
           # The game's libraries as the APK has them, to check the mods' build leaves them as they are.

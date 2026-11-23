@@ -429,7 +429,7 @@ def add_code(base, libraries, dex, unsigned, abi=ABI):
 
 def sign(build_tools, aligned, apk, out):
     keystore = os.environ.get("SUNRISE_ANDROID_KEYSTORE")
-    alias = os.environ.get("SUNRISE_ANDROID_KEY_ALIAS", "sunrise-debug")
+    alias = os.environ.get("SUNRISE_ANDROID_KEY_ALIAS", "horizon-debug")
     env = dict(os.environ)
     if not keystore:
         keystore = out / "debug.keystore"
