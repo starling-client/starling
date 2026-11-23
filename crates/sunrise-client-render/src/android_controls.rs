@@ -226,6 +226,9 @@ pub struct TouchControls {
     pub swimming: bool,
     pub mounted: bool,
     pub sneaking: bool,
+    /// Starling: the player is sprinting: the sprint button shows held, as the sneak button
+    /// shows the player's crouch, not only the finger on it.
+    pub sprinting: bool,
     pub toggle_crouch: bool,
     /// Snapshotted by a world gesture; drift cannot turn eating into mining.
     pub hold_uses_item: bool,
@@ -274,6 +277,7 @@ impl Default for TouchControls {
             swimming: false,
             mounted: false,
             sneaking: false,
+            sprinting: false,
             toggle_crouch: false,
             hold_uses_item: false,
             holding_use: false,
@@ -674,6 +678,7 @@ impl TouchControls {
                     } else {
                         self.sneaking
                     })
+                || (control == Control::Sprint && !self.inventory_mode && self.sprinting)
                 || Self::button(control).is_some_and(|bt| {
                     state.held(bt)
                         || (bt == Button::LeftTrigger && state.triggers[0] > 0.0)

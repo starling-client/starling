@@ -291,7 +291,12 @@ impl Game<'_> {
         tc.set_vertical_movement(flying);
         tc.swimming = self.player.as_ref().is_some_and(|p| p.swimming);
         tc.mounted = self.riding.is_some();
-        tc.sneaking = self.keys.raw(&KeyCode::ShiftLeft);
+        // Starling: the buttons show what the player is doing, not only a finger on them: a
+        // toggled crouch or a sprint stays lit.
+        let sneak_key = self.keys.raw(&KeyCode::ShiftLeft);
+        tc.sneaking =
+            sneak_key || (!flying && self.player.as_ref().is_some_and(|p| p.local_crouching));
+        tc.sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
         tc.toggle_crouch = self.settings.toggle_crouch;
         tc.update_visibility(shown, dt);
         let editing = tc.editor.is_some() || self.mobile.ui.floating_menu;
@@ -307,7 +312,7 @@ impl Game<'_> {
             && if tc.settings.shield_button {
                 tc.shield_held()
             } else {
-                tc.sneaking || state.held(sunrise_client::gamepad::Button::RightStick)
+                sneak_key || state.held(sunrise_client::gamepad::Button::RightStick)
             };
         if self.mobile.touch_shield {
             state.triggers[0] = 1.;
