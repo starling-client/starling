@@ -34,9 +34,32 @@ fn android_main(app: AndroidApp) {
 /// render points. The phone starts the engine from here instead of through `main_with`; without
 /// these the game stops at its first mod guard ("engine platform socket is not installed").
 fn install_platform() -> Result<(), String> {
+    register_parts();
     sunrise_mod_host::install_platform()?;
     mod_render::render::install();
     Ok(())
+}
+
+/// Sunrise's in-game parts Starling ships, registered before the game reads them, as the official
+/// desktop game does (sunrise-official's `register`): the performance overlay (Sunrise Settings,
+/// Extras, Performance Overlay) and auto-reconnect.
+fn register_parts() {
+    use sunrise_hooks::{hud, lang, pages, settings};
+    let results = [
+        sunrise_hooks::register(&sunrise_reconnect::HOOKS),
+        sunrise_hooks::register(&sunrise_perf_overlay::HOOKS),
+        settings::register(&sunrise_reconnect::SETTING),
+        settings::register(&sunrise_perf_overlay::SETTING),
+        lang::register(sunrise_reconnect::LANG),
+        pages::register(&sunrise_reconnect::SECTION),
+        pages::register(&sunrise_perf_overlay::SECTION),
+        hud::register(&sunrise_perf_overlay::LAYER),
+    ];
+    for result in results {
+        if let Err(e) = result {
+            log::warn!("Starling: an in-game part did not register: {e}");
+        }
+    }
 }
 
 /// Where the native mod libraries for this game build are, in the app's own storage

@@ -28,6 +28,13 @@ jni = "0.21.1"
 sunrise-mod-host = { path = "../sunrise-mod-host", default-features = false }
 # The packages of the native mod libraries the phone loads (android_lib.rs `native_libraries`).
 sunrise-mod-package = { path = "../sunrise-mod-package" }
+# Sunrise's own in-game parts Starling ships (android_lib.rs `register_parts`): the performance
+# overlay and auto-reconnect, as the official desktop game registers them. Not its telemetry, login or
+# updates.
+sunrise-hooks = { path = "../sunrise-hooks" }
+sunrise-perf-overlay = { path = "../sunrise-perf-overlay" }
+sunrise-reconnect = { path = "../sunrise-reconnect" }
+log = "0.4"
 
 [features]
 default = ["audio"]
