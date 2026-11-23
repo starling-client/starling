@@ -134,6 +134,14 @@ fn names_crates(name: &str) -> bool {
 
 /// The Horizon package at `path` rewritten in place as a Sunrise package. Nothing changes when
 /// it fails.
+/// What installing a Horizon WebAssembly mod says: this game runs no WebAssembly.
+const WASM: &str = "a Horizon WebAssembly mod, which this game doesn't run";
+
+/// Whether a Horizon manifest's mod runs as WebAssembly (a `[wasm]` table beside its `mod.wasm`).
+fn runs_as_wasm(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == "[wasm]")
+}
+
 pub fn adopt(path: &Path) -> Result<(), String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let file = std::fs::File::open(path).map_err(|e| at(&e))?;
@@ -153,6 +161,9 @@ pub fn adopt(path: &Path) -> Result<(), String> {
         entry.read_to_end(&mut bytes).map_err(|e| at(&e))?;
         let (name, bytes) = if name == MANIFEST {
             let text = String::from_utf8(bytes).map_err(|e| at(&e))?;
+            if runs_as_wasm(&text) {
+                return Err(at(&WASM));
+            }
             (
                 crate::manifest::MANIFEST.to_owned(),
                 manifest(&text).into_bytes(),
@@ -190,7 +201,21 @@ pub fn adopt(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ids, manifest, path_in_package, source};
+    use super::{ids, manifest, path_in_package, runs_as_wasm, source};
+
+    #[test]
+    fn a_webassembly_mod_is_told_apart() {
+        assert!(runs_as_wasm("id = \"zoom\"
+
+[wasm]
+sha512 = \"ab\"
+"));
+        assert!(!runs_as_wasm("id = \"x\"
+
+[native]
+horizon = \"abc\"
+"));
+    }
 
     #[test]
     fn horizons_data_folders_and_ids_take_sunrises_names() {

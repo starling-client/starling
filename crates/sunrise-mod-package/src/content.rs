@@ -380,6 +380,9 @@ impl<'de> Deserialize<'de> for BlockShapes {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Shapes {
+            // Starling: Horizon's shapes name their one property as `property`.
+            #[serde(default)]
+            property: String,
             #[serde(default)]
             properties: Vec<String>,
             #[serde(default)]
@@ -388,7 +391,7 @@ impl<'de> Deserialize<'de> for BlockShapes {
         }
         let shapes = Shapes::deserialize(deserializer)?;
         Ok(Self(StateValues {
-            property: String::new(),
+            property: shapes.property,
             properties: shapes.properties,
             values: shapes.values,
             default: shapes.default,
@@ -2595,9 +2598,15 @@ capabilities = ["registries"]
             block.collision_shapes.as_ref().unwrap().default,
             Some(vec![])
         );
-        assert!(
-            serde_json::from_str::<BlockShapes>(r#"{"property":"axis","default":[]}"#).is_err()
-        );
+        // Horizon's single `property` reads as a one-property tuple; both at once are refused.
+        let horizon: BlockShapes =
+            serde_json::from_str(r#"{"property":"axis","values":{"x":[]}}"#).unwrap();
+        assert_eq!(horizon.property_names(), ["axis"]);
+        assert!(horizon.check().is_ok());
+        let both: BlockShapes =
+            serde_json::from_str(r#"{"property":"axis","properties":["axis"],"default":[]}"#)
+                .unwrap();
+        assert!(both.check().is_err());
         for value in [
             r#"{"properties":["axis","axis"],"default":[]}"#,
             r#"{"properties":["Axis"],"default":[]}"#,

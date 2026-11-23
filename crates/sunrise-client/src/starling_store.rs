@@ -255,7 +255,8 @@ pub fn whole_game_only(index: &Index) -> BTreeSet<String> {
         .collect()
 }
 
-/// The native mods the catalogs leave out on this game: those Compile v2 can't play
+/// The mods the catalogs leave out on this game: those Compile v2 can't play, and any other the
+/// store's index lists as failed for good (a Horizon WebAssembly mod, say)
 /// ([`whole_game_only`]) in this APK's own build, read from GitHub once. It blocks: the catalogs
 /// ask from their search threads. None for a game that doesn't say its build, or without the
 /// network: the catalogs then list every mod, as before.
