@@ -153,9 +153,19 @@ def hooks_path(src: Path) -> str:
     sys.exit(f"{src.parent.name}: no #[sunrise_mod] in its source")
 
 
-def package_manifest(mod_id: str, version: str, cargo: dict) -> str:
+def own_crate(at: Path, name: str, spec: dict) -> Path:
+    """Starling: a crate of the mod's own, by `path` from the crate at `at` (Earshot's `earshot-core`): where it
+    is, or exit when the path holds no crate or leaves `at` (callers check the package's own bounds)."""
+    path = (at / spec["path"]).resolve()
+    if not (path / "Cargo.toml").is_file():
+        sys.exit(f"{at.name}: dependency {name} holds no crate at {spec['path']}")
+    return path
+
+
+def package_manifest(mod_id: str, version: str, cargo: dict, work: Path | None = None) -> str:
     """The mod's Cargo manifest as a package of this workspace: its own dependencies, with the pinned SDK's API
-    crate (`.sunrise/sdk/api/crates/sunrise-mod-api`) replaced by this checkout's."""
+    crate (`.sunrise/sdk/api/crates/sunrise-mod-api`) replaced by this checkout's. A crate of the mod's own (a
+    `path` inside its package) joins the workspace with it, its API crate replaced the same way."""
     api = (ROOT / "crates" / "sunrise-mod-api").as_posix()
     lines = ["[package]", f'name = "smod-{mod_id}"', f'version = "{version}"', 'edition = "2024"',
              "publish = false", "", "[lib]", f'name = "{mod_id}"', 'path = "src/lib.rs"', 'crate-type = ["dylib"]',
@@ -165,12 +175,47 @@ def package_manifest(mod_id: str, version: str, cargo: dict) -> str:
             lines.append(f'{name} = {{ path = "{api}" }}')
         elif isinstance(spec, str):
             lines.append(f'{name} = "{spec}"')
+        elif "path" in spec and work is not None and "git" not in spec:
+            path = own_crate(work, name, spec)
+            if not path.is_relative_to(work.resolve()):
+                sys.exit(f"{mod_id}: dependency {name} is a path outside the mod's package")
+            fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in spec.items() if key != "path")
+            lines.append(f'{name} = {{ path = "{path.as_posix()}"{", " + fields if fields else ""} }}')
         elif "path" in spec or "git" in spec:
             sys.exit(f"{mod_id}: dependency {name} is a path or git dependency, which a build here cannot take")
         else:
             fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in spec.items())
             lines.append(f"{name} = {{ {fields} }}")
     return "\n".join(lines) + "\n"
+
+
+def own_crates(work: Path, cargo: dict) -> None:
+    """The mod's own crates (path dependencies inside its package) join this workspace with it: in each, a path
+    to the API crate becomes this checkout's, and its own path dependencies must stay inside the package."""
+    api = json.dumps((ROOT / "crates" / "sunrise-mod-api").as_posix())
+    pending = [(work, name, spec) for name, spec in cargo.get("dependencies", {}).items()
+               if isinstance(spec, dict) and "path" in spec and spec.get("package", name) != "sunrise-mod-api"
+               and name != "sunrise-mod-api"]
+    seen = set()
+    while pending:
+        at, name, spec = pending.pop()
+        path = own_crate(at, name, spec)
+        if not path.is_relative_to(work.resolve()):
+            sys.exit(f"{work.name}: dependency {name} is a path outside the mod's package")
+        if path in seen:
+            continue
+        seen.add(path)
+        manifest = path / "Cargo.toml"
+        text = manifest.read_text()
+        for dep_name, dep in tomllib.loads(text).get("dependencies", {}).items():
+            if not isinstance(dep, dict) or "path" not in dep:
+                continue
+            if dep_name == "sunrise-mod-api" or dep.get("package") == "sunrise-mod-api":
+                text = re.sub(r'(?m)^(\s*' + re.escape(dep_name) + r'\s*=\s*\{[^}\n]*?path\s*=\s*)"[^"]*"',
+                              lambda m: m.group(1) + api, text)
+            else:
+                pending.append((path, dep_name, dep))
+        manifest.write_text(text)
 
 
 def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
@@ -201,7 +246,8 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
             work.rename(folder / mod_id)
             work = folder / mod_id
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
-        (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo))
+        (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work))
+        own_crates(work, cargo)
         identity = f"{commit} {mod_id} {version} {release}"
         side = SIDES.get(manifest.get("side", "both"), "Both")
         rows = {
