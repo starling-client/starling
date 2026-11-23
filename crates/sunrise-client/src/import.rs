@@ -168,6 +168,26 @@ pub struct Installed {
 
 /// Put the file `name` (at `path`) where the game finds it.
 pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, String> {
+    // Starling: a Horizon package (`.hmod`) is a copy of it rewritten as Sunrise's, as the
+    // catalog's install adopts it, and then imported as one.
+    if sunrise_mod_package::horizon::holds(path) {
+        let adopted = path.with_extension("adopted.smod");
+        let result = fs::copy(path, &adopted)
+            .map_err(|e| format!("could not import {name}: {e}"))
+            .and_then(|_| {
+                sunrise_mod_package::horizon::adopt(&adopted)
+                    .map_err(|e| format!("could not import {name}: {e}"))
+            })
+            .and_then(|()| {
+                let stem = Path::new(name)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                install(&adopted, &format!("{stem}.smod"), places)
+            });
+        let _ = fs::remove_file(&adopted);
+        return result;
+    }
     let (kind, prefix) = classify(path);
     let stem = Path::new(name)
         .file_stem()

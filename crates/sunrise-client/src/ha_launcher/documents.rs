@@ -418,6 +418,10 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         })?;
         output.sync_all()?;
         drop(output);
+        // Starling: a Horizon package is rewritten as Sunrise's, as the catalog's install does.
+        if request.kind == Kind::Mods && sunrise_mod_package::horizon::holds(&staged) {
+            sunrise_mod_package::horizon::adopt(&staged)?;
+        }
         notice("Checking archive...", false);
         let native_shader = content_files::validate(&staged, request.kind, &name, || {
             CANCEL.load(Ordering::Relaxed)

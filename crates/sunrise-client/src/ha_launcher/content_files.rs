@@ -30,7 +30,8 @@ impl Kind {
     pub fn accepts(self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         match self {
-            Self::Mods => lower.ends_with(".smod"),
+            // Starling: a Horizon package too; the import adopts it as Sunrise's.
+            Self::Mods => lower.ends_with(".smod") || lower.ends_with(".hmod"),
             Self::Packs => lower.ends_with(".zip"),
             Self::Shaders => lower.ends_with(".zip") || lower.ends_with(".sshader"),
         }

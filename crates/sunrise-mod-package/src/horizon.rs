@@ -132,8 +132,6 @@ fn names_crates(name: &str) -> bool {
     name == "Cargo.toml" || (name.starts_with("src/") && name.ends_with(".rs"))
 }
 
-/// The Horizon package at `path` rewritten in place as a Sunrise package. Nothing changes when
-/// it fails.
 /// What installing a Horizon WebAssembly mod says: this game runs no WebAssembly.
 const WASM: &str = "a Horizon WebAssembly mod, which this game doesn't run";
 
@@ -142,6 +140,8 @@ fn runs_as_wasm(text: &str) -> bool {
     text.lines().any(|line| line.trim() == "[wasm]")
 }
 
+/// The Horizon package at `path` rewritten in place as a Sunrise package. Nothing changes when
+/// it fails.
 pub fn adopt(path: &Path) -> Result<(), String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let file = std::fs::File::open(path).map_err(|e| at(&e))?;
