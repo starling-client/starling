@@ -248,7 +248,10 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work))
         own_crates(work, cargo)
-        identity = f"{commit} {mod_id} {version} {release}"
+        # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
+        # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The four-word identity of
+        # Starling's Horizon-based game made every library refused on the phone ("native mods left out").
+        identity = f"{commit} {mod_id} {version} {release} unwind"
         side = SIDES.get(manifest.get("side", "both"), "Both")
         rows = {
             "NATIVE_BUILD": identity,
