@@ -214,7 +214,10 @@ pub(super) fn put(
         let relative = format!("{folder_name}/{name}");
         let owner = installed.entries.iter().find(|e| e.file == relative);
         let ours = owner.is_some_and(|e| e.source == p.source && e.project == p.id);
-        if home.join(&relative).exists() && !ours {
+        // Starling: a file no entry names that is this very version (one the player had before,
+        // or an install the list lost) is recorded rather than refused or fetched again.
+        let already = owner.is_none() && super::file_matches(&home.join(&relative), file);
+        if home.join(&relative).exists() && !ours && !already {
             return Err(match owner {
                 Some(e) => format!(
                     "{relative} belongs to {}, installed from the browser.",
@@ -227,7 +230,11 @@ pub(super) fn put(
             });
         }
         let line = format!("{} {}", p.title, step.version.number);
-        let path = source.fetch(file, &home.join(folder_name), &|f| progress(&line, f))?;
+        let path = if already {
+            home.join(&relative)
+        } else {
+            source.fetch(file, &home.join(folder_name), &|f| progress(&line, f))?
+        };
         let (algo, hash) = file.checksum().expect("fetch checks for one");
         if let Some(old) = old.as_ref().filter(|old| old.file != relative) {
             let _ = fs::remove_file(home.join(&old.file));

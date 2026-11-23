@@ -81,6 +81,10 @@ pub enum SourceId {
     Modrinth,
     CurseForge,
     /// Sunrise's own registry of reviewed mods, modpacks and resource packs ([`sunrise`]).
+    /// Starling: the lists Starling 0.9.0 wrote name it `horizon`, the registry it browsed then;
+    /// without the alias their whole `mod-browser.json` failed to read and every pack already
+    /// installed was refused as not the browser's.
+    #[serde(alias = "horizon")]
     Sunrise,
 }
 
@@ -433,4 +437,25 @@ pub fn safe_name(name: &str) -> Option<&str> {
             !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         });
     ok.then_some(name)
+}
+
+/// Starling: whether the file at `path` is the catalog's file `file`, by its checksum.
+pub(crate) fn file_matches(path: &std::path::Path, file: &FileRef) -> bool {
+    use sha2::{Digest, Sha256, Sha512};
+    let Some((algo, hash)) = file.checksum() else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let got = match algo {
+        "SHA-512" => format!("{:x}", Sha512::digest(&bytes)),
+        "SHA-256" => format!("{:x}", Sha256::digest(&bytes)),
+        "SHA-1" => {
+            use sha1::Sha1;
+            format!("{:x}", Sha1::digest(&bytes))
+        }
+        _ => return false,
+    };
+    got.eq_ignore_ascii_case(hash)
 }

@@ -6,7 +6,9 @@ use std::{fs, path::Path};
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Origin {
+    /// Starling 0.9.0's saved choice says `horizon`.
     #[default]
+    #[serde(alias = "horizon")]
     Sunrise,
     Modrinth,
 }
@@ -75,7 +77,7 @@ pub fn install(
         // Starling: a file nobody's entry names that is this very version (an install the list
         // lost, or one from before the sync) is recorded rather than refused.
         let unclaimed = !list.entries.iter().any(|e| e.file == relative);
-        if unclaimed && same_file(&target, file) {
+        if unclaimed && browser::file_matches(&target, file) {
             let (algo, hash) = file.checksum().ok_or("The source supplies no checksum")?;
             list.entries.retain(|e| !ours(e));
             list.entries.push(installed::Entry {
@@ -317,25 +319,4 @@ mod tests {
         );
         fs::remove_dir_all(home).unwrap();
     }
-}
-
-/// Starling: whether the file at `path` is the catalog's file `file`, by its checksum.
-fn same_file(path: &Path, file: &browser::FileRef) -> bool {
-    use sha2::{Digest, Sha256, Sha512};
-    let Some((algo, hash)) = file.checksum() else {
-        return false;
-    };
-    let Ok(bytes) = fs::read(path) else {
-        return false;
-    };
-    let got = match algo {
-        "SHA-512" => format!("{:x}", Sha512::digest(&bytes)),
-        "SHA-256" => format!("{:x}", Sha256::digest(&bytes)),
-        "SHA-1" => {
-            use sha1::Sha1;
-            format!("{:x}", Sha1::digest(&bytes))
-        }
-        _ => return false,
-    };
-    got.eq_ignore_ascii_case(hash)
 }
