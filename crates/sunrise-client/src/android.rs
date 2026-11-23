@@ -1586,6 +1586,16 @@ pub fn main(
             }
         }
     }
+    // Starling: Play with Friends' invite codes join on a phone too. The desktop's official
+    // executable registers this (sunrise-official); Android has none, and the title screen's
+    // Friends icon stayed grey.
+    #[cfg(feature = "friends")]
+    if sunrise_hooks::register(&sunrise_friends::game::HOOKS).is_err() {
+        logcat(
+            log::Level::Warn,
+            "Sunrise: Play with Friends registered too late",
+        );
+    }
     if let Err(e) = std::env::set_current_dir(&home) {
         logcat(
             log::Level::Error,

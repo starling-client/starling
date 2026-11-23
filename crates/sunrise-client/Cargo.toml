@@ -150,7 +150,9 @@ controllers = ["sunrise-client-lib/controllers", "dep:gilrs", "dep:sunrise-duals
 sunrise-extras = ["friends"]
 # Play with Friends: sharing a world behind an invite code (game/friends.rs). Joining one is
 # sunrise-friends' `game` side, which sunrise-official registers (`sunrise_hooks::tunnel`).
-friends = ["dep:sunrise-friends"]
+# Starling: and its `game` side, which Android registers itself (android.rs): no sunrise-official
+# there, and without it the title screen's Friends icon was grey (0.9.0).
+friends = ["dep:sunrise-friends", "sunrise-friends/game"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["sunrise-core/rng-trace", "sunrise-client-lib/rng-trace"]
 # Rust's allocations go to the system heap instead of mimalloc, where heap profilers that replace
