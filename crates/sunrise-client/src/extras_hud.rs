@@ -50,6 +50,8 @@ pub fn draw_layers(
         atlas,
         corners,
         shown,
+        // The HUD's own layers draw only in play.
+        over_menu: false,
     };
     for layer in layers.iter().filter(|l| l.stage() == hud::Stage::Hud) {
         layer.draw(&mut canvas);
