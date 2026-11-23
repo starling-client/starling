@@ -386,6 +386,10 @@ def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI):
         )
     # The window themes (res/: the starting window's icon and background).
     shutil.copytree(HERE / "res", res, dirs_exist_ok=True)
+    # The Preview's own icon (res-preview/: tools/android_adaptive_icon.py over
+    # packaging/icons/starling-murmuration-preview.svg), so it reads apart from Starling beside it.
+    if variant == "preview":
+        shutil.copytree(HERE / "res-preview", res, dirs_exist_ok=True)
     shortcuts = res / "xml" / "shortcuts.xml"
     shortcuts.write_text(shortcuts.read_text(encoding="utf-8").replace("@APPLICATION_ID@", application_id), encoding="utf-8")
     # Match the setup dialogs without loading Rust or the game's renderer.
