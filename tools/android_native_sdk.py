@@ -87,15 +87,17 @@ def prepare() -> None:
     # sunrise-world's build script hashes Cargo.lock into its snapshot key and reruns when it changes: the mods'
     # packages change it, and the whole game above sunrise-world would build again, unlike the APK's. Here it
     # watches its own sources and manifests only.
+    # Sunrise's sunrise-world has no build script (no snapshot key to keep from Cargo.lock).
     script = ROOT / "crates/sunrise-world/build.rs"
-    text = script.read_text()
-    watched = 'for file in [manifest.join("Cargo.toml"), core.join("Cargo.toml"), lock] {'
-    lock_line = '    let lock = manifest.join("../../Cargo.lock");\n'
-    if watched not in text or lock_line not in text:
-        sys.exit("prepare: crates/sunrise-world/build.rs no longer reads Cargo.lock as this script expects")
-    text = text.replace(lock_line, "").replace(watched, watched.replace(", lock]", "]"))
-    script.write_text(text)
-    print("prepare: sunrise-world's build script leaves Cargo.lock out")
+    if script.is_file():
+        text = script.read_text()
+        watched = 'for file in [manifest.join("Cargo.toml"), core.join("Cargo.toml"), lock] {'
+        lock_line = '    let lock = manifest.join("../../Cargo.lock");\n'
+        if watched not in text or lock_line not in text:
+            sys.exit("prepare: crates/sunrise-world/build.rs no longer reads Cargo.lock as this script expects")
+        text = text.replace(lock_line, "").replace(watched, watched.replace(", lock]", "]"))
+        script.write_text(text)
+        print("prepare: sunrise-world's build script leaves Cargo.lock out")
     # One heap for the game and every mod. The phone opens a mod library on its own (RTLD_LOCAL), so its
     # `__rust_alloc` binds to the std's library it needs (the system heap), never to the game's mimalloc: a block
     # a mod allocated and the game freed crashed the first start (SIGSEGV in `native_libraries::open`, 2026-11-19).
