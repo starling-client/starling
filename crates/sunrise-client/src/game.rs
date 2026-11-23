@@ -14537,6 +14537,11 @@ pub(crate) fn run_with(
     sunrise_world::datafix::set_resources(
         &std::path::absolute(&vanilla_root).unwrap_or_else(|_| vanilla_root.clone()),
     );
+    // Starling (#474): resources from an older preparer are prepared again, not half loaded.
+    #[cfg(target_os = "android")]
+    if options.execution_role.is_client() {
+        sunrise_client::preparer::set_aside_stale(&vanilla_root);
+    }
     // Android has no launcher to start from: the setup screen asks for the game files instead.
     #[cfg(not(target_os = "android"))]
     if let Some(error) = missing_resources(&vanilla_root, sunrise_hooks::engine::get_the_game()) {

@@ -33,6 +33,30 @@ fn shared() -> MutexGuard<'static, Stage> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Starling (#474): resources an older preparer made lack tables this game reads, and the game
+/// stopped halfway through its load ("fluid_state_definitions Missing: re-run sunrise-prepare")
+/// with no way back. Their manifest goes aside here, before the load: the load then stops as on a
+/// first start, where Android's setup prepares the resources again. True when it went aside.
+pub fn set_aside_stale(resources: &Path) -> bool {
+    let manifest = resources.join("sunrise-resources.json");
+    if !manifest.is_file() {
+        return false;
+    }
+    let made_by = std::fs::read(resources.join(sunrise_prepare::STAMP))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|stamp| stamp["output_version"].as_i64());
+    if made_by == Some(i64::from(sunrise_prepare::OUTPUT_VERSION)) {
+        return false;
+    }
+    log::warn!(
+        "Sunrise: the resources were prepared by output version {}, this game reads {}: preparing them again",
+        made_by.map_or("unknown".into(), |v| v.to_string()),
+        sunrise_prepare::OUTPUT_VERSION
+    );
+    std::fs::rename(&manifest, resources.join("sunrise-resources.json.stale")).is_ok()
+}
+
 /// Where the preparing is now.
 pub fn stage() -> Stage {
     shared().clone()
