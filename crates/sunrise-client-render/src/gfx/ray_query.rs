@@ -70,6 +70,7 @@ pub(in crate::gfx) fn sunrise_scene() -> bool {
 /// with the device extensions it lacks, which the log names too.
 pub(super) fn note_offer(adapter: &wgpu::Adapter) {
     let info = adapter.get_info();
+    crate::graphics::offer_mali_fast_terrain(super::super::adreno::mali_vulkan(&info));
     let offered = adapter.features().contains(RAY_QUERY);
     crate::graphics::offer_ray_tracing(offered);
     if offered {

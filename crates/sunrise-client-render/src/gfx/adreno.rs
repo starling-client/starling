@@ -5,11 +5,20 @@
 //! paths on (an Adreno 710). Every other GPU keeps the usual pipelines and draw order, but for the
 //! sky after solid terrain, which every GPU behind Android's Vulkan takes (`late_sky::wanted`).
 
-/// Adreno on Android's Vulkan.
+/// Adreno on Android's Vulkan, or Mali there with the Mali Fast Terrain switch on (experimental:
+/// Mali-G57 MC2 players report fewer FPS than Horizon Android 0.7.8 gave them).
 pub(super) fn adreno_vulkan(info: &wgpu::AdapterInfo) -> bool {
     cfg!(target_os = "android")
         && info.backend == wgpu::Backend::Vulkan
-        && info.name.contains("Adreno")
+        && (info.name.contains("Adreno")
+            || (info.name.contains("Mali") && crate::graphics::mali_fast_terrain_wanted()))
+}
+
+/// Mali on Android's Vulkan: where the Mali Fast Terrain switch applies.
+pub(in crate::gfx) fn mali_vulkan(info: &wgpu::AdapterInfo) -> bool {
+    cfg!(target_os = "android")
+        && info.backend == wgpu::Backend::Vulkan
+        && info.name.contains("Mali")
 }
 
 /// What these paths' pipelines of terrain.wgsl share. Unlike `Renderer::new`'s own, they may fail:

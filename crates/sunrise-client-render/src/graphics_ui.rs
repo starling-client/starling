@@ -128,6 +128,8 @@ pub enum H {
     TranslucentBatching,
     /// Ray Tracing (experimental, #470): a ray-query device for `[ray_tracing]` shader packs.
     RayTracing,
+    /// Starling: Mali Fast Terrain (experimental), Adreno's terrain paths on Mali.
+    MaliFastTerrain,
     /// Starling: the performance overlay (`sunrise_perf_overlay`), on the Advanced page as
     /// Starling 0.9.0 had it.
     PerfOverlay,
@@ -597,6 +599,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "Experimental: hardware ray tracing for shader packs that use it. Next start.",
                         ),
+                        h(
+                            H::MaliFastTerrain,
+                            None,
+                            "Experimental: the cheaper terrain drawing Adreno gets, on Mali. Next start.",
+                        ),
                     ],
                 ),
                 (
@@ -1062,6 +1069,10 @@ impl H {
                 "Ray Tracing (Experimental)",
                 on_off(g.ray_tracing && crate::graphics::ray_tracing_offered()),
             ),
+            H::MaliFastTerrain => labelled(
+                "Mali Fast Terrain (Experimental)",
+                on_off(g.mali_fast_terrain && crate::graphics::mali_fast_terrain_offered()),
+            ),
             H::HdrSmoothGradients => labelled(
                 "Smooth Gradients",
                 on_off(g.hdr_smooth_gradients && out.wide_frame_supported),
@@ -1191,6 +1202,7 @@ impl H {
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::RayTracing => g.ray_tracing = !g.ray_tracing,
+            H::MaliFastTerrain => g.mali_fast_terrain = !g.mali_fast_terrain,
             H::PerfOverlay => sunrise_perf_overlay::step(back),
             H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
@@ -1260,6 +1272,9 @@ impl Item {
             Item::Sunrise(H::RayTracing) if !crate::graphics::ray_tracing_offered() => {
                 Some("Your GPU or graphics API doesn't support it.")
             }
+            Item::Sunrise(H::MaliFastTerrain) if !crate::graphics::mali_fast_terrain_offered() => {
+                Some("Your GPU or graphics API doesn't support it.")
+            }
             Item::Sunrise(H::EntityCullingPrecheck)
                 if s.sunrise.entity_culling != EntityCullingMode::Asynchronous =>
             {
@@ -1314,6 +1329,9 @@ impl Item {
                 g.translucent_batching && crate::graphics::translucent_batching_offered()
             }
             Item::Sunrise(H::RayTracing) => g.ray_tracing && crate::graphics::ray_tracing_offered(),
+            Item::Sunrise(H::MaliFastTerrain) => {
+                g.mali_fast_terrain && crate::graphics::mali_fast_terrain_offered()
+            }
             Item::Sunrise(H::HdrSmoothGradients) => {
                 g.hdr_smooth_gradients && out.wide_frame_supported
             }
@@ -1418,6 +1436,7 @@ impl Item {
                         | H::GraphicsApi
                         | H::TranslucentBatching
                         | H::RayTracing
+                        | H::MaliFastTerrain
                         | H::HdrSmoothGradients
                 )
                 | Item::Vanilla(

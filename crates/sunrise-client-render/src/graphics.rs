@@ -772,6 +772,23 @@ pub fn gpu_culling_lost() -> bool {
     GPU_CULLING_LOST.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static MALI_FAST_TERRAIN_WANTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// The Mali Fast Terrain switch (experimental) as `sunrise-graphics.txt` had it when it was read:
+/// the renderer a start opens takes Adreno's terrain paths on Mali with it (`gfx::adreno`).
+pub fn mali_fast_terrain_wanted() -> bool {
+    MALI_FAST_TERRAIN_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+static MALI_FAST_TERRAIN_OFFERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Whether the last renderer opened Mali behind Android's Vulkan, where the switch does something.
+pub fn offer_mali_fast_terrain(on: bool) {
+    MALI_FAST_TERRAIN_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn mali_fast_terrain_offered() -> bool {
+    MALI_FAST_TERRAIN_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static RAY_TRACING_WANTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// The Ray Tracing switch (experimental, #470) as `sunrise-graphics.txt` had it when it was
@@ -1014,6 +1031,10 @@ pub struct Graphics {
     /// when this is on (off by default). Falls back to a plain device when the
     /// ray-tracing one fails to open.
     pub ray_tracing: bool,
+    /// Mali Fast Terrain (experimental): Adreno's cheaper solid terrain, flat draws and quad cache
+    /// on a Mali GPU behind Android's Vulkan (`gfx::adreno::adreno_vulkan`). Off by default; saved
+    /// only when on.
+    pub mali_fast_terrain: bool,
     /// The native `sunrise:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -1122,6 +1143,7 @@ impl Default for Graphics {
             translucent_batching: true,
             hdr_smooth_gradients: true,
             ray_tracing: false,
+            mali_fast_terrain: false,
             shader_pack: String::new(),
             shader_profile: String::new(),
         }
@@ -1192,6 +1214,7 @@ impl Graphics {
         }
         // Ray Tracing (experimental, #470): the renderers this start makes read it.
         RAY_TRACING_WANTED.store(g.ray_tracing, std::sync::atomic::Ordering::Relaxed);
+        MALI_FAST_TERRAIN_WANTED.store(g.mali_fast_terrain, std::sync::atomic::Ordering::Relaxed);
         g
     }
     /// Whether HDR output is held back on a window whose graphics driver is `driver`
@@ -1336,6 +1359,7 @@ impl Graphics {
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
                 "rayTracing" => g.ray_tracing = flag(g.ray_tracing),
+                "maliFastTerrain" => g.mali_fast_terrain = flag(g.mali_fast_terrain),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 // Starling's pick before it took this page's key (`off`: none).
@@ -1420,6 +1444,9 @@ impl Graphics {
         );
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
+        }
+        if self.mali_fast_terrain {
+            text += "maliFastTerrain:true\n";
         }
         text += &self.blue_map.serialize();
         text
@@ -1918,6 +1945,7 @@ mod tests {
             translucent_batching: false,
             hdr_smooth_gradients: false,
             ray_tracing: true,
+            mali_fast_terrain: true,
             shader_pack: "Golden Hour".into(),
             shader_profile: "LOW".into(),
         };
