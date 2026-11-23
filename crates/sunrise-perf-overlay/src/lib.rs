@@ -33,8 +33,24 @@ impl FrameGraph {
         }
         self.frames.push_back((frame_ms, cpu_ms, gpu));
     }
+    /// Starling: over a menu (`Canvas::over_menu`), on a phone, the frames per second alone in a
+    /// small box at the top right, where the full overlay covered the screen's own buttons. The
+    /// times and the graph are for the world.
+    fn draw_compact(&self, canvas: &mut dyn Canvas) {
+        let n = self.frames.len() as f32;
+        let frame = self.frames.iter().map(|f| f.0).sum::<f32>() / n;
+        let line = format!("{:.0} fps", 1000.0 / frame.max(0.001));
+        let width = canvas.text_width(&line) + 6.0;
+        let x = canvas.size().0 - width - 2.0;
+        canvas.fill(x, 2.0, width, 14.0, 0x9000_0000);
+        canvas.text(x + 3.0, 4.0, &line, 0xFFFF_FFFF, true);
+    }
     pub fn draw(&self, mode: Overlay, canvas: &mut dyn Canvas) {
         if mode == Overlay::Off || self.frames.is_empty() {
+            return;
+        }
+        if cfg!(target_os = "android") && canvas.over_menu() {
+            self.draw_compact(canvas);
             return;
         }
         let n = self.frames.len() as f32;
@@ -165,6 +181,17 @@ fn with_seat<T>(f: impl FnOnce(&mut Seat) -> T) -> T {
         seats.resize_with(seat + 1, Seat::default);
     }
     f(&mut seats[seat])
+}
+
+/// Starling: the setting's label (a translation key), for the row the graphics settings' Advanced
+/// page shows.
+pub fn label() -> &'static str {
+    with_seat(|s| s.overlay.label())
+}
+
+/// Starling: the setting's next value, or the one before with `back`.
+pub fn step(back: bool) {
+    with_seat(|s| s.overlay = s.overlay.step(back));
 }
 
 /// The frames' hook, for `sunrise_platform::hooks::register`, and the overlay's layer, for

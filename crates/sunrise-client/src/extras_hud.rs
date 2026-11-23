@@ -58,7 +58,12 @@ pub fn draw_layers(
 
 /// Draws the layers crates registered over everything ([`hud::Stage::Top`]), last. Nothing is
 /// stacked in a corner there: every corner is hidden. With none, no canvas.
-pub fn draw_top_layers(layers: &[&dyn hud::Layer], batch: &mut HudBatch, atlas: &HudAtlas) {
+pub fn draw_top_layers(
+    layers: &[&dyn hud::Layer],
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    over_menu: bool,
+) {
     let mut top = layers
         .iter()
         .filter(|l| l.stage() == hud::Stage::Top)
@@ -72,6 +77,7 @@ pub fn draw_top_layers(layers: &[&dyn hud::Layer], batch: &mut HudBatch, atlas: 
         atlas,
         corners: &mut corners,
         shown: [false; 4],
+        over_menu,
     };
     for layer in top {
         layer.draw(&mut canvas);
@@ -83,6 +89,8 @@ struct Canvas<'a> {
     atlas: &'a HudAtlas,
     corners: &'a mut Corners,
     shown: [bool; 4],
+    /// Starling: a menu is under the layers (`hud::Canvas::over_menu`).
+    over_menu: bool,
 }
 
 /// `0xAARRGGBB` as the batch's colour.
@@ -117,6 +125,9 @@ impl hud::Canvas for Canvas<'_> {
         };
         let i = Corner::ALL.iter().position(|c| *c == corner)?;
         self.shown[i].then(|| self.corners.place(corner, w, h))
+    }
+    fn over_menu(&self) -> bool {
+        self.over_menu
     }
 }
 

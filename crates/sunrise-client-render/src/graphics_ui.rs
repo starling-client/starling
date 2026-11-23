@@ -128,6 +128,9 @@ pub enum H {
     TranslucentBatching,
     /// Ray Tracing (experimental, #470): a ray-query device for `[ray_tracing]` shader packs.
     RayTracing,
+    /// Starling: the performance overlay (`sunrise_perf_overlay`), on the Advanced page as
+    /// Starling 0.9.0 had it.
+    PerfOverlay,
     HdrSmoothGradients,
     /// Opens Starling's performance calibration (`options_ui::Page::PerfCalibration`): the
     /// fastest way of drawing the same picture on this phone. Android only.
@@ -560,41 +563,51 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
         ),
         (
             Page::Advanced,
-            vec![(
-                "Frames",
-                vec![
-                    h(
-                        H::PresentMode,
+            vec![
+                (
+                    "Frames",
+                    vec![
+                        h(
+                            H::PresentMode,
+                            None,
+                            "How frames reach the screen while VSync is off.",
+                        ),
+                        h(
+                            H::Pacing,
+                            None,
+                            "Efficient sleeps until the next frame; Precise spins, like vanilla.",
+                        ),
+                        h(
+                            H::GraphicsApi,
+                            None,
+                            "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
+                        ),
+                        h(
+                            H::GpuDrivers,
+                            None,
+                            "A custom Vulkan driver, like Turnip, instead of the system's. Next start.",
+                        ),
+                        h(
+                            H::TranslucentBatching,
+                            Saves,
+                            "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
+                        ),
+                        h(
+                            H::RayTracing,
+                            None,
+                            "Experimental: hardware ray tracing for shader packs that use it. Next start.",
+                        ),
+                    ],
+                ),
+                (
+                    "Overlay",
+                    vec![h(
+                        H::PerfOverlay,
                         None,
-                        "How frames reach the screen while VSync is off.",
-                    ),
-                    h(
-                        H::Pacing,
-                        None,
-                        "Efficient sleeps until the next frame; Precise spins, like vanilla.",
-                    ),
-                    h(
-                        H::GraphicsApi,
-                        None,
-                        "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
-                    ),
-                    h(
-                        H::GpuDrivers,
-                        None,
-                        "A custom Vulkan driver, like Turnip, instead of the system's. Next start.",
-                    ),
-                    h(
-                        H::TranslucentBatching,
-                        Saves,
-                        "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
-                    ),
-                    h(
-                        H::RayTracing,
-                        None,
-                        "Experimental: hardware ray tracing for shader packs that use it. Next start.",
-                    ),
-                ],
-            )],
+                        "Frame rate and frame times over the game, with a graph.",
+                    )],
+                ),
+            ],
         ),
         (
             Page::Hdr,
@@ -985,6 +998,7 @@ impl H {
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
             H::DitherCutoutMips => labelled("Distant Plant Dither", on_off(g.dither_cutout_mips)),
             H::PresentMode => labelled("Present Mode", g.present_mode.label()),
+            H::PerfOverlay => labelled("Performance Overlay", sunrise_perf_overlay::label()),
             H::Pacing => labelled(
                 "Frame Pacing",
                 match g.pacing {
@@ -1177,6 +1191,7 @@ impl H {
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::RayTracing => g.ray_tracing = !g.ray_tracing,
+            H::PerfOverlay => sunrise_perf_overlay::step(back),
             H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
                 g.pacing = match g.pacing {
@@ -1393,6 +1408,7 @@ impl Item {
                         | H::BlueMapRadius
                         | H::ScreenshotQuality
                         | H::Pacing
+                        | H::PerfOverlay
                         | H::PresentMode
                         | H::Workers
                         | H::ParallelTick

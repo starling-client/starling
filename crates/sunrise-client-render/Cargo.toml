@@ -9,6 +9,8 @@ description = "The client's world data, rendering and screens: chunks, meshing, 
 [dependencies]
 # The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
 sunrise-hooks = { path = "../sunrise-hooks" }
+# Starling: the performance overlay's row on the graphics settings' Advanced page.
+sunrise-perf-overlay = { path = "../sunrise-perf-overlay" }
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }

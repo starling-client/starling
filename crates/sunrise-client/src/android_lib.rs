@@ -52,7 +52,6 @@ fn register_parts() {
         settings::register(&sunrise_perf_overlay::SETTING),
         lang::register(sunrise_reconnect::LANG),
         pages::register(&sunrise_reconnect::SECTION),
-        pages::register(&sunrise_perf_overlay::SECTION),
         hud::register(&sunrise_perf_overlay::LAYER),
     ];
     for result in results {

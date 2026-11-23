@@ -30,6 +30,11 @@ pub trait Canvas {
     /// then any earlier layer in that corner. `None` while the corner is hidden (the debug
     /// screen covers the top left): draw nothing there then.
     fn place(&mut self, corner: Corner, w: f32, h: f32) -> Option<(f32, f32)>;
+    /// Starling: whether a menu (the title, the options, a screen over the world) is under
+    /// this [`Stage::Top`] layer, where a layer may draw less so it keeps off the menu's buttons.
+    fn over_menu(&self) -> bool {
+        false
+    }
 }
 
 /// When a [`Layer`] draws.

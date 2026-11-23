@@ -7341,6 +7341,7 @@ impl Game<'_> {
             sunrise_hooks::hud::engine::all(),
             &mut batch,
             &self.gui.atlas,
+            self.title.is_some() || self.screen != Screen::Playing,
         );
         self.draw_performance_overlays(&mut batch);
         self.draw_pad_over_hud(&mut batch);
@@ -13451,6 +13452,38 @@ impl Game<'_> {
                                 dynamic_scale,
                             );
                             sunrise_hooks::engine::frame_timed(&times);
+                            // Starling: whether the GPU timer times frames at all here (the
+                            // overlay read 0 ms of GPU on a phone): once at the first timed
+                            // frame, once if 600 frames went by untimed.
+                            {
+                                use std::sync::atomic::{AtomicU32, Ordering};
+                                static UNTIMED: AtomicU32 = AtomicU32::new(0);
+                                match r.gpu_times.last() {
+                                    Some(gpu)
+                                        if UNTIMED.swap(u32::MAX, Ordering::Relaxed)
+                                            != u32::MAX =>
+                                    {
+                                        log::info!(
+                                            "Starling: GPU timer: first timed frame {gpu:.2} ms ({} gpu times)",
+                                            r.gpu_times.len()
+                                        );
+                                    }
+                                    None if {
+                                        let n = UNTIMED.load(Ordering::Relaxed);
+                                        if n != u32::MAX {
+                                            UNTIMED.store(n + 1, Ordering::Relaxed);
+                                        }
+                                        n == 600
+                                    } =>
+                                    {
+                                        log::warn!(
+                                            "Starling: GPU timer: 600 frames and none timed (timer {})",
+                                            if r.gpu_timer_on() { "on" } else { "off" }
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
                             if let Some(&gpu) = r.gpu_times.last() {
                                 self.gpu_utilization =
                                     f64::from(gpu) * 100.0 / f64::from(ms(cpu).max(0.001));

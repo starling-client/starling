@@ -377,6 +377,11 @@ pub fn read_meshes(
 }
 
 impl Renderer {
+    /// Starling: whether the device times frames (`GpuTimer`), for the log that says whether
+    /// it ever timed one.
+    pub fn gpu_timer_on(&self) -> bool {
+        self.gpu_timer.is_some()
+    }
     /// Keeps CPU copies of the meshes uploaded from now on, for `render-capture`, or drops
     /// them. They start empty: the caller meshes everything again for a complete capture.
     pub fn keep_capture_copies(&mut self, on: bool) {
