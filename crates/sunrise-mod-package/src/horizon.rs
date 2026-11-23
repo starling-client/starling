@@ -216,7 +216,7 @@ mod tests {
         let files: [(&str, &str); 3] = [
             (
                 "horizon-mod.toml",
-                "id = \"m\"\nname = \"M\"\nversion = \"1.0.0\"\napi = \"0.2\"\n\n[native]\ngame = \"26.3\"\nhorizon = \"abc\"\n",
+                "id = \"m\"\nname = \"M\"\nversion = \"1.0.0\"\napi = \"0.2\"\n\n[native]\ngame = \"26.3\"\nhorizon = \"0123456789abcdef0123456789abcdef01234567\"\n",
             ),
             (
                 "Cargo.toml",
