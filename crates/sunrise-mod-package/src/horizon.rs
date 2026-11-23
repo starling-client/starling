@@ -203,6 +203,40 @@ pub fn adopt(path: &Path) -> Result<(), String> {
 mod tests {
     use super::{ids, manifest, path_in_package, runs_as_wasm, source};
 
+    /// An adopted native package reads as Sunrise's, the origin file beside its source.
+    #[test]
+    fn an_adopted_native_package_reads_with_its_origin() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("starling-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.hmod");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        let files: [(&str, &str); 3] = [
+            (
+                "horizon-mod.toml",
+                "id = \"m\"\nname = \"M\"\nversion = \"1.0.0\"\napi = \"0.2\"\n\n[native]\ngame = \"26.3\"\nhorizon = \"abc\"\n",
+            ),
+            (
+                "Cargo.toml",
+                "[package]\nname = \"m\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nhorizon-mod-api = { path = \".horizon/sdk/api/crates/horizon-mod-api\" }\n",
+            ),
+            ("src/lib.rs", "use horizon_mod_api as mod_api;\n"),
+        ];
+        for (name, text) in files {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        super::adopt(&path).unwrap();
+        assert!(super::origin(&path).is_some());
+        let package = crate::Package::read(&path);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let package = package.unwrap();
+        assert!(package.is_native());
+    }
+
     #[test]
     fn a_webassembly_mod_is_told_apart() {
         let wasm = "id = \"zoom\"\n\n[wasm]\nsha512 = \"ab\"\n";

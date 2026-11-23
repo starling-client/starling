@@ -196,11 +196,13 @@ pub fn hide_native_mods(ids: impl IntoIterator<Item = String>) {
     let _ = HIDDEN_NATIVE_MODS.set(ids.into_iter().collect());
 }
 
+/// Starling: any mod of the registries the store lists as failed for good, not only native ones (a Horizon
+/// WebAssembly mod, which this game doesn't run, is a content mod to the catalog).
 fn hidden_native_mod(project: &Project) -> bool {
-    HIDDEN_NATIVE_MODS
-        .get()
-        .is_some_and(|ids| ids.contains(&project.id))
-        && is_native_mod(project)
+    project.source == SourceId::Sunrise
+        && HIDDEN_NATIVE_MODS
+            .get()
+            .is_some_and(|ids| ids.contains(&project.id))
 }
 
 /// Whether `project` is a native mod, which only runs once compiled into the game. The registry

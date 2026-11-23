@@ -1186,9 +1186,12 @@ impl Package {
                     return Err(format!("invalid or duplicate package path: {name}"));
                 }
                 if !directory {
+                    // Starling: a package adopted from Horizon's registry keeps the SHA-256 of the file it
+                    // came from (`horizon::ORIGIN`), which names its library in the mod store.
                     if name != MANIFEST
                         && name != USES_FILE
                         && name != "icon.png"
+                        && name != crate::horizon::ORIGIN
                         && !name.starts_with("runtime/")
                         && !name.starts_with("assets/")
                         && !name.starts_with("data/")
