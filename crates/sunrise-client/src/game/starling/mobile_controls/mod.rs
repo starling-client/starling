@@ -914,13 +914,7 @@ impl Game<'_> {
             }
             let default = sunrise_client::keybinds::KeyBinds::default_of(mapping);
             let result = if let Some(key) = sunrise_client::keybinds::key_code(default) {
-                self.mapped_key(
-                    key,
-                    down,
-                    false,
-                    key,
-                    sunrise_client::held::Source::Keyboard,
-                )
+                self.mobile_mapped_key(key, down, key)
             } else if let Some(button) = sunrise_client::keybinds::mouse_button(default) {
                 self.android_custom_mouse(button, down)
             } else {
@@ -1041,13 +1035,7 @@ impl Game<'_> {
                                 | KeyCode::ControlRight
                         ) =>
                     {
-                        let _ = self.mapped_key(
-                            code,
-                            down,
-                            false,
-                            code,
-                            sunrise_client::held::Source::Keyboard,
-                        );
+                        let _ = self.mobile_mapped_key(code, down, code);
                     }
                     Err(button) => {
                         let _ = self.android_custom_mouse(button, down);
@@ -1116,13 +1104,7 @@ impl Game<'_> {
         } else {
             for mapped in translated {
                 let result = match mapped {
-                    Ok(code) => self.mapped_key(
-                        code,
-                        down,
-                        false,
-                        code,
-                        sunrise_client::held::Source::Keyboard,
-                    ),
+                    Ok(code) => self.mobile_mapped_key(code, down, code),
                     Err(button) => self.android_custom_mouse(button, down),
                 };
                 if let Err(error) = result {
@@ -1233,9 +1215,7 @@ impl Game<'_> {
             for item in mapped {
                 match item {
                     Err(b) => self.play_mouse(b, down)?,
-                    Ok(k) => {
-                        self.mapped_key(k, down, false, k, sunrise_client::held::Source::Keyboard)?
-                    }
+                    Ok(k) => self.mobile_mapped_key(k, down, k)?,
                 }
             }
             return Ok(());
@@ -1849,13 +1829,7 @@ impl Game<'_> {
                                 self.mobile.ui.toggle_modifier(key)
                             };
                             if !self.pad_in_menu() {
-                                self.mapped_key(
-                                    key,
-                                    down,
-                                    false,
-                                    key,
-                                    sunrise_client::held::Source::Keyboard,
-                                )?;
+                                self.mobile_mapped_key(key, down, key)?;
                             }
                         } else {
                             if !self.mobile.ui.key_down(t.id, key) {
