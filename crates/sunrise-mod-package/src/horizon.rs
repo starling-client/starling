@@ -10,6 +10,19 @@ use std::path::Path;
 /// Horizon's manifest file.
 pub const MANIFEST: &str = "horizon-mod.toml";
 
+/// In an adopted package: the SHA-256 of the file Horizon's registry lists, which Starling's mod
+/// store names its library of the mod by (the adopted file's own bytes are this phone's alone).
+pub const ORIGIN: &str = "starling-origin.sha256";
+
+/// The SHA-256 of the registry's file the package at `path` was adopted from, if it was.
+pub fn origin(path: &Path) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+    let mut text = String::new();
+    zip.by_name(ORIGIN).ok()?.read_to_string(&mut text).ok()?;
+    let text = text.trim();
+    (text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())).then(|| text.to_owned())
+}
+
 /// The crates a mod may name, by what follows `horizon_` or `horizon-` in their names. Anything
 /// else that says "horizon" (a mod's own id, a namespace, a comment) stays as written.
 /// `part` is no crate: `#[horizon_part]`, the attribute of a part.
@@ -125,6 +138,14 @@ pub fn adopt(path: &Path) -> Result<(), String> {
         out.start_file(name.as_str(), options).map_err(|e| at(&e))?;
         out.write_all(&bytes).map_err(|e| at(&e))?;
     }
+    use sha2::Digest;
+    let listed = std::fs::read(path).map_err(|e| at(&e))?;
+    let digest: String = sha2::Sha256::digest(&listed)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    out.start_file(ORIGIN, options).map_err(|e| at(&e))?;
+    out.write_all(digest.as_bytes()).map_err(|e| at(&e))?;
     let bytes = out.finish().map_err(|e| at(&e))?.into_inner();
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("mod");
     let temporary = path.with_file_name(format!("{file}.adopting"));

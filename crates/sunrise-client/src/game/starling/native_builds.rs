@@ -690,8 +690,14 @@ fn store_wanted() -> Result<StoreWanted, String> {
         if off.contains(&bundle.manifest.id) || !seen.insert(bundle.manifest.id.clone()) {
             continue;
         }
-        let source =
-            file_sha256(&path).ok_or_else(|| format!("{}: can't be read", path.display()))?;
+        // A package adopted from Horizon's registry is the store's by the registry's file: the
+        // store builds each of the catalog's (ported where Sunrise's API changed) under that name.
+        let source = match sunrise_mod_package::horizon::origin(&path) {
+            Some(listed) => listed,
+            None => {
+                file_sha256(&path).ok_or_else(|| format!("{}: can't be read", path.display()))?
+            }
+        };
         wanted.push((
             path,
             store::Wanted {
@@ -1051,7 +1057,9 @@ fn build_in_store(
             .map_err(service_error)?
             .into_json()
             .map_err(|e| e.to_string())?;
-        let job = store::job_of(&w.source, abi);
+        // The service names the job by the file it was sent (an adopted package's own bytes).
+        let sent = file_sha256(path).unwrap_or_else(|| w.source.clone());
+        let job = store::job_of(&sent, abi);
         if answer["job"].as_str() != Some(job.as_str()) {
             return Err("The build server gave another job.".into());
         }
