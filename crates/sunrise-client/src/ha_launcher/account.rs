@@ -1,4 +1,4 @@
-//! Sunrise's launcher's account API (launcher/src/account.rs), as Sunrise Android's launcher calls
+//! Sunrise's launcher's account API (launcher/src/account.rs), as Horizon Android's launcher calls
 //! it, over Starling's accounts (`crate::accounts`, crate starling-account): the same profiles the
 //! game's own account screen shows, their secrets sealed by the Android Keystore, the sign-in kept
 //! in the foreground while the player is in the browser. The game renews the session itself when it

@@ -1,7 +1,7 @@
-//! Sunrise Android's keyboard, pointer and screen bridge, over Starling's: StarlingActivity already
+//! Horizon Android's keyboard, pointer and screen bridge, over Starling's: StarlingActivity already
 //! owns the keyboard's editor (TextMirror), the system bars, the camera cutout's insets, the
 //! pointer's capture and the file picker, and two editors in one activity would fight over the
-//! keyboard. Sunrise Android's own (an EditText it added through JNI) is not used.
+//! keyboard. Horizon Android's own (an EditText it added through JNI) is not used.
 use std::sync::Mutex;
 
 /// The keyboard's editor flags (TextMirror.java): the Done action, and a password's.

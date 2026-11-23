@@ -103,7 +103,7 @@ pub fn set_scale(scale: RenderScale) {
     REQUESTED_SCALE.store(scale.percent(), std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The launcher draws at the window's own size. Sunrise Android lowered its own resolution with
+/// The launcher draws at the window's own size. Horizon Android lowered its own resolution with
 /// the game's (its winit drew a smaller surface scaled up); Starling's game scales its own frame,
 /// and its winit has no such surface.
 #[cfg(target_os = "android")]

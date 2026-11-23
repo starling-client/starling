@@ -469,7 +469,7 @@ pub(super) fn button_rounded(
     } else {
         15.0
     };
-    // A label ending in " v" opens a list (Sunrise Android's convention): the "v" is drawn as a
+    // A label ending in " v" opens a list (Horizon Android's convention): the "v" is drawn as a
     // chevron at the right, not as a letter after the text.
     let dropdown = label.strip_suffix(" v");
     let label = dropdown.unwrap_or(label);

@@ -1,5 +1,5 @@
 //! Files handed to the game from outside its folder (Android's "Open with", share and file picker,
-//! Sunrise Android's folder): the inbox installed on a worker (sunrise_client::import), told by a
+//! Horizon Android's folder): the inbox installed on a worker (sunrise_client::import), told by a
 //! banner across the top of every screen, the setup's too. It drops in with a sound as a file
 //! arrives, a spinner turning while it installs, then says what each file added with a chime (or
 //! what went wrong, lower), its bar running out before it goes back up. Its sounds are made here,

@@ -21,7 +21,7 @@ import java.util.Locale;
  * The game folder as a place in Android's Files app and the system's file pickers: browse, open,
  * copy in and out, rename, delete. GameFolder holds the paths and the file operations; this is the
  * part that speaks to Android. MANAGE_DOCUMENTS in the manifest lets only the system bind it; an
- * app reaches a file or folder only after the player picks it there. Adapted from Sunrise Android's
+ * app reaches a file or folder only after the player picks it there. Adapted from Horizon Android's
  * SunriseDocumentsProvider (THIRD_PARTY_NOTICES.md).
  */
 public final class GameFolderProvider extends DocumentsProvider {

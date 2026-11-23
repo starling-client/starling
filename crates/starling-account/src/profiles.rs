@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // SPDX-License-Identifier: MIT
-//! Provider-aware selection, adapted from Sunrise Android's launcher account model.
+//! Provider-aware selection, adapted from Horizon Android's launcher account model.
 use super::*;
 
 /// A failed refresh never replaces the profile that was playing before it.

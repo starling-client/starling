@@ -1,4 +1,4 @@
-// Adapted from Sunrise Android at fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
+// Adapted from Horizon Android at fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // See THIRD_PARTY_NOTICES.md and LICENSE.
 //! Per-profile touch layouts. Coordinates are normalized; sizes are fractions

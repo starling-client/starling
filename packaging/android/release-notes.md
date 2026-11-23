@@ -3,13 +3,13 @@
 ## Install
 
 - **Already have Starling:** tap **Update** inside the game.
-- **New here, or coming from Sunrise Android:** download the APK for your phone below and open it. Almost every phone takes **`starling-0.9.0-arm64-v8a.apk`**. Older 32-bit phones take `armeabi-v7a`, and x86 tablets and emulators take `x86_64` or `x86`.
+- **New here, or coming from Horizon Android:** download the APK for your phone below and open it. Almost every phone takes **`starling-0.9.0-arm64-v8a.apk`**. Older 32-bit phones take `armeabi-v7a`, and x86 tablets and emulators take `x86_64` or `x86`.
 
 ## What's new in 0.9.0
 
 ### New
 
-- **A launcher before the game,** from Sunrise Android: profiles, each with its own worlds, mods and settings; a catalog of mods, resource packs and shader packs from Sunrise and Modrinth; and your installed content, to turn on and off.
+- **A launcher before the game,** from Horizon Android: profiles, each with its own worlds, mods and settings; a catalog of mods, resource packs and shader packs from Sunrise and Modrinth; and your installed content, to turn on and off.
 - **A wardrobe for skins and capes,** synced with your Microsoft account.
 - **Calibrate...** tries the ways your phone can draw the world and keeps the fastest.
 - **Custom GPU drivers** (64-bit ARM, experimental), from **GPU Drivers...** in the graphics settings, and **ray tracing** (experimental).
@@ -24,7 +24,7 @@
 
 ### Faster
 
-- **Sunrise Android's performance work:** terrain drawn as Sunrise Android 0.7.8 draws it, paused menus no longer drawing the world, shadow maps of at most 4096, and menus over the world at most 60 FPS, so they don't heat the phone.
+- **Horizon Android's performance work:** terrain drawn as Horizon Android 0.7.8 draws it, paused menus no longer drawing the world, shadow maps of at most 4096, and menus over the world at most 60 FPS, so they don't heat the phone.
 - **Games with mods open faster:** about 6 seconds less on a phone with 20 or so mods.
 
 ### Mods

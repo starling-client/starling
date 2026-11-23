@@ -3764,7 +3764,7 @@ impl OptionsUi {
             _ => "starling.skin.account",
         })
     }
-    /// Skin Customization's rows for the playing profile's account, as Sunrise Android's wardrobe
+    /// Skin Customization's rows for the playing profile's account, as Horizon Android's wardrobe
     /// has them: a Microsoft account's upload of the chosen skin to its profile, and how the last
     /// one went; an Ely.by account's page on ely.by, where its skin is changed.
     fn skin_cloud_rows(&self) -> Vec<Row> {

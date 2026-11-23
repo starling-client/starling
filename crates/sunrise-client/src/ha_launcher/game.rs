@@ -1,4 +1,4 @@
-//! What Sunrise Android's launcher drew with from its game (`game::loading_renderer`,
+//! What Horizon Android's launcher drew with from its game (`game::loading_renderer`,
 //! `UiResources`, `loading_frame`), over Starling's boot renderer (`gfx::boot`): the launcher draws
 //! a HUD batch and nothing else, and the boot renderer opens the device with only the two
 //! pipelines that takes, where the world's renderer builds every pipeline the game will need (on a
@@ -13,7 +13,7 @@ use crate::ha_launcher::client::{
 use std::sync::Arc;
 use winit::window::Window;
 
-/// The surface's size, where Sunrise Android read the world renderer's configuration.
+/// The surface's size, where Horizon Android read the world renderer's configuration.
 #[derive(Clone, Copy)]
 pub struct Surface {
     pub width: u32,
@@ -121,5 +121,5 @@ pub fn loading_frame(batch: &HudBatch) -> &HudBatch {
     batch
 }
 
-/// Sunrise Android's game kept the mods it bundled on between runs; Starling's has none.
+/// Horizon Android's game kept the mods it bundled on between runs; Starling's has none.
 pub fn android_reset_bundled_mods() {}

@@ -438,7 +438,7 @@ def sign(build_tools, aligned, apk, out):
             run(
                 "keytool", "-genkeypair", "-keystore", keystore, "-storepass", "android",
                 "-keypass", "android", "-alias", alias, "-keyalg", "RSA", "-keysize", "2048",
-                "-validity", "10000", "-dname", "CN=Sunrise Android debug",
+                "-validity", "10000", "-dname", "CN=Horizon Android debug",
             )
     apksigner = tool(build_tools, "apksigner")
     run(

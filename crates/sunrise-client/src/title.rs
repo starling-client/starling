@@ -414,7 +414,7 @@ pub enum Action {
         dir: PathBuf,
         selected: Vec<String>,
     },
-    /// Starling on Android: back to the launcher (Sunrise Android's, `ha_launcher`), where the
+    /// Starling on Android: back to the launcher (Horizon Android's, `ha_launcher`), where the
     /// instance that opens directly is chosen.
     Launcher,
 }

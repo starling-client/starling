@@ -902,7 +902,7 @@
   "How bright the HUD and menus are, against paper white.": "Яркость интерфейса и меню относительно белой точки.",
   "Your display's darkest black. 0 for OLED; LCDs glow a little.": "Самый тёмный чёрный вашего экрана. 0 для OLED; ЖК-панели светятся немного.",
   "Shortcut": "Сочетание клавиш",
-  "starling.credits.founders": "Starling, ранее Sunrise Android, от JuanLuci и Vasysik",
+  "starling.credits.founders": "Starling, ранее Horizon Android, от JuanLuci и Vasysik",
   "starling.credits.sunrise": "На основе Sunrise от Ludovic Marie и участников Sunrise, лицензия MIT",
   "starling.diagnostics.title": "Диагностика",
   "starling.diagnostics.notice": "Отчёты локальные. Проверьте перед отправкой.",

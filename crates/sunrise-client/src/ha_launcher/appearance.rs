@@ -1,4 +1,4 @@
-//! The wardrobe's choice, worn by Starling's game: Sunrise Android's game read the launcher's
+//! The wardrobe's choice, worn by Starling's game: Horizon Android's game read the launcher's
 //! `sunrise-appearance.json`; Starling's wears the choice each profile keeps in the instance
 //! (`own_skin`: `sunrise-skins.json` and the PNGs of `skins/`), which its Skin Customization
 //! shows too.
@@ -30,7 +30,7 @@ pub fn wear(game: &Path, skin: Option<&Path>, slim: bool) -> Result<(), String> 
         .map_err(|e| e.to_string())
 }
 
-/// Sunrise Android's offline name plays as Starling's offline profile of that name.
+/// Horizon Android's offline name plays as Starling's offline profile of that name.
 pub fn play_offline(name: &str) {
     let name = name.trim();
     if starling_account::valid_offline_name(name)

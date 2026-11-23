@@ -1,11 +1,11 @@
 //! Where Starling's releases come out, and what of a release is Starling's: for the update prompt
 //! (game/update_offer.rs) and the native mod builds (game/native_builds.rs), on Android.
 //!
-//! Starling and Sunrise Android are one project now, in the organisation's repository
+//! Starling and Horizon Android are one project now, in the organisation's repository
 //! (starling-client/starling); Starling's own (JuanLuci/starling) is where its releases came out
 //! before, and still do until the merged one. Both are asked, the organisation's first, so an
 //! install follows the releases wherever they come out. The organisation's repository also holds
-//! Sunrise Android's releases (its APKs are named after it) and preview builds of Starling
+//! Horizon Android's releases (its APKs are named after it) and preview builds of Starling
 //! (`starling-preview-...`): only an APK named `starling-<version>-...` is an update.
 
 /// The repositories, as GitHub's API names them, the organisation's first.
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn only_starlings_own_apk_is_an_update() {
-        // Sunrise Android's last release, the organisation's latest today: not Starling's.
+        // Horizon Android's last release, the organisation's latest today: not Starling's.
         let sunrise =
             json!({"tag_name": "v0.7.8", "assets": [asset("Sunrise-Android-0.7.8-arm64-v8a.apk")]});
         assert_eq!(update_for_abi(&sunrise, "0.2.2", "arm64-v8a"), None);

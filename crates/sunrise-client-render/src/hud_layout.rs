@@ -272,7 +272,7 @@ pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
     hotbar_with_attack_side(w, h, i, None)
 }
 
-// Adapted from Sunrise Android fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
+// Adapted from Horizon Android fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 /// Mobile gauge placement, including space for an offhand slot on the same side.
 pub fn hotbar_with_attack_side(

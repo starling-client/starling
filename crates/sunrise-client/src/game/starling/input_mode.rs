@@ -122,7 +122,7 @@ impl Game<'_> {
     }
 
     /// A mouse's left button on a card drawn for the touch screen (the Starling folder's or
-    /// Sunrise Android's offer, an update, the native builds, the mod catalog): those read only
+    /// Horizon Android's offer, an update, the native builds, the mod catalog): those read only
     /// fingers, so with a mouse their buttons could not be pressed. The button goes to them as a
     /// finger where the pointer is; true when one took it.
     #[cfg(target_os = "android")]

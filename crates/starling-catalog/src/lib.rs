@@ -459,7 +459,7 @@ fn shader_pack_version(versions: &[Version]) -> Option<&Version> {
 }
 
 /// Modrinth's shader pack into `shaderpacks/`, and on the list of what the catalog installed.
-/// Adapted from Sunrise Android's `shader_catalog.rs` (Vasysik, MIT).
+/// Adapted from Horizon Android's `shader_catalog.rs` (Vasysik, MIT).
 fn install_modrinth_shader_pack(
     project: &Project,
     home: &Path,

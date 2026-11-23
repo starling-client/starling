@@ -4,7 +4,7 @@
 //! task of its own; once allowed, a restart moves the player's files (android.rs
 //! `game_folder`). Turned down, it comes back from the folder buttons (Open Pack Folder...).
 //!
-//! After it, the offer of Sunrise Android's worlds and resource packs (SunriseImport.java), for a
+//! After it, the offer of Horizon Android's worlds and resource packs (SunriseImport.java), for a
 //! player who set Starling up before the setup made it (game/setup.rs): on a start while Sunrise
 //! Android is installed, until they answer it (Bring them over, then Done; or Not now).
 use super::Game;
@@ -35,14 +35,14 @@ pub(super) enum Stage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Card {
     Folder(Stage),
-    /// Sunrise Android's worlds and packs: true once the player picked its folder.
+    /// Horizon Android's worlds and packs: true once the player picked its folder.
     Sunrise(bool),
 }
 
 #[derive(Default)]
 pub(super) struct FilesOffer {
     stage: Option<Stage>,
-    /// Sunrise Android's offer, shown when the folder's is not: true once its folder is picked.
+    /// Horizon Android's offer, shown when the folder's is not: true once its folder is picked.
     sunrise: Option<bool>,
     started: bool,
     /// Made again from a folder button (Open Pack Folder...): it shows over any screen.
@@ -97,15 +97,15 @@ fn card_texts(card: Card) -> [&'static str; 4] {
     match card {
         Card::Folder(stage) => texts(stage),
         Card::Sunrise(false) => [
-            "Coming from Sunrise Android?",
-            "Sunrise Android is part of Starling now: bring your worlds and resource packs over. \
-             Close Sunrise Android first, then, in the folder that opens, tap Use this folder and \
-             Allow. They are copied: Sunrise Android keeps its own.",
+            "Coming from Horizon Android?",
+            "Horizon Android is part of Starling now: bring your worlds and resource packs over. \
+             Close Horizon Android first, then, in the folder that opens, tap Use this folder and \
+             Allow. They are copied: Horizon Android keeps its own.",
             "Bring them over",
             "Not now",
         ],
         Card::Sunrise(true) => [
-            "Coming from Sunrise Android?",
+            "Coming from Horizon Android?",
             "Your worlds and resource packs are on their way: the note at the top says what each \
              one added. Tap Done when they are in.",
             "Done",

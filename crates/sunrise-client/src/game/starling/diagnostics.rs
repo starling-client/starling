@@ -1,4 +1,4 @@
-//! Sunrise Android's diagnostic reports, integrated with Starling's game settings.
+//! Horizon Android's diagnostic reports, integrated with Starling's game settings.
 use super::Game;
 use serde_json::{Value, json};
 use std::sync::{

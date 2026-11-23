@@ -147,7 +147,7 @@ fn resolve(home: &Path, id: &str) -> io::Result<Document> {
 fn row(home: &Path, id: &str) -> io::Result<Value> {
     if id == ROOT {
         return Ok(
-            json!({"document_id": ROOT, "_display_name": "Sunrise Android",
+            json!({"document_id": ROOT, "_display_name": "Horizon Android",
             "mime_type": DIRECTORY, "flags": 0}),
         );
     }
@@ -286,7 +286,7 @@ pub fn call(home: &Path, op: &str, id: &str, arg: &str) -> io::Result<Value> {
     }
     match op {
         "roots" => Ok(json!([{"root_id": ROOT, "document_id": ROOT,
-            "title": "Sunrise Android", "flags": 18, "mime_types": "*/*"}])),
+            "title": "Horizon Android", "flags": 18, "mime_types": "*/*"}])),
         "document" => Ok(json!([row(home, id)?])),
         "children" => Ok(json!(children(home, id)?)),
         "child" => Ok(json!(is_child(home, id, arg))),

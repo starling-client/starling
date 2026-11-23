@@ -1639,7 +1639,7 @@ impl Game<'_> {
                     }
                 }
             }
-            // Where the finger aims (tap to interact), as Sunrise Android's (Vasysik, MIT): a
+            // Where the finger aims (tap to interact), as Horizon Android's (Vasysik, MIT): a
             // white ring outlined dark, and while it breaks a block, a whole disc growing inside
             // it to the rim as the block cracks (its size, never its angle, shows the progress).
             if let Some(p) = self.touch_aim_point() {

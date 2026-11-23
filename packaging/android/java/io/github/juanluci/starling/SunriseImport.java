@@ -22,8 +22,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Sunrise Android's worlds and resource packs brought into Starling, the two ports being one now.
- * Sunrise Android shows its files to the system as a documents provider (its
+ * Horizon Android's worlds and resource packs brought into Starling, the two ports being one now.
+ * Horizon Android shows its files to the system as a documents provider (its
  * SunriseDocumentsProvider: a root "sunrise" holding each profile's "p0/worlds", "p0/packs"...),
  * so the system's folder picker, opened on it, gives Starling read access to what the player
  * picks: the whole folder, its Worlds or Resource Packs, or one world or pack. Each world goes
@@ -43,7 +43,7 @@ final class SunriseImport {
 
     private SunriseImport() {}
 
-    /** Whether Sunrise Android is on the phone (its package is declared in the manifest's queries). */
+    /** Whether Horizon Android is on the phone (its package is declared in the manifest's queries). */
     static boolean installed(Context context) {
         try {
             context.getPackageManager().getPackageInfo(PACKAGE, 0);
@@ -53,7 +53,7 @@ final class SunriseImport {
         }
     }
 
-    /** The system's folder picker, opened on Sunrise Android's folder. */
+    /** The system's folder picker, opened on Horizon Android's folder. */
     static Intent picker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI,
@@ -67,7 +67,7 @@ final class SunriseImport {
             @Override
             public void run() {
                 WorkService.hold(activity, REASON,
-                        "Bringing your worlds over from Sunrise Android", true);
+                        "Bringing your worlds over from Horizon Android", true);
                 try {
                     String said = bring(activity, tree);
                     if (said != null) {
@@ -99,7 +99,7 @@ final class SunriseImport {
      */
     private static String bring(Activity activity, Uri tree) {
         if (!AUTHORITY.equals(tree.getAuthority())) {
-            return "That is not Sunrise Android's folder: pick Sunrise in the list of places";
+            return "That is not Horizon Android's folder: pick Sunrise in the list of places";
         }
         ContentResolver files = activity.getContentResolver();
         File inbox = new File(activity.getFilesDir(), "import-inbox");
@@ -127,10 +127,10 @@ final class SunriseImport {
                 brought += bring(files, tree, inbox, path[1], document(files, tree, picked));
             }
         } catch (IOException | RuntimeException e) {
-            android.util.Log.w("starling", "could not read Sunrise Android's folder", e);
-            return "Could not read Sunrise Android's files: close Sunrise Android, then try again";
+            android.util.Log.w("starling", "could not read Horizon Android's folder", e);
+            return "Could not read Horizon Android's files: close Horizon Android, then try again";
         }
-        return brought == 0 ? "Sunrise Android has no worlds or resource packs there" : null;
+        return brought == 0 ? "Horizon Android has no worlds or resource packs there" : null;
     }
 
     /** One world or pack into the inbox: 1 when it went, 0 for anything else. */
@@ -255,7 +255,7 @@ final class SunriseImport {
 
     /** A name the inbox can hold (LauncherActivity's rule): no folders, no ".part" at its end. */
     private static String safe(String name) {
-        String clean = name == null || name.isEmpty() ? "Sunrise Android" : name;
+        String clean = name == null || name.isEmpty() ? "Horizon Android" : name;
         clean = clean.replaceAll("[/\\\\:*?\"<>|]", "_");
         return clean.endsWith(".part") ? clean + "_" : clean;
     }

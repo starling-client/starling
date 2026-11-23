@@ -3,7 +3,7 @@
 //! atlas's skin slots, where the local player's model (first and third person, the inventory's)
 //! and the player list's head take it in place of the profile's skin (`update_remote_skins`).
 //! Each profile (Microsoft, Ely.by, offline) wears its own choice; a Microsoft account can upload
-//! it to its profile and an Ely.by account changes its own on ely.by, as in Sunrise Android's
+//! it to its profile and an Ely.by account changes its own on ely.by, as in Horizon Android's
 //! wardrobe.
 use super::Game;
 use std::path::{Path, PathBuf};

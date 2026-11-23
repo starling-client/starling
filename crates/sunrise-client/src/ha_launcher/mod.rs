@@ -1,11 +1,11 @@
-// Adapted from Sunrise Android 0.7.8 (tag v0.7.8, crates/sunrise-client/src/android_main.rs and
+// Adapted from Horizon Android 0.7.8 (tag v0.7.8, crates/sunrise-client/src/android_main.rs and
 // android/), written by Vasysik and the Horizon Android contributors (MIT). Copyright (c) 2026
 // Ludovic Marie and the Horizon contributors. See THIRD_PARTY_NOTICES.md and LICENSE.
-//! Sunrise Android's launcher, drawn by the game's renderer before the game starts: Play with its
+//! Horizon Android's launcher, drawn by the game's renderer before the game starts: Play with its
 //! instances, the mods, packs and shaders catalogs, what is installed (with the file manager), the
-//! settings and the wardrobe. The files are Sunrise Android's own, with their paths pointed here:
+//! settings and the wardrobe. The files are Horizon Android's own, with their paths pointed here:
 //! `crate::` is this module, `sunrise_client::` is [`client`], the game's library under the names
-//! Sunrise Android knew it by.
+//! Horizon Android knew it by.
 //!
 //! A process runs the launcher or the game, never both: winit's event loop is made once a process
 //! (`android::main`). Play keeps the chosen instance in `android-launcher.json` and starts the app
@@ -27,7 +27,7 @@ pub(crate) mod native_ime;
 pub(crate) mod platform;
 pub(crate) mod search_queue;
 pub(crate) mod shader_catalog;
-// Sunrise's desktop launcher's catalog search, downloads and skins, as Sunrise Android shared them
+// Sunrise's desktop launcher's catalog search, downloads and skins, as Horizon Android shared them
 // (launcher/src at v0.7.8).
 pub(crate) mod browser;
 pub(crate) mod port_net;
@@ -38,19 +38,19 @@ pub(crate) mod account;
 pub(crate) mod content_files;
 // The wardrobe's choice for Starling's game (own_skin).
 pub(crate) mod appearance;
-// The account's head on the header and the account pages (Sunrise Android's game had it).
+// The account's head on the header and the account pages (Horizon Android's game had it).
 pub(crate) mod skin_head;
-/// Sunrise Android's documents provider told the launcher when the Files app changed a file;
+/// Horizon Android's documents provider told the launcher when the Files app changed a file;
 /// Starling's (GameFolderProvider) is the system's, which tells it nothing.
 pub(crate) mod document_provider {
     pub fn take_changes() -> bool {
         false
     }
 }
-// The game's own, which Sunrise Android's had beside these.
+// The game's own, which Horizon Android's had beside these.
 
 /// Starling's diagnostics, the ZIP players attach to their reports (`crate::diagnostics`, as the
-/// game's Diagnostics exports it): kept in the app's private files, where Sunrise Android named
+/// game's Diagnostics exports it): kept in the app's private files, where Horizon Android named
 /// the launcher's folder.
 pub(crate) mod diagnostics {
     pub use crate::diagnostics::{heartbeat, record_error, redact};
@@ -77,11 +77,11 @@ pub(crate) mod performance {
         crate::performance::export(&sunrise_client::logging::private_home())
     }
 }
-// What its launcher drew with from Sunrise Android's game, over Starling's boot renderer.
+// What its launcher drew with from Horizon Android's game, over Starling's boot renderer.
 pub(crate) mod game;
 
-/// The game's library as Sunrise Android 0.7.8 named it. Starling has the same code under other
-/// names: Sunrise Android's touch controls, their editor, its theme and its keyboard came over as
+/// The game's library as Horizon Android 0.7.8 named it. Starling has the same code under other
+/// names: Horizon Android's touch controls, their editor, its theme and its keyboard came over as
 /// `android_controls`, `android_control_ui`, `android_control_theme` and
 /// `android_control_keyboard`.
 pub(crate) mod client {
@@ -93,7 +93,7 @@ pub(crate) mod client {
     pub use sunrise_client::*;
     pub use sunrise_client_render::android_gamepad;
 
-    /// Sunrise Android's input runtime, over Starling's: the controllers come through the input
+    /// Horizon Android's input runtime, over Starling's: the controllers come through the input
     /// hook (`android::pad_state`), not winit's device events.
     pub mod android_runtime {
         use sunrise_client::gamepad::PadState;
@@ -119,14 +119,14 @@ pub(crate) mod client {
         pub fn take_launcher_return() -> bool {
             false
         }
-        // Sunrise Android's device knobs, kept for the launcher's own run; the game's process
+        // Horizon Android's device knobs, kept for the launcher's own run; the game's process
         // reads the launcher's settings itself when it starts (`ha_launcher::game_started`).
         pub fn configure_worker_limit(_limit: u32) {}
         pub fn configure_cache_budget(_mib: u32) {}
         pub fn configure_gpu(_batching: bool) {}
         pub fn configure_graphics(_open_gl: bool) {}
         pub fn set_experimental_leaf_culling(_enabled: bool) {}
-        /// Sunrise Android's Vulkan start-up marker; Starling's game keeps its own
+        /// Horizon Android's Vulkan start-up marker; Starling's game keeps its own
         /// (`graphics::RENDERER_MARKER`) and goes to OpenGL ES by itself after a failed start.
         pub mod graphics_startup {
             pub fn configure(_home: std::path::PathBuf) {}
@@ -136,7 +136,7 @@ pub(crate) mod client {
         }
     }
 
-    /// Sunrise Android installed the game's files itself. Starling's game does it on its setup
+    /// Horizon Android installed the game's files itself. Starling's game does it on its setup
     /// screen (the official files from Mojang, then the preparing on the phone: `accounts`,
     /// `preparer`), so the launcher only asks whether that is done, and Play starts the game
     /// there when it is not.
@@ -190,14 +190,14 @@ pub(crate) mod client {
         }
     }
 
-    /// The game's mod list. Sunrise Android's game carried mods of its own, which its Mods page
+    /// The game's mod list. Horizon Android's game carried mods of its own, which its Mods page
     /// listed beside the installed ones; Starling's has none.
     pub mod mod_list {
         pub use sunrise_client::mod_list::*;
         pub const ANDROID_BUNDLED: [(&str, &str, &str); 0] = [];
     }
 
-    /// Sunrise Android mended its own engine data's structure files; Starling's prepared files
+    /// Horizon Android mended its own engine data's structure files; Starling's prepared files
     /// need nothing of the kind.
     pub mod android_resources {
         pub fn repair_structure_transforms(

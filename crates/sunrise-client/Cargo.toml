@@ -108,7 +108,7 @@ winit = { version = "0.30.13", features = ["android-native-activity"] }
 jni = "0.21.1"
 # The mods, resource packs and shader packs catalog (game/mod_catalog.rs).
 starling-catalog = { path = "../starling-catalog" }
-# Sunrise Android's launcher (ha_launcher/): the accounts it lists and signs in, the links it
+# Horizon Android's launcher (ha_launcher/): the accounts it lists and signs in, the links it
 # checks, and the skins it reads and draws in the wardrobe.
 starling-account = { path = "../starling-account" }
 # Its proxy settings and the Java mods' checks, as Sunrise's launcher shares them.

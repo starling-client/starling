@@ -1,4 +1,4 @@
-// Adapted from Sunrise Android at fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
+// Adapted from Horizon Android at fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
 // Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 // See THIRD_PARTY_NOTICES.md and LICENSE.
 //! Android menu gestures and auxiliary keys, independent of gameplay fingers.
@@ -206,7 +206,7 @@ pub enum InGameMenuAction {
     ForceKill,
     /// Open the game's log folder in the system file manager.
     OpenLogs,
-    /// Back to Sunrise Android's launcher (`ha_launcher`), a world saved first.
+    /// Back to Horizon Android's launcher (`ha_launcher`), a world saved first.
     OpenLauncher,
     /// The naming field of a preset dialog was tapped: show the system keyboard.
     EditPresetField(bool),
@@ -2943,7 +2943,7 @@ impl TouchUi {
             ui.centered_fit(Face::SemiBold, 9.5, badge_r, accent_hi, mode_badge_txt);
         }
 
-        // Starling: the way back to Sunrise Android's launcher, from any screen, in the header
+        // Starling: the way back to Horizon Android's launcher, from any screen, in the header
         // beside the controls' badge.
         if let Some(r) = hub_launcher_button(dx, dy, dw) {
             ui.rounded(r[0], r[1], r[2], r[3], 9.0, card_bg);

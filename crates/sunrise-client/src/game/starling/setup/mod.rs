@@ -28,7 +28,7 @@ enum Step {
     /// game's files are where a player can reach them, and a bug report's log with them.
     #[cfg(target_os = "android")]
     Folder(super::files_offer::Stage),
-    /// Sunrise Android is on the phone: its worlds and resource packs can come over
+    /// Horizon Android is on the phone: its worlds and resource packs can come over
     /// (SunriseImport.java). True once its folder was asked for: they are arriving.
     #[cfg(target_os = "android")]
     Sunrise(bool),
@@ -76,7 +76,7 @@ enum Action {
     /// Not now (asked again on the title screen only if not turned down), or Later.
     #[cfg(target_os = "android")]
     FolderLater,
-    /// Sunrise Android's folder in the system's picker (again, if the player came back without
+    /// Horizon Android's folder in the system's picker (again, if the player came back without
     /// picking it).
     #[cfg(target_os = "android")]
     Sunrise,
@@ -120,7 +120,7 @@ pub(super) struct Setup {
     /// The Starling folder put off for this start (Later).
     #[cfg(target_os = "android")]
     folder_later: bool,
-    /// Whether Sunrise Android is installed, asked of Android once.
+    /// Whether Horizon Android is installed, asked of Android once.
     #[cfg(target_os = "android")]
     sunrise_installed: Cell<Option<bool>>,
     /// Its folder asked for: its worlds and packs are on their way to the import inbox.
@@ -306,9 +306,9 @@ fn folder_offer(setup: &Setup) -> Option<super::files_offer::Stage> {
     })
 }
 
-/// Written once the player answered Sunrise Android's offer (Next or Skip here, Done or Not now
+/// Written once the player answered Horizon Android's offer (Next or Skip here, Done or Not now
 /// over the title, game/files_offer.rs): it is not made again. It came back on every start until
-/// the worlds came over, and a player keeping Sunrise Android installed saw it every time.
+/// the worlds came over, and a player keeping Horizon Android installed saw it every time.
 #[cfg(target_os = "android")]
 pub(super) fn sunrise_answered() -> std::path::PathBuf {
     sunrise_client::logging::private_home().join("sunrise-android-import-answered")
@@ -319,7 +319,7 @@ pub(super) fn sunrise_answered() -> std::path::PathBuf {
 pub(super) static SUNRISE_LATER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Whether to offer Sunrise Android's worlds and packs: it is installed, and not answered yet.
+/// Whether to offer Horizon Android's worlds and packs: it is installed, and not answered yet.
 #[cfg(target_os = "android")]
 fn sunrise_offer(setup: &Setup) -> bool {
     if sunrise_answered().exists() || SUNRISE_LATER.load(std::sync::atomic::Ordering::Relaxed) {
@@ -374,16 +374,16 @@ fn texts(step: &Step) -> (&'static str, String, Option<String>) {
         }
         #[cfg(target_os = "android")]
         Step::Sunrise(false) => (
-            "Coming from Sunrise Android?",
-            "Sunrise Android is part of Starling now: bring your worlds and resource packs over. \
-             Close Sunrise Android first, then, in the folder that opens, tap Use this folder and \
+            "Coming from Horizon Android?",
+            "Horizon Android is part of Starling now: bring your worlds and resource packs over. \
+             Close Horizon Android first, then, in the folder that opens, tap Use this folder and \
              Allow."
                 .into(),
-            Some("They are copied: Sunrise Android keeps its own.".into()),
+            Some("They are copied: Horizon Android keeps its own.".into()),
         ),
         #[cfg(target_os = "android")]
         Step::Sunrise(true) => (
-            "Coming from Sunrise Android?",
+            "Coming from Horizon Android?",
             "Your worlds and resource packs are on their way: the note at the top says what each \
              one added. Tap Next when they are in."
                 .into(),
@@ -899,7 +899,7 @@ impl Loading {
             .pond
             .set(pond.map(|_| [0.0, below, w, h - below]));
         // The inbox's banner over it all, since the setup polls the inbox too: what its file
-        // picker, or Sunrise Android's folder, added.
+        // picker, or Horizon Android's folder, added.
         self.imports.draw(atlas, batch);
     }
 
@@ -1069,7 +1069,7 @@ impl Loading {
                 if crate::android::import_sunrise_android() {
                     self.setup.sunrise_picked = true;
                 } else {
-                    log::warn!("Sunrise: no folder picker for Sunrise Android's files");
+                    log::warn!("Sunrise: no folder picker for Horizon Android's files");
                 }
             }
             #[cfg(target_os = "android")]

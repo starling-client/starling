@@ -451,7 +451,7 @@ pub fn file_access_allowed() -> bool {
     .unwrap_or(false)
 }
 
-/// Whether Sunrise Android is on the phone: the setup offers to bring its worlds and packs over.
+/// Whether Horizon Android is on the phone: the setup offers to bring its worlds and packs over.
 pub fn sunrise_android_installed() -> bool {
     with_activity(|env, activity| {
         env.call_method(activity, "sunriseAndroidInstalled", "()Z", &[])?
@@ -460,7 +460,7 @@ pub fn sunrise_android_installed() -> bool {
     .unwrap_or(false)
 }
 
-/// The system's folder picker on Sunrise Android's folder: the worlds and packs picked arrive in
+/// The system's folder picker on Horizon Android's folder: the worlds and packs picked arrive in
 /// the import inbox (StarlingActivity, SunriseImport.java). False when it could not open.
 pub fn import_sunrise_android() -> bool {
     with_activity(|env, activity| {
@@ -579,7 +579,7 @@ fn keep_restart_look() {
     }
 }
 
-/// Whether this process runs the game, not Sunrise Android's launcher (ha_launcher).
+/// Whether this process runs the game, not Horizon Android's launcher (ha_launcher).
 static IN_GAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// This APK's version (versionName), and whether it is a release, which only can install the
@@ -1550,7 +1550,7 @@ pub fn main(
     let _ = std::fs::create_dir_all(&private);
     let mut notes = Vec::new();
     let folder = game_folder(&private, &mut notes);
-    // Sunrise Android's launcher, or the game in the instance it chose: one of them a process.
+    // Horizon Android's launcher, or the game in the instance it chose: one of them a process.
     let chosen = crate::ha_launcher::start(&private, &folder);
     let home = match &chosen {
         crate::ha_launcher::Start::Game(instance) => instance.clone(),

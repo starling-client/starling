@@ -9,7 +9,7 @@ use super::*;
 
 /// Where an Ely.by account changes its skin.
 pub const ELY_SKINS: &str = "https://ely.by/skins";
-/// The largest PNG sent, as Sunrise Android's import takes.
+/// The largest PNG sent, as Horizon Android's import takes.
 pub const MAX_PNG: usize = 1024 * 1024;
 const BOUNDARY: &str = "starling-skin-upload-v1";
 

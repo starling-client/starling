@@ -75,11 +75,11 @@ import javax.crypto.spec.GCMParameterSpec;
 public class StarlingActivity extends NativeActivity {
     private DisplayPreferences displayPreferences;
     private static final int PICK_FILE = 1;
-    /** Sunrise Android's folder picked: its worlds and packs come over (SunriseImport). */
+    /** Horizon Android's folder picked: its worlds and packs come over (SunriseImport). */
     private static final int PICK_SUNRISE = 2;
     /** Android's answer to the permissions the running build's mods need. */
     private static final int MOD_PERMISSIONS = 3;
-    /** The launcher's file picker (Sunrise Android's): its answer goes to nativeDocumentResult. */
+    /** The launcher's file picker (Horizon Android's): its answer goes to nativeDocumentResult. */
     private static final int PICK_DOCUMENT = 4101;
 
     /** The build with native mods this game runs (loadGame), or null for the APK's own. */
@@ -791,7 +791,7 @@ public class StarlingActivity extends NativeActivity {
     }
 
     /**
-     * The launcher's file picker (Sunrise Android's): the document chosen goes to the launcher,
+     * The launcher's file picker (Horizon Android's): the document chosen goes to the launcher,
      * which reads it through the content resolver and puts it where it belongs.
      */
     public void pickDocument() {
@@ -828,13 +828,13 @@ public class StarlingActivity extends NativeActivity {
         return true;
     }
 
-    /** Whether Sunrise Android is on the phone, so its worlds can come over (the setup asks). */
+    /** Whether Horizon Android is on the phone, so its worlds can come over (the setup asks). */
     public boolean sunriseAndroidInstalled() {
         return SunriseImport.installed(this);
     }
 
     /**
-     * The system's folder picker on Sunrise Android's folder; its worlds and packs go to the
+     * The system's folder picker on Horizon Android's folder; its worlds and packs go to the
      * game's import inbox (SunriseImport). False when it is not installed or nothing can pick.
      */
     public boolean importFromSunriseAndroid() {
@@ -857,7 +857,7 @@ public class StarlingActivity extends NativeActivity {
     /**
      * The system's file manager on a folder; false where none can show it. A folder of the game's
      * opens through this app's own provider (GameFolderProvider), which shows it in shared storage
-     * and in the app's own files alike, as Sunrise Android did. Another one of shared storage opens
+     * and in the app's own files alike, as Horizon Android did. Another one of shared storage opens
      * through the storage's provider. When nothing opens, the player is told where to look.
      */
     public boolean openFolder(String path) {

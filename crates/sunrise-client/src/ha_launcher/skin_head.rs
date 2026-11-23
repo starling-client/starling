@@ -206,7 +206,7 @@ pub fn from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<HeadSkin> {
     Some(skin)
 }
 
-/// Sunrise Android's theme drew the account's head (`Ui::avatar_head_2d`); Starling's copy of the
+/// Horizon Android's theme drew the account's head (`Ui::avatar_head_2d`); Starling's copy of the
 /// theme (`android_control_theme`) left it out with the launcher.
 pub trait AvatarHead {
     fn avatar_head_2d(&mut self, x: f32, y: f32, size: f32, player_name: &str);
