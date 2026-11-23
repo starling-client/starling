@@ -70,14 +70,15 @@ REMOVED_COMMERCIAL_PREFIXES = (
     "crates/sunrise-client/src/game/interface/cosmetics",
     "crates/sunrise-official-servers",
 )
-# The launcher lives in sunrise-org/sunrise-launcher (launcher split D1); its removed commercial pages and sculk art
-# went with the tree, so nothing under launcher/ comes back.
-REMOVED_TREE = "launcher/"
+# Sunrise's launcher lives in sunrise-org/sunrise-launcher (launcher split D1). Starling keeps its own launcher/
+# tree (the desktop launcher and its mod browser), so the tree is not refused here; the commercial crates and
+# modules above still are.
+REMOVED_TREE = None
 
 
 def commercial(path):
     """True when `path` is a removed commercial crate or game module, or anything under the removed launcher/ tree."""
-    if path.startswith(REMOVED_TREE):
+    if REMOVED_TREE and path.startswith(REMOVED_TREE):
         return True
     parsed = PurePosixPath(path)
     for prefix in REMOVED_COMMERCIAL_PREFIXES:

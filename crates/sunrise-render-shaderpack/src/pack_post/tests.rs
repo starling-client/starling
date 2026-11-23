@@ -314,6 +314,8 @@ fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
         draw: false,
         images: Vec::new(),
         buffers: Vec::new(),
+        alpha_cut: None,
+        prepass_uv: None,
     };
     let buffers = crate::pack_images::Buffers::new(
         &device,
@@ -407,6 +409,8 @@ fn a_png_under_a_name_of_its_own_is_not_bound() {
         images: Vec::new(),
         buffers: Vec::new(),
         initial_values: vec![0; 48],
+        alpha_cut: None,
+        prepass_uv: None,
     };
     let buffers = crate::pack_images::Buffers::new(
         &device,
@@ -487,6 +491,8 @@ fn an_image_without_an_entry_reads_zero() {
             image("flat", "image2D", "rgba8", 3),
         ],
         buffers: Vec::new(),
+        alpha_cut: None,
+        prepass_uv: None,
     };
     let buffers = crate::pack_images::Buffers::new(
         &device,
