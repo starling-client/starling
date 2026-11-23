@@ -585,8 +585,8 @@ pub fn set_prepass(on: bool) {
 }
 
 /// The Auto profile, or `SUNRISE_SHADER_PACK_PREPASS=1`: solid terrain draws its depth first with
-/// the program's own vertex stage and only the atlas' alpha test, then the program shades with
-/// depth writes off, so a phone's GPU can drop what is hidden before running the pack's fragment
+/// the program's own vertex stage and only the atlas' alpha test, then the program shades over it
+/// (writing depth too, for the cutout edges the prepass left out), so a phone's GPU can drop what is hidden before running the pack's fragment
 /// stage (grass and leaves stacked in front of each other otherwise run it once per layer).
 pub fn prepass_wanted() -> bool {
     PREPASS.load(std::sync::atomic::Ordering::Relaxed)
@@ -1442,7 +1442,11 @@ pub fn build_pass(
             depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 // After the depth pass, only what stays in front passes.
-                depth_write_enabled: Some(g.depth_write && prepass.is_none()),
+                // Starling: depth writes stay on after the prepass. The prepass keeps only what is
+                // above its cut (0.5 and up); a leaf's edge between the pack's own alpha test and
+                // that cut shaded with no depth, and the trunk or leaves behind drawn later showed
+                // through it.
+                depth_write_enabled: Some(g.depth_write),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: if p.name == "gbuffers_damagedblock" {
