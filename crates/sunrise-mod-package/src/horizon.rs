@@ -97,6 +97,36 @@ fn source(text: &str) -> String {
     out
 }
 
+/// A file's path as this game reads it. Horizon keeps a mod's declarations in
+/// `data/<namespace>/horizon/` (blocks, items, menus...) and its engine's own data in the
+/// `horizon` namespace (`data/horizon/tags/...`); Sunrise reads `data/<namespace>/sunrise/` and
+/// `sunrise`. Without this every block and item of a Horizon mod was left out.
+fn path_in_package(name: &str) -> String {
+    let mut parts: Vec<&str> = name.splitn(4, '/').collect();
+    if matches!(parts.first(), Some(&"data" | &"assets")) {
+        if parts.get(1) == Some(&"horizon") {
+            parts[1] = "sunrise";
+        }
+        if parts[0] == "data" && parts.len() == 4 && parts[2] == "horizon" {
+            parts[2] = "sunrise";
+        }
+    }
+    parts.join("/")
+}
+
+/// Whether `name` is a data or asset file that names ids: the engine's (`"horizon:pick"`,
+/// `"#horizon:..."`) are `sunrise:` here.
+fn names_ids(name: &str) -> bool {
+    (name.starts_with("data/") || name.starts_with("assets/"))
+        && (name.ends_with(".json") || name.ends_with(".mcmeta"))
+}
+
+/// A data or asset file naming the engine's ids by this game's namespace.
+fn ids(text: &str) -> String {
+    text.replace("\"horizon:", "\"sunrise:")
+        .replace("\"#horizon:", "\"#sunrise:")
+}
+
 /// Whether `name` is one of the package's text files that name crates.
 fn names_crates(name: &str) -> bool {
     name == "Cargo.toml" || (name.starts_with("src/") && name.ends_with(".rs"))
@@ -113,7 +143,7 @@ pub fn adopt(path: &Path) -> Result<(), String> {
         .compression_method(zip::CompressionMethod::Deflated);
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| at(&e))?;
-        let name = entry.name().map_err(|e| at(&e))?.into_owned();
+        let name = path_in_package(&entry.name().map_err(|e| at(&e))?);
         if entry.is_dir() {
             out.add_directory(name.as_str(), options)
                 .map_err(|e| at(&e))?;
@@ -130,6 +160,11 @@ pub fn adopt(path: &Path) -> Result<(), String> {
         } else if names_crates(&name) {
             match String::from_utf8(bytes) {
                 Ok(text) => (name, source(&text).into_bytes()),
+                Err(e) => (name, e.into_bytes()),
+            }
+        } else if names_ids(&name) {
+            match String::from_utf8(bytes) {
+                Ok(text) => (name, ids(&text).into_bytes()),
                 Err(e) => (name, e.into_bytes()),
             }
         } else {
@@ -155,7 +190,35 @@ pub fn adopt(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{manifest, source};
+    use super::{ids, manifest, path_in_package, source};
+
+    #[test]
+    fn horizons_data_folders_and_ids_take_sunrises_names() {
+        assert_eq!(
+            path_in_package("data/evilcraft/horizon/menu/a.json"),
+            "data/evilcraft/sunrise/menu/a.json"
+        );
+        assert_eq!(
+            path_in_package("data/horizon/tags/block/class/crop.json"),
+            "data/sunrise/tags/block/class/crop.json"
+        );
+        assert_eq!(
+            path_in_package("assets/horizon/lang/en_us.json"),
+            "assets/sunrise/lang/en_us.json"
+        );
+        // A mod's own folder named horizon elsewhere, and source, stay.
+        assert_eq!(
+            path_in_package("assets/evilcraft/horizon/x.png"),
+            "assets/evilcraft/horizon/x.png"
+        );
+        assert_eq!(path_in_package("src/horizon.rs"), "src/horizon.rs");
+        assert_eq!(
+            ids(
+                r##"{"processor_type": "horizon:pick", "tag": "#horizon:x", "id": "myhorizon:y"}"##
+            ),
+            r##"{"processor_type": "sunrise:pick", "tag": "#sunrise:x", "id": "myhorizon:y"}"##
+        );
+    }
 
     #[test]
     fn the_native_pin_takes_sunrises_key() {
