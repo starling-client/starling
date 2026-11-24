@@ -324,8 +324,12 @@ def compat(work: Path) -> None:
     if not lib.is_file() or (src / "starling_compat.rs").exists():
         return
     shutil.copyfile(COMPAT, src / "starling_compat.rs")
+    # A row's helper (one function, which the tool inlines into the game's copy) and a support module (a module
+    # of the patch crate, where `crate` is the game's) are not the mod's crate: they take nothing.
+    manifest = (work / "sunrise-mod.toml").read_text(encoding="utf-8")
+    elsewhere = {(work / m).resolve() for m in re.findall(r'(?m)^\s*(?:helper|source)\s*=\s*"([^"]+)"', manifest)}
     for path in src.rglob("*.rs"):
-        if path.name == "starling_compat.rs":
+        if path.name == "starling_compat.rs" or path.resolve() in elsewhere:
             continue
         text = path.read_text(encoding="utf-8")
         head = INNER.match(text).end()
