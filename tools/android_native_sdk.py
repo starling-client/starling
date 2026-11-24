@@ -300,6 +300,74 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     return result["installs"]
 
 
+HORIZON_CRATE = re.compile(r"\bhorizon_(?=[a-z])")
+GENERICS = re.compile(r"<[^<>]*>")
+
+
+def short(path: str) -> str:
+    """A function's path without generic arguments, as the index and a row may differ in them."""
+    while GENERICS.search(path):
+        path = GENERICS.sub("", path)
+    return path
+
+
+def retarget(mod_id: str, work: Path) -> list[str]:
+    """Starling: a Horizon mod's `[native.*]` rows, made for Horizon's game, moved to this one. Its crates are Sunrise's
+    (`horizon_client` is `sunrise_client`); a target whose module moved in the sync is found in the staged game's
+    function index by its type and name, when exactly one function there has them; a support module's file is the
+    same file under the renamed crate, or the game crate's root. The rows' bindings name the same crates. Writes the
+    manifest back; returns what it could not place, for the build's log."""
+    manifest_path = work / "sunrise-mod.toml"
+    text = manifest_path.read_text(encoding="utf-8")
+    if "horizon_" not in text and "crates/horizon-" not in text:
+        return []
+    index = json.loads((ROOT / "functions.json").read_text())["functions"]
+    by_short = {}
+    for key in index:
+        by_short.setdefault(short(key), []).append(key)
+    by_tail = {}
+    for key in index:
+        parts = short(key).split("::")
+        by_tail.setdefault("::".join(parts[-2:]), []).append(key)
+    unplaced = []
+
+    def place(target: str) -> str:
+        renamed = HORIZON_CRATE.sub("sunrise_", target)
+        if short(renamed) in by_short:
+            return renamed
+        tail = "::".join(short(renamed).split("::")[-2:])
+        found = [k for k in by_tail.get(tail, []) if k.split("::")[0] == renamed.split("::")[0]]
+        if len(found) == 1:
+            return found[0]
+        unplaced.append(target)
+        return renamed
+
+    def target_line(match: re.Match) -> str:
+        return f'{match.group(1)}"{place(match.group(2))}"'
+
+    text = re.sub(r'(?m)^(\s*target\s*=\s*)"([^"]+)"', target_line, text)
+
+    def file_line(match: re.Match) -> str:
+        path = re.sub(r"crates/horizon-", "crates/sunrise-", match.group(2))
+        if not (ROOT / path).is_file():
+            unplaced.append(match.group(2))
+            path = "crates/sunrise-client/src/game.rs"
+        return f'{match.group(1)}"{path}"'
+
+    text = re.sub(r'(?m)^(\s*file\s*=\s*)"(crates/[^"]+)"', file_line, text)
+    # Bindings' types and the rest: the crates under their Sunrise names.
+    text = HORIZON_CRATE.sub("sunrise_", text)
+    manifest_path.write_bytes(text.encode("utf-8"))
+    for source in (work / "src").rglob("*.rs"):
+        code = source.read_text(encoding="utf-8")
+        renamed = HORIZON_CRATE.sub("sunrise_", code)
+        if renamed != code:
+            source.write_bytes(renamed.encode("utf-8"))
+    if unplaced:
+        print(f"mods: {mod_id}: not placed in this game: {', '.join(unplaced)}")
+    return unplaced
+
+
 # The game crate's features in the APK (crates/sunrise-android's dependency on sunrise-client and its default):
 # a copied function is compiled under the same `cfg`s.
 GAME_FEATURES = ("audio", "sunrise-extras")
@@ -335,6 +403,8 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
             work = folder / mod_id
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
         # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
+        if tables:
+            retarget(mod_id, work)
         installs = patched(mod_id, work, folder, commit, abi) if tables else None
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
                                                           "rlib" if tables else "dylib"))
