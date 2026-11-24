@@ -235,7 +235,8 @@ def workspace_libraries() -> dict[str, Path]:
 
 
 def patch_tool() -> Path:
-    """sunrise-android-patch for this computer: `SUNRISE_ANDROID_PATCH`, or built here (host target)."""
+    """sunrise-android-patch for this computer: `SUNRISE_ANDROID_PATCH`, or built here (host target). `mods` builds
+    it before any mod joins the workspace: a mod's own manifest would stop Cargo reading it."""
     named = os.environ.get("SUNRISE_ANDROID_PATCH")
     if named:
         return Path(named)
@@ -293,6 +294,8 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         if old.name != "_placeholder":
             shutil.rmtree(old)
     placeholder()
+    if os.environ.get("SUNRISE_UNSTAGED_SOURCE") and not os.environ.get("SUNRISE_ANDROID_PATCH"):
+        os.environ["SUNRISE_ANDROID_PATCH"] = str(patch_tool())
     built = []
     for path in packages:
         work = folder / path.stem
