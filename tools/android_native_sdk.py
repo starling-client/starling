@@ -281,6 +281,21 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
             features = f', features = {json.dumps(list(GAME_FEATURES))}' if package == "sunrise-client" else ""
             lines.append(f'{name} = {{ path = "{path.as_posix()}", package = "{package}", '
                          f'default-features = false{features} }}')
+    # The crates from crates.io the game's own source names (`winit`), as sunrise-client takes them: its Android
+    # table's over its own.
+    game = tomllib.loads((ROOT / "crates" / "sunrise-client" / "Cargo.toml").read_text())
+    external = dict(game.get("dependencies", {}))
+    external.update(game.get("target", {}).get('cfg(target_os = "android")', {}).get("dependencies", {}))
+    for package, spec in sorted(external.items()):
+        name = package.replace("-", "_")
+        if name in libraries or not re.search(r"\b" + re.escape(name) + r"\s*::", text):
+            continue
+        if isinstance(spec, str):
+            spec = {"version": spec}
+        if "path" in spec or spec.get("workspace"):
+            continue
+        fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in spec.items() if key != "optional")
+        lines.append(f'{name} = {{ package = "{package}", {fields} }}')
     (dest / "Cargo.toml").write_text("\n".join(lines) + "\n")
     return result["installs"]
 
