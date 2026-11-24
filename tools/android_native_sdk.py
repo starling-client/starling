@@ -384,6 +384,11 @@ def compat(work: Path) -> None:
     lib = src / "lib.rs"
     if not lib.is_file() or (src / "starling_compat.rs").exists():
         return
+    # The port rules Starling's Horizon ports were made with (tools/android_compat/autoport.py: block entity ticks,
+    # mod commands, menu buttons and screens over Sunrise's shapes), then the names below.
+    done = subprocess.run([sys.executable, str(COMPAT.with_name("autoport.py")), str(work)],
+                          capture_output=True, text=True)
+    print(f"mods: {work.name}: {(done.stdout + done.stderr).strip().splitlines()[-1:] or ''}")
     shutil.copyfile(COMPAT, src / "starling_compat.rs")
     # A row's helper (one function, which the tool inlines into the game's copy) and a support module (a module
     # of the patch crate, where `crate` is the game's) are not the mod's crate: they take nothing.
