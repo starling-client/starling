@@ -316,6 +316,56 @@ COMPAT = ROOT / "tools" / "android_compat" / "starling_compat.rs"
 INNER = re.compile(r"\A(?:\s*(?://[!/][^\n]*|#!\[[^\]]*\])\n)*")
 
 
+def body_end(text: str, start: int) -> int:
+    """The index just past the `}` closing the block whose `{` is at `start` (strings and comments aside)."""
+    depth, i = 0, start
+    while i < len(text):
+        c = text[i]
+        if text.startswith("//", i):
+            i = text.find("\n", i)
+            if i < 0:
+                return len(text)
+            continue
+        if c == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return len(text)
+
+
+MOVEMENT_HOOK = re.compile(
+    r"fn\s+movement_input\s*\(\s*&self\s*,\s*(\w+)\s*:\s*&dyn\s+(?:mod_api::)?ClientHost\s*,\s*"
+    r"(\w+)\s*:\s*&mut\s+(?:mod_api::)?MovementInputEvent\s*,?\s*\)\s*\{")
+
+
+def api_rules(text: str) -> str:
+    """Horizon hooks Sunrise renamed, rewritten in place: the old body runs on the old event (starling_compat)."""
+    m = MOVEMENT_HOOK.search(text)
+    while m:
+        host, event = m.group(1), m.group(2)
+        end = body_end(text, m.end() - 1)
+        body = text[m.end():end - 1]
+        new = (f"fn movement_input_update(&self, {host}: &dyn mod_api::ClientHost, "
+               f"__starling_event: &mut mod_api::MovementInputUpdateEvent<'_>) {{\n"
+               f"        let mut __starling_old = crate::starling_compat::MovementInputEvent::of(&*__starling_event.input);\n"
+               f"        (|{event}: &mut crate::starling_compat::MovementInputEvent| {{{body}}})(&mut __starling_old);\n"
+               f"        __starling_old.write(&mut *__starling_event.input);\n    }}")
+        text = text[:m.start()] + new + text[end:]
+        m = MOVEMENT_HOOK.search(text, m.start() + len(new))
+    text = re.sub(r"\bmod_api::MovementInputEvent\b", "crate::starling_compat::MovementInputEvent", text)
+    text = re.sub(r"(use\s+mod_api::\{[^}]*?)\bMovementInputEvent\s*,\s*", r"\1", text, flags=re.S)
+    text = re.sub(r"(use\s+mod_api::\{[^}]*?),\s*MovementInputEvent\b", r"\1", text, flags=re.S)
+    text = re.sub(r"\bhook_ids::movement_input\b", "hook_ids::movement_input_update", text)
+    return text
+
+
 def compat(work: Path) -> None:
     """A mod made for Horizon (its rows or source name `horizon_`... before `retarget`, or it calls Horizon's
     names): `starling_compat` in its crate, and every file of it `use`s its traits, so the old calls resolve."""
@@ -338,7 +388,7 @@ def compat(work: Path) -> None:
     for path in src.rglob("*.rs"):
         if path.name == "starling_compat.rs" or path.resolve() in elsewhere or own_crate_file(path):
             continue
-        text = path.read_text(encoding="utf-8")
+        text = api_rules(path.read_text(encoding="utf-8"))
         head = INNER.match(text).end()
         line = "#[allow(unused_imports)]\nuse crate::starling_compat::*;\n"
         if path == lib:

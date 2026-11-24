@@ -71,6 +71,8 @@ pub trait StarlingId {
     fn to_string(&self) -> String;
     fn is_empty(&self) -> bool;
     fn as_str(&self) -> &str;
+    fn starts_with(&self, prefix: &str) -> bool;
+    fn ends_with(&self, suffix: &str) -> bool;
 }
 
 impl StarlingId for Option<&str> {
@@ -82,5 +84,71 @@ impl StarlingId for Option<&str> {
     }
     fn as_str(&self) -> &str {
         self.unwrap_or_default()
+    }
+    fn starts_with(&self, prefix: &str) -> bool {
+        self.unwrap_or_default().starts_with(prefix)
+    }
+    fn ends_with(&self, suffix: &str) -> bool {
+        self.unwrap_or_default().ends_with(suffix)
+    }
+}
+
+/// Values Horizon handed as `Option` that Sunrise hands plain: the old `unwrap_or` still reads them.
+pub trait StarlingPlain: Sized {
+    fn unwrap_or(self, _default: Self) -> Self {
+        self
+    }
+    fn unwrap_or_default(self) -> Self {
+        self
+    }
+}
+impl StarlingPlain for i32 {}
+impl StarlingPlain for u32 {}
+impl StarlingPlain for f32 {}
+impl StarlingPlain for f64 {}
+impl StarlingPlain for bool {}
+
+/// Horizon's `movement_input` event: the old fields over Sunrise's `movement_input_update` input.
+/// The adoption renames the hook (`fn movement_input` becomes a `movement_input_update` that builds this, runs the
+/// old body and writes it back): the old `forward`/`strafe` are Sunrise's `move_vector` `[left, forward]`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MovementInputEvent {
+    pub forward: f32,
+    pub strafe: f32,
+    pub jump: bool,
+    pub sneak: bool,
+    pub forward_key: bool,
+    pub backward_key: bool,
+    pub left_key: bool,
+    pub right_key: bool,
+    pub sprint: bool,
+}
+
+impl MovementInputEvent {
+    pub fn of(input: &mod_api::MovementInput) -> Self {
+        let keys = input.key_presses;
+        Self {
+            forward: input.move_vector[1],
+            strafe: input.move_vector[0],
+            jump: keys.jump,
+            sneak: keys.sneak,
+            forward_key: keys.forward,
+            backward_key: keys.backward,
+            left_key: keys.left,
+            right_key: keys.right,
+            sprint: keys.sprint,
+        }
+    }
+
+    pub fn write(&self, input: &mut mod_api::MovementInput) {
+        input.move_vector = [self.strafe, self.forward];
+        let keys = &mut input.key_presses;
+        keys.jump = self.jump;
+        keys.sneak = self.sneak;
+        keys.forward = self.forward_key;
+        keys.backward = self.backward_key;
+        keys.left = self.left_key;
+        keys.right = self.right_key;
+        keys.sprint = self.sprint;
     }
 }
