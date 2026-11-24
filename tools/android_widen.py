@@ -10,6 +10,9 @@ Rather than a list that grows with every mod, this makes every module and every 
 public in the staged copy: `mod x` becomes `pub mod x`, `pub(crate)`, `pub(super)`, `pub(self)` and `pub(in path)`
 become `pub`. The APK is built from the same copy (android.yml, store_base.sh), so a mod built against it loads.
 Item names don't change, only who may name them; a private item made public may warn, never fail.
+
+A re-export (`pub(crate) use`) that names a `macro_rules!` macro of its crate stays as it is: a local macro can't be
+re-exported publicly (E0364).
 """
 import re
 import sys
@@ -20,26 +23,25 @@ CRATES = ("sunrise-client", "sunrise-client-gameplay", "sunrise-gameplay", "sunr
           "sunrise-client-input", "sunrise-world", "sunrise-core", "sunrise-protocol", "sunrise-items")
 RESTRICTED = re.compile(r"\bpub\s*\(\s*(?:crate|super|self|in\s+[\w:]+)\s*\)")
 MACRO = re.compile(r"\bmacro_rules!\s*(\w+)")
-# A re-export of one name: kept restricted when it is a `macro_rules!` macro of the file (E0364 otherwise).
-USE_ONE = re.compile(r"\bpub\s*\([^)]*\)\s*use\s+(?:[\w:]*::)?(\w+)\s*;")
+RESTRICTED_USE = re.compile(r"\bpub\s*\([^)]*\)\s*use\s+[^;]+;")
 # A module declaration with no visibility, at the start of a line (attributes before it stay as they are).
 PRIVATE_MOD = re.compile(r"(?m)^(\s*)mod\s+(\w+)\s*([;{])")
 
 
-def widen(text: str) -> str:
-    macros = set(MACRO.findall(text))
-    kept = {}
+def widen(text: str, macros: frozenset = frozenset()) -> str:
+    macros = macros | set(MACRO.findall(text))
+    kept = []
 
     def keep(m: re.Match) -> str:
-        if m.group(1) in macros:
-            kept[f"\0{len(kept)}\0"] = m.group(0)
+        if set(re.findall(r"\w+", m.group(0))) & macros:
+            kept.append(m.group(0))
             return f"\0{len(kept) - 1}\0"
         return m.group(0)
 
-    text = USE_ONE.sub(keep, text)
+    text = RESTRICTED_USE.sub(keep, text)
     text = RESTRICTED.sub("pub", text)
-    for mark, original in kept.items():
-        text = text.replace(mark, original)
+    for i, original in enumerate(kept):
+        text = text.replace(f"\0{i}\0", original)
     return PRIVATE_MOD.sub(lambda m: f"{m.group(1)}pub mod {m.group(2)}{m.group(3)}", text)
 
 
@@ -49,11 +51,11 @@ def main() -> None:
         sys.exit(f"{root}: not a staged copy (no functions.json): this rewrites visibility in place")
     changed = 0
     for crate in CRATES:
-        for path in (root / "crates" / crate).rglob("*.rs"):
-            if "target" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8")
-            wide = widen(text)
+        files = [p for p in (root / "crates" / crate).rglob("*.rs") if "target" not in p.parts]
+        texts = {p: p.read_text(encoding="utf-8") for p in files}
+        macros = frozenset(name for text in texts.values() for name in MACRO.findall(text))
+        for path, text in texts.items():
+            wide = widen(text, macros)
             if wide != text:
                 path.write_bytes(wide.encode("utf-8"))
                 changed += 1
