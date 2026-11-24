@@ -1593,9 +1593,11 @@ pub fn apply_mobile_defaults(tier: crate::system_stats::Tier, s: &mut crate::set
     // Gen 2 at render distance 8 and LOD distance 128, Full drew the frame in 29 to 31 ms of GPU
     // and Mobile in 19 (render distance 8 alone, 15.5).
     g.far_detail = FarDetail::Mobile;
-    // Leaf faces behind two leaf layers go, the crowns look the same: render distance 8 with
-    // LOD distance 128 at Mobile went from 18.7 to 15.5 ms of GPU on the same phone.
-    g.leaf_culling = LeafCullingMode::Hidden;
+    // Starling: the leaves inside a crown draw solid, the outer ones keep their cutout, so a crown
+    // looks full from outside. Hidden (faces behind two leaf layers dropped) was the default and
+    // took 18.7 to 15.5 ms of GPU on the Snapdragon 8 Gen 2, but its crowns showed the sky through
+    // the outer leaves' gaps where the faces behind were gone, which players found ugly.
+    g.leaf_culling = LeafCullingMode::Solid;
 }
 
 /// A phone that started before every tier began at the window's own size: the 70% (Low tier) or
@@ -1761,8 +1763,8 @@ mod tests {
             (low.sunrise.far_detail, high.sunrise.far_detail),
             (FarDetail::Mobile, FarDetail::Mobile)
         );
-        // Leaf faces no one sees left out, crowns as they were.
-        assert_eq!(high.sunrise.leaf_culling, LeafCullingMode::Hidden);
+        // The crowns' insides solid, their outer leaves cut out.
+        assert_eq!(high.sunrise.leaf_culling, LeafCullingMode::Solid);
         // What the options screens read back.
         let file = high.to_file();
         let back = crate::settings::Settings::from_file(file);

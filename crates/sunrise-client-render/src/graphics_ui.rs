@@ -831,7 +831,7 @@ fn description(
                     LeafCullingMode::Solid | LeafCullingMode::SolidAggressive
                 ) =>
         {
-            "Cutout Leaves is off, so every leaf is already solid: this mode changes nothing."
+            "Cutout Leaves is off: every leaf is already solid, so this changes nothing."
         }
         (Item::Sunrise(H::LeafCulling), _) => match s.sunrise.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
