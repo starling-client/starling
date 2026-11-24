@@ -480,6 +480,8 @@ mod render_arm;
 mod render_frame_post;
 mod render_frame_pre;
 mod render_gui_post;
+// Starling: Horizon's hook point for mixin mods (gui_layer_draw.rs).
+mod gui_layer_draw;
 mod render_gui_pre;
 mod render_hand;
 mod render_item_in_frame;

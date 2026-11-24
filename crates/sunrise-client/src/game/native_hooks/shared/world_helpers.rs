@@ -260,6 +260,7 @@ impl<'g> Game<'g> {
         if status_row {
             self.keep_status_rows(&batch.vertices[start..], batch.width, batch.height);
         }
+        self.native_gui_layer_draw(id, batch);
         self.native_gui_layer_post(id, batch);
     }
 
