@@ -360,8 +360,9 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
                 "[package]", f'name = "smod-{mod_id}-library"', f'version = "{version}"', 'edition = "2024"',
                 "publish = false", "", "[lib]", f'name = "{mod_id}_library"', 'path = "src/lib.rs"',
                 'crate-type = ["dylib"]', "", "[dependencies]",
-                f'mod_api = {{ path = "{api}", package = "sunrise-mod-api" }}',
-                f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host" }}',
+                f'mod_api = {{ path = "{api}", package = "sunrise-mod-api", default-features = false }}',
+                # As crates/sunrise-android takes it: the host's defaults are the desktop's (controllers).
+                f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host", default-features = false }}',
                 f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}',
                 f'sunrise_patched = {{ path = "{(folder / (mod_id + "-patched")).as_posix()}", '
                 f'package = "smod-{mod_id}-patched" }}' if installs is not None else "",
