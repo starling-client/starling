@@ -267,6 +267,12 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     crate = Path(result["dir"]) / "sunrise_patched"
     dest = folder / f"{mod_id}-patched"
     shutil.copytree(crate, dest)
+    # The generator re-exports every module of the copied ones, a test module too (`native_hooks`'s
+    # `*_tests`, `#![cfg(test)]` inside), which the game built for a phone doesn't have.
+    lib = dest / "src" / "lib.rs"
+    kept = [line for line in lib.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not re.fullmatch(r"\s*pub use ::sunrise_\w+(::\w+)*_tests;\s*", line)]
+    lib.write_bytes("".join(kept).encode("utf-8"))
     text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
     libraries = workspace_libraries()
     lines = ["[package]", f'name = "smod-{mod_id}-patched"', 'version = "0.0.0"', 'edition = "2024"',
