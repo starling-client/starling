@@ -822,6 +822,17 @@ fn description(
             EntityCullingMode::Synchronous => "CPU occlusion test runs this frame.",
             EntityCullingMode::Asynchronous => "Occlusion checks run on a worker thread.",
         },
+        // Starling: with Cutout Leaves off every leaf is already in the solid layer (the mesher's
+        // `force_solid`), so the Solid modes have nothing left to make solid.
+        (Item::Sunrise(H::LeafCulling), _)
+            if !s.cutout_leaves
+                && matches!(
+                    s.sunrise.leaf_culling,
+                    LeafCullingMode::Solid | LeafCullingMode::SolidAggressive
+                ) =>
+        {
+            "Cutout Leaves is off, so every leaf is already solid: this mode changes nothing."
+        }
         (Item::Sunrise(H::LeafCulling), _) => match s.sunrise.leaf_culling {
             LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
             LeafCullingMode::Hidden => {

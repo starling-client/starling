@@ -1644,7 +1644,14 @@ impl Game<'_> {
             .enumerate()
             .any(|(j, m)| m.native.is_some() && !m.id.is_empty() && mods.is_on(j));
         // The libraries the next start opens follow the mods on, from those already here.
+        let before = native_libs_mods();
         native_libs_follow();
+        // Starling: a mod turned off (or one on whose library is here) changed what the next start
+        // opens without a Compile: say so, with Restart now. Players turned a mod off and saw it
+        // keep running, since the game opened its libraries at start.
+        if native_libs_mods() != before {
+            self.native_builds.stage = Some(Stage::Chosen(NATIVE_LIBS.to_owned()));
+        }
         if !any_on {
             let _ = std::fs::remove_file(dir().join("current"));
             let _ = std::fs::remove_file(dir().join("starts"));

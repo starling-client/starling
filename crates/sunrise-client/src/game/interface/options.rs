@@ -39,6 +39,14 @@ fn catalog_shelf(shelf: sunrise_client::options_ui::CatalogShelf) -> starling_ca
 /// Starling: on a phone a menu over the world (pause, inventory, ...) draws at most 60 frames a
 /// second. A paused game's menu draws its kept backdrop (`menu_blur_cache`) so cheaply that it
 /// ran at 300+ FPS, warming the phone for nothing. A computer keeps its limit.
+/// Starling: the focus native mods' frame rate hook sees. A phone's game in the foreground is the
+/// one being played even when a chat bubble or the keyboard holds Android's window focus, and
+/// Dynamic FPS then held it at its unfocused rate; leaving the app is `minimized`. Outside the
+/// hooked function: horizon-mixins refuses a target body with a `cfg`.
+fn mod_focus(focused: bool) -> bool {
+    cfg!(target_os = "android") || focused
+}
+
 fn menu_frame_cap(limit: i32, has_screen: bool) -> i32 {
     if cfg!(target_os = "android") && has_screen {
         limit.min(60)
@@ -999,7 +1007,7 @@ impl Game<'_> {
         // A native mod may only lower it (`native_framerate_limit`).
         let mut hooked = limit;
         self.native_framerate_limit(
-            self.focused,
+            mod_focus(self.focused),
             context.iconified,
             self.title.is_none(),
             &mut hooked,
