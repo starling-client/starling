@@ -377,6 +377,9 @@ def api_rules(text: str) -> str:
     # `client_setup` lends a setup context now, not the client host (its key, setting and resource calls are its).
     text = re.sub(r"(fn\s+client_setup\s*\(\s*&self\s*,\s*\w+\s*:\s*&mut\s+dyn\s+)(?:mod_api::)?ClientHost\b",
                   r"\1mod_api::ClientSetupContext", text)
+    # The damage hooks lend a hit's host now (Horizon's lent the level's random host).
+    text = re.sub(r"(fn\s+living_(?:damage_post|incoming_damage|damage_pre|hurt)\s*\(\s*&self\s*,\s*\w+\s*:\s*&(?:mut\s+)?dyn\s+)"
+                  r"(?:mod_api::)?LevelRandomHost\b", r"\1mod_api::HitHost", text)
     return text
 
 
@@ -387,18 +390,21 @@ def compat(work: Path) -> None:
     lib = src / "lib.rs"
     if not lib.is_file() or (src / "starling_compat.rs").exists():
         return
+    # A row's helper (one function, which the tool inlines into the game's copy) and a support module (a module
+    # of the patch crate, where `crate` is the game's) are not the mod's crate: they take nothing, since they call
+    # the game, not the mod API. Any source file a row names (a helper, a module, a bridge), and the files of a
+    # crate of the mod's own (a folder of `src` with its Cargo.toml), whose `crate` isn't the mod's.
+    manifest = (work / "sunrise-mod.toml").read_text(encoding="utf-8")
+    elsewhere = {(work / m).resolve() for m in re.findall(r'"(src/[^"]+\.rs)"', manifest)}
+    kept = {path: path.read_bytes() for path in elsewhere if path.is_file()}
     # The port rules Starling's Horizon ports were made with (tools/android_compat/autoport.py: block entity ticks,
     # mod commands, menu buttons and screens over Sunrise's shapes), then the names below.
     done = subprocess.run([sys.executable, str(COMPAT.with_name("autoport.py")), str(work)],
                           capture_output=True, text=True)
     print(f"mods: {work.name}: {(done.stdout + done.stderr).strip().splitlines()[-1:] or ''}")
+    for path, data in kept.items():
+        path.write_bytes(data)
     shutil.copyfile(COMPAT, src / "starling_compat.rs")
-    # A row's helper (one function, which the tool inlines into the game's copy) and a support module (a module
-    # of the patch crate, where `crate` is the game's) are not the mod's crate: they take nothing.
-    manifest = (work / "sunrise-mod.toml").read_text(encoding="utf-8")
-    # Any source file a row names (a helper, a module, a bridge), and the files of a crate of the mod's own
-    # (a folder of `src` with its Cargo.toml), whose `crate` isn't the mod's.
-    elsewhere = {(work / m).resolve() for m in re.findall(r'"(src/[^"]+\.rs)"', manifest)}
 
     def own_crate_file(path: Path) -> bool:
         return any((parent / "Cargo.toml").is_file() for parent in path.parents
