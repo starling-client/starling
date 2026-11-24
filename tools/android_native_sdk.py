@@ -428,8 +428,15 @@ def retarget(mod_id: str, work: Path) -> list[str]:
         renamed = HORIZON_CRATE.sub("sunrise_", target)
         if short(renamed) in by_short:
             return renamed
+        crate = renamed.split("::")[0]
         tail = "::".join(short(renamed).split("::")[-2:])
-        found = [k for k in by_tail.get(tail, []) if k.split("::")[0] == renamed.split("::")[0]]
+        found = [k for k in by_tail.get(tail, []) if k.split("::")[0] == crate]
+        if len(found) == 1:
+            return found[0]
+        # The function alone, when its type moved or was renamed too: only where one function of the crate has
+        # the name.
+        name = short(renamed).split("::")[-1]
+        found = [k for k in index if k.split("::")[0] == crate and short(k).split("::")[-1] == name]
         if len(found) == 1:
             return found[0]
         unplaced.append(target)
