@@ -310,10 +310,11 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
             work.rename(folder / mod_id)
             work = folder / mod_id
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
+        # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
+        installs = patched(mod_id, work, folder, commit, abi) if tables else None
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
                                                           "rlib" if tables else "dylib"))
         own_crates(work, cargo)
-        installs = patched(mod_id, work, folder, commit, abi) if tables else None
         # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
         # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The entry template adds the
         # panic strategy itself (`sunrise_native_build`), so the library carries the first four words and
