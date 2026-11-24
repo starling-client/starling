@@ -139,6 +139,7 @@ jobs:
           staged=$(python3 tools/prebuilt_game.py stage "$RUNNER_TEMP/staging" | tail -1)
           rsync -a --delete --exclude .git --exclude target "$staged/" ./
           ls functions.json internals.json loops.json
+          python3 tools/android_widen.py .
       - name: The game build native mods are made for
         if: inputs.game_build_id != ''
         env:
