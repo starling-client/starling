@@ -6392,8 +6392,11 @@ impl Launcher {
                 self.catalog.config.open_directly = !self.catalog.config.open_directly;
                 // A first start that chose its destination and never finished the game's setup (`Chosen`)
                 // still opened the game at every start: the switch is the player's choice now.
-                if self.catalog.config.onboarding == crate::ha_launcher::catalog::OnboardingState::Chosen {
-                    self.catalog.config.onboarding = crate::ha_launcher::catalog::OnboardingState::Complete;
+                if self.catalog.config.onboarding
+                    == crate::ha_launcher::catalog::OnboardingState::Chosen
+                {
+                    self.catalog.config.onboarding =
+                        crate::ha_launcher::catalog::OnboardingState::Complete;
                 }
                 self.catalog.config.save(&self.home)?;
                 self.catalog.status = if self.catalog.config.open_directly {
