@@ -519,7 +519,15 @@ GAME_CALLS = (
 )
 
 
+# Game shapes Sunrise changed, as text: Horizon's tuple variant `GuestUse::OnBlock(_)` is a struct variant now.
+GAME_TEXT = (
+    (re.compile(r"\bGuestUse::OnBlock\(\s*_\s*\)"), "GuestUse::OnBlock { .. }"),
+)
+
+
 def game_calls(text: str) -> str:
+    for pattern, replacement in GAME_TEXT:
+        text = pattern.sub(replacement, text)
     for path, arity, new in GAME_CALLS:
         pattern = re.compile(r"\b" + re.escape(path) + r"\s*\(")
         pos = 0
