@@ -152,3 +152,14 @@ impl MovementInputEvent {
         keys.sprint = self.sprint;
     }
 }
+
+/// An id Horizon handed as `Option<String>` (`.as_deref()` read it) that Sunrise hands as `Option<Option<&str>>`.
+pub trait StarlingNestedId {
+    fn as_deref(&self) -> Option<&str>;
+}
+
+impl StarlingNestedId for Option<Option<&str>> {
+    fn as_deref(&self) -> Option<&str> {
+        self.flatten()
+    }
+}
