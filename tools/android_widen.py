@@ -18,7 +18,8 @@ from pathlib import Path
 # The crates the game is made of, below the mod API: what a copied function or a Horizon mod's helper names.
 CRATES = ("sunrise-client", "sunrise-client-gameplay", "sunrise-gameplay", "sunrise-client-lib", "sunrise-client-render",
           "sunrise-client-input", "sunrise-world", "sunrise-core", "sunrise-protocol", "sunrise-items")
-RESTRICTED = re.compile(r"\bpub\s*\(\s*(?:crate|super|self|in\s+[\w:]+)\s*\)")
+# Not before `use`: a re-export of a `macro_rules!` macro can't be `pub` (E0364).
+RESTRICTED = re.compile(r"\bpub\s*\(\s*(?:crate|super|self|in\s+[\w:]+)\s*\)(?!\s*use\b)")
 # A module declaration with no visibility, at the start of a line (attributes before it stay as they are).
 PRIVATE_MOD = re.compile(r"(?m)^(\s*)mod\s+(\w+)\s*([;{])")
 
