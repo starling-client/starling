@@ -252,7 +252,9 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     source = os.environ.get("SUNRISE_UNSTAGED_SOURCE")
     if not (ROOT / "functions.json").is_file() or not source:
         sys.exit(f"mods: {mod_id} has [native.*] rows: build from the staged game, with SUNRISE_UNSTAGED_SOURCE")
-    scratch = folder.parent / "target" / "android-patch" / mod_id
+    # Outside `target`, which may be a link (the tool refuses output paths through one), and outside the
+    # workspace's member glob.
+    scratch = folder.parent / ".android-patch" / mod_id
     if scratch.exists():
         shutil.rmtree(scratch)
     done = subprocess.run([str(patch_tool()), str(ROOT), source, commit, str(scratch), build_apk.TARGETS[abi][0],
