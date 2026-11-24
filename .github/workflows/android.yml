@@ -40,9 +40,9 @@ on:
         type: boolean
         default: false
       staged:
-        description: Build the arm64 game from its staged copy (tools/prebuilt_game.py stage), with a replacement slot in each function, as mixin mods need
+        description: Build the arm64 game from its staged copy (tools/prebuilt_game.py stage), with a replacement slot in each function, as mixin mods and the store's bases need
         type: boolean
-        default: false
+        default: true
       game_build_id:
         description: The game build the APK names to native mods (a full commit; empty, this one). A fix outside the mod API keeps the store's libraries of that build
         type: string
@@ -132,7 +132,9 @@ jobs:
       # The checkout becomes the staged copy (the slots and functions.json, internals.json, loops.json beside the source);
       # its .git stays, so build_apk.py still names the commit.
       - name: The staged game
-        if: inputs.staged && matrix.abi == 'arm64-v8a'
+        # Every arm64 build but a dispatch that turns it off: the store's bases are staged (store_base.sh), and a mod
+        # library built beside one loads only in a game built the same way.
+        if: (github.event_name != 'workflow_dispatch' || inputs.staged) && matrix.abi == 'arm64-v8a'
         run: |
           staged=$(python3 tools/prebuilt_game.py stage "$RUNNER_TEMP/staging" | tail -1)
           rsync -a --delete --exclude .git --exclude target "$staged/" ./
