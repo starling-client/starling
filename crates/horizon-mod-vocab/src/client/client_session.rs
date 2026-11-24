@@ -131,6 +131,36 @@ impl ClientTabListEntry {
     }
 }
 
+/// The title, subtitle and action bar on screen now, read with
+/// `ClientSession::client_titles`: what this client has been sent, changing as the server
+/// sends titles.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientTitles {
+    /// The title; `None` once its timer has run out.
+    pub title: Option<crate::Text>,
+    /// The subtitle; shown only with a title.
+    pub subtitle: Option<crate::Text>,
+    /// The action bar; `None` once its timer has run out.
+    pub action_bar: Option<crate::Text>,
+}
+
+impl ClientTitles {
+    /// Titles from their parts.
+    pub fn new(
+        title: Option<crate::Text>,
+        subtitle: Option<crate::Text>,
+        action_bar: Option<crate::Text>,
+    ) -> Self {
+        Self {
+            title,
+            subtitle,
+            action_bar,
+        }
+    }
+}
+
 /// The local player's current block-breaking operation. An unavailable player
 /// returns `None` from the handle, distinct from [`Self::Idle`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -148,4 +178,24 @@ pub enum BlockBreakingState {
         /// The visible crack stage, 0 through 9; absent while progress is zero.
         stage: Option<u8>,
     },
+}
+
+/// One boss bar the window shows, read with `ClientSession::client_boss_bars`. Unlike
+/// `ClientBossBar`, the bar a `customize_boss_event_progress` event hands a mod, this is the
+/// bar as the window holds it: name and progress only.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(horizon_mod_api_macros::Wire)]
+pub struct ClientBossBarEntry {
+    /// The bar's name.
+    pub name: crate::Text,
+    /// 0 to 1, as drawn (the lerped value).
+    pub progress: f32,
+}
+
+impl ClientBossBarEntry {
+    /// A boss bar entry from its parts.
+    pub fn new(name: crate::Text, progress: f32) -> Self {
+        Self { name, progress }
+    }
 }
