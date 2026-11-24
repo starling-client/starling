@@ -383,9 +383,10 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
                 f'package = "smod-{mod_id}-patched" }}' if installs is not None else "",
             ]) + "\n")
             (library / "src" / "lib.rs").write_text(
-                f"extern crate {mod_id};\n" + ("extern crate sunrise_patched;\n" if installs is not None else "")
-                + entry.replace("extern crate mod_api;", "extern crate mod_api;", 1)
-                + "\nextern crate sunrise_mod_host as _;\n")
+                # After the template: it opens with its inner doc comment.
+                entry + f"\nextern crate {mod_id};\n"
+                + ("extern crate sunrise_patched;\n" if installs is not None else "")
+                + "extern crate sunrise_mod_host as _;\n")
         built.append((mod_id, version, identity, path, bool(tables)))
     if not built:
         sys.exit("mods: nothing to build")
