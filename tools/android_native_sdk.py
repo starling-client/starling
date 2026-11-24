@@ -276,7 +276,11 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     for name, path in sorted(libraries.items()):
         if re.search(r"\b" + re.escape(name) + r"\s*::", text):
             package = tomllib.loads((path / "Cargo.toml").read_text())["package"]["name"]
-            lines.append(f'{name} = {{ path = "{path.as_posix()}", package = "{package}" }}')
+            # No default features: the APK's own build (crates/sunrise-android) names the game's, and the
+            # defaults would bring the desktop's (controllers: hidapi, libudev).
+            features = f', features = {json.dumps(list(GAME_FEATURES))}' if package == "sunrise-client" else ""
+            lines.append(f'{name} = {{ path = "{path.as_posix()}", package = "{package}", '
+                         f'default-features = false{features} }}')
     (dest / "Cargo.toml").write_text("\n".join(lines) + "\n")
     return result["installs"]
 
