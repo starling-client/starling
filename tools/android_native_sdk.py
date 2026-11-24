@@ -311,6 +311,28 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
 
 
 HORIZON_CRATE = re.compile(r"\bhorizon_(?=[a-z])")
+# Horizon's mod API names over Sunrise's (tools/android_compat/starling_compat.rs), put in a mod made for Horizon.
+COMPAT = ROOT / "tools" / "android_compat" / "starling_compat.rs"
+INNER = re.compile(r"\A(?:\s*(?://[!/][^\n]*|#!\[[^\]]*\])\n)*")
+
+
+def compat(work: Path) -> None:
+    """A mod made for Horizon (its rows or source name `horizon_`... before `retarget`, or it calls Horizon's
+    names): `starling_compat` in its crate, and every file of it `use`s its traits, so the old calls resolve."""
+    src = work / "src"
+    lib = src / "lib.rs"
+    if not lib.is_file() or (src / "starling_compat.rs").exists():
+        return
+    shutil.copyfile(COMPAT, src / "starling_compat.rs")
+    for path in src.rglob("*.rs"):
+        if path.name == "starling_compat.rs":
+            continue
+        text = path.read_text(encoding="utf-8")
+        head = INNER.match(text).end()
+        line = "#[allow(unused_imports)]\nuse crate::starling_compat::*;\n"
+        if path == lib:
+            line = "mod starling_compat;\n" + line
+        path.write_bytes((text[:head] + line + text[head:]).encode("utf-8"))
 GENERICS = re.compile(r"<[^<>]*>")
 
 
@@ -414,6 +436,8 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
         # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
         if tables:
+            # Only mods with [native.*] rows for now: the API mods the store builds already have their ports.
+            compat(work)
             retarget(mod_id, work)
         installs = patched(mod_id, work, folder, commit, abi) if tables else None
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
