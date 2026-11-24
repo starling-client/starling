@@ -374,6 +374,9 @@ def api_rules(text: str) -> str:
     text = re.sub(r"(use\s+mod_api::\{[^}]*?)\bMovementInputEvent\s*,\s*", r"\1", text, flags=re.S)
     text = re.sub(r"(use\s+mod_api::\{[^}]*?),\s*MovementInputEvent\b", r"\1", text, flags=re.S)
     text = re.sub(r"\bhook_ids::movement_input\b", "hook_ids::movement_input_update", text)
+    # `client_setup` lends a setup context now, not the client host (its key, setting and resource calls are its).
+    text = re.sub(r"(fn\s+client_setup\s*\(\s*&self\s*,\s*\w+\s*:\s*&mut\s+dyn\s+)(?:mod_api::)?ClientHost\b",
+                  r"\1mod_api::ClientSetupContext", text)
     return text
 
 
