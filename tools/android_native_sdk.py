@@ -327,9 +327,16 @@ def compat(work: Path) -> None:
     # A row's helper (one function, which the tool inlines into the game's copy) and a support module (a module
     # of the patch crate, where `crate` is the game's) are not the mod's crate: they take nothing.
     manifest = (work / "sunrise-mod.toml").read_text(encoding="utf-8")
-    elsewhere = {(work / m).resolve() for m in re.findall(r'(?m)^\s*(?:helper|source)\s*=\s*"([^"]+)"', manifest)}
+    # Any source file a row names (a helper, a module, a bridge), and the files of a crate of the mod's own
+    # (a folder of `src` with its Cargo.toml), whose `crate` isn't the mod's.
+    elsewhere = {(work / m).resolve() for m in re.findall(r'"(src/[^"]+\.rs)"', manifest)}
+
+    def own_crate_file(path: Path) -> bool:
+        return any((parent / "Cargo.toml").is_file() for parent in path.parents
+                   if parent != work and work in parent.parents)
+
     for path in src.rglob("*.rs"):
-        if path.name == "starling_compat.rs" or path.resolve() in elsewhere:
+        if path.name == "starling_compat.rs" or path.resolve() in elsewhere or own_crate_file(path):
             continue
         text = path.read_text(encoding="utf-8")
         head = INNER.match(text).end()

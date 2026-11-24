@@ -18,14 +18,28 @@ from pathlib import Path
 # The crates the game is made of, below the mod API: what a copied function or a Horizon mod's helper names.
 CRATES = ("sunrise-client", "sunrise-client-gameplay", "sunrise-gameplay", "sunrise-client-lib", "sunrise-client-render",
           "sunrise-client-input", "sunrise-world", "sunrise-core", "sunrise-protocol", "sunrise-items")
-# Not before `use`: a re-export of a `macro_rules!` macro can't be `pub` (E0364).
-RESTRICTED = re.compile(r"\bpub\s*\(\s*(?:crate|super|self|in\s+[\w:]+)\s*\)(?!\s*use\b)")
+RESTRICTED = re.compile(r"\bpub\s*\(\s*(?:crate|super|self|in\s+[\w:]+)\s*\)")
+MACRO = re.compile(r"\bmacro_rules!\s*(\w+)")
+# A re-export of one name: kept restricted when it is a `macro_rules!` macro of the file (E0364 otherwise).
+USE_ONE = re.compile(r"\bpub\s*\([^)]*\)\s*use\s+(?:[\w:]*::)?(\w+)\s*;")
 # A module declaration with no visibility, at the start of a line (attributes before it stay as they are).
 PRIVATE_MOD = re.compile(r"(?m)^(\s*)mod\s+(\w+)\s*([;{])")
 
 
 def widen(text: str) -> str:
+    macros = set(MACRO.findall(text))
+    kept = {}
+
+    def keep(m: re.Match) -> str:
+        if m.group(1) in macros:
+            kept[f"\0{len(kept)}\0"] = m.group(0)
+            return f"\0{len(kept) - 1}\0"
+        return m.group(0)
+
+    text = USE_ONE.sub(keep, text)
     text = RESTRICTED.sub("pub", text)
+    for mark, original in kept.items():
+        text = text.replace(mark, original)
     return PRIVATE_MOD.sub(lambda m: f"{m.group(1)}pub mod {m.group(2)}{m.group(3)}", text)
 
 
