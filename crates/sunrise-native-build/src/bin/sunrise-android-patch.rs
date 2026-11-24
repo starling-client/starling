@@ -1,7 +1,8 @@
-//! `sunrise-android-patch STAGED COMMIT OUT TARGET FEATURES MOD_DIR...`: the patch crates of the
+//! `sunrise-android-patch STAGED SOURCE COMMIT OUT TARGET FEATURES MOD_DIR...`: the patch crates of the
 //! mods' `[[native.mixin]]` rows (with their support modules, bridges and loops), for Starling's
-//! Android store (tools/android_native_sdk.py). The game's source is the staged copy at STAGED,
-//! which holds `functions.json` and `loops.json` (tools/prebuilt_game.py `stage`), so nothing is
+//! Android store (tools/android_native_sdk.py). STAGED is the staged copy, for its `functions.json`
+//! and `loops.json` (tools/prebuilt_game.py `stage`); SOURCE the commit's own source, unstaged, which
+//! the index's byte ranges are of. Nothing is
 //! downloaded but the horizon-mixins tool, once per pin, into `$SUNRISE_ANDROID_PATCH_HOME`
 //! (`curl`, where the network is). The tool plans against TARGET's cfg and the game crate's
 //! FEATURES (comma separated). Prints JSON: the folder holding one crate per name, the crate
@@ -104,10 +105,11 @@ fn main() {
         }
         return;
     }
-    let [staged, commit, out, target, features, mods @ ..] = args.as_slice() else {
-        fail("usage: sunrise-android-patch STAGED COMMIT OUT TARGET FEATURES MOD_DIR...")
+    let [staged, source, commit, out, target, features, mods @ ..] = args.as_slice() else {
+        fail("usage: sunrise-android-patch STAGED SOURCE COMMIT OUT TARGET FEATURES MOD_DIR...")
     };
     let staged = Path::new(staged);
+    let source = Path::new(source);
     let bundles: Vec<_> = mods
         .iter()
         .map(
@@ -137,7 +139,7 @@ fn main() {
     let prepared = patch::prepare_with(
         &rust,
         staged,
-        Some(staged),
+        Some(source),
         out,
         &projects,
         &sdk,
