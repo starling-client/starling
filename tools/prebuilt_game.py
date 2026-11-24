@@ -219,7 +219,7 @@ def sync_stage(source: Path, destination: Path) -> None:
                     dest.chmod(expected)
 
 
-def stage(target_dir: Path, stage_tool: Path | None = None, *, sdk_dylibs: bool = False) -> Path:
+def stage(target_dir: Path, stage_tool: Path | None = None, *, sdk_dylibs: bool = False, widen: bool = False) -> Path:
     """Stage HEAD's tracked files on an exclusively owned target. Run the staging pass (#589) on a fresh copy so
     it can edit the source and emit build data, then sync the result. SDK builds also stage dylib manifests."""
     setup_started = time.monotonic()
@@ -235,6 +235,11 @@ def stage(target_dir: Path, stage_tool: Path | None = None, *, sdk_dylibs: bool 
             path.write_bytes(data)
             if os.name == "posix" and mode & 0o111:
                 path.chmod(stat.S_IMODE(path.stat().st_mode) | (mode & 0o111))
+        if widen:
+            # Starling's Android game (`stage TARGET --widen`): its crates fully public before the pass reads them
+            # (tools/android_widen.py), so the function index, the copies a mixin build makes and the APK agree.
+            import android_widen
+            android_widen.widen_tree(scratch)
         arguments = [str(scratch), str(scratch / INTERNALS), commit]
         if stage_tool is None:
             # Build the tool from a stable copy of the unmodified commit, not the disposable rewrite tree.
@@ -1200,6 +1205,7 @@ def main() -> None:
     # built from, so mixin mods install their copies on the phone.
     stage_parser = commands.add_parser("stage")
     stage_parser.add_argument("target", type=Path, help="an exclusively owned folder; the staged source is TARGET/stage")
+    stage_parser.add_argument("--widen", action="store_true", help="the game's crates fully public first (tools/android_widen.py)")
     tool_parser = commands.add_parser("tool")
     tool_parser.add_argument("dist", type=Path)
     gather_parser = commands.add_parser("gather")
@@ -1220,7 +1226,7 @@ def main() -> None:
     elif args.command == "pack":
         pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool)
     elif args.command == "stage":
-        print(stage(args.target.resolve()))
+        print(stage(args.target.resolve(), widen=args.widen))
     elif args.command == "tool":
         pack_tool(args.dist.resolve())
     elif args.command == "gather":

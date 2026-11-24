@@ -475,6 +475,8 @@ impl Chat {
             focused,
         );
     }
+    // Starling: More Chat History's mixins replace it.
+    #[sunrise_mod_api_macros::replaceable]
     fn push_message(&mut self, font: &crate::font::Font, mut message: Message, focused: bool) {
         if !self.abilities.shows(message.source) {
             return;
@@ -522,6 +524,8 @@ impl Chat {
         local_time()
     }
     /// The lines `message` wraps to (none when the chat search hides it), added newest first.
+    // Starling: More Chat History's mixins replace it.
+    #[sunrise_mod_api_macros::replaceable]
     fn add_lines(&mut self, font: &crate::font::Font, message: &Message, focused: bool) -> usize {
         // What the chat shows: legacy `§` codes format the text, they aren't part of it.
         let whole = message.content.strip_legacy().plain();
@@ -788,6 +792,8 @@ impl Chat {
         self.history_file = Some(file);
     }
     /// `ChatComponent.addRecentChat`: a command also goes to the saved history.
+    // Starling: More Chat History's mixins replace it.
+    #[sunrise_mod_api_macros::replaceable]
     pub fn add_recent(&mut self, message: &str) {
         if self.recent.last().map(String::as_str) != Some(message) {
             if self.recent.len() >= 100 {

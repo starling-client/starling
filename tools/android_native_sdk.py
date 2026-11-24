@@ -246,9 +246,11 @@ def patch_tool() -> Path:
     return target / "release" / "sunrise-android-patch"
 
 
-def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> list[str] | None:
-    """The patch crate of `mod_id`'s `[native.*]` rows, as the workspace package `smod-<id>-patched` (library
-    `sunrise_patched`, which the install expressions name), and those expressions; None when it has none."""
+def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> list[tuple[str, str]] | None:
+    """The patch crates of `mod_id`'s `[native.*]` rows, each a workspace package `smod-<id>-patched-<crate>` with
+    the library name the generator gave it (`sunrise_patched` for the game crate's copies, `sunrise_patched_<crate>`
+    for a lower crate's, which the install expressions name), and those expressions; None when it has none.
+    Returns the expressions and, for the library crate, each patch crate's (package, library) pair."""
     source = os.environ.get("SUNRISE_UNSTAGED_SOURCE")
     if not (ROOT / "functions.json").is_file() or not source:
         sys.exit(f"mods: {mod_id} has [native.*] rows: build from the staged game, with SUNRISE_UNSTAGED_SOURCE")
@@ -264,50 +266,59 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     result = json.loads(done.stdout.strip().splitlines()[-1])
     if result is None:
         return None
-    crate = Path(result["dir"]) / "sunrise_patched"
-    dest = folder / f"{mod_id}-patched"
-    shutil.copytree(crate, dest)
-    # The generator re-exports every module of the copied ones, a test module too (`native_hooks`'s
-    # `*_tests`, `#![cfg(test)]` inside), which the game built for a phone doesn't have.
-    lib = dest / "src" / "lib.rs"
-    kept = [line for line in lib.read_text(encoding="utf-8").splitlines(keepends=True)
-            if not re.fullmatch(r"\s*pub use ::sunrise_\w+(::\w+)*_tests;\s*", line)]
-    lib.write_bytes(game_calls("".join(kept)).encode("utf-8"))
-    text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
     libraries = workspace_libraries()
     # The mod's crate by the name its helpers call it, as the desktop's build names it
     # (`api::Project::crate_name`): its manifest's library name, else its package's (`mod-flair` is `mod_flair`).
     own = tomllib.loads((work / "Cargo.toml").read_text())
     own_name = own.get("lib", {}).get("name") or own["package"]["name"].replace("-", "_")
-    lines = ["[package]", f'name = "smod-{mod_id}-patched"', 'version = "0.0.0"', 'edition = "2024"',
-             "publish = false", "", "[lib]", 'name = "sunrise_patched"', 'path = "src/lib.rs"',
-             'crate-type = ["rlib"]', "", "[dependencies]",
-             f'{own_name} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}']
-    for name, path in sorted(libraries.items()):
-        if re.search(r"\b" + re.escape(name) + r"\s*::", text):
-            package = tomllib.loads((path / "Cargo.toml").read_text())["package"]["name"]
-            # No default features: the APK's own build (crates/sunrise-android) names the game's, and the
-            # defaults would bring the desktop's (controllers: hidapi, libudev).
-            features = f', features = {json.dumps(list(GAME_FEATURES))}' if package == "sunrise-client" else ""
-            lines.append(f'{name} = {{ path = "{path.as_posix()}", package = "{package}", '
-                         f'default-features = false{features} }}')
     # The crates from crates.io the game's own source names (`winit`), as sunrise-client takes them: its Android
     # table's over its own.
     game = tomllib.loads((ROOT / "crates" / "sunrise-client" / "Cargo.toml").read_text())
     external = dict(game.get("dependencies", {}))
     external.update(game.get("target", {}).get('cfg(target_os = "android")', {}).get("dependencies", {}))
-    for package, spec in sorted(external.items()):
-        name = package.replace("-", "_")
-        if name in libraries or not re.search(r"\b" + re.escape(name) + r"\s*::", text):
-            continue
-        if isinstance(spec, str):
-            spec = {"version": spec}
-        if "path" in spec or spec.get("workspace"):
-            continue
-        fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in spec.items() if key != "optional")
-        lines.append(f'{name} = {{ package = "{package}", {fields} }}')
-    (dest / "Cargo.toml").write_text("\n".join(lines) + "\n")
-    return result["installs"]
+    names = result["names"]
+    crates = []
+    for name in names:
+        dest = folder / f"{mod_id}-patched-{name}"
+        shutil.copytree(Path(result["dir"]) / name, dest)
+        # The generator re-exports every module of the copied ones, a test module too (`native_hooks`'s
+        # `*_tests`, `#![cfg(test)]` inside), which the game built for a phone doesn't have.
+        lib = dest / "src" / "lib.rs"
+        kept = [line for line in lib.read_text(encoding="utf-8").splitlines(keepends=True)
+                if not re.fullmatch(r"\s*pub use ::sunrise_\w+(::\w+)*_tests;\s*", line)]
+        lib.write_bytes(game_calls("".join(kept)).encode("utf-8"))
+        text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
+        package_name = f"smod-{mod_id}-patched-{name}"
+        lines = ["[package]", f'name = "{package_name}"', 'version = "0.0.0"', 'edition = "2024"',
+                 "publish = false", "", "[lib]", f'name = "{name}"', 'path = "src/lib.rs"',
+                 'crate-type = ["rlib"]', "", "[dependencies]",
+                 f'{own_name} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}']
+        # The game crate's copies may call a lower crate's copied functions (`sunrise_patched_<crate>`).
+        for other in names:
+            if other != name and other.startswith(name + "_") and re.search(r"\b" + re.escape(other) + r"\b", text):
+                lines.append(f'{other} = {{ path = "{(folder / f"{mod_id}-patched-{other}").as_posix()}", '
+                             f'package = "smod-{mod_id}-patched-{other}" }}')
+        for lib_name, path in sorted(libraries.items()):
+            if re.search(r"\b" + re.escape(lib_name) + r"\s*::", text):
+                package = tomllib.loads((path / "Cargo.toml").read_text())["package"]["name"]
+                # No default features: the APK's own build (crates/sunrise-android) names the game's, and the
+                # defaults would bring the desktop's (controllers: hidapi, libudev).
+                features = f', features = {json.dumps(list(GAME_FEATURES))}' if package == "sunrise-client" else ""
+                lines.append(f'{lib_name} = {{ path = "{path.as_posix()}", package = "{package}", '
+                             f'default-features = false{features} }}')
+        for package, spec in sorted(external.items()):
+            ext = package.replace("-", "_")
+            if ext in libraries or not re.search(r"\b" + re.escape(ext) + r"\s*::", text):
+                continue
+            if isinstance(spec, str):
+                spec = {"version": spec}
+            if "path" in spec or spec.get("workspace"):
+                continue
+            fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in spec.items() if key != "optional")
+            lines.append(f'{ext} = {{ package = "{package}", {fields} }}')
+        (dest / "Cargo.toml").write_text("\n".join(lines) + "\n")
+        crates.append((package_name, name, dest))
+    return result["installs"], crates
 
 
 HORIZON_CRATE = re.compile(r"\bhorizon_(?=[a-z])")
@@ -547,7 +558,8 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
             # Only mods with [native.*] rows for now: the API mods the store builds already have their ports.
             compat(work)
             retarget(mod_id, work)
-        installs = patched(mod_id, work, folder, commit, abi) if tables else None
+        made = patched(mod_id, work, folder, commit, abi) if tables else None
+        installs, patch_crates = made if made else (None, [])
         (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
                                                           "rlib" if tables else "dylib"))
         own_crates(work, cargo)
@@ -591,13 +603,13 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
                 # As crates/sunrise-android takes it: the host's defaults are the desktop's (controllers).
                 f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host", default-features = false }}',
                 f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}',
-                f'sunrise_patched = {{ path = "{(folder / (mod_id + "-patched")).as_posix()}", '
-                f'package = "smod-{mod_id}-patched" }}' if installs is not None else "",
+                *(f'{name} = {{ path = "{dest.as_posix()}", package = "{package}" }}'
+                  for package, name, dest in patch_crates),
             ]) + "\n")
             (library / "src" / "lib.rs").write_text(
                 # After the template: it opens with its inner doc comment.
                 entry + f"\nextern crate {mod_id};\n"
-                + ("extern crate sunrise_patched;\n" if installs is not None else "")
+                + "".join(f"extern crate {name};\n" for _, name, _ in patch_crates)
                 + "extern crate sunrise_mod_host as _;\n")
         built.append((mod_id, version, identity, path, bool(tables)))
     if not built:

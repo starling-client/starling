@@ -45,10 +45,8 @@ def widen(text: str, macros: frozenset = frozenset()) -> str:
     return PRIVATE_MOD.sub(lambda m: f"{m.group(1)}pub mod {m.group(2)}{m.group(3)}", text)
 
 
-def main() -> None:
-    root = Path(sys.argv[1])
-    if not (root / "functions.json").is_file():
-        sys.exit(f"{root}: not a staged copy (no functions.json): this rewrites visibility in place")
+def widen_tree(root: Path) -> int:
+    """Every file of the game's crates under `root` widened in place; how many changed. Only on a copy."""
     changed = 0
     for crate in CRATES:
         files = [p for p in (root / "crates" / crate).rglob("*.rs") if "target" not in p.parts]
@@ -59,7 +57,14 @@ def main() -> None:
             if wide != text:
                 path.write_bytes(wide.encode("utf-8"))
                 changed += 1
-    print(f"android_widen: {changed} files of {len(CRATES)} crates made public")
+    return changed
+
+
+def main() -> None:
+    root = Path(sys.argv[1])
+    if not (root / "functions.json").is_file():
+        sys.exit(f"{root}: not a staged copy (no functions.json): this rewrites visibility in place")
+    print(f"android_widen: {widen_tree(root)} files of {len(CRATES)} crates made public")
 
 
 if __name__ == "__main__":

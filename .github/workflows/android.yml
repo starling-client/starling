@@ -136,10 +136,9 @@ jobs:
         # library built beside one loads only in a game built the same way.
         if: (github.event_name != 'workflow_dispatch' || inputs.staged) && matrix.abi == 'arm64-v8a'
         run: |
-          staged=$(python3 tools/prebuilt_game.py stage "$RUNNER_TEMP/staging" | tail -1)
+          staged=$(python3 tools/prebuilt_game.py stage "$RUNNER_TEMP/staging" --widen | tail -1)
           rsync -a --delete --exclude .git --exclude target "$staged/" ./
           ls functions.json internals.json loops.json
-          python3 tools/android_widen.py .
       - name: The game build native mods are made for
         if: inputs.game_build_id != ''
         env:
