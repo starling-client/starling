@@ -17,8 +17,12 @@ the same flags and features (build_apk.py `build_library` with more packages), s
 APK ships and only the mods compile. OUT gets what the game reads in its `native-libs` folder (android_lib.rs):
 `native-mods.json`, each `lib<id>.so`, and each mod's package in `sunrise-native-mods/<id>/`.
 
-Mods with `[native.*]` tables (mixins, bridges, modules) need the staged game (tools/prebuilt_game.py `stage`) and
-are refused here for now.
+Mods with `[native.*]` tables (mixins, modules, bridges, loops) need this checkout to be the staged game
+(tools/prebuilt_game.py `stage`, whose `functions.json` it holds) and the commit's unstaged source in
+`SUNRISE_UNSTAGED_SOURCE` (the stage's `stage-in`). For such a mod, sunrise-android-patch (crates/sunrise-native-build)
+copies the functions its rows target out of that source and applies them with horizon-mixins, into a patch crate;
+the mod's own crate becomes an rlib the patch crate's helpers call, and a third crate, the library, holds the entry,
+whose `installs()` puts each copy in its function's slot when the game opens the library. One such mod a build.
 """
 
 import argparse
@@ -162,13 +166,14 @@ def own_crate(at: Path, name: str, spec: dict) -> Path:
     return path
 
 
-def package_manifest(mod_id: str, version: str, cargo: dict, work: Path | None = None) -> str:
+def package_manifest(mod_id: str, version: str, cargo: dict, work: Path | None = None,
+                     crate_type: str = "dylib") -> str:
     """The mod's Cargo manifest as a package of this workspace: its own dependencies, with the pinned SDK's API
     crate (`.sunrise/sdk/api/crates/sunrise-mod-api`) replaced by this checkout's. A crate of the mod's own (a
     `path` inside its package) joins the workspace with it, its API crate replaced the same way."""
     api = (ROOT / "crates" / "sunrise-mod-api").as_posix()
     lines = ["[package]", f'name = "smod-{mod_id}"', f'version = "{version}"', 'edition = "2024"',
-             "publish = false", "", "[lib]", f'name = "{mod_id}"', 'path = "src/lib.rs"', 'crate-type = ["dylib"]',
+             "publish = false", "", "[lib]", f'name = "{mod_id}"', 'path = "src/lib.rs"', f'crate-type = ["{crate_type}"]',
              "", "[dependencies]"]
     for name, spec in cargo.get("dependencies", {}).items():
         if name == "sunrise-mod-api" or (isinstance(spec, dict) and spec.get("package") == "sunrise-mod-api"):
@@ -218,6 +223,66 @@ def own_crates(work: Path, cargo: dict) -> None:
         manifest.write_text(text)
 
 
+# The crates of this workspace a generated patch crate may name, by their library name.
+def workspace_libraries() -> dict[str, Path]:
+    found = {}
+    for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
+        data = tomllib.loads(manifest.read_text())
+        package = data.get("package", {}).get("name")
+        if package:
+            found[data.get("lib", {}).get("name", package.replace("-", "_"))] = manifest.parent
+    return found
+
+
+def patch_tool() -> Path:
+    """sunrise-android-patch for this computer: `SUNRISE_ANDROID_PATCH`, or built here (host target)."""
+    named = os.environ.get("SUNRISE_ANDROID_PATCH")
+    if named:
+        return Path(named)
+    target = ROOT / "target" / "host-tools"
+    subprocess.run(["cargo", "build", "--release", "-q", "-p", "sunrise-native-build", "--bin", "sunrise-android-patch"],
+                   check=True, cwd=ROOT, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    return target / "release" / "sunrise-android-patch"
+
+
+def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> list[str] | None:
+    """The patch crate of `mod_id`'s `[native.*]` rows, as the workspace package `smod-<id>-patched` (library
+    `sunrise_patched`, which the install expressions name), and those expressions; None when it has none."""
+    source = os.environ.get("SUNRISE_UNSTAGED_SOURCE")
+    if not (ROOT / "functions.json").is_file() or not source:
+        sys.exit(f"mods: {mod_id} has [native.*] rows: build from the staged game, with SUNRISE_UNSTAGED_SOURCE")
+    scratch = folder.parent / "target" / "android-patch" / mod_id
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    done = subprocess.run([str(patch_tool()), str(ROOT), source, commit, str(scratch), build_apk.TARGETS[abi][0],
+                           ",".join(GAME_FEATURES), str(work)], cwd=ROOT, capture_output=True, text=True)
+    if done.returncode != 0:
+        sys.exit(f"mods: {mod_id}: {done.stderr.strip()}")
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    if result is None:
+        return None
+    crate = Path(result["dir"]) / "sunrise_patched"
+    dest = folder / f"{mod_id}-patched"
+    shutil.copytree(crate, dest)
+    text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
+    libraries = workspace_libraries()
+    lines = ["[package]", f'name = "smod-{mod_id}-patched"', 'version = "0.0.0"', 'edition = "2024"',
+             "publish = false", "", "[lib]", 'name = "sunrise_patched"', 'path = "src/lib.rs"',
+             'crate-type = ["rlib"]', "", "[dependencies]",
+             f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}']
+    for name, path in sorted(libraries.items()):
+        if re.search(r"\b" + re.escape(name) + r"\s*::", text):
+            package = tomllib.loads((path / "Cargo.toml").read_text())["package"]["name"]
+            lines.append(f'{name} = {{ path = "{path.as_posix()}", package = "{package}" }}')
+    (dest / "Cargo.toml").write_text("\n".join(lines) + "\n")
+    return result["installs"]
+
+
+# The game crate's features in the APK (crates/sunrise-android's dependency on sunrise-client and its default):
+# a copied function is compiled under the same `cfg`s.
+GAME_FEATURES = ("audio", "sunrise-extras")
+
+
 def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
     commit, release = game_build()
     template = TEMPLATE.read_text()
@@ -239,15 +304,16 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         if not isinstance(native, dict):
             sys.exit(f"{path.name}: not a native mod")
         tables = sorted(key for key, value in native.items() if isinstance(value, (list, dict)))
-        if tables:
-            print(f"mods: {mod_id} left out: [native.{', native.'.join(tables)}] needs the staged game")
-            continue
+        if tables and any(t for *_, t in built if t):
+            sys.exit(f"mods: {mod_id}: one mod with [native.*] rows a build")
         if work.name != mod_id:
             work.rename(folder / mod_id)
             work = folder / mod_id
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
-        (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work))
+        (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
+                                                          "rlib" if tables else "dylib"))
         own_crates(work, cargo)
+        installs = patched(mod_id, work, folder, commit, abi) if tables else None
         # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
         # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The entry template adds the
         # panic strategy itself (`sunrise_native_build`), so the library carries the first four words and
@@ -256,38 +322,64 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         built_as = f"{commit} {mod_id} {version} {release}"
         identity = f"{built_as} unwind"
         side = SIDES.get(manifest.get("side", "both"), "Both")
+        hooks = hooks_path(work / "src")
+        if tables:
+            # The library is a crate of its own above the mod's and the patch crate.
+            hooks = hooks.replace("crate::", f"{mod_id}::", 1)
         rows = {
             "NATIVE_BUILD": built_as,
-            "MOD_ENTRIES": f'"{mod_id}" => {hooks_path(work / "src")},',
+            "MOD_ENTRIES": f'"{mod_id}" => {hooks},',
             "BUILT_MODS": f'mod_api::__private::native::BuiltMod {{ id: "{mod_id}", version: "{version}", '
                           f"side: mod_api::Side::{side} }},",
             "MOD_SLOTS": "",
-            "MOD_REDIRECTS": "",
+            "MOD_REDIRECTS": "".join(f"{i},\n" for i in installs or ()),
         }
         entry = template
         for marker, value in rows.items():
             entry = entry.replace(f"/* {marker} */", value)
-        (work / "src" / "starling_native_entry.rs").write_text(entry)
-        with open(work / "src" / "lib.rs", "a", encoding="utf-8") as lib:
-            lib.write('\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n')
-        built.append((mod_id, version, identity, path))
+        if not tables:
+            (work / "src" / "starling_native_entry.rs").write_text(entry)
+            with open(work / "src" / "lib.rs", "a", encoding="utf-8") as lib:
+                lib.write('\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n')
+        else:
+            library = folder / f"{mod_id}-library"
+            (library / "src").mkdir(parents=True)
+            api = (ROOT / "crates" / "sunrise-mod-api").as_posix()
+            host = (ROOT / "crates" / "sunrise-mod-host").as_posix()
+            (library / "Cargo.toml").write_text("\n".join([
+                "[package]", f'name = "smod-{mod_id}-library"', f'version = "{version}"', 'edition = "2024"',
+                "publish = false", "", "[lib]", f'name = "{mod_id}_library"', 'path = "src/lib.rs"',
+                'crate-type = ["dylib"]', "", "[dependencies]",
+                f'mod_api = {{ path = "{api}", package = "sunrise-mod-api" }}',
+                f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host" }}',
+                f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}',
+                f'sunrise_patched = {{ path = "{(folder / (mod_id + "-patched")).as_posix()}", '
+                f'package = "smod-{mod_id}-patched" }}' if installs is not None else "",
+            ]) + "\n")
+            (library / "src" / "lib.rs").write_text(
+                f"extern crate {mod_id};\n" + ("extern crate sunrise_patched;\n" if installs is not None else "")
+                + entry.replace("extern crate mod_api;", "extern crate mod_api;", 1)
+                + "\nextern crate sunrise_mod_host as _;\n")
+        built.append((mod_id, version, identity, path, bool(tables)))
     if not built:
         sys.exit("mods: nothing to build")
 
     sdk = build_apk.sdk_dir()
     ndk = Path(os.environ.get("ANDROID_NDK_HOME") or sdk / "ndk" / build_apk.NDK)
-    build_apk.build_library(profile, ndk, sdk, abi, ("sunrise-android", *(f"smod-{m}" for m, *_ in built)))
+    build_apk.build_library(profile, ndk, sdk, abi, ("sunrise-android", *(
+        f"smod-{m}-library" if staged else f"smod-{m}" for m, *_, staged in built)))
     triple = build_apk.TARGETS[abi][0]
     deps = ROOT / "target" / triple / ("debug" if profile == "dev" else profile)
     if out.exists():
         shutil.rmtree(out)
     (out / "sunrise-native-mods").mkdir(parents=True)
     records = []
-    for mod_id, version, identity, path in built:
+    for mod_id, version, identity, path, staged in built:
         library = out / f"lib{mod_id}.so"
-        made = next((p for p in (deps / f"lib{mod_id}.so", deps / "deps" / f"lib{mod_id}.so") if p.is_file()), None)
+        name = f"lib{mod_id}_library.so" if staged else f"lib{mod_id}.so"
+        made = next((p for p in (deps / name, deps / "deps" / name) if p.is_file()), None)
         if made is None:
-            sys.exit(f"mods: no lib{mod_id}.so under {deps}")
+            sys.exit(f"mods: no {name} under {deps}")
         build_apk.run(build_apk.ndk_tool(ndk, "llvm-strip"), "--strip-unneeded", "-o", library, made)
         records.append({"file": library.name, "sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
                         "mod": mod_id, "identity": identity})
@@ -295,7 +387,7 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
         # executable, and a `[native]` manifest without its source is refused ("inconsistent code declaration").
         unpack(path, out / "sunrise-native-mods" / mod_id)
     (out / "native-mods.json").write_text(json.dumps({"libraries": records}, indent=2) + "\n")
-    print(f"mods: {', '.join(m for m, *_ in built)} for {identity.split()[0][:10]} in {out}")
+    print(f"mods: {', '.join(m for m, *_ in built)} for {commit[:10]} in {out}")
 
 
 def main() -> None:
