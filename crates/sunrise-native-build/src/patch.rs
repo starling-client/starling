@@ -117,6 +117,12 @@ fn extras(bundles: &[&Bundle]) -> Result<api_gen::patch::Extras, String> {
     Ok(extras)
 }
 
+/// The horizon-mixins tool at `identity`, fetched or built once per pin (for a program that only
+/// readies it, as Starling's Android store base does before its offline builds).
+pub fn mixins_tool(rust: &dyn Toolchain, identity: &MixinsIdentity) -> Result<PathBuf, String> {
+    super::mixins_patch::tool(rust, identity)
+}
+
 /// The patched sources of `projects`' `[[native.mixin]]` rows, supports modules and bridges,
 /// ready to compile: one crate folder per name under `dir`.
 pub struct Prepared<'a> {
@@ -402,6 +408,23 @@ pub fn prepare<'a>(
     sdk: &Identity,
     mixins: &MixinsIdentity,
 ) -> Result<Option<Prepared<'a>>, String> {
+    prepare_with(rust, game, None, out, projects, sdk, mixins, None)
+}
+
+/// [`prepare`] with the game's source at `source` instead of the pinned archive, and the tool
+/// planning against `target`'s cfg instead of this computer's: Starling's Android store builds a
+/// mod against the staged game it holds (tools/android_native_sdk.py), offline, for the phone.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_with<'a>(
+    rust: &dyn Toolchain,
+    game: &Path,
+    source: Option<&Path>,
+    out: &Path,
+    projects: &[api::Project<'a>],
+    sdk: &Identity,
+    mixins: &MixinsIdentity,
+    target: Option<&str>,
+) -> Result<Option<Prepared<'a>>, String> {
     let bundles: Vec<&Bundle> = projects
         .iter()
         .map(|project| project.bundle)
@@ -440,7 +463,10 @@ pub fn prepare<'a>(
     } else {
         Some(super::mixins_patch::tool(rust, mixins)?)
     };
-    let source = super::source(sdk.commit())?;
+    let source = match source {
+        Some(source) => source.to_path_buf(),
+        None => super::source(sdk.commit())?,
+    };
     let started = std::time::Instant::now();
     let index = function_index(game, sdk.commit())?;
     // A filled loop's entry, or one whose loop function has rows, is copied like a mixin's target,
@@ -566,6 +592,9 @@ pub fn prepare<'a>(
         // `check_identity`), and the features the game was built with.
         let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
         game_cfg(&mut print, sdk);
+        if let Some(target) = target {
+            print.args(["--target", target]);
+        }
         print.args(["--print", "cfg"]);
         let printed = print.output().map_err(|e| e.to_string())?;
         if !printed.status.success() {
