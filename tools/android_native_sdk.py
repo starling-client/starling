@@ -275,10 +275,14 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     lib.write_bytes("".join(kept).encode("utf-8"))
     text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
     libraries = workspace_libraries()
+    # The mod's crate by the name its helpers call it, as the desktop's build names it
+    # (`api::Project::crate_name`): its manifest's library name, else its package's (`mod-flair` is `mod_flair`).
+    own = tomllib.loads((work / "Cargo.toml").read_text())
+    own_name = own.get("lib", {}).get("name") or own["package"]["name"].replace("-", "_")
     lines = ["[package]", f'name = "smod-{mod_id}-patched"', 'version = "0.0.0"', 'edition = "2024"',
              "publish = false", "", "[lib]", 'name = "sunrise_patched"', 'path = "src/lib.rs"',
              'crate-type = ["rlib"]', "", "[dependencies]",
-             f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}']
+             f'{own_name} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}']
     for name, path in sorted(libraries.items()):
         if re.search(r"\b" + re.escape(name) + r"\s*::", text):
             package = tomllib.loads((path / "Cargo.toml").read_text())["package"]["name"]
