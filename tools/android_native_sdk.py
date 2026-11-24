@@ -272,7 +272,7 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
     lib = dest / "src" / "lib.rs"
     kept = [line for line in lib.read_text(encoding="utf-8").splitlines(keepends=True)
             if not re.fullmatch(r"\s*pub use ::sunrise_\w+(::\w+)*_tests;\s*", line)]
-    lib.write_bytes("".join(kept).encode("utf-8"))
+    lib.write_bytes(game_calls("".join(kept)).encode("utf-8"))
     text = "".join(f.read_text(encoding="utf-8") for f in (dest / "src").rglob("*.rs"))
     libraries = workspace_libraries()
     # The mod's crate by the name its helpers call it, as the desktop's build names it
@@ -466,6 +466,46 @@ def retarget(mod_id: str, work: Path) -> list[str]:
     if unplaced:
         print(f"mods: {mod_id}: not placed in this game: {', '.join(unplaced)}")
     return unplaced
+
+
+def call_args(text: str, open_paren: int) -> tuple[int, int]:
+    """The index past the `)` closing the call whose `(` is at `open_paren`, and its top-level argument count."""
+    depth, count, i, seen = 0, 0, open_paren, False
+    while i < len(text):
+        c = text[i]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i + 1, (count + 1 if seen else 0)
+        elif c == "," and depth == 1:
+            count += 1
+        elif depth >= 1 and not c.isspace():
+            seen = True
+        i += 1
+    return len(text), count
+
+
+# Starling's game for Horizon's (the game's own compat functions): a call Horizon's game had with this many arguments
+# goes to the function that takes them. Each serves every mod whose helpers or modules make that call.
+GAME_CALLS = (
+    ("sunrise_client::save::item_to_nbt", 1, "sunrise_client::save::item_to_nbt_current"),
+)
+
+
+def game_calls(text: str) -> str:
+    for path, arity, new in GAME_CALLS:
+        pattern = re.compile(r"\b" + re.escape(path) + r"\s*\(")
+        pos = 0
+        while (m := pattern.search(text, pos)):
+            end, count = call_args(text, m.end() - 1)
+            if count == arity:
+                text = text[:m.start()] + new + text[m.end() - 1:]
+                pos = m.start() + len(new)
+            else:
+                pos = end
+    return text
 
 
 # The game crate's features in the APK (crates/sunrise-android's dependency on sunrise-client and its default):

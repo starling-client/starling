@@ -655,7 +655,7 @@ fn fluid_id(name: &str) -> Option<u32> {
 }
 
 pub use sunrise_items::item_nbt::{
-    decode_items, encode_item, encode_items, item_from_nbt, item_to_nbt,
+    decode_items, encode_item, encode_items, item_from_nbt, item_to_nbt, item_to_nbt_current,
 };
 
 /// The block entity type ID for the block it sits in (a chest-like container

@@ -957,6 +957,7 @@ pub(super) fn load_resources_for_mods(
                     true,
                 )
                 .map_err(|error| error.to_string())?;
+                sunrise_items::item_nbt::set_current_items(rest.items.clone());
                 resources
                     .rest
                     .set(rest)
@@ -989,6 +990,7 @@ pub(super) fn load_resources_for_mods(
             started,
             !headless,
         )?;
+        sunrise_items::item_nbt::set_current_items(rest.items.clone());
         resources
             .rest
             .set(rest)

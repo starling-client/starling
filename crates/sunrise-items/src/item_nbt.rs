@@ -86,6 +86,34 @@ pub fn encode_item(
 pub fn item_to_nbt(stack: &crate::items::ItemStack, items: &crate::items::Items) -> Tag {
     Tag::compound(encode_item(stack, items))
 }
+
+/// Starling: the item tables of the world being played (`set_current_items`), for the one-argument
+/// `item_to_nbt` Horizon's game had, which mixin mods made for Horizon call ([`item_to_nbt_current`]).
+static CURRENT_ITEMS: std::sync::RwLock<Option<Arc<crate::items::Items>>> =
+    std::sync::RwLock::new(None);
+
+/// Starling: the item tables a world's resources loaded, for [`item_to_nbt_current`].
+pub fn set_current_items(items: Arc<crate::items::Items>) {
+    *CURRENT_ITEMS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(items);
+}
+
+/// Starling: Horizon's `item_to_nbt(stack)`, with the tables of the world being played; before any
+/// world loaded, the stack's id and count alone.
+pub fn item_to_nbt_current(stack: &crate::items::ItemStack) -> Tag {
+    let items = CURRENT_ITEMS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    match items {
+        Some(items) => item_to_nbt(stack, &items),
+        None => Tag::compound([
+            ("id", Tag::String((*stack.item).into())),
+            ("count", Tag::Int(stack.count as i32)),
+        ]),
+    }
+}
 /// A stack from a command or data file, without legacy save handling. `ItemStack.CODEC`
 /// ignores unknown fields (including `Count`); `count` defaults to 1. A present count
 /// must be numeric and in 1 to 99 after Java's `Number.intValue`. A `components` patch
