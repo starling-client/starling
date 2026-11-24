@@ -39,6 +39,10 @@ on:
         description: Build with the fast profile, as releases and the mod store's bases (store-base.yml) do; a mod store library only links against a game built with the profile its base had
         type: boolean
         default: false
+      staged:
+        description: Build the arm64 game from its staged copy (tools/prebuilt_game.py stage), with a replacement slot in each function, as mixin mods need
+        type: boolean
+        default: false
       game_build_id:
         description: The game build the APK names to native mods (a full commit; empty, this one). A fix outside the mod API keeps the store's libraries of that build
         type: string
@@ -125,6 +129,14 @@ jobs:
       # Compile v2: the arm64 APK's game is a set of Rust libraries (the mod API's crates and the mod host among
       # them), so a native mod plays from a small library of its own beside them, which mod-builds' store builds
       # for this commit and profile (its store-base.yml runs this same build). The other ABIs have no store.
+      # The checkout becomes the staged copy (the slots and functions.json, internals.json, loops.json beside the source);
+      # its .git stays, so build_apk.py still names the commit.
+      - name: The staged game
+        if: inputs.staged && matrix.abi == 'arm64-v8a'
+        run: |
+          staged=$(python3 tools/prebuilt_game.py stage "$RUNNER_TEMP/staging" | tail -1)
+          rsync -a --delete --exclude .git --exclude target "$staged/" ./
+          ls functions.json internals.json loops.json
       - name: The game build native mods are made for
         if: inputs.game_build_id != ''
         env:
