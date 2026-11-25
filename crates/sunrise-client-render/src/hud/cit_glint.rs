@@ -4,7 +4,7 @@
 //! (red) and its intensity (alpha) in their colour; its scrolled UV is worked out on the CPU, as
 //! vanilla's glint's is. Without enchantment rules nothing here is made.
 
-use super::HudVertex;
+use super::{HUD_SHADER, HudVertex};
 use crate::gfx::hud_coverage::Pipeline;
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_optifine::cit::{Blend, Factor, Kind, Rule};
@@ -377,7 +377,7 @@ impl CitGlintPass {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise HUD (CIT glints)"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../hud.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(HUD_SHADER.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("CIT glint layout"),
@@ -419,7 +419,7 @@ impl CitGlintPass {
                     multiview_mask: None,
                     cache: None,
                 };
-                let source = wgpu::ShaderSource::Wgsl(include_str!("../hud.wgsl").into());
+                let source = wgpu::ShaderSource::Wgsl(HUD_SHADER.into());
                 Pipeline::new(device, &desc, source, coverage).expect("the CIT glint's coverage")
             })
             .collect();

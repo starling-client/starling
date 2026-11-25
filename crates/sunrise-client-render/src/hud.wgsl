@@ -50,7 +50,13 @@ struct Out {
         }
         return vec4(glint.rgb * glint.rgb, mask);
     }
-    let c = textureSample(atlas, atlas_sampler, in.uv) * in.color;
+    var texel: vec4<f32>;
+    if in.uv.x < -8192.0 {
+        texel = separate_map_texel(in.uv);
+    } else {
+        texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+    }
+    let c = texel * in.color;
     if c.a < 0.004 { discard; }
     return c;
 }

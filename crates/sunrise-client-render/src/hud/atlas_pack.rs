@@ -770,8 +770,35 @@ impl HudAtlas {
         }
         let limit = atlas_limit();
         let mut full_sizes = HashMap::new();
+        #[cfg(not(target_os = "android"))]
+        let separate_maps = false;
+        #[cfg(target_os = "android")]
+        let mut separate_maps = false;
         #[cfg(target_os = "android")]
         if limit < MAX_ATLAS_SIZE {
+            if full
+                && (MAP_PAGE_SIDE..=4096).contains(&limit)
+                && map_pages_available()
+                && !crate::sprites::labpbr_maps()
+            {
+                let mut sizes: Vec<PackedImage> = images
+                    .iter()
+                    .map(|(name, w, h, _)| {
+                        let border = if flags.get(name).is_some_and(|flag| flag.blur) {
+                            2
+                        } else {
+                            0
+                        };
+                        (String::new(), w + border, h + border, Vec::new())
+                    })
+                    .collect();
+                sizes.sort_by_key(|(_, w, h, _)| std::cmp::Reverse((*h, *w)));
+                if Self::mobile_layout(&sizes, limit).is_err() {
+                    images.retain(|(name, ..)| !name.starts_with("sunrise/map"));
+                    separate_maps = true;
+                    log::info!("GUI atlas: using separate map pages before reducing sprites");
+                }
+            }
             Self::fit_mobile_atlas(&mut images, &mut full_sizes, &gui_sizes, &flags, limit)?;
         }
         // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
@@ -964,6 +991,7 @@ impl HudAtlas {
             }
         }
         Ok(Self {
+            separate_maps,
             pictures: std::sync::Mutex::new(pictures::Cache::new(root, defaults)),
             revision: Self::next_revision(),
             material_maps: std::sync::Arc::new(material_maps),

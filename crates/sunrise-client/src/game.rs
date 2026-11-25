@@ -3948,6 +3948,7 @@ struct Game<'a> {
     dragon_model: Option<sunrise_client::mobs::Part>,
     /// Map textures waiting for the next HUD batch to upload them.
     map_patches: Vec<sunrise_client::font::Patch>,
+    map_tiles: Vec<(usize, Vec<u8>)>,
     name_tag_layouts: names::NameTagLayouts,
     text_displays: std::collections::HashMap<i32, text_displays::RemoteTextDisplay>,
     interactions: std::collections::HashMap<i32, interactions::RemoteInteraction>,
@@ -8156,7 +8157,6 @@ impl Game<'_> {
         self.entity_spans.borrow_mut().clear();
         self.entity_motion.borrow_mut().clear();
         self.entity_motion_posed.borrow_mut().clear();
-        self.maps.slots.next_frame();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
         self.prepare_entity_culling();
@@ -11453,6 +11453,7 @@ impl Game<'_> {
         pr.lap("pr_projection");
         let vanilla_skin = self.apply_player_skin_override(title);
         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+        self.maps.slots.next_frame();
         let mut hud = sunrise_client::spans::time("hud", || self.hud(size));
         self.flush_ime(&mut hud);
         self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
@@ -11691,6 +11692,10 @@ impl Game<'_> {
         // geometry (game/blocks/maps/mod.rs, world text) upload with this batch; draining
         // map_patches any earlier leaves them a frame behind.
         hud.patches.append(&mut self.map_patches);
+        hud.map_tiles.append(&mut self.map_tiles);
+        if title {
+            self.maps.slots.forget();
+        }
         hud.patches.append(self.text_patches.get_mut());
         self.dynamic_texture_patches(&mut hud.image_patches);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
@@ -11891,6 +11896,15 @@ impl Game<'_> {
         };
         prepared_draws.clear();
         *self.prepared_model_draws.borrow_mut() = prepared_draws;
+        if self
+            .renderer
+            .as_ref()
+            .is_some_and(Renderer::map_page_allocation_failed)
+            && sunrise_client::hud::fallback_to_shared_map_atlas()
+        {
+            log::warn!("Map pages: rebuilding the shared atlas after allocation failure");
+            self.reload_packs();
+        }
         let _cleanup = spans::guard("pr_cleanup");
         // A frame the surface refused (occluded, lost, timed out) is `Ok(false)`.
         self.frame_drawn = matches!(result, Ok(true));
@@ -14192,6 +14206,7 @@ impl<'a> Game<'a> {
             breath_clouds: Default::default(),
             dragon_model: prepared.dragon_model,
             map_patches: Vec::new(),
+            map_tiles: Vec::new(),
             name_tag_layouts: Default::default(),
             text_displays: Default::default(),
             interactions: Default::default(),

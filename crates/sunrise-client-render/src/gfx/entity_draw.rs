@@ -5,10 +5,11 @@ pub(super) fn entity_shader() -> String {
     crate::overlay::wgsl_constants()
         + &format!("const EXPLICIT_PARTICLE_OVERLAY: u32 = {EXPLICIT_PARTICLE_OVERLAY}u;\n")
         + include_str!("../hdr_light.wgsl")
+        + include_str!("../map_tiles.wgsl")
         + include_str!("../entity.wgsl")
 }
 
-pub(super) fn entity_binding_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
+pub(super) fn entity_binding_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
     let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
         binding,
@@ -16,7 +17,7 @@ pub(super) fn entity_binding_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
         ty,
         count: None,
     };
-    [
+    let mut entries = vec![
         entry(
             0,
             vf,
@@ -77,7 +78,70 @@ pub(super) fn entity_binding_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
                 multisampled: false,
             },
         ),
-    ]
+    ];
+    entries.extend(map_pages::layouts());
+    entries
+}
+
+pub(super) struct EntityTextures {
+    pub(super) atlas: wgpu::TextureView,
+    pub(super) atlas_sampler: wgpu::Sampler,
+    pub(super) lightmap: wgpu::TextureView,
+    pub(super) lightmap_sampler: wgpu::Sampler,
+    pub(super) glint: wgpu::TextureView,
+    pub(super) glint_sampler: wgpu::Sampler,
+    pub(super) glint_armor: wgpu::TextureView,
+}
+
+impl EntityTextures {
+    pub(super) fn group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        globals: &wgpu::Buffer,
+        maps: &map_pages::MapPages,
+    ) -> wgpu::BindGroup {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&self.atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&self.lightmap),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&self.lightmap_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&self.glint),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Sampler(&self.glint_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(&self.glint_armor),
+            },
+        ];
+        entries.extend(map_pages::bindings(maps.views()));
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Entity resources"),
+            layout,
+            entries: &entries,
+        })
+    }
 }
 
 pub(super) const ENTITY_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint8x4,5=>Snorm8x4,6=>Float32x2];
@@ -167,6 +231,10 @@ pub(super) fn static_entity_shader() -> String {
 }
 
 impl Renderer {
+    pub fn map_page_allocation_failed(&self) -> bool {
+        self.map_pages.allocation_failed()
+    }
+
     /// Whether this renderer's device was armed for hardware ray tracing (ray queries):
     /// the adapter offered `EXPERIMENTAL_RAY_QUERY` and Ray Tracing (experimental) was
     /// switched on when the device opened (#470).

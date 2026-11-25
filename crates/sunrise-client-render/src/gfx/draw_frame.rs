@@ -39,6 +39,28 @@ impl Renderer {
         if self.device_lost() {
             return Err(super::in_flight::LOST.into());
         }
+        let bindings_changed = if frame.title {
+            self.map_pages.clear()
+        } else {
+            self.map_pages
+                .update(&self.device, &self.queue, &frame.hud.map_tiles)
+        };
+        if bindings_changed {
+            self.entity_group = self.entity_textures.group(
+                &self.device,
+                &self.entity_bindings,
+                &self.globals,
+                &self.map_pages,
+            );
+            self.hand_group = self.entity_textures.group(
+                &self.device,
+                &self.entity_bindings,
+                &self.hand_globals,
+                &self.map_pages,
+            );
+            self.hud
+                .bind_map_pages(&self.device, self.map_pages.views());
+        }
         if polled.is_ok()
             && let Some(timer) = &mut self.gpu_timer
         {

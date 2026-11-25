@@ -212,7 +212,7 @@ impl UiResources {
             let pool = dynamic_texture_pool();
             let game = sunrise_assets::resource_source::ResourceSource::directory(vanilla.into());
             let atlas = startup::time("ui.atlas", || {
-                HudAtlas::build_over_with_dynamic_textures(root, root, &game, pool)
+                HudAtlas::build_over_with_dynamic_textures(root, &game, &game, pool)
             });
             let panorama = panorama
                 .join()

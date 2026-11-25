@@ -8,7 +8,7 @@ use super::Game;
 use std::collections::HashMap;
 use sunrise_client::{
     blocks::{Fluid, MAP_COLORS},
-    hud::{HudBatch, MAP_SLOTS, Rect, map_slot_sprite},
+    hud::{HudBatch, MAP_SLOTS, Rect, map_slot_sprite, separate_map_rect},
     items::ItemStack,
     mesher::Vertex,
 };
@@ -1725,24 +1725,28 @@ impl Game<'_> {
                 slot
             }
         };
-        let rect = self
-            .gui
-            .atlas
-            .sprites
-            .get(map_slot_sprite(slot)?)
-            .copied()?;
+        let shared = self.gui.atlas.sprites.get(map_slot_sprite(slot)?).copied();
+        let rect = if self.gui.atlas.separate_maps {
+            separate_map_rect(slot)?
+        } else {
+            shared?
+        };
         let m = self.maps.data.get_mut(&id)?;
         if m.texture_dirty {
             m.texture_dirty = false;
             let rgba: Vec<u8> = m.colors.iter().flat_map(|&c| packed_rgba(c)).collect();
-            let (w, h) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
-            self.map_patches.push(sunrise_client::font::Patch {
-                x: (rect.u0 * w).round() as u32,
-                y: (rect.v0 * h).round() as u32,
-                width: 128,
-                height: 128,
-                rgba,
-            });
+            if self.gui.atlas.separate_maps {
+                self.map_tiles.push((slot, rgba));
+            } else {
+                let (w, h) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
+                self.map_patches.push(sunrise_client::font::Patch {
+                    x: (rect.u0 * w).round() as u32,
+                    y: (rect.v0 * h).round() as u32,
+                    width: 128,
+                    height: 128,
+                    rgba,
+                });
+            }
         }
         Some(rect)
     }

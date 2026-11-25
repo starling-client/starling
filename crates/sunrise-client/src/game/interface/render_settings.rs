@@ -246,6 +246,7 @@ impl Game<'_> {
         self.maps.slots.forget();
         self.trim_slots.forget();
         self.map_patches.clear();
+        self.map_tiles.clear();
         self.text_patches.get_mut().clear();
         self.dynamic_textures.forget_uploads();
         self.kept_block_entities.get_mut().clear();
