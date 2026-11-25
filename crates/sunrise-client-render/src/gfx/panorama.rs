@@ -338,10 +338,12 @@ impl Panorama {
         });
         Self {
             vertices,
-            maximum_side: if cfg!(target_os = "android") && gl {
-                256
+            maximum_side: if cfg!(target_os = "android")
+                && (gl || device.limits().max_texture_dimension_2d <= 4096)
+            {
+                1024.min(device.limits().max_texture_dimension_2d)
             } else {
-                u32::MAX
+                device.limits().max_texture_dimension_2d
             },
             pipeline,
             layout,
@@ -367,8 +369,32 @@ impl Panorama {
             0,
             bytemuck::cast_slice(&projection(width, height, yaw, pitch).to_cols_array()),
         );
-        if self.cube.is_none() {
-            self.cube = Some(self.cube(device, queue));
+        if !cfg!(target_os = "android") {
+            if self.cube.is_none() {
+                self.cube = Some(self.cube(device, queue));
+            }
+            return;
+        }
+        while self.cube.is_none() && self.maximum_side != 0 {
+            let checks = super::GpuChecks::push(device);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let cube = self.cube(device, queue);
+            let internal = pollster::block_on(internal.pop());
+            let checked = checks.pop();
+            let Some(error) = internal.or(checked) else {
+                self.cube = Some(cube);
+                break;
+            };
+            let side = self.faces.size.min(self.maximum_side);
+            self.maximum_side = match side {
+                513.. => 512,
+                257..=512 => 256,
+                _ => 0,
+            };
+            log::warn!(
+                "Title panorama: could not upload a {side}px cube, next limit {}px: {error}",
+                self.maximum_side
+            );
         }
     }
 
@@ -390,6 +416,11 @@ impl Panorama {
         let (size, texels) = texels.map_or_else(
             || (1, PLACEHOLDER.repeat(6)),
             |texels| reduced_texels(size, texels, self.maximum_side),
+        );
+        #[cfg(target_os = "android")]
+        log::info!(
+            "Title panorama: uploading {size}px faces (source {}px)",
+            self.faces.size
         );
         let texture = device.create_texture_with_data(
             queue,

@@ -238,16 +238,28 @@ impl Renderer {
         self.prepared_ranges.clear();
     }
 
+    /// Bind the hand's vertices on adapters without base-vertex draws.
+    pub(super) fn bind_hand_vertices(&self, pass: &mut wgpu::RenderPass<'_>, first: i32) -> i32 {
+        if self.base_vertex {
+            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+            first
+        } else {
+            let offset = first as u64 * std::mem::size_of::<Vertex>() as u64;
+            pass.set_vertex_buffer(0, self.entity_buffer.slice(offset..));
+            0
+        }
+    }
+
     pub(super) fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>, quads: u32, first: u32) {
         pass.set_pipeline(&self.entity_pipeline);
         pass.set_bind_group(0, &self.hand_group, &[]);
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-        pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        let base_vertex = self.bind_hand_vertices(pass, (first * 4) as i32);
+        pass.draw_indexed(0..quads * 6, base_vertex, 0..1);
         if light_marks(self.output.frame.format, self.hdr.is_some()) {
             // Drawn into the world: the light sources it holds are marked as the world's are.
             pass.set_pipeline(&self.hdr_entity_mark_pipeline);
-            pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+            pass.draw_indexed(0..quads * 6, base_vertex, 0..1);
         }
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
