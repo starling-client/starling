@@ -109,6 +109,7 @@ pub use image::*;
 mod batch;
 mod batch_text;
 mod renderer;
+const HUD_SHADER: &str = concat!(include_str!("map_tiles.wgsl"), include_str!("hud.wgsl"));
 pub use batch::*;
 pub use renderer::*;
 

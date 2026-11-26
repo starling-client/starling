@@ -87,6 +87,7 @@ mod entity_draw;
 mod hdr_config;
 #[cfg(test)]
 mod inter_stage_tests;
+pub(crate) mod map_pages;
 mod renderer_construction;
 mod section_fade;
 mod section_upload;

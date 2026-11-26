@@ -212,6 +212,8 @@ pub struct Renderer {
     pub(crate) entity_group: wgpu::BindGroup,
     /// The layout of `entity_group`, for the native shadow pass.
     pub(crate) entity_bindings: wgpu::BindGroupLayout,
+    pub(super) entity_textures: EntityTextures,
+    pub(super) map_pages: map_pages::MapPages,
     /// Generation-owned prepared model geometry. World block entities instance it
     /// when the draw is not kept, spinning, or claimed by a shader pack.
     pub(crate) prepared_models: Option<PreparedModels>,

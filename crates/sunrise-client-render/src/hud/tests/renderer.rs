@@ -208,7 +208,7 @@ fn a_gui_models_glint_follows_it_in_its_depth_pass() {
 
 #[test]
 fn hud_shader_validates_both_fragment_entries() {
-    let module = naga::front::wgsl::parse_str(include_str!("../../hud.wgsl")).unwrap();
+    let module = naga::front::wgsl::parse_str(HUD_SHADER).unwrap();
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
@@ -286,6 +286,7 @@ fn container_origins_use_java_integer_division() {
             width: width as f32,
             height: height as f32,
             patches: Vec::new(),
+            map_tiles: Vec::new(),
             image_patches: Vec::new(),
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),

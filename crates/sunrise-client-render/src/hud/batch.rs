@@ -79,6 +79,7 @@ pub struct HudBatch {
     pub height: f32,
     /// Glyph pixels to upload into the atlas before drawing.
     pub patches: Vec<crate::font::Patch>,
+    pub map_tiles: Vec<(usize, Vec<u8>)>,
     /// Client mods' dynamic textures to upload into their atlas slots before drawing, sharing
     /// the pixels the game keeps of them.
     pub image_patches: Vec<dynamic_textures::ImagePatch>,
@@ -232,6 +233,7 @@ impl HudBatch {
             width: gui.size[0] as f32,
             height: gui.size[1] as f32,
             patches: Vec::new(),
+            map_tiles: Vec::new(),
             image_patches: Vec::new(),
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),

@@ -2075,12 +2075,45 @@ fn small_atlas_preserves_gui_before_reducing_other_sprites() {
         ("gui/panel".to_string(), 512, 256, vec![255; 512 * 256 * 4]),
     ];
     let mut full_sizes = HashMap::new();
-    HudAtlas::fit_mobile_atlas(&mut images, &mut full_sizes, &HashMap::new(), 1024).unwrap();
+    HudAtlas::fit_mobile_atlas(
+        &mut images,
+        &mut full_sizes,
+        &HashMap::new(),
+        &HashMap::new(),
+        1024,
+    )
+    .unwrap();
     let gui = images.iter().find(|i| i.0 == "gui/panel").unwrap();
     assert_eq!((gui.1, gui.2), (512, 256));
     assert!(!full_sizes.contains_key("gui/panel"));
     assert!(full_sizes.contains_key("entity/large"));
 }
+#[test]
+fn decorative_art_gives_up_resolution_before_world_sprites() {
+    let mut images = vec![
+        (
+            "gui/realms/adventure".into(),
+            1024,
+            512,
+            vec![255; 1024 * 512 * 4],
+        ),
+        ("entity/large".into(), 384, 384, vec![255; 384 * 384 * 4]),
+    ];
+    let mut full_sizes = HashMap::new();
+    HudAtlas::fit_mobile_atlas(
+        &mut images,
+        &mut full_sizes,
+        &HashMap::new(),
+        &HashMap::new(),
+        1024,
+    )
+    .unwrap();
+
+    assert_eq!((images[0].1, images[0].2), (512, 256));
+    assert_eq!((images[1].1, images[1].2), (384, 384));
+    assert_eq!(full_sizes["gui/realms/adventure"], (1024, 512));
+}
+
 #[test]
 fn a_small_atlas_of_interface_sprites_alone_reduces_them_rather_than_failing() {
     // What a phone whose GPU takes 4096 sees with the default resources: the interface
@@ -2094,7 +2127,14 @@ fn a_small_atlas_of_interface_sprites_alone_reduces_them_rather_than_failing() {
         ("sunrise/map0".to_string(), 128, 128, Vec::new()),
     ];
     let mut full_sizes = HashMap::new();
-    HudAtlas::fit_mobile_atlas(&mut images, &mut full_sizes, &HashMap::new(), 1024).unwrap();
+    HudAtlas::fit_mobile_atlas(
+        &mut images,
+        &mut full_sizes,
+        &HashMap::new(),
+        &HashMap::new(),
+        1024,
+    )
+    .unwrap();
     let of = |name: &str| {
         let i = images.iter().find(|i| i.0 == name).unwrap();
         (i.1, i.2)

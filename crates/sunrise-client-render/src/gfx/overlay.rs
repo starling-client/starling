@@ -159,8 +159,8 @@ impl Renderer {
             pass.set_pipeline(self.overlay_hand.as_ref().unwrap_or(&self.entity_pipeline));
             pass.set_bind_group(0, &self.hand_group, &[]);
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-            pass.draw_indexed(0..overlay.hand_quads * 6, overlay.first_hand_vertex, 0..1);
+            let base_vertex = self.bind_hand_vertices(&mut pass, overlay.first_hand_vertex);
+            pass.draw_indexed(0..overlay.hand_quads * 6, base_vertex, 0..1);
             drop(pass);
             if let Some(hdr) = &self.hdr
                 && !no_pack_hdr_gain(layered, self.shader_pack_kind().is_some(), !frame.title)
@@ -197,12 +197,12 @@ impl Renderer {
                     });
                     pass.set_bind_group(0, &self.hand_group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                    let base_vertex = self.bind_hand_vertices(&mut pass, overlay.first_hand_vertex);
                     let quads = 0..overlay.hand_quads * 6;
                     pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
-                    pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
+                    pass.draw_indexed(quads.clone(), base_vertex, 0..1);
                     pass.set_pipeline(&self.hdr_entity_mark_pipeline);
-                    pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
+                    pass.draw_indexed(quads, base_vertex, 0..1);
                 }
             }
         }

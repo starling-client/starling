@@ -1,10 +1,52 @@
 use super::*;
 
+#[cfg(any(target_os = "android", test))]
+/// Average the source footprint around each destination texel. Its edges line up with
+/// the original sprite, including odd sizes. Weight colors by alpha so invisible texels
+/// don't darken a visible outline or icon.
+fn half_ui((name, w, h, pixels): &PackedImage) -> PackedImage {
+    let (width, height) = (w.div_ceil(2), h.div_ceil(2));
+    let mut reduced = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        let (top, bottom) = (y * h, (y + 1) * h);
+        for x in 0..width {
+            let (left, right) = (x * w, (x + 1) * w);
+            let mut sum = [0_u64; 4];
+            for sy in top / height..bottom.div_ceil(height) {
+                let cover_y = bottom.min((sy + 1) * height) - top.max(sy * height);
+                for sx in left / width..right.div_ceil(width) {
+                    let cover_x = right.min((sx + 1) * width) - left.max(sx * width);
+                    let index = ((sy * w + sx) * 4) as usize;
+                    let alpha =
+                        u64::from(cover_x) * u64::from(cover_y) * u64::from(pixels[index + 3]);
+                    for channel in 0..3 {
+                        sum[channel] += alpha * u64::from(pixels[index + channel]);
+                    }
+                    sum[3] += alpha;
+                }
+            }
+            let total = u64::from(*w) * u64::from(*h);
+            let [r, g, b, alpha] = sum;
+            let color = [r, g, b].map(|c| ((c + alpha / 2) / alpha.max(1)) as u8);
+            reduced.extend([
+                color[0],
+                color[1],
+                color[2],
+                ((alpha + total / 2) / total) as u8,
+            ]);
+        }
+    }
+    (name.clone(), width, height, reduced)
+}
+
 impl HudAtlas {
     /// Pack against a skyline so space below shorter neighbours stays usable.
     /// Pixel UI must not be reduced merely because tall shelves leave gaps.
     #[cfg(any(target_os = "android", test))]
-    fn mobile_layout(images: &[PackedImage], maximum: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
+    pub(super) fn mobile_layout(
+        images: &[PackedImage],
+        maximum: u32,
+    ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         let width = maximum.min(4096);
         // [x, occupied height, segment width]. Segments cover the complete width.
         let mut skyline = vec![[0u32, 0, width]];
@@ -65,79 +107,166 @@ impl HudAtlas {
         }
         Ok((width, placements, bottom))
     }
-    /// Fit static sprites to a small adapter without shrinking pixel icons, glyphs or dynamic
-    /// map/skin/GUI slots. Terrain uses separate texture arrays and is unchanged.
+    /// Fit static sprites to a small adapter. Decorative pictures give up detail first,
+    /// then world textures, interface sprites and oversized button art.
     #[cfg(any(target_os = "android", test))]
-    fn fit_mobile_atlas(
+    pub(super) fn fit_mobile_atlas(
         images: &mut [PackedImage],
-        gui_sizes: &mut HashMap<String, (u32, u32)>,
+        full_sizes: &mut HashMap<String, (u32, u32)>,
+        gui_sizes: &HashMap<String, (u32, u32)>,
         flags: &HashMap<String, TextureFlags>,
         limit: u32,
     ) -> Result<()> {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Priority {
+            Decoration,
+            World,
+            Interface,
+            Controls,
+        }
+
+        let shrink_rank = |(name, w, h, rgba): &PackedImage| {
+            let path = name.split_once(':').map_or(name.as_str(), |(_, path)| path);
+            let side = (*w).max(*h);
+            // The two standard skin layouts use at most 64×64 texels. The slots for
+            // runtime patches keep their own pixel coordinates.
+            if path.contains("font/")
+                || name.starts_with("sunrise/")
+                || (path.starts_with("entity/player/") && side <= 64)
+                || side <= SMALLEST_SHRUNK_SIDE
+                || rgba.len() < (*w as usize * *h as usize * 4)
+            {
+                return None;
+            }
+            let button_background =
+                path.strip_prefix("gui/sprites/widget/")
+                    .is_some_and(|widget| {
+                        widget.starts_with("button") || widget.starts_with("realms_button")
+                    });
+            let touch = path.starts_with("gui/bedrock/")
+                || path.starts_with("gui/sprites/touch/")
+                || path.starts_with("android-controls/");
+            // Only remove a level of detail if the button still has at least its GUI size.
+            // Smaller pack replacements and standard touch sheets are already pixel art.
+            let (gui_w, gui_h) = gui_sizes.get(name).copied().unwrap_or((*w, *h));
+            if (button_background && (w.div_ceil(2) < gui_w || h.div_ceil(2) < gui_h))
+                || (touch && side <= 256)
+            {
+                return None;
+            }
+            let decoration = path.starts_with("gui/advancements/backgrounds/")
+                || matches!(
+                    path,
+                    "gui/title/mojangstudios"
+                        | "gui/title/minceraft"
+                        | "gui/realms/adventure"
+                        | "gui/realms/experience"
+                        | "gui/realms/inspiration"
+                        | "gui/realms/new_world"
+                        | "gui/realms/survival_spawn"
+                        | "gui/realms/upload"
+                );
+            let priority = if button_background || touch {
+                Priority::Controls
+            } else if decoration {
+                if side <= 128 {
+                    return None;
+                }
+                Priority::Decoration
+            } else if path.starts_with("gui/") || path.starts_with("ui/") {
+                Priority::Interface
+            } else {
+                Priority::World
+            };
+            Some((priority, std::cmp::Reverse(side)))
+        };
+        let pack = |dimensions: &[PackedImage]| {
+            let mut sorted = dimensions.to_vec();
+            sorted.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+            Self::layout(&sorted, limit)
+        };
+        let borders: Vec<_> = images
+            .iter()
+            .map(|(name, ..)| {
+                if flags.get(name).is_some_and(|f| f.blur) {
+                    2
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let mut dimensions: Vec<PackedImage> = images
+            .iter()
+            .zip(&borders)
+            .map(|((_, w, h, _), border)| (String::new(), w + border, h + border, Vec::new()))
+            .collect();
+        let Err(mut error) = pack(&dimensions) else {
+            return Ok(());
+        };
         loop {
-            let mut dimensions: Vec<PackedImage> = images
+            // Repack after reducing one size group. Small sprites can keep all their
+            // texels when making room in a few large sprites is enough.
+            let Some(rank @ (priority, std::cmp::Reverse(side))) =
+                images.iter().filter_map(shrink_rank).min()
+            else {
+                return Err(error);
+            };
+            let mut group: Vec<_> = images
                 .iter()
-                .map(|(name, w, h, _)| {
-                    let border = if flags.get(name).is_some_and(|f| f.blur) {
-                        2
-                    } else {
-                        0
-                    };
-                    (name.clone(), w + border, h + border, Vec::new())
-                })
+                .enumerate()
+                .filter_map(|(index, image)| (shrink_rank(image) == Some(rank)).then_some(index))
                 .collect();
-            dimensions.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-            match Self::layout(&dimensions, limit) {
-                Ok(_) => return Ok(()),
-                Err(error) => {
-                    // The interface's own textures wait until the rest is as small as it goes:
-                    // a phone whose GPU takes 4096 and whose default resources need 4108 rows
-                    // (the PowerVR GE8322) then fits them, instead of losing its packs.
-                    let mut changed = false;
-                    for interface in [false, true] {
-                        for (name, w, h, rgba) in images.iter_mut() {
-                            // Never the glyphs, and never the slots written at run time
-                            // (`slots`, all under `sunrise/`), whose size is their own.
-                            if name.contains("font/")
-                                || name.starts_with("sunrise/")
-                                || (*w).max(*h) <= SMALLEST_SHRUNK_SIDE
-                                || rgba.len() < (*w as usize * *h as usize * 4)
-                            {
-                                continue;
-                            }
-                            if (name.starts_with("gui/") || name.starts_with("ui/")) != interface {
-                                continue;
-                            }
-                            // Keep original GUI units and normalized UVs. Runtime patches
-                            // retain their full-size slots, so no coordinate remapping occurs.
-                            gui_sizes.entry(name.clone()).or_insert((*w, *h));
-                            let (old_w, old_h) = (*w, *h);
-                            *w = (*w / 2).max(1);
-                            *h = (*h / 2).max(1);
-                            let mut smaller = Vec::with_capacity((*w * *h * 4) as usize);
-                            for y in 0..*h {
-                                for x in 0..*w {
-                                    let at =
-                                        ((y * old_h / *h * old_w + x * old_w / *w) * 4) as usize;
-                                    smaller.extend_from_slice(&rgba[at..at + 4]);
-                                }
-                            }
-                            *rgba = smaller;
-                            changed = true;
-                        }
-                        if changed {
-                            log::info!(
-                                "Reduced {} atlas sprites to fit the adapter's {limit}px texture limit",
-                                if interface { "interface" } else { "non-UI" }
-                            );
-                            break;
-                        }
-                    }
-                    if !changed {
-                        return Err(error);
+            group.sort_by_key(|&index| {
+                let (_, w, h, _) = &images[index];
+                std::cmp::Reverse(u64::from(*w) * u64::from(*h))
+            });
+            let set_trial = |dimensions: &mut [PackedImage], count| {
+                for (index, &sprite) in group.iter().enumerate() {
+                    let (_, w, h, _) = &images[sprite];
+                    let divisor = if index < count { 2 } else { 1 };
+                    dimensions[sprite].1 = w.div_ceil(divisor) + borders[sprite];
+                    dimensions[sprite].2 = h.div_ceil(divisor) + borders[sprite];
+                }
+            };
+            let mut count = group.len();
+            set_trial(&mut dimensions, count);
+            let remaining = pack(&dimensions).err();
+            if remaining.is_none() {
+                // Keep a known fit while trying smaller prefixes of this size group.
+                let mut failed = 0;
+                while count - failed > 1 {
+                    let middle = failed + (count - failed) / 2;
+                    set_trial(&mut dimensions, middle);
+                    if pack(&dimensions).is_ok() {
+                        count = middle;
+                    } else {
+                        failed = middle;
                     }
                 }
             }
+            for &index in &group[..count] {
+                let image = &mut images[index];
+                full_sizes
+                    .entry(image.0.clone())
+                    .or_insert((image.1, image.2));
+                *image = match priority {
+                    Priority::World => halved(image),
+                    _ => half_ui(image),
+                };
+            }
+            let category = match priority {
+                Priority::Decoration => "decorative",
+                Priority::World => "non-UI",
+                Priority::Interface => "interface",
+                Priority::Controls => "controls and button backgrounds",
+            };
+            log::info!(
+                "Reduced {count} {category} atlas sprites with a {side}px side to fit the adapter's {limit}px texture limit"
+            );
+            let Some(next_error) = remaining else {
+                return Ok(());
+            };
+            error = next_error;
         }
     }
 
@@ -449,17 +578,13 @@ impl HudAtlas {
                     maps.iter().any(Option::is_some).then(|| Box::new(maps))
                 })
                 .flatten();
-            (gw <= 1024
-                && (gh <= 512
-                    || matches!(
-                        name.as_str(),
-                        "gui/title/background/panorama_0"
-                            | "gui/title/background/panorama_2"
-                            | "gui/title/background/panorama_3"
-                            | "gui/presets/isles"
-                    )
-                    || name.starts_with("font/")))
-            .then_some(((name, w, h, pixels), flags, gui_size, animated, maps))
+            (gw <= 1024 && (gh <= 512 || name.starts_with("font/"))).then_some((
+                (name, w, h, pixels),
+                flags,
+                gui_size,
+                animated,
+                maps,
+            ))
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
@@ -641,9 +766,36 @@ impl HudAtlas {
         }
         let limit = atlas_limit();
         let mut full_sizes = HashMap::new();
+        #[cfg(not(target_os = "android"))]
+        let separate_maps = false;
+        #[cfg(target_os = "android")]
+        let mut separate_maps = false;
         #[cfg(target_os = "android")]
         if limit < MAX_ATLAS_SIZE {
-            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &flags, limit)?;
+            if full
+                && (MAP_PAGE_SIDE..=4096).contains(&limit)
+                && map_pages_available()
+                && !crate::sprites::labpbr_maps()
+            {
+                let mut sizes: Vec<PackedImage> = images
+                    .iter()
+                    .map(|(name, w, h, _)| {
+                        let border = if flags.get(name).is_some_and(|flag| flag.blur) {
+                            2
+                        } else {
+                            0
+                        };
+                        (String::new(), w + border, h + border, Vec::new())
+                    })
+                    .collect();
+                sizes.sort_by_key(|(_, w, h, _)| std::cmp::Reverse((*h, *w)));
+                if Self::mobile_layout(&sizes, limit).is_err() {
+                    images.retain(|(name, ..)| !name.starts_with("sunrise/map"));
+                    separate_maps = true;
+                    log::info!("GUI atlas: using separate map pages before reducing sprites");
+                }
+            }
+            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &gui_sizes, &flags, limit)?;
         }
         // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
         // border wrapped from their own edges keeps the filter off their
@@ -671,8 +823,7 @@ impl HudAtlas {
         )
         .or_else(|error| -> Result<_> {
             let models = reducible_model_sprites(root, &images, &bordered);
-            let layout =
-                Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, MAX_ATLAS_SIZE)?;
+            let layout = Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, limit)?;
             log::warn!("reduced HUD model texture resolution to keep the resource pack: {error}");
             Ok(layout)
         })?;
@@ -836,6 +987,7 @@ impl HudAtlas {
             }
         }
         Ok(Self {
+            separate_maps,
             pictures: std::sync::Mutex::new(pictures::Cache::new(root, defaults)),
             revision: Self::next_revision(),
             material_maps: std::sync::Arc::new(material_maps),

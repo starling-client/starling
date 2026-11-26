@@ -643,6 +643,7 @@ impl Game<'_> {
                 .set_resource_root(game.pack.source.clone());
             game.maps.slots.forget();
             game.map_patches.clear();
+            game.map_tiles.clear();
             game.text_patches.get_mut().clear();
             // Kept mod block entities name the old atlas's sprites, and their view distances the old
             // registry's states.
@@ -771,7 +772,7 @@ pub(super) fn stage_pack(
                     let game = sunrise_assets::resource_source::ResourceSource::directory(
                         vanilla_root.to_path_buf(),
                     );
-                    HudAtlas::build_over_with_dynamic_textures(&source, &source, &game, pool)
+                    HudAtlas::build_over_with_dynamic_textures(&source, &game, &game, pool)
                         .map_err(|e| e.to_string())
                 });
                 let panorama = super::resource_load::named_scope(s, "pack-assets", || {

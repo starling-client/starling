@@ -1,6 +1,7 @@
 use super::*;
 
 pub struct HudAtlas {
+    pub separate_maps: bool,
     pub(super) pictures: std::sync::Mutex<pictures::Cache>,
     /// Identity of this packed atlas, used to invalidate cached model UV data
     /// even when a resource reload places sprites at the same coordinates.
@@ -134,6 +135,47 @@ pub(super) fn halved((name, w, h, data): &PackedImage) -> PackedImage {
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
 pub const MAP_SLOTS: usize = 256;
+pub const MAP_TILE_SIDE: u32 = 128;
+pub(crate) const MAP_PAGE_SIDE: u32 = 1024;
+const MAPS_PER_ROW: u32 = MAP_PAGE_SIDE / MAP_TILE_SIDE;
+pub(crate) const MAPS_PER_PAGE: usize = (MAPS_PER_ROW * MAPS_PER_ROW) as usize;
+pub(crate) const MAP_PAGE_COUNT: usize = MAP_SLOTS / MAPS_PER_PAGE;
+
+static MAP_PAGE_ALLOCATION_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Keep using shared map slots if this process could not allocate a dedicated page.
+#[cfg(target_os = "android")]
+pub(super) fn map_pages_available() -> bool {
+    !MAP_PAGE_ALLOCATION_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn fallback_to_shared_map_atlas() -> bool {
+    !MAP_PAGE_ALLOCATION_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Texel coordinates in a page, plus a negative U tag shared by the HUD and entity shaders.
+pub fn separate_map_rect(slot: usize) -> Option<Rect> {
+    if slot >= MAP_SLOTS {
+        return None;
+    }
+    let page = slot / MAPS_PER_PAGE;
+    let tile = slot as u32 % MAPS_PER_PAGE as u32;
+    let x = (tile % MAPS_PER_ROW) * MAP_TILE_SIDE;
+    let y = (tile / MAPS_PER_ROW) * MAP_TILE_SIDE;
+    let u = x as f32 - 16384.0 + page as f32 * MAP_PAGE_SIDE as f32;
+    Some(Rect {
+        u0: u,
+        v0: y as f32,
+        u1: u + MAP_TILE_SIDE as f32,
+        v1: (y + MAP_TILE_SIDE) as f32,
+        w: MAP_TILE_SIDE,
+        h: MAP_TILE_SIDE,
+    })
+}
+
+/// The atlas sprite of map slot `slot` (`horizon/map{slot}`), named once:
+/// every map shown asks for its slot's each frame.
 /// The atlas sprite of map slot `slot` (`sunrise/map{slot}`), named once:
 /// every map shown asks for its slot's each frame.
 pub fn map_slot_sprite(slot: usize) -> Option<&'static str> {
@@ -912,6 +954,7 @@ impl HudAtlas {
             h: 1,
         };
         Ok(Self {
+            separate_maps: false,
             pictures: Default::default(),
             revision: Self::next_revision(),
             pixels: Vec::new(),
@@ -984,6 +1027,7 @@ impl HudAtlas {
         );
         let white = sprites["sunrise/white"];
         Self {
+            separate_maps: false,
             pictures: Default::default(),
             revision: Self::next_revision(),
             font: crate::font::Font::load(
