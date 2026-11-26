@@ -188,10 +188,13 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
                 edits.append((_inside(s, folder, root), s["byte_start"], s["byte_end"], s["suggested_replacement"]))
             continue
         if code == "E0308":
-            pair = _types(diag["message"]) or next(
-                (_types(c["message"]) for c in diag.get("children", []) if _types(c["message"])), None)
+            # The label first (rustc's short display, `&str`), then the message, then a note (`&'static str`,
+            # lifetimes and paths spelled out), for a span that followed a macro to its call.
             label = span.get("label") or next((s.get("label") or "" for s in diag["spans"] if s.get("is_primary")), "")
-            pair = pair or _types(label)
+            pair = _types(label) or _types(diag["message"]) or next(
+                (_types(c["message"]) for c in diag.get("children", []) if _types(c["message"])), None)
+            if pair:
+                pair = tuple(re.sub(r"&'static ", "&", t) for t in pair)
             rule = TYPE_RULES.get(pair) if pair else None
             if not rule and pair:
                 rule = next((r for (want, got), r in SHAPE_RULES if re.fullmatch(want, pair[0])
