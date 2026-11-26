@@ -297,5 +297,17 @@
   "Inverted automatic": "Inverted automatic",
   "Fixed": "Fixed",
   "Fixed reversed": "Fixed reversed",
-  "starling.credits.sunrise": "Built on Sunrise by Ludovic Marie and the Sunrise contributors, MIT License"
+  "starling.credits.sunrise": "Built on Sunrise by Ludovic Marie and the Sunrise contributors, MIT License",
+  "sunrise.touch.attack": "Attack",
+  "sunrise.touch.chat": "Chat",
+  "sunrise.touch.dismount": "Dismount",
+  "sunrise.touch.down": "Down",
+  "sunrise.touch.jump": "Jump",
+  "sunrise.touch.settings": "Touch",
+  "sunrise.touch.shield": "Shield",
+  "sunrise.touch.sneak": "Sneak",
+  "sunrise.touch.sprint": "Sprint",
+  "sunrise.touch.swap": "Swap",
+  "sunrise.touch.up": "Up",
+  "sunrise.touch.use": "Use"
 }
