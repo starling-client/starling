@@ -514,6 +514,7 @@ fn old_button(j: usize, label: String) -> NativeSetting {
         label: name,
         tooltip: None,
         value,
+        category: None,
     }
 }
 

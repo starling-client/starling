@@ -46,6 +46,39 @@ pub mod tests {
             "a refused setting is the mod's error, not startup's"
         );
     }
+
+    #[test]
+    pub(crate) fn categories_are_owned_and_unknown_or_empty_ones_are_refused() {
+        let mut registrar = super::PartRegistrar::new("first");
+        registrar
+            .register_setting(SettingSpec::toggle("on", "first.on", true))
+            .unwrap();
+        registrar
+            .register_setting(SettingSpec::toggle("off", "first.off", false))
+            .unwrap();
+        assert_eq!(registrar.categorize_setting("on", "first.group"), Ok(()));
+        assert_eq!(
+            registrar.categorize_setting("on", ""),
+            Err(SettingError::EmptyLabel)
+        );
+        assert_eq!(
+            registrar.categorize_setting("missing", "first.group"),
+            Err(SettingError::UnknownSetting("missing".into()))
+        );
+        // A later call replaces the category instead of adding a second entry.
+        assert_eq!(registrar.categorize_setting("on", "first.other"), Ok(()));
+        assert_eq!(
+            registrar.parts.setting_categories,
+            [("first", "on".to_owned(), "first.other".to_owned())]
+        );
+        // Another mod cannot categorize the first mod's setting.
+        registrar.mod_id = "second";
+        assert_eq!(
+            registrar.categorize_setting("on", "second.group"),
+            Err(SettingError::UnknownSetting("on".into()))
+        );
+        assert_eq!(registrar.parts.setting_categories.len(), 1);
+    }
 }
 
 impl SettingsRegistrar for PartRegistrar {
@@ -60,6 +93,33 @@ impl SettingsRegistrar for PartRegistrar {
             return Err(crate::SettingError::Duplicate(setting.key));
         }
         self.parts.settings.push((self.mod_id, setting));
+        Ok(())
+    }
+
+    fn categorize_setting(&mut self, key: &str, category: &str) -> Result<(), crate::SettingError> {
+        if category.is_empty() {
+            return Err(crate::SettingError::EmptyLabel);
+        }
+        if !self
+            .parts
+            .settings
+            .iter()
+            .any(|(owner, spec)| *owner == self.mod_id && spec.key.as_str() == key)
+        {
+            return Err(crate::SettingError::UnknownSetting(key.to_owned()));
+        }
+        if let Some(entry) = self
+            .parts
+            .setting_categories
+            .iter_mut()
+            .find(|(owner, k, _)| *owner == self.mod_id && k.as_str() == key)
+        {
+            entry.2 = category.to_owned();
+        } else {
+            self.parts
+                .setting_categories
+                .push((self.mod_id, key.to_owned(), category.to_owned()));
+        }
         Ok(())
     }
 }

@@ -3285,6 +3285,8 @@ impl Game<'_> {
                     label: spec.label.clone(),
                     tooltip: spec.tooltip.clone(),
                     value,
+                    category: mod_api::__private::setting_category(mod_id, &spec.key)
+                        .map(str::to_owned),
                 }
             })
             .collect()

@@ -1,0 +1,3 @@
+ids = ["method:SettingsRegistrar::categorize_setting", "type:SettingError.UnknownSetting", "type:NativeSetting.category"]
+why = "Adds setting categories for the mod config page: a mod groups its settings under section headings with `SettingsRegistrar::categorize_setting(key, category)` after registering them, so a page with many settings reads as sections instead of one flat list. `SettingSpec` keeps its four fields, so an old-SDK mod's registration still decodes."
+migrate = "Additive. Call `categorize_setting` after `register_setting` for the same key; settings without one render exactly as today."

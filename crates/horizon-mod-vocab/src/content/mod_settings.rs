@@ -82,7 +82,9 @@ pub enum SettingError {
     InvalidKey(String),
     /// The mod registered a setting with this key already.
     Duplicate(String),
-    /// The label (or an option of a choice) is empty.
+    /// No setting with this key is registered by the calling mod.
+    UnknownSetting(String),
+    /// The label, the category, or an option of a choice is empty.
     EmptyLabel,
     /// A choice has no options, or its default is not one of them.
     InvalidChoice,
@@ -101,6 +103,9 @@ impl std::fmt::Display for SettingError {
         match self {
             Self::InvalidKey(key) => write!(f, "invalid setting key {key:?}"),
             Self::Duplicate(key) => write!(f, "setting {key:?} is registered twice"),
+            Self::UnknownSetting(key) => {
+                write!(f, "no setting {key:?} is registered by this mod")
+            }
             Self::EmptyLabel => f.write_str("a setting's label or option is empty"),
             Self::InvalidChoice => f.write_str("a choice needs options and a default among them"),
             Self::EmptyRange => f.write_str("a range needs finite bounds with min below max"),
@@ -382,5 +387,36 @@ mod tests {
         assert_eq!(toggle.store(SettingValue::Choice(0)), None);
         assert_eq!(range.store(SettingValue::Range(4.5)), None);
         assert_eq!(color.store(SettingValue::Color(0x0100_0000)), None);
+    }
+
+    #[test]
+    fn an_old_sdk_payload_still_decodes() {
+        use crate::wire::{Reader, Wire, Writer};
+
+        // The exact bytes an old-SDK mod sends for `SettingSpec::toggle("on", "test.on", true)`:
+        // key "on", label "test.on", tooltip None, kind Toggle { default: true } — four fields
+        // and nothing else. A field added to `SettingSpec` would break this decode, and break
+        // every already-published mod that registers a setting, so the shape stays pinned.
+        let old = [
+            0x02, 0x00, 0x00, 0x00, 0x6f, 0x6e, // "on"
+            0x07, 0x00, 0x00, 0x00, 0x74, 0x65, 0x73, 0x74, 0x2e, 0x6f, 0x6e, // "test.on"
+            0x00, // tooltip: None
+            0x00, 0x00, 0x00, 0x00, // kind: Toggle
+            0x01, // default: true
+        ];
+        let spec = SettingSpec::toggle("on", "test.on", true);
+        let mut reader = Reader::new(&old);
+        assert_eq!(
+            SettingSpec::take(&mut reader).expect("an old payload decodes"),
+            spec
+        );
+        assert!(
+            reader.rest().is_empty(),
+            "the payload holds nothing beyond the four fields"
+        );
+        // The struct's own encoding is exactly those bytes: its wire shape is the old one.
+        let mut writer = Writer::new();
+        spec.put(&mut writer);
+        assert_eq!(writer.bytes(), old.as_slice());
     }
 }

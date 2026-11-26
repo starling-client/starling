@@ -59,6 +59,9 @@ pub struct Parts {
     pub(crate) key_mappings: Vec<(&'static str, crate::KeyRegistration)>,
     /// Settings by owner, in registration order (`Registrar::register_setting`).
     pub(crate) settings: Vec<(&'static str, crate::SettingSpec)>,
+    /// Categories by owner and setting key (`Registrar::categorize_setting`), one entry per
+    /// setting: a later call replaces the earlier category.
+    pub(crate) setting_categories: Vec<(&'static str, String, String)>,
     /// Block parts, and block entity parts as the block parts they also are.
     pub(crate) blocks: HashMap<Box<str>, Vec<Attached<dyn BlockPart>>>,
     /// Block entity parts by block, for the hooks asked by block (`block_entity`, `screen`).

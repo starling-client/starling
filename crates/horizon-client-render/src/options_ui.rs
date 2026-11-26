@@ -4276,7 +4276,14 @@ impl OptionsUi {
         let Some(page) = &m.native else {
             return rows;
         };
+        let mut category: Option<&str> = None;
         for (j, setting) in page.settings.iter().enumerate() {
+            if setting.category.as_deref() != category {
+                category = setting.category.as_deref();
+                if let Some(category) = category {
+                    rows.push(Row::Heading(category.to_owned()));
+                }
+            }
             let widget = match (&setting.value, u16::try_from(i), u16::try_from(j)) {
                 (crate::mod_list::NativeSettingValue::Range { .. }, Ok(i), Ok(j)) => Widget {
                     x: 0.0,
@@ -7963,6 +7970,7 @@ mod tests {
                     label: "Trails".into(),
                     tooltip: None,
                     value: crate::mod_list::NativeSettingValue::Toggle(true),
+                    category: None,
                 }],
                 ..Default::default()
             }),
@@ -7998,10 +8006,11 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
         let size = (480.0, 240.0);
-        let setting = |key: &str, value: V| NativeSetting {
+        let setting = |key: &str, category: Option<&str>, value: V| NativeSetting {
             key: key.into(),
             label: key.into(),
             tooltip: None,
+            category: category.map(str::to_owned),
             value,
         };
         s.mods.installed.push(crate::mod_list::Installed {
@@ -8012,9 +8021,10 @@ mod tests {
             dev: false,
             native: Some(crate::mod_list::NativePage {
                 settings: vec![
-                    setting("trails", V::Toggle(true)),
+                    setting("trails", None, V::Toggle(true)),
                     setting(
                         "speed",
+                        Some("test.movement"),
                         V::Range {
                             min: 0.0,
                             max: 4.0,
@@ -8022,11 +8032,47 @@ mod tests {
                             value: 1.0,
                         },
                     ),
+                    setting("jump", Some("test.movement"), V::Toggle(false)),
+                    setting("sneak", Some("test.safety"), V::Toggle(false)),
                 ],
                 ..Default::default()
             }),
         });
         ui.show(Page::NativeMod(0));
+        // Headings appear in order at category changes; each setting's (i, j)
+        // is its index in the page, headings never taking one.
+        let rows = ui.native_rows(&s, 0);
+        let summary: Vec<String> = rows
+            .iter()
+            .map(|row| match row {
+                Row::Note(_) => "note".to_string(),
+                Row::Heading(key) => format!("heading:{key}"),
+                Row::Buttons(widget, _) => match &widget.kind {
+                    WKind::Button {
+                        act: Act::NativeSetting(_, j),
+                        ..
+                    } => format!("button:{j}"),
+                    WKind::Slider {
+                        opt: Opt::ModSetting(_, j),
+                        ..
+                    } => format!("slider:{j}"),
+                    _ => "other".to_string(),
+                },
+                _ => "other".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            summary.iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "note",
+                "button:0",
+                "heading:test.movement",
+                "slider:1",
+                "button:2",
+                "heading:test.safety",
+                "button:3",
+            ]
+        );
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
         let toggle = widgets
             .iter()
@@ -8085,6 +8131,50 @@ mod tests {
                 step: 1.0,
                 value: 4.0
             }
+        );
+    }
+
+    #[test]
+    fn an_uncategorized_mod_page_has_no_headings() {
+        use crate::mod_list::{NativeSetting, NativeSettingValue as V};
+        let mut s = Settings::default();
+        let ui = OptionsUi::default();
+        let setting = |key: &str, value: V| NativeSetting {
+            key: key.into(),
+            label: key.into(),
+            tooltip: None,
+            category: None,
+            value,
+        };
+        s.mods.installed.push(crate::mod_list::Installed {
+            id: "native".into(),
+            title: "Native 1.0".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(crate::mod_list::NativePage {
+                settings: vec![
+                    setting("trails", V::Toggle(true)),
+                    setting(
+                        "speed",
+                        V::Range {
+                            min: 0.0,
+                            max: 4.0,
+                            step: 1.0,
+                            value: 1.0,
+                        },
+                    ),
+                ],
+                ..Default::default()
+            }),
+        });
+        let rows = ui.native_rows(&s, 0);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, Row::Heading(_)))
+                .count(),
+            0,
+            "uncategorized settings draw no headings"
         );
     }
 
@@ -8615,6 +8705,7 @@ mod tests {
                     label: "Trails".into(),
                     tooltip: None,
                     value: crate::mod_list::NativeSettingValue::Toggle(true),
+                    category: None,
                 }],
                 ..Default::default()
             }),
@@ -9095,6 +9186,7 @@ mod tests {
                     label: "Trails".into(),
                     tooltip: None,
                     value: crate::mod_list::NativeSettingValue::Toggle(true),
+                    category: None,
                 }],
             }),
         });

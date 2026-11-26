@@ -67,6 +67,10 @@ Settings are client settings and appear on your mod's page in **Options > Mods**
 button.
 
 - Read a setting with `host.setting(mod_id, key)` or a typed read. Typed reads are cached per data folder and key.
+- Group settings under headings with `Registrar::categorize_setting(key, category)` after registering
+  them: settings sharing a category (a translation key) are drawn under one heading, in registration
+  order, on the mod's page. Settings without a category render as today. A key the calling mod never
+  registered, or an empty category, comes back as the error.
 - `host.set_setting(mod_id, key, value)` keeps a value. A successful write updates the cache; a failed one leaves
   it. This write does not fire `setting_changed`.
 - When the player edits a setting, the value is kept first, then `setting_changed` tells your mod alone.
