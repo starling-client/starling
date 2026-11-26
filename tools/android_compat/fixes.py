@@ -50,6 +50,18 @@ TYPE_RULES = {
     ("Option<String>", "Option<Option<&str>>"): lambda e: f"{_paren(e)}.flatten().map(str::to_string)",
     ("Option<&str>", "Option<Option<&str>>"): lambda e: f"{_paren(e)}.flatten()",
     ("[i32; 3]", "Option<[i32; 3]>"): lambda e: f"{_paren(e)}.unwrap_or_default()",
+    # Tooltip lines are a text with its colour now (`u32::MAX` keeps the text's own); Horizon's were strings.
+    ("(Text, u32)", "String"): lambda e: f"(mod_api::Text::literal({e}), u32::MAX)",
+    ("(Text, u32)", "&str"): lambda e: f"(mod_api::Text::literal({e}), u32::MAX)",
+    ("(Text, u32)", "&String"): lambda e: f"(mod_api::Text::literal({_paren(_strip_ref(e))}.clone()), u32::MAX)",
+    ("&[String]", "&EntityTags<'_>"):
+        lambda e: f"&{_paren(_strip_ref(e))}.iter_utf16().map(String::from_utf16_lossy).collect::<Vec<String>>()",
+    ("Option<bool>", "bool"): lambda e: f"Some({e})",
+    ("bool", "Option<bool>"): lambda e: f"{_paren(e)}.unwrap_or(false)",
+    ("Option<&ItemResource>", "&ItemResource"): lambda e: f"Some({e})",
+    ("&ItemStack", "&(usize, ItemStack)"): lambda e: f"&{_paren(_strip_ref(e))}.1",
+    ("&ItemStack", "&&(usize, ItemStack)"): lambda e: f"&{_paren(_strip_ref(e))}.1",
+    ("Result<i32, _>", "i32"): lambda e: f"Ok({e})",
     # Sunrise's `insert` / `extract` say when a handler answered more than asked; Horizon's moved nothing then.
     ("u32", "Result<u32, Overanswered>"): lambda e: f"{_paren(e)}.unwrap_or(0)",
     ("u32", "Result<u32, mod_api::Overanswered>"): lambda e: f"{_paren(e)}.unwrap_or(0)",
@@ -65,6 +77,15 @@ FIELD_CALLS = {
 # Names starling_compat.rs gives every file of an adopted mod: an import of them from `mod_api` that no longer
 # resolves is dropped, and the prelude's glob supplies them.
 PRELUDE = {"move_resources", "MovementInputEvent"}
+
+# Shapes by pattern, after the exact pairs: (expected, found) regexes -> rule.
+SHAPE_RULES = [
+    # A write Horizon answered with whether it took, Sunrise with why it didn't.
+    ((r"bool", r"Result<\(\), [\w:]+>"), lambda e: f"{_paren(e)}.is_ok()"),
+    # A value Horizon handed plain that Sunrise may refuse: the old value or the type's default.
+    ((r"String|i32|u32|i64|u64|f32|f64|usize", r"Result<_, _>|Result<\w+, [\w:]+>"),
+     lambda e: f"{_paren(e)}.unwrap_or_default()"),
+]
 
 # Methods Sunrise renamed whose old arity tells them apart: name -> (arguments of the old call, new name).
 RENAMED_BY_ARITY = {"insert": (5, "insert_at"), "extract": (5, "extract_at")}
@@ -155,6 +176,18 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
             label = span.get("label") or ""
             pair = pair or _types(label)
             rule = TYPE_RULES.get(pair) if pair else None
+            if not rule and pair:
+                rule = next((r for (want, got), r in SHAPE_RULES if re.fullmatch(want, pair[0])
+                             and re.fullmatch(got, pair[1])), None)
+            if not rule and pair == ("Option<RegistryName>", "&str"):
+                # `kind.id(keys) != name`: the id is compared as text, as Horizon's was.
+                other = next((s for s in diag["spans"] if not s.get("is_primary")
+                              and "expected because" in (s.get("label") or "")), None)
+                if other and _inside(other, folder, root) == path:
+                    lhs = source[other["byte_start"]:other["byte_end"]].decode("utf-8", "replace")
+                    edits.append((path, other["byte_start"], other["byte_end"], f"{_paren(lhs)}.as_deref()"))
+                    edits.append((path, start, end, f"Some({expr})"))
+                continue
             if rule:
                 new = rule(expr)
                 if re.fullmatch(r"[A-Za-z_]\w*", expr) and _shorthand(source, start, end):

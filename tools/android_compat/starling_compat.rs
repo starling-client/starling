@@ -218,6 +218,9 @@ impl<R, T: mod_api::ResourceHandler<R> + ?Sized> StarlingResources<R> for T {
 /// Names Sunrise keeps at the API's root that Horizon's mods used without importing them (a hook's parameter types
 /// the adoption's rules write, or the mod named them through a glob Sunrise no longer has).
 pub use mod_api::{ConfigContext, HostSide, PackDiscoveryContext};
+/// And every other root name of the API: Horizon's mods reached some through modules or globs that moved (a hook's
+/// host trait, `Flow`, a reload context). A name the mod imports or defines itself wins over this glob.
+pub use mod_api::*;
 
 /// Horizon's `move_resources(host, from, to, filter, max, tx)` at the root, over Sunrise's `resource_util` one
 /// (whose transaction is optional).
