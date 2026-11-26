@@ -4,6 +4,7 @@
     python3 tools/android_native_sdk.py prepare               # the game and the mod API as Rust dylibs
     RUSTFLAGS="-C prefer-dynamic" python3 packaging/android/build_apk.py --abi arm64-v8a ...
     RUSTFLAGS="-C prefer-dynamic" python3 tools/android_native_sdk.py mods OUT MOD.smod... [--profile P] [--abi A]
+    RUSTFLAGS="-C prefer-dynamic" python3 tools/android_native_sdk.py mods OUT MOD.smod... --check
 
 `prepare` rewrites this checkout's manifests (a CI runner's or a build copy's, never a working tree someone edits)
 the way tools/prebuilt_game.py rewrites its staged copy: the API crates (sunrise-mod-api's and sunrise-mod-points'
@@ -16,6 +17,11 @@ builds from source (build_apk.py TLS_FLAGS) sits inside the lowest of them, once
 the same flags and features (build_apk.py `build_library` with more packages), so the game's crates are the ones the
 APK ships and only the mods compile. OUT gets what the game reads in its `native-libs` folder (android_lib.rs):
 `native-mods.json`, each `lib<id>.so`, and each mod's package in `sunrise-native-mods/<id>/`.
+
+`mods --check` stages the packages the same way and runs `cargo check` instead of the build, with the same flags,
+features and std: OUT/check.json says for each package whether it compiles and its first errors, or why it was
+refused (mod-builds' corpus check, which compares the catalog's mods on a new game with the ones that compiled on
+the last). No mixin mod: they need the staged game's patch crates.
 
 Mods with `[native.*]` tables (mixins, modules, bridges, loops) need this checkout to be the staged game
 (tools/prebuilt_game.py `stage`, whose `functions.json` it holds) and the commit's unstaged source in
@@ -186,13 +192,14 @@ def horizon_layer(work: Path) -> None:
     compat(work)
 
 
-def horizon_fixes(ids: list[str], profile: str, ndk: Path, sdkdir: Path, abi: str, packages: tuple) -> None:
+def horizon_fixes(ids: list[str], profile: str, ndk: Path, sdkdir: Path, abi: str, packages: tuple,
+                  check: bool = False) -> None:
     """Builds `packages`; while Horizon mods among them fail, fixes what the compiler pins down
     (tools/android_compat/fixes.py) and builds again, a few rounds at most. The build after it is the real one."""
     sys.path.insert(0, str(COMPAT.parent))
     import fixes  # noqa: E402
     for round_ in range(1, 5):
-        built, output = build_apk.build_library(profile, ndk, sdkdir, abi, packages, messages=True)
+        built, output = build_apk.build_library(profile, ndk, sdkdir, abi, packages, messages=True, check=check)
         if built:
             return
         made = 0
@@ -623,7 +630,95 @@ def game_calls(text: str) -> str:
 GAME_FEATURES = ("audio", "sunrise-extras")
 
 
-def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
+def stage_package(path: Path, folder: Path, template: str, commit: str, release: str, abi: str,
+                  built: list, from_horizon: list, check: bool = False) -> None:
+    """One package into this workspace as `mods` builds it (`built` and `from_horizon` get its rows): unpacked,
+    adopted from Horizon through the layer, its patch crate made for its [native.*] rows, its entry module written.
+    Exits on a package the build can't take."""
+    work = folder / path.stem
+    manifest = unpack(path, work)
+    mod_id, version = manifest["id"], manifest["version"]
+    if not ID.fullmatch(mod_id):
+        sys.exit(f"{path.name}: id {mod_id!r} is not a crate name")
+    native = manifest.get("native")
+    if not isinstance(native, dict):
+        sys.exit(f"{path.name}: not a native mod")
+    tables = sorted(key for key, value in native.items() if isinstance(value, (list, dict)))
+    if tables and check:
+        sys.exit(f"{path.name}: [native.{', native.'.join(tables)}] rows: `mods --check` takes no mixin mod")
+    if tables and any(t for *_, t in built if t):
+        sys.exit(f"mods: {mod_id}: one mod with [native.*] rows a build")
+    if work.name != mod_id:
+        work.rename(folder / mod_id)
+        work = folder / mod_id
+    cargo = tomllib.loads((work / "Cargo.toml").read_text())
+    horizon = adopt_horizon(work)
+    # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
+    if horizon:
+        horizon_layer(work)
+    if tables:
+        if not horizon:
+            compat(work)
+        retarget(mod_id, work)
+    made = patched(mod_id, work, folder, commit, abi) if tables else None
+    installs, patch_crates = made if made else (None, [])
+    (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
+                                                      "rlib" if tables else "dylib"))
+    own_crates(work, cargo)
+    # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
+    # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The entry template adds the
+    # panic strategy itself (`sunrise_native_build`), so the library carries the first four words and
+    # native-mods.json all five. A four-word record made every library refused on the phone, and five words
+    # in the library too gave it "unwind unwind" ("native mods left out").
+    built_as = f"{commit} {mod_id} {version} {release}"
+    identity = f"{built_as} unwind"
+    side = SIDES.get(manifest.get("side", "both"), "Both")
+    hooks = hooks_path(work / "src")
+    if tables:
+        # The library is a crate of its own above the mod's and the patch crate.
+        hooks = hooks.replace("crate::", f"{mod_id}::", 1)
+    rows = {
+        "NATIVE_BUILD": built_as,
+        "MOD_ENTRIES": f'"{mod_id}" => {hooks},',
+        "BUILT_MODS": f'mod_api::__private::native::BuiltMod {{ id: "{mod_id}", version: "{version}", '
+                      f"side: mod_api::Side::{side} }},",
+        "MOD_SLOTS": "",
+        "MOD_REDIRECTS": "".join(f"{i},\n" for i in installs or ()),
+    }
+    entry = template
+    for marker, value in rows.items():
+        entry = entry.replace(f"/* {marker} */", value)
+    if not tables:
+        (work / "src" / "starling_native_entry.rs").write_text(entry)
+        with open(work / "src" / "lib.rs", "a", encoding="utf-8") as lib:
+            lib.write('\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n')
+    else:
+        library = folder / f"{mod_id}-library"
+        (library / "src").mkdir(parents=True)
+        api = (ROOT / "crates" / "sunrise-mod-api").as_posix()
+        host = (ROOT / "crates" / "sunrise-mod-host").as_posix()
+        (library / "Cargo.toml").write_text("\n".join([
+            "[package]", f'name = "smod-{mod_id}-library"', f'version = "{version}"', 'edition = "2024"',
+            "publish = false", "", "[lib]", f'name = "{mod_id}_library"', 'path = "src/lib.rs"',
+            'crate-type = ["dylib"]', "", "[dependencies]",
+            f'mod_api = {{ path = "{api}", package = "sunrise-mod-api", default-features = false }}',
+            # As crates/sunrise-android takes it: the host's defaults are the desktop's (controllers).
+            f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host", default-features = false }}',
+            f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}',
+            *(f'{name} = {{ path = "{dest.as_posix()}", package = "{package}" }}'
+              for package, name, dest in patch_crates),
+        ]) + "\n")
+        (library / "src" / "lib.rs").write_text(
+            # After the template: it opens with its inner doc comment.
+            entry + f"\nextern crate {mod_id};\n"
+            + "".join(f"extern crate {name};\n" for _, name, _ in patch_crates)
+            + "extern crate sunrise_mod_host as _;\n")
+    built.append((mod_id, version, identity, path, bool(tables)))
+    if horizon and not tables:
+        from_horizon.append(mod_id)
+
+
+def mods(out: Path, packages: list[Path], profile: str, abi: str, check: bool = False) -> None:
     commit, release = game_build()
     template = TEMPLATE.read_text()
     folder = ROOT / MODS_DIR
@@ -635,93 +730,28 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
     placeholder()
     if os.environ.get("SUNRISE_UNSTAGED_SOURCE") and not os.environ.get("SUNRISE_ANDROID_PATCH"):
         os.environ["SUNRISE_ANDROID_PATCH"] = str(patch_tool())
-    built, from_horizon = [], []
+    built, from_horizon, refused = [], [], {}
     for path in packages:
-        work = folder / path.stem
-        manifest = unpack(path, work)
-        mod_id, version = manifest["id"], manifest["version"]
-        if not ID.fullmatch(mod_id):
-            sys.exit(f"{path.name}: id {mod_id!r} is not a crate name")
-        native = manifest.get("native")
-        if not isinstance(native, dict):
-            sys.exit(f"{path.name}: not a native mod")
-        tables = sorted(key for key, value in native.items() if isinstance(value, (list, dict)))
-        if tables and any(t for *_, t in built if t):
-            sys.exit(f"mods: {mod_id}: one mod with [native.*] rows a build")
-        if work.name != mod_id:
-            work.rename(folder / mod_id)
-            work = folder / mod_id
-        cargo = tomllib.loads((work / "Cargo.toml").read_text())
-        horizon = adopt_horizon(work)
-        # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
-        if horizon:
-            horizon_layer(work)
-        if tables:
-            if not horizon:
-                compat(work)
-            retarget(mod_id, work)
-        made = patched(mod_id, work, folder, commit, abi) if tables else None
-        installs, patch_crates = made if made else (None, [])
-        (work / "Cargo.toml").write_text(package_manifest(mod_id, version, cargo, work,
-                                                          "rlib" if tables else "dylib"))
-        own_crates(work, cargo)
-        # `<build> <mod> <version> <rustc release> <panic strategy>`, as sunrise-mod-host's loader reads it
-        # (`identity_parts`): the APK and its mods unwind (build_apk.py BUILD_STD). The entry template adds the
-        # panic strategy itself (`sunrise_native_build`), so the library carries the first four words and
-        # native-mods.json all five. A four-word record made every library refused on the phone, and five words
-        # in the library too gave it "unwind unwind" ("native mods left out").
-        built_as = f"{commit} {mod_id} {version} {release}"
-        identity = f"{built_as} unwind"
-        side = SIDES.get(manifest.get("side", "both"), "Both")
-        hooks = hooks_path(work / "src")
-        if tables:
-            # The library is a crate of its own above the mod's and the patch crate.
-            hooks = hooks.replace("crate::", f"{mod_id}::", 1)
-        rows = {
-            "NATIVE_BUILD": built_as,
-            "MOD_ENTRIES": f'"{mod_id}" => {hooks},',
-            "BUILT_MODS": f'mod_api::__private::native::BuiltMod {{ id: "{mod_id}", version: "{version}", '
-                          f"side: mod_api::Side::{side} }},",
-            "MOD_SLOTS": "",
-            "MOD_REDIRECTS": "".join(f"{i},\n" for i in installs or ()),
-        }
-        entry = template
-        for marker, value in rows.items():
-            entry = entry.replace(f"/* {marker} */", value)
-        if not tables:
-            (work / "src" / "starling_native_entry.rs").write_text(entry)
-            with open(work / "src" / "lib.rs", "a", encoding="utf-8") as lib:
-                lib.write('\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n')
-        else:
-            library = folder / f"{mod_id}-library"
-            (library / "src").mkdir(parents=True)
-            api = (ROOT / "crates" / "sunrise-mod-api").as_posix()
-            host = (ROOT / "crates" / "sunrise-mod-host").as_posix()
-            (library / "Cargo.toml").write_text("\n".join([
-                "[package]", f'name = "smod-{mod_id}-library"', f'version = "{version}"', 'edition = "2024"',
-                "publish = false", "", "[lib]", f'name = "{mod_id}_library"', 'path = "src/lib.rs"',
-                'crate-type = ["dylib"]', "", "[dependencies]",
-                f'mod_api = {{ path = "{api}", package = "sunrise-mod-api", default-features = false }}',
-                # As crates/sunrise-android takes it: the host's defaults are the desktop's (controllers).
-                f'sunrise_mod_host = {{ path = "{host}", package = "sunrise-mod-host", default-features = false }}',
-                f'{mod_id} = {{ path = "{work.as_posix()}", package = "smod-{mod_id}" }}',
-                *(f'{name} = {{ path = "{dest.as_posix()}", package = "{package}" }}'
-                  for package, name, dest in patch_crates),
-            ]) + "\n")
-            (library / "src" / "lib.rs").write_text(
-                # After the template: it opens with its inner doc comment.
-                entry + f"\nextern crate {mod_id};\n"
-                + "".join(f"extern crate {name};\n" for _, name, _ in patch_crates)
-                + "extern crate sunrise_mod_host as _;\n")
-        built.append((mod_id, version, identity, path, bool(tables)))
-        if horizon and not tables:
-            from_horizon.append(mod_id)
-    if not built:
+        before = set(folder.iterdir())
+        try:
+            stage_package(path, folder, template, commit, release, abi, built, from_horizon, check)
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - `--check` answers for each package
+            if not check:
+                raise
+            refused[path.name] = (str(error) if isinstance(error, SystemExit)
+                                  else f"{type(error).__name__}: {error}")[:400]
+            # What it left in the workspace would fail every other package's check.
+            for left in set(folder.iterdir()) - before:
+                shutil.rmtree(left, ignore_errors=True)
+    if not built and not check:
         sys.exit("mods: nothing to build")
 
     sdk = build_apk.sdk_dir()
     ndk = Path(os.environ.get("ANDROID_NDK_HOME") or sdk / "ndk" / build_apk.NDK)
     packages = ("sunrise-android", *(f"smod-{m}-library" if staged else f"smod-{m}" for m, *_, staged in built))
+    if check:
+        check_mods(out, built, from_horizon, refused, profile, ndk, sdk, abi, packages)
+        return
     if from_horizon:
         horizon_fixes(from_horizon, profile, ndk, sdk, abi, packages)
     build_apk.build_library(profile, ndk, sdk, abi, packages)
@@ -747,6 +777,53 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
     print(f"mods: {', '.join(m for m, *_ in built)} for {commit[:10]} in {out}")
 
 
+def check_mods(out: Path, built: list, from_horizon: list, refused: dict, profile: str, ndk: Path, sdkdir: Path,
+               abi: str, packages: tuple) -> None:
+    """`mods --check`: the staged packages through `cargo check` (build_apk.py `build_library` with `check`), the
+    Horizon layer's rounds first, and OUT/check.json in place of the libraries: for each package whether it
+    compiles and its first errors, or why it was `refused`. An error in the game's own crates fails every mod."""
+    if from_horizon:
+        horizon_fixes(from_horizon, profile, ndk, sdkdir, abi, packages, check=True)
+    done, output = build_apk.build_library(profile, ndk, sdkdir, abi, packages, messages=True, check=True) \
+        if built else (True, "")
+    errors, game = {}, []
+    for line in output.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        message = msg.get("message") or {}
+        if msg.get("reason") != "compiler-message" or not str(message.get("level", "")).startswith("error"):
+            continue
+        # The package's folder in this workspace, in either form of cargo's id (`path+file:///…/<id>#smod-x@0.1.0`,
+        # `smod-x 0.1.0 (path+file:///…/<id>)`): a mod's own crates are folders inside its package.
+        found = re.search(rf"/{MODS_DIR}/([a-z0-9_]+)(?:[/#)]|$)", msg.get("package_id", ""))
+        code = (message.get("code") or {}).get("code") or ""
+        span = next((x for x in message.get("spans", []) if x.get("is_primary")), None)
+        where = f" ({span['file_name']}:{span['line_start']})" if span else ""
+        text = f"{code} {message.get('message', '')}".strip()[:240] + where
+        (errors.setdefault(found.group(1), []) if found else game).append(text)
+    if not done and not errors and not game:
+        # Cargo stopped before the compiler (a manifest, the lockfile): its own words, at the end of its output.
+        game.append(" ".join(output.split())[-600:])
+    answers = {}
+    for mod_id, version, _identity, path, _staged in built:
+        found = errors.get(mod_id, [])
+        answers[path.name] = {"mod": mod_id, "version": version, "ok": not found and not game,
+                              "errors": len(found), "first": found[:8]}
+    for name, why in refused.items():
+        answers[name] = {"ok": False, "refused": why}
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "check.json").write_text(json.dumps({"game": {"ok": not game, "first": game[:8]},
+                                                "packages": answers}, indent=1) + "\n")
+    print(f"mods --check: {sum(1 for a in answers.values() if a['ok'])} of {len(answers)} packages compile"
+          + ("; the game's own crates do not" if game else ""), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -756,11 +833,13 @@ def main() -> None:
     build.add_argument("packages", type=Path, nargs="+")
     build.add_argument("--profile", default="quick")
     build.add_argument("--abi", default=build_apk.ABI)
+    build.add_argument("--check", action="store_true",
+                       help="`cargo check` the packages instead: OUT/check.json answers for each")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare()
     else:
-        mods(args.out.resolve(), [p.resolve() for p in args.packages], args.profile, args.abi)
+        mods(args.out.resolve(), [p.resolve() for p in args.packages], args.profile, args.abi, args.check)
 
 
 if __name__ == "__main__":

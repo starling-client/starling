@@ -164,10 +164,11 @@ def emutls_shared(ndk, abi):
     return path
 
 
-def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",), messages=False):
+def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",), messages=False, check=False):
     """Builds `packages` for `abi`. With `messages`, cargo's JSON messages come back as text with whether it built,
     instead of the output going to the console and a failure ending the script (android_native_sdk.py's Horizon
-    layer reads the compiler's errors to fix a mod and build again)."""
+    layer reads the compiler's errors to fix a mod and build again). With `check`, `cargo check` with the same
+    flags, features and std: whether it compiles, with no library (mod-builds' corpus check of the catalog's mods)."""
     env = dict(os.environ, ANDROID_NDK_HOME=str(ndk), ANDROID_HOME=str(sdk))
     # Preserve source identity in local diagnostic reports, including source builds.
     try:
@@ -206,12 +207,13 @@ def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",), mes
         "cargo", "ndk", "-t", abi, "--platform", MIN_SDK,
         # More packages than the game only for native mod libraries (tools/android_native_sdk.py `mods`), built
         # beside it with the same features and flags, so the game's crates are the ones the APK ships.
-        "build", BUILD_STD, "--profile", profile, *(flag for p in packages for flag in ("-p", p)),
+        "check" if check else "build", BUILD_STD, "--profile", profile, *(flag for p in packages for flag in ("-p", p)),
     ]
     if messages:
         done = subprocess.run([*command, "--keep-going", "--message-format=json"], cwd=ROOT, env=env,
                               capture_output=True, text=True)
-        return done.returncode == 0, done.stdout
+        # Cargo's own words (a manifest it refused) are on stderr, after the compiler's JSON.
+        return done.returncode == 0, done.stdout + "\n" + done.stderr
     run(*command, cwd=ROOT, env=env)
 
 
@@ -535,6 +537,10 @@ def main():
         "--preview", action="store_true",
         help=f"Starling Preview ({APPLICATION_ID}{VARIANTS['preview'][0]}), the organisation's CI build",
     )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="only `cargo check` the library's crates, as they build: no library, no APK",
+    )
     parser.add_argument("--abi", choices=TARGETS, default=ABI, help="Android ABI (default: arm64-v8a)")
     args = parser.parse_args()
     triple, _, _ = TARGETS[args.abi]
@@ -547,6 +553,9 @@ def main():
         if not path.exists():
             sys.exit(f"build_apk: missing {path}")
 
+    if args.check:
+        build_library(args.profile, ndk, sdk, args.abi, check=True)
+        return
     if not args.no_build:
         build_library(args.profile, ndk, sdk, args.abi)
     profile_dir = "debug" if args.profile == "dev" else args.profile
